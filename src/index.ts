@@ -271,6 +271,14 @@ function supportOf(entry: DirectoryEntry, profile: ProfileShape | undefined, man
 }
 
 /** Request-local credential context established by the stream listener. */
+interface StreamAttempt {
+  keyId: string | undefined
+  usedManagedKey: boolean
+  at: number
+  sequence: number
+  claimed: boolean
+}
+
 interface RequestScope {
   provider: string
   keyId: string | null
@@ -325,6 +333,8 @@ export class KeysManagerService {
   private readonly als = new AsyncLocalStorage<RequestScope>()
   private readonly attempts = new Map<string, AttemptState>()
   private readonly stepAttempts = new Map<string, AttemptState>()
+  private readonly streamAttempts = new Map<string, StreamAttempt[]>()
+  private attemptSequence = 0
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
   settings: SettingsLike | undefined
@@ -365,7 +375,10 @@ export class KeysManagerService {
 
   /** Serialize mutations. */
   private run<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(operation, operation)
+    const guarded = (): Promise<T> => this.store.readOnly
+      ? Promise.reject(new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.'))
+      : operation()
+    const next = this.queue.then(guarded, guarded)
     this.queue = next.catch(() => {})
     return next
   }
@@ -729,7 +742,7 @@ export class KeysManagerService {
     if (descriptor.writable === false) warnings.push('The active profile is read-only; key changes cannot be saved.')
     return {
       now,
-      writable: descriptor.writable,
+      writable: descriptor.writable && !this.store.readOnly,
       settings: { ...normalizeSettings(this.store.settings) },
       providers: views,
       managedCount: views.filter(view => view.managed).length,
@@ -1348,6 +1361,11 @@ export class KeysManagerService {
       if (now - entry.at <= ATTEMPT_TTL_MS) continue
       this.switches.delete(key)
     }
+    for (const [key, attempts] of this.streamAttempts) {
+      const kept = attempts.filter(entry => now - entry.at <= ATTEMPT_TTL_MS)
+      if (kept.length === 0) this.streamAttempts.delete(key)
+      else this.streamAttempts.set(key, kept)
+    }
   }
 
   /** Waterfall listener: bind a key to the request and observe its terminal chunk. */
@@ -1420,6 +1438,7 @@ export class KeysManagerService {
               const reason = chunk.reason
               const used = store?.keyUsed === true
               if (reason.kind === 'error') {
+                service.recordStreamAttempt(providerId, sessionId, keyId, used)
                 if (used && reason.failure !== undefined) {
                   service.recordFailure(providerId, sessionId, keyId, reason.failure, true)
                 } else if (sessionId !== undefined) {
@@ -1477,6 +1496,37 @@ export class KeysManagerService {
     return action
   }
 
+  /** Record one failed stream attempt for turn/step attribution. */
+  private recordStreamAttempt(providerId: string, sessionId: string | undefined, keyId: string | undefined, usedManagedKey: boolean): void {
+    if (sessionId === undefined) return
+    const key = bindingKey(sessionId, providerId)
+    const attempts = this.streamAttempts.get(key) ?? []
+    attempts.push({
+      keyId,
+      usedManagedKey,
+      at: Date.now(),
+      sequence: ++this.attemptSequence,
+      claimed: false,
+    })
+    while (attempts.length > 8) attempts.shift()
+    this.streamAttempts.set(key, attempts)
+  }
+
+  /** Claim the next unclaimed stream attempt after a step's last sequence. */
+  private claimStreamAttempt(
+    providerId: string,
+    sessionId: string | undefined,
+    afterSequence: number,
+  ): StreamAttempt | undefined {
+    if (sessionId === undefined) return undefined
+    const attempts = this.streamAttempts.get(bindingKey(sessionId, providerId))
+    if (attempts === undefined) return undefined
+    const found = attempts.find(entry => !entry.claimed && entry.sequence > afterSequence)
+    if (found === undefined) return undefined
+    found.claimed = true
+    return found
+  }
+
   /**
    * Find a metadata-selectable alternate whose credential actually resolves.
    * A key whose credential was removed outside the manager must not cause the
@@ -1516,19 +1566,29 @@ export class KeysManagerService {
     const attemptKey = bindingKey(sessionId, providerId)
     const switchKey = `${attemptKey}\u0000${payload.turn}\u0000${payload.step}`
     let attempt = this.stepAttempts.get(switchKey)
+    const evidence = this.claimStreamAttempt(providerId, sessionId, attempt?.lastSequence ?? 0)
     if (attempt === undefined) {
       const currentAttempt = this.attempts.get(attemptKey)
-      if (currentAttempt === undefined || currentAttempt.usedManagedKey !== true) return next()
+      const source = evidence ?? currentAttempt
+      if (source === undefined || source.usedManagedKey !== true) return next()
       attempt = {
-        keyId: currentAttempt.keyId,
+        keyId: source.keyId,
         retries: 0,
-        failure: currentAttempt.failure,
+        failure: currentAttempt?.failure,
         at: now,
         turn: payload.turn,
         step: payload.step,
         usedManagedKey: true,
+        lastSequence: evidence?.sequence ?? 0,
       }
       this.stepAttempts.set(switchKey, attempt)
+    } else if (evidence !== undefined) {
+      // A retry may have selected a different key or fallen back to an
+      // external credential; refresh this step's attribution.
+      attempt.keyId = evidence.keyId
+      attempt.usedManagedKey = evidence.usedManagedKey
+      attempt.lastSequence = evidence.sequence
+      attempt.at = now
     }
     if (attempt.usedManagedKey !== true) return next()
     const currentKeyId = attempt.keyId

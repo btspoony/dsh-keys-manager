@@ -64,3 +64,9 @@ git log by the release-prep workflow.
 - Retry/switch attempts are scoped per session/provider/turn/step so concurrent
   steps cannot reset each other's budget; pruning retains steps that still own
   a switch budget.
+- State loading distinguishes read failures from parse corruption: read errors
+  keep the file untouched and force a read-only/in-memory store, while corrupt
+  JSON is backed up before a fresh state is written.
+- Each failed stream attempt is attributed to the step that claims it, so a
+  retry on another key or on an external credential refreshes the step's key
+  and evidence instead of reusing stale state.

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
@@ -360,4 +360,39 @@ test('sanitize drops legacy valueMissing markers', () => {
     },
   })
   assert.equal(state.providers.p.keys[0].valueMissing, false)
+})
+
+
+test('a state read failure keeps the file untouched and refuses writes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-readfail-'))
+  try {
+    const file = join(dir, 'state.json')
+    await mkdir(file)
+    const store = new KeysManagerStore(file, { warn: () => {} })
+    assert.equal(store.readOnly, true)
+    assert.match(String(store.loadError), /Could not read/)
+    store.state.settings.retryCount = 3
+    store.touch()
+    await store.flush()
+    assert.equal((await stat(file)).isDirectory(), true)
+    await store.close()
+    assert.equal((await stat(file)).isDirectory(), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('corrupt state is backed up and the fresh store is writable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-corrupt-'))
+  try {
+    const file = join(dir, 'state.json')
+    await writeFile(file, '{not json')
+    const store = new KeysManagerStore(file, { warn: () => {} })
+    assert.equal(store.readOnly, false)
+    assert.match(String(store.loadError), /preserved at/)
+    const entries = await readdir(dir)
+    assert.ok(entries.some(name => name.includes('state.json.corrupt-')))
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })

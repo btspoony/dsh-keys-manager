@@ -153,6 +153,8 @@ export interface AttemptState {
   step?: number
   /** Whether the request actually resolved a managed key through the broker. */
   usedManagedKey?: boolean
+  /** Monotonic stream-sequence attribution for this step. */
+  lastSequence?: number
 }
 
 /** Provider support verdict used by the UI. */

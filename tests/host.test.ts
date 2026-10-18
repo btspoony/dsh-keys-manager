@@ -1258,3 +1258,103 @@ test('a mismatch release records partial deletion without touching the profile',
     await h.close()
   }
 })
+
+
+test('a retried step refreshes attribution to the key it actually used', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ retryCount: 1 })
+    const record = h.store.provider('zai-coding-cn')!
+    const [first, second] = record.keys
+    ;(h.service as any).attempts.set('session-retry\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      turn: 1,
+      step: 1,
+      usedManagedKey: true,
+    })
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-retry' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-retry', second.id, true)
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    assert.equal(second.cooldownUntil > 0, true)
+    assert.equal(first.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a retry on an external credential does not cool a managed key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.setSettings({ retryCount: 1 })
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    ;(h.service as any).attempts.set('session-external\u0000zai-coding-cn', {
+      keyId: key.id,
+      retries: 0,
+      at: Date.now(),
+      turn: 1,
+      step: 1,
+      usedManagedKey: true,
+    })
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-external' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-external', undefined, false)
+    const next = vi.fn(async () => undefined)
+    assert.equal(await h.service.requestErrorListener(payload, next), undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(key.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('first errors of concurrent steps claim separate stream attempts', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ retryCount: 2 })
+    const [first, second] = h.store.provider('zai-coding-cn')!.keys
+    ;(h.service as any).attempts.set('session-concurrent-events\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      usedManagedKey: true,
+    })
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-concurrent-events', first.id, true)
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-concurrent-events', second.id, true)
+    const payload = (turn: number) => ({
+      provider: 'zai-coding-cn',
+      turn,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-concurrent-events' } },
+    }) as unknown as RequestErrorPayload
+    await h.service.requestErrorListener(payload(1), async () => ({ kind: 'retry' as const }))
+    await h.service.requestErrorListener(payload(2), async () => ({ kind: 'retry' as const }))
+    assert.equal((h.service as any).stepAttempts.get('session-concurrent-events\u0000zai-coding-cn\u00001\u00001').keyId, first.id)
+    assert.equal((h.service as any).stepAttempts.get('session-concurrent-events\u0000zai-coding-cn\u00002\u00001').keyId, second.id)
+  } finally {
+    await h.close()
+  }
+})

@@ -21,7 +21,7 @@ export const STATE_FILENAME = 'state.json'
 const BINDING_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 /** State document plus a non-fatal load diagnostic. */
-export type LoadedState = StateDocument & { loadError?: string }
+export type LoadedState = StateDocument & { loadError?: string; readOnly?: boolean }
 
 /** Resolve the durable state directory for the current Harness home. */
 export function stateDirectory(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string {
@@ -163,22 +163,39 @@ export function sanitizeState(raw: unknown): StateDocument {
   return state
 }
 
-/** Read a state file; a corrupt document is preserved beside the fresh one. */
+/** Read a state file; only parse corruption is preserved and reset. */
 export function readStateFile(file: string): LoadedState {
   if (!existsSync(file)) return emptyState()
+  let text: string
   try {
-    const text = readFileSync(file, 'utf8')
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    // A read failure is not corruption. Keep the file untouched and refuse to
+    // overwrite it; the manager starts read-only/in-memory.
+    return {
+      ...emptyState(),
+      readOnly: true,
+      loadError: `Could not read ${file}: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+  try {
     return sanitizeState(JSON.parse(text))
   } catch (error) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backup = `${file}.corrupt-${stamp}`
+    let preserved = false
     try {
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-      renameSync(file, `${file}.corrupt-${stamp}`)
+      renameSync(file, backup)
+      preserved = true
     } catch {
-      // Best effort: the caller still starts from an empty state.
+      // Keep the original bytes if the backup could not be created.
     }
     return {
       ...emptyState(),
-      loadError: error instanceof Error ? error.message : String(error),
+      readOnly: !preserved,
+      loadError: preserved
+        ? `State file was corrupt; preserved at ${backup} (${error instanceof Error ? error.message : String(error)})`
+        : `State file was corrupt and could not be backed up; refusing to overwrite it (${error instanceof Error ? error.message : String(error)})`,
     }
   }
 }
@@ -192,6 +209,7 @@ export class KeysManagerStore {
   readonly file: string
   state: StateDocument
   loadError: string | undefined
+  readonly readOnly: boolean
   private readonly warn: (message: string) => void
   private dirty = false
   private timer: ReturnType<typeof setTimeout> | undefined
@@ -203,7 +221,8 @@ export class KeysManagerStore {
     this.warn = options.warn ?? (() => {})
     const loaded = readStateFile(file)
     this.loadError = loaded.loadError
-    const { loadError: _loadError, ...state } = loaded
+    this.readOnly = loaded.readOnly === true
+    const { loadError: _loadError, readOnly: _readOnly, ...state } = loaded
     this.state = state
   }
 
@@ -261,7 +280,7 @@ export class KeysManagerStore {
 
   /** Mark state dirty and schedule a write. */
   touch(): void {
-    if (this.closed) return
+    if (this.closed || this.readOnly) return
     this.dirty = true
     if (this.timer !== undefined) return
     this.timer = setTimeout(() => {
@@ -278,6 +297,10 @@ export class KeysManagerStore {
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
       this.timer = undefined
+    }
+    if (this.readOnly) {
+      this.dirty = false
+      return this.writeChain
     }
     if (!this.dirty) return this.writeChain
     this.dirty = false
@@ -309,6 +332,7 @@ export class KeysManagerStore {
   /** Stop the timer and persist once. */
   async close(): Promise<void> {
     this.closed = true
+    if (this.readOnly) return
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
       this.timer = undefined
