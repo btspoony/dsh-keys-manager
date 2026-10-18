@@ -1830,9 +1830,7 @@ export function apply(ctx: HostContext): void {
   const store = new KeysManagerStore(file, { warn: message => ctx.logger.warn(message) })
   const service = new KeysManagerService(ctx, store)
 
-  ctx.effect(() => () => {
-    void service.close()
-  }, 'keys-manager: persist state')
+  ctx.effect(() => () => service.close(), 'keys-manager: persist state')
 
   ctx.inject(['credentials'], child => {
     const credentials = (child as HostContext).credentials

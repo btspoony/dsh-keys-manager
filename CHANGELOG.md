@@ -80,7 +80,8 @@ git log by the release-prep workflow.
 - Every recovery requires evidence for the current request; retry budgets are
   scoped per selected key and retries are pinned to their key without sticky
   sessions. Unsupported state schema versions open read-only, and shutdown
-  drains the mutation queue before the final snapshot.
+  drains the mutation queue before the final snapshot; the disposer returns
+  the close promise so teardown awaits it.
 - Retry pins are scoped per turn/step (ambiguous concurrent pins are not
   consumed), index rebuilds preserve unrelated pins, and each key in a step
   keeps its own retry counter.
