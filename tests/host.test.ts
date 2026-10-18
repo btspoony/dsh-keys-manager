@@ -35,6 +35,7 @@ function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs
   const raw = {
     failResolve: false,
     failUnset: false,
+    failUnsetRefs: new Set<string>(),
     failRefs: new Set<string>(),
     async resolve(ref: string) {
       if (raw.failResolve || raw.failRefs.has(ref)) throw new Error('credential store unavailable')
@@ -49,7 +50,7 @@ function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs
       refs.set(ref, value)
     },
     async unset(ref: string) {
-      if (raw.failUnset) throw new Error('credential store locked')
+      if (raw.failUnset || raw.failUnsetRefs.has(ref)) throw new Error('credential store locked')
       refs.delete(ref)
     },
   }
@@ -357,13 +358,13 @@ test('retry budget, key switch, cooldown, and success reset', async () => {
       signal: { aborted: false },
       agent: { session: { id: 'session-fail' } },
     } as unknown as RequestErrorPayload;
-    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure)
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure, true)
     const retryOne = await h.service.requestErrorListener(payload, async () => undefined)
     assert.deepEqual(retryOne, { kind: 'retry' })
-    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure)
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure, true)
     const retryTwo = await h.service.requestErrorListener(payload, async () => undefined)
     assert.deepEqual(retryTwo, { kind: 'retry' })
-    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure)
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure, true)
     const retryThree = await h.service.requestErrorListener(payload, async () => undefined)
     assert.deepEqual(retryThree, { kind: 'retry' })
     assert.ok(first.cooldownUntil > Date.now() - 1000)
@@ -538,6 +539,14 @@ test('a single-key pool preserves its key when delegation requests a retry', asy
     await h.service.adoptProvider('zai-coding-cn')
     await h.service.setSettings({ retryCount: 1 })
     const selected = await h.service.selectKey('zai-coding-cn', 'session-only')
+    ;(h.service as any).attempts.set('session-only\u0000zai-coding-cn', {
+      keyId: selected.key!.id,
+      retries: 0,
+      at: Date.now(),
+      turn: 7,
+      step: 1,
+      usedManagedKey: true,
+    })
     const payload = {
       provider: 'zai-coding-cn',
       turn: 7,
@@ -564,7 +573,15 @@ test('terminal delegation cools the exhausted key', async () => {
   try {
     await h.service.adoptProvider('zai-coding-cn')
     await h.service.setSettings({ retryCount: 1 })
-    await h.service.selectKey('zai-coding-cn', 'session-terminal')
+    const selected = await h.service.selectKey('zai-coding-cn', 'session-terminal')
+    ;(h.service as any).attempts.set('session-terminal\u0000zai-coding-cn', {
+      keyId: selected.key!.id,
+      retries: 0,
+      at: Date.now(),
+      turn: 8,
+      step: 1,
+      usedManagedKey: true,
+    })
     const payload = {
       provider: 'zai-coding-cn',
       turn: 8,
@@ -851,10 +868,15 @@ test('a failed unset restores a plugin-created extra route', async () => {
   try {
     await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
     const record = h.store.provider('deepinfra')!
+    const live = h.settings.valueOf('llm-pi-ai').providers.deepinfra
+    live.baseURL = 'https://edited.example/v1'
+    live.models = [{ id: 'edited-model' }]
     h.credentials.raw.failUnset = true
     await assert.rejects(() => h.service.releaseProvider('deepinfra'), /credential store locked/)
     const profile = h.settings.valueOf('llm-pi-ai').providers.deepinfra
     assert.equal(profile.apiKeyEnv, record.brokerRef)
+    assert.equal(profile.baseURL, 'https://edited.example/v1')
+    assert.deepEqual(profile.models, [{ id: 'edited-model' }])
     assert.notEqual(h.store.provider('deepinfra'), undefined)
     h.credentials.raw.failUnset = false
     await h.service.releaseProvider('deepinfra')
@@ -869,6 +891,7 @@ test('an unreadable settings snapshot keeps managed selection active', async () 
   const h = await harness()
   try {
     await h.service.adoptProvider('zai-coding-cn')
+    ;(h.service as any).bindingCache.clear()
     h.settings.failDescribe = true
     const selectSpy = vi.spyOn(h.service, 'selectKey')
     const iterable = h.service.streamListener(
@@ -881,6 +904,7 @@ test('an unreadable settings snapshot keeps managed selection active', async () 
       // consume
     }
     assert.equal(selectSpy.mock.calls.length, 1)
+    ;(h.service as any).attempts.get('session-unknown\u0000zai-coding-cn').usedManagedKey = true
     const payload = {
       provider: 'zai-coding-cn',
       turn: 1,
@@ -911,7 +935,7 @@ test('a failure with no selected key keeps the retry budget', async () => {
       turn: 1,
       step: 1,
     })
-    ;(h.service as any).recordFailure('zai-coding-cn', 'session-none', undefined, { code: 'RATE_LIMIT' })
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-none', undefined, { code: 'RATE_LIMIT' }, true)
     const attempt = (h.service as any).attempts.get(attemptKey)
     assert.equal(attempt.keyId, 'k-first')
     assert.equal(attempt.retries, 1)
@@ -932,6 +956,150 @@ test('active switch budgets survive wall-clock pruning', async () => {
     ;(h.service as any).attempts.get('s\u0000p').turn = 2
     ;(h.service as any).pruneAttempts(Date.now())
     assert.equal((h.service as any).switches.has(switchKey), false)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('release leaves an externally replaced native profile untouched', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const record = h.store.provider('zai-coding-cn')!
+    const ref = record.keys[0].ref
+    const live = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    live.apiKeyEnv = 'SOME_OTHER_REF'
+    await h.service.releaseProvider('zai-coding-cn')
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, 'SOME_OTHER_REF')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.credentials.refs.has(ref), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('release leaves an externally replaced extra route untouched', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    const record = h.store.provider('deepinfra')!
+    const live = h.settings.valueOf('llm-pi-ai').providers.deepinfra
+    live.apiKeyEnv = 'SOME_OTHER_REF'
+    await h.service.releaseProvider('deepinfra')
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.deepinfra.apiKeyEnv, 'SOME_OTHER_REF')
+    assert.equal(h.store.provider('deepinfra'), undefined)
+    assert.equal(h.credentials.refs.has(record.keys[0].ref), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a partially deleted pool records per-key deletion progress', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const record = h.store.provider('zai-coding-cn')!
+    h.credentials.raw.failUnsetRefs.add(record.keys[1].ref)
+    await assert.rejects(() => h.service.releaseProvider('zai-coding-cn'), /credential store locked/)
+    assert.equal(record.keys[0].valueMissing, true)
+    assert.equal(record.keys[1].valueMissing, false)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, record.brokerRef)
+    h.credentials.raw.failUnsetRefs.clear()
+    await h.service.releaseProvider('zai-coding-cn')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('concurrent first selections bind one sticky key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const [first, second] = await Promise.all([
+      h.service.selectKey('zai-coding-cn', 'session-concurrent'),
+      h.service.selectKey('zai-coding-cn', 'session-concurrent'),
+    ])
+    assert.equal(first.key!.id, second.key!.id)
+    assert.equal(h.store.binding('session-concurrent', 'zai-coding-cn')!.keyId, first.key!.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('attempt pruning keeps an active step whose latest switch is recent', async () => {
+  const h = await harness()
+  try {
+    const now = Date.now()
+    const activeAttempt = 's\u0000p'
+    const activeSwitch = 's\u0000p\u00001\u00001'
+    ;(h.service as any).attempts.set(activeAttempt, {
+      keyId: 'k',
+      retries: 0,
+      at: now - 2 * 60 * 60 * 1000,
+      turn: 1,
+      step: 1,
+      usedManagedKey: true,
+    })
+    ;(h.service as any).switches.set(activeSwitch, { count: 1, at: now - 1000 })
+    for (let index = 0; index < 128; index += 1) {
+      ;(h.service as any).attempts.set(`d${index}\u0000p`, {
+        keyId: 'k',
+        retries: 0,
+        at: now - 2 * 60 * 60 * 1000,
+        turn: 2,
+        step: 1,
+        usedManagedKey: true,
+      })
+    }
+    ;(h.service as any).pruneAttempts(now)
+    assert.equal((h.service as any).attempts.has(activeAttempt), true)
+    assert.equal((h.service as any).switches.has(activeSwitch), true)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('an unreadable snapshot does not re-enable a known binding mismatch', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv = 'SOME_OTHER_REF'
+    h.service.getState() // populate the confirmed mismatch cache
+    h.settings.failDescribe = true
+    const selectSpy = vi.spyOn(h.service, 'selectKey')
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-known-mismatch', messages: [] },
+      async function* () {
+        yield { type: 'text' }
+      } as any,
+    )
+    for await (const _chunk of iterable) {
+      // consume
+    }
+    assert.equal(selectSpy.mock.calls.length, 0)
+    selectSpy.mockRestore()
+    h.settings.failDescribe = false
+  } finally {
+    await h.close()
+  }
+})
+
+test('release refuses to proceed when settings are unreadable', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const record = h.store.provider('zai-coding-cn')!
+    const ref = record.keys[0].ref
+    h.settings.failDescribe = true
+    await assert.rejects(() => h.service.releaseProvider('zai-coding-cn'), /unreadable/)
+    assert.equal(h.credentials.refs.has(ref), true)
+    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
+    h.settings.failDescribe = false
   } finally {
     await h.close()
   }

@@ -275,6 +275,8 @@ interface RequestScope {
   provider: string
   keyId: string | null
   keyValue: string | null
+  /** Set only when the broker resolver actually answered with this key. */
+  keyUsed: boolean
 }
 
 /** Original credential provider methods captured before wrapping. */
@@ -329,7 +331,9 @@ export class KeysManagerService {
   private readonly credentialOriginals = new WeakMap<object, CredentialOriginals>()
   private readonly credentialWrappers = new WeakMap<object, CredentialWrappers>()
   private brokerOwners = new Map<string, string>()
+  private readonly bindingCache = new Map<string, 'healthy' | 'mismatch'>()
   private lastBindingPruneAt = 0
+  private readonly selectionQueues = new Map<string, Promise<unknown>>()
   private queue: Promise<unknown> = Promise.resolve()
   readonly typertRemote: TypertRemoteBinding
 
@@ -351,6 +355,7 @@ export class KeysManagerService {
 
   /** Rebuild the broker-reference → provider index. */
   private rebuildBrokerMap(): void {
+    this.bindingCache.clear()
     this.brokerOwners = new Map()
     for (const provider of Object.values(this.store.providers)) {
       if (provider.brokerRef.length > 0) this.brokerOwners.set(provider.brokerRef, provider.provider)
@@ -407,6 +412,7 @@ export class KeysManagerService {
         const active = service.als.getStore()
         if (active !== undefined && active.provider === owner) {
           if (typeof active.keyValue === 'string' && active.keyValue.length > 0) {
+            active.keyUsed = true
             return { value: active.keyValue, source: 'keys-manager' }
           }
           return undefined
@@ -751,12 +757,16 @@ export class KeysManagerService {
    * key-pool recovery for a provider that is still managed.
    */
   private bindingState(record: ProviderRecord, descriptor: SettingsSnapshot = this.describeSettings()): BindingState {
-    if (!descriptor.readable) return 'unknown'
+    if (!descriptor.readable) {
+      // Never re-enable a previously confirmed mismatch from an unreadable
+      // snapshot; without evidence, leave the binding unknown.
+      return this.bindingCache.get(record.provider) ?? 'unknown'
+    }
     const namespace = this.namespace(descriptor, record.settingsNs)
-    if (namespace === undefined) return 'mismatch'
-    const profile = asProfile(getPath(namespace.value, record.settingsPath))
-    if (profile === undefined) return 'mismatch'
-    return profile.apiKeyEnv === record.brokerRef ? 'healthy' : 'mismatch'
+    const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, record.settingsPath))
+    const state: BindingState = profile !== undefined && profile.apiKeyEnv === record.brokerRef ? 'healthy' : 'mismatch'
+    this.bindingCache.set(record.provider, state)
+    return state
   }
 
   /** Candidate credential refs from which an existing key can be imported. */
@@ -1068,26 +1078,26 @@ export class KeysManagerService {
     return namespace === undefined ? undefined : asProfile(getPath(namespace.value, path))
   }
 
-  /** Put the broker reference back if release fails after changing the profile. */
-  private async restoreBrokerBinding(record: ProviderRecord): Promise<void> {
-    if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
-      await this.mutateSettings(record.settingsNs, [{
-        op: 'set',
-        path: ['providers', record.extraId],
-        value: {
-          displayName: record.displayName,
-          ...(record.api === null ? {} : { api: record.api }),
-          ...(record.baseURL === null ? {} : { baseURL: record.baseURL }),
-          apiKeyEnv: record.brokerRef,
-          models: record.models,
-        },
-      }])
-    } else {
-      await this.mutateSettings(record.settingsNs, [{
-        op: 'set',
-        path: [...record.settingsPath, 'apiKeyEnv'],
-        value: record.brokerRef,
-      }])
+  /** Restore the exact live profile captured before release mutated it. */
+  private async restoreProfileSnapshot(record: ProviderRecord, snapshot: ProfileShape | undefined): Promise<void> {
+    if (record.settingsPath.length === 0) {
+      const apiKeyEnv = snapshot !== undefined && typeof snapshot.apiKeyEnv === 'string' ? snapshot.apiKeyEnv : record.brokerRef
+      await this.mutateSettings(record.settingsNs, [{ op: 'set', path: ['apiKeyEnv'], value: apiKeyEnv }])
+      return
+    }
+    await this.mutateSettings(record.settingsNs, [
+      snapshot === undefined
+        ? { op: 'unset', path: record.settingsPath }
+        : { op: 'set', path: record.settingsPath, value: snapshot },
+    ])
+  }
+
+  /** Remove every managed credential, recording progress before a retry. */
+  private async deleteManagedCredentials(record: ProviderRecord): Promise<void> {
+    for (const key of record.keys) {
+      await this.unsetOriginal(key.ref)
+      key.valueMissing = true
+      this.store.touch()
     }
   }
 
@@ -1096,8 +1106,30 @@ export class KeysManagerService {
     const record = this.store.provider(provider)
     if (record === undefined) return
     const descriptor = this.describeSettings()
+    if (!descriptor.readable) {
+      throw new Error('Settings are currently unreadable; refusing to release a provider whose binding cannot be inspected.')
+    }
     const namespace = this.namespace(descriptor, record.settingsNs)
     if (namespace === undefined) throw new Error(`Settings namespace "${record.settingsNs}" is not mounted`)
+    const binding = this.bindingState(record, descriptor)
+    if (binding === 'unknown') {
+      throw new Error('Settings are currently unreadable; refusing to release a provider whose binding cannot be inspected.')
+    }
+
+    // The user may have repaired or replaced the provider in Models. In that
+    // case release only drops manager metadata and credentials; it must not
+    // overwrite the live profile.
+    if (binding === 'mismatch') {
+      await this.deleteManagedCredentials(record)
+      delete this.store.providers[provider]
+      this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
+      this.rebuildBrokerMap()
+      this.store.touch()
+      return
+    }
+
+    const liveProfile = asProfile(getPath(namespace.value, record.settingsPath))
+    const snapshot = liveProfile === undefined ? undefined : structuredClone(liveProfile)
     let profileMutated = false
     try {
       if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
@@ -1124,11 +1156,11 @@ export class KeysManagerService {
       }
       // The profile mutation came first so a read-only profile fails before
       // any managed credential is deleted.
-      for (const key of record.keys) await this.unsetOriginal(key.ref)
+      await this.deleteManagedCredentials(record)
     } catch (error) {
       if (profileMutated) {
         try {
-          await this.restoreBrokerBinding(record)
+          await this.restoreProfileSnapshot(record, snapshot)
         } catch (restoreError) {
           this.warn(`release compensation failed for ${provider}: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`)
         }
@@ -1161,8 +1193,31 @@ export class KeysManagerService {
     })
   }
 
-  /** Choose a key for one request. */
+  /**
+   * Serialize the first selection for a sticky session/provider pair so two
+   * concurrent requests cannot advance the cursor and bind different keys.
+   */
   async selectKey(providerId: string, sessionId: string | undefined): Promise<KeySelection> {
+    if (!this.store.settings.stickySession || sessionId === undefined) {
+      return this.doSelectKey(providerId, sessionId)
+    }
+    const queueKey = `${sessionId}\u0000${providerId}`
+    const previous = this.selectionQueues.get(queueKey) ?? Promise.resolve()
+    const next = previous.then(
+      () => this.doSelectKey(providerId, sessionId),
+      () => this.doSelectKey(providerId, sessionId),
+    )
+    const tail = next.then(() => undefined, () => undefined)
+    this.selectionQueues.set(queueKey, tail)
+    try {
+      return await next
+    } finally {
+      if (this.selectionQueues.get(queueKey) === tail) this.selectionQueues.delete(queueKey)
+    }
+  }
+
+  /** Selection body; callers reach it through {@link selectKey}. */
+  private async doSelectKey(providerId: string, sessionId: string | undefined): Promise<KeySelection> {
     const provider = this.store.provider(providerId)
     if (provider === undefined) return { key: undefined, value: undefined }
     const now = Date.now()
@@ -1216,7 +1271,7 @@ export class KeysManagerService {
   }
 
   /** Record a terminal failure without deciding policy yet. */
-  private recordFailure(providerId: string, sessionId: string | undefined, keyId: string | undefined, failure: LlmFailureLike): void {
+  private recordFailure(providerId: string, sessionId: string | undefined, keyId: string | undefined, failure: LlmFailureLike, usedManagedKey = false): void {
     if (sessionId === undefined) return
     const key = bindingKey(sessionId, providerId)
     const previous = this.attempts.get(key)
@@ -1228,6 +1283,7 @@ export class KeysManagerService {
       at: Date.now(),
       turn: previous?.turn,
       step: previous?.step,
+      usedManagedKey,
     })
   }
 
@@ -1264,7 +1320,15 @@ export class KeysManagerService {
   private pruneAttempts(now: number): void {
     if (this.attempts.size >= 128) {
       for (const [key, attempt] of this.attempts) {
-        if (now - attempt.at > ATTEMPT_TTL_MS) this.attempts.delete(key)
+        if (now - attempt.at <= ATTEMPT_TTL_MS) continue
+        const stepKey = attempt.turn !== undefined && attempt.step !== undefined
+          ? `${key}\u0000${attempt.turn}\u0000${attempt.step}`
+          : undefined
+        const switchAt = stepKey === undefined ? undefined : this.switches.get(stepKey)?.at
+        // A recent switch entry means the step is still active even if the
+        // attempt's own timestamp is older; keep the attempt and its budget.
+        if (switchAt !== undefined && now - switchAt <= ATTEMPT_TTL_MS) continue
+        this.attempts.delete(key)
       }
     }
     const activeSteps = new Set<string>()
@@ -1282,9 +1346,11 @@ export class KeysManagerService {
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
     const record = this.store.provider(providerId)
-    if (record === undefined || this.bindingState(record) === 'mismatch') return next()
+    if (record === undefined) return next()
+    const binding = this.bindingState(record)
+    if (binding === 'mismatch') return next()
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
-    return this.wrapStream(options, next, providerId, sessionId)
+    return this.wrapStream(options, next, providerId, sessionId, binding === 'healthy')
   }
 
   /** Wrap one managed stream so credential resolution sees this key. */
@@ -1293,6 +1359,7 @@ export class KeysManagerService {
     next: () => AsyncIterable<StreamChunkLike>,
     providerId: string,
     sessionId: string | undefined,
+    trustBinding: boolean,
   ): AsyncIterable<StreamChunkLike> {
     const service = this
     let iterator: AsyncIterator<StreamChunkLike> | undefined
@@ -1316,6 +1383,7 @@ export class KeysManagerService {
                 provider: providerId,
                 keyId: keyId ?? null,
                 keyValue: selection.value ?? null,
+                keyUsed: trustBinding && keyId !== undefined && selection.value !== undefined,
               }
               if (sessionId !== undefined && keyId !== undefined) {
                 const key = bindingKey(sessionId, providerId)
@@ -1330,9 +1398,10 @@ export class KeysManagerService {
                   at: Date.now(),
                   turn: previous?.turn,
                   step: previous?.step,
+                  usedManagedKey: store.keyUsed,
                 })
               }
-              iterator = await service.als.run(store, () => next()[Symbol.asyncIterator]())
+              iterator = await service.als.run(store!, () => next()[Symbol.asyncIterator]())
             }
             if (iterator === undefined) throw new Error('managed stream has no iterator')
             const result = await service.als.run(store!, () => iterator!.next())
@@ -1340,13 +1409,22 @@ export class KeysManagerService {
             const chunk = result.value
             if (chunk.type === 'finish' && chunk.reason !== undefined) {
               const reason = chunk.reason
+              const used = store?.keyUsed === true
               if (reason.kind === 'error') {
-                if (reason.failure !== undefined) service.recordFailure(providerId, sessionId, keyId, reason.failure)
+                if (used && reason.failure !== undefined) {
+                  service.recordFailure(providerId, sessionId, keyId, reason.failure, true)
+                } else if (sessionId !== undefined) {
+                  // The request failed on an external credential; do not
+                  // attribute it to a managed key.
+                  service.attempts.delete(bindingKey(sessionId, providerId))
+                }
                 service.pruneAttempts(Date.now())
               } else if (reason.kind === 'aborted') {
                 // Cancellation is not a key failure.
-              } else {
+              } else if (used) {
                 service.recordSuccess(providerId, sessionId, keyId)
+              } else if (sessionId !== undefined) {
+                service.attempts.delete(bindingKey(sessionId, providerId))
               }
             }
             return result
@@ -1403,12 +1481,8 @@ export class KeysManagerService {
     if (sessionId === undefined) return next()
     const now = Date.now()
     const attemptKey = bindingKey(sessionId, providerId)
-    let attempt = this.attempts.get(attemptKey)
-    if (attempt === undefined) {
-      const binding = this.store.binding(sessionId, providerId)
-      attempt = { keyId: binding?.keyId, retries: 0, at: now }
-      this.attempts.set(attemptKey, attempt)
-    }
+    const attempt = this.attempts.get(attemptKey)
+    if (attempt === undefined || attempt.usedManagedKey !== true) return next()
     if (attempt.turn !== payload.turn || attempt.step !== payload.step) {
       attempt.turn = payload.turn
       attempt.step = payload.step

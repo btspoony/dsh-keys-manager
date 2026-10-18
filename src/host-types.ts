@@ -151,6 +151,8 @@ export interface AttemptState {
   at: number
   turn?: number
   step?: number
+  /** Whether the request actually resolved a managed key through the broker. */
+  usedManagedKey?: boolean
 }
 
 /** Provider support verdict used by the UI. */
