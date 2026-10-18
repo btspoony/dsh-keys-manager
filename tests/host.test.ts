@@ -35,8 +35,9 @@ function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs
   const raw = {
     failResolve: false,
     failUnset: false,
+    failRefs: new Set<string>(),
     async resolve(ref: string) {
-      if (raw.failResolve) throw new Error('credential store unavailable')
+      if (raw.failResolve || raw.failRefs.has(ref)) throw new Error('credential store unavailable')
       const value = refs.get(ref)
       return value === undefined ? undefined : { value, source: 'test' }
     },
@@ -67,6 +68,7 @@ function fakeSettings(): any {
   ]
   return {
     writable: true,
+    failMutate: false,
     namespaces,
     describe() {
       return namespaces.map(entry => ({
@@ -79,6 +81,7 @@ function fakeSettings(): any {
       }))
     },
     async mutate(ns: string, ops: any[], expectedRevision?: number) {
+      if (this.failMutate) throw new Error('revision conflict')
       const entry = namespaces.find(candidate => candidate.ns === ns)
       if (!entry) throw new Error(`missing namespace ${ns}`)
       if (expectedRevision !== undefined && expectedRevision !== entry.revision) throw new Error('revision conflict')
@@ -796,6 +799,43 @@ test('stale switch counters are pruned', async () => {
     ;(h.service as any).switches.set('s\u0000p\u0000t\u0000s', { count: 1, at: Date.now() - 2 * 60 * 60 * 1000 })
     ;(h.service as any).pruneAttempts(Date.now())
     assert.equal((h.service as any).switches.has('s\u0000p\u0000t\u0000s'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a transient probe failure on a bound key still tries another healthy key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const record = h.store.provider('zai-coding-cn')!
+    const [first, second] = record.keys
+    const bound = await h.service.selectKey('zai-coding-cn', 'session-bound')
+    assert.equal(bound.key!.id, first.id)
+    record.cursor = 0
+    h.credentials.raw.failRefs.add(first.ref)
+    const selected = await h.service.selectKey('zai-coding-cn', 'session-bound')
+    assert.equal(selected.key!.id, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a settings mutation refusal keeps credentials before release', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const record = h.store.provider('zai-coding-cn')!
+    const ref = record.keys[0].ref
+    h.settings.failMutate = true
+    await assert.rejects(() => h.service.releaseProvider('zai-coding-cn'), /revision conflict/)
+    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.credentials.refs.has(ref), true)
+    h.settings.failMutate = false
+    await h.service.releaseProvider('zai-coding-cn')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
   } finally {
     await h.close()
   }

@@ -73,7 +73,10 @@ function sanitizeKey(raw: unknown): KeyRecord | undefined {
     consecutiveFailures: integerOr(source.consecutiveFailures, 0),
     totalUses: integerOr(source.totalUses, 0),
     totalFailures: integerOr(source.totalFailures, 0),
-    valueMissing: source.valueMissing === true,
+    // Legacy builds persisted transient read failures as valueMissing. The
+    // credential may be healthy again; re-probe on the next selection instead
+    // of carrying a permanent marker across restarts.
+    valueMissing: false,
     importedFrom: typeof source.importedFrom === 'string' ? source.importedFrom : null,
     oauth: source.oauth !== null && typeof source.oauth === 'object' ? (source.oauth as Record<string, unknown>) : null,
   }

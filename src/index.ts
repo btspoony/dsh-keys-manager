@@ -1145,7 +1145,7 @@ export class KeysManagerService {
       tried.add(key.id)
       const selected = await tryCandidate(key)
       if (selected !== undefined) return selected
-      key = pickRoundRobin(provider, now)
+      key = pickRoundRobin(provider, now, tried)
     }
 
     // A previously missing key may have been restored in the credential store.

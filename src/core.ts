@@ -103,13 +103,14 @@ export function isSelectable(key: KeyRecord | undefined, now: number): key is Ke
 }
 
 /** Pick the next healthy key for a provider in creation order, advancing the cursor. */
-export function pickRoundRobin(provider: ProviderRecord, now: number): KeyRecord | undefined {
+export function pickRoundRobin(provider: ProviderRecord, now: number, exclude?: ReadonlySet<string>): KeyRecord | undefined {
   const keys = Array.isArray(provider.keys) ? provider.keys : []
   if (keys.length === 0) return undefined
   const start = normalizeCursor(provider.cursor, keys.length)
   for (let offset = 0; offset < keys.length; offset += 1) {
     const index = (start + offset) % keys.length
     const key = keys[index]
+    if (exclude?.has(key.id)) continue
     if (isSelectable(key, now)) {
       provider.cursor = (index + 1) % keys.length
       return key

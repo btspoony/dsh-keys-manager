@@ -335,3 +335,29 @@ test('pruneBindings drops expired session bindings', () => {
   assert.deepEqual(Object.keys(store.state.sessionBindings), ['fresh\u0000p'])
   assert.equal(store.pruneBindings(now), false)
 })
+
+
+test('round robin can exclude already tried keys', () => {
+  const a = key('a')
+  const b = key('b')
+  const p = provider([a, b])
+  const exclude = new Set(['a'])
+  assert.equal(pickRoundRobin(p, now, exclude), b)
+  exclude.add('b')
+  assert.equal(pickRoundRobin(p, now, exclude), undefined)
+})
+
+test('sanitize drops legacy valueMissing markers', () => {
+  const state = sanitizeState({
+    version: 1,
+    providers: {
+      p: {
+        provider: 'p',
+        settingsNs: 'llm-pi-ai',
+        settingsPath: ['providers', 'p'],
+        keys: [{ id: 'k', ref: 'REF_K', valueMissing: true }],
+      },
+    },
+  })
+  assert.equal(state.providers.p.keys[0].valueMissing, false)
+})

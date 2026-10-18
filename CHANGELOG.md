@@ -46,3 +46,6 @@ git log by the release-prep workflow.
   deleted; adoption aborts on a credential-store read error instead of
   creating an empty pool; a broken broker binding bypasses key selection and
   failover; stale switch counters are pruned.
+- Selection excludes already-tried keys and clears legacy `valueMissing`
+  markers on load; the client ignores stale refresh responses with a request
+  generation guard.

@@ -15,6 +15,7 @@ export function createStore(ctx: ClientContext): ClientStore {
     busy: null,
     now: Date.now(),
   }
+  let generation = 0
   const listeners = new Set<() => void>()
   const emit = (): void => {
     for (const listener of [...listeners]) {
@@ -41,25 +42,29 @@ export function createStore(ctx: ClientContext): ClientStore {
     async load(options = {}) {
       // Do not let a refresh race a mutation; the UI also disables refresh.
       if (snapshot.busy !== null) return
+      const request = ++generation
       update({ busy: 'load', error: options.keepError === true ? snapshot.error : null })
       try {
         const result = await rpc('getState', {})
+        if (request !== generation) return
         if (!result.ok) throw new Error(result.error.message)
         update({ status: 'ready', state: result.value, now: Date.now(), busy: null, error: null })
       } catch (error) {
+        if (request !== generation) return
         update({ status: snapshot.state !== null ? snapshot.status : 'error', busy: null, error: messageOf(error) })
       }
     },
     async call(method: string, args: Record<string, unknown>): Promise<ActionOutcome> {
+      const request = ++generation
       update({ busy: method, error: null })
       try {
         const result = await rpc(method, args)
         if (!result.ok) throw new Error(result.error.message)
-        update({ status: 'ready', state: result.value, now: Date.now(), busy: null, error: null })
+        if (request === generation) update({ status: 'ready', state: result.value, now: Date.now(), busy: null, error: null })
         return { ok: true, value: result.value }
       } catch (error) {
         const message = messageOf(error)
-        update({ busy: null, error: message })
+        if (request === generation) update({ busy: null, error: message })
         return { ok: false, error: message }
       }
     },

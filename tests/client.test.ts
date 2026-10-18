@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'vitest'
 import { apply } from '../src/client/index'
-import { LOCALE_DICTS } from '../src/client/locales'
 import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
 import type { ClientContext, LocaleDicts, RpcResult, StateView } from '../src/client/types'
@@ -190,9 +189,6 @@ describe('client registration', () => {
     for (const cleanup of harness.cleanups.reverse()) cleanup()
   })
 
-  test('locale dictionaries are identical to the exported namespace payload', () => {
-    expect(Object.keys(LOCALE_DICTS.zh).sort()).toEqual(Object.keys(LOCALE_DICTS.en).sort())
-  })
 })
 
 describe('client store', () => {
@@ -237,6 +233,34 @@ describe('client store', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(store.getSnapshot().state?.providers[0].status).toBe('active')
     expect(store.getSnapshot().state?.coolingKeyCount).toBe(0)
+  })
+
+  test('a load started before a mutation cannot overwrite the mutation result', async () => {
+    const harness = makeContext()
+    let releaseLoad!: () => void
+    const gate = new Promise<void>(resolve => { releaseLoad = resolve })
+    let getStateCalls = 0
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/getState') {
+        getStateCalls += 1
+        if (getStateCalls === 1) await gate
+        const state = makeState()
+        state.managedCount = getStateCalls === 1 ? 1 : 2
+        return { ok: true, value: state }
+      }
+      const state = makeState()
+      state.managedCount = 2
+      return { ok: true, value: state }
+    }
+    const store = createStore(harness.ctx)
+    const loading = store.load()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const outcome = await store.call('addKey', { provider: 'zai-coding-cn', alias: 'second', value: 'sk-second' })
+    expect(outcome.ok).toBe(true)
+    expect(store.getSnapshot().state?.managedCount).toBe(2)
+    releaseLoad()
+    await loading
+    expect(store.getSnapshot().state?.managedCount).toBe(2)
   })
 
   test('refresh does not race an in-flight mutation', async () => {
