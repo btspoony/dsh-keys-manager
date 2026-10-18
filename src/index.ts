@@ -376,9 +376,15 @@ export class KeysManagerService {
 
   /** Serialize mutations. */
   private run<T>(operation: () => Promise<T>): Promise<T> {
-    const guarded = (): Promise<T> => this.store.readOnly
-      ? Promise.reject(new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.'))
-      : operation()
+    const guarded = async (): Promise<T> => {
+      if (this.store.readOnly) {
+        throw new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.')
+      }
+      const result = await operation()
+      // A mutation is not successful until its state document is durable.
+      await this.store.flush()
+      return result
+    }
     const next = this.queue.then(guarded, guarded)
     this.queue = next.catch(() => {})
     return next
@@ -1597,18 +1603,17 @@ export class KeysManagerService {
     let attempt = this.stepAttempts.get(switchKey)
     const evidence = linked ?? this.claimStreamAttempt(providerId, sessionId, attempt?.lastSequence ?? 0)
     if (attempt === undefined) {
-      const currentAttempt = this.attempts.get(attemptKey)
-      const source = evidence ?? currentAttempt
-      if (source === undefined || source.usedManagedKey !== true) return next()
+      // Do not fall back to the shared session record: another step may have
+      // overwritten it. Without request-scoped evidence, delegating is safer.
+      if (evidence === undefined || evidence.usedManagedKey !== true) return next()
       attempt = {
-        keyId: source.keyId,
+        keyId: evidence.keyId,
         retries: 0,
-        failure: currentAttempt?.failure,
         at: now,
         turn: payload.turn,
         step: payload.step,
         usedManagedKey: true,
-        lastSequence: evidence?.sequence ?? 0,
+        lastSequence: evidence.sequence,
       }
       this.stepAttempts.set(switchKey, attempt)
     } else if (evidence !== undefined) {

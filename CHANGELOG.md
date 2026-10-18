@@ -73,5 +73,9 @@ git log by the release-prep workflow.
 - Failover evidence is linked to the exact failure object the agent loop
   forwards, consumed on every delegation path, and no longer claimed by a
   later request; unscoped broker resolution skips paused/missing/cooling keys.
+- Configuration-changing mutations await the durable state flush before
+  reporting success. Attribution no longer falls back to the shared session
+  record on an identity miss, and production stream regressions cover skipped
+  and reversed error callbacks.
 - State probing uses stat and distinguishes ENOENT from permission failures;
   a denied parent directory starts read-only and cannot overwrite valid state.
