@@ -69,8 +69,10 @@ function fakeSettings(): any {
   return {
     writable: true,
     failMutate: false,
+    failDescribe: false,
     namespaces,
     describe() {
+      if (this.failDescribe) throw new Error('settings unavailable')
       return namespaces.map(entry => ({
         ns: entry.ns,
         autoGenerate: false,
@@ -624,7 +626,9 @@ test('a failed credential unset keeps the provider manageable', async () => {
     await h.service.adoptProvider('zai-coding-cn')
     h.credentials.raw.failUnset = true
     await assert.rejects(() => h.service.releaseProvider('zai-coding-cn'), /credential store locked/)
-    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
+    const record = h.store.provider('zai-coding-cn')!
+    assert.notEqual(record, undefined)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, record.brokerRef)
     assert.equal(h.service.getState().managedCount, 1)
     h.credentials.raw.failUnset = false
     await h.service.releaseProvider('zai-coding-cn')
@@ -836,6 +840,98 @@ test('a settings mutation refusal keeps credentials before release', async () =>
     h.settings.failMutate = false
     await h.service.releaseProvider('zai-coding-cn')
     assert.equal(h.store.provider('zai-coding-cn'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a failed unset restores a plugin-created extra route', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    const record = h.store.provider('deepinfra')!
+    h.credentials.raw.failUnset = true
+    await assert.rejects(() => h.service.releaseProvider('deepinfra'), /credential store locked/)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.deepinfra
+    assert.equal(profile.apiKeyEnv, record.brokerRef)
+    assert.notEqual(h.store.provider('deepinfra'), undefined)
+    h.credentials.raw.failUnset = false
+    await h.service.releaseProvider('deepinfra')
+    assert.equal(h.store.provider('deepinfra'), undefined)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.deepinfra, undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an unreadable settings snapshot keeps managed selection active', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.failDescribe = true
+    const selectSpy = vi.spyOn(h.service, 'selectKey')
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-unknown', messages: [] },
+      async function* () {
+        yield { type: 'text' }
+      } as any,
+    )
+    for await (const _chunk of iterable) {
+      // consume
+    }
+    assert.equal(selectSpy.mock.calls.length, 1)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-unknown' } },
+    } as unknown as RequestErrorPayload
+    const next = vi.fn(async () => ({ kind: 'retry' as const }))
+    const result = await h.service.requestErrorListener(payload, next)
+    assert.deepEqual(result, { kind: 'retry' })
+    assert.equal(next.mock.calls.length, 0)
+    selectSpy.mockRestore()
+    h.settings.failDescribe = false
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failure with no selected key keeps the retry budget', async () => {
+  const h = await harness()
+  try {
+    const attemptKey = 'session-none\u0000zai-coding-cn'
+    ;(h.service as any).attempts.set(attemptKey, {
+      keyId: 'k-first',
+      retries: 1,
+      at: Date.now(),
+      turn: 1,
+      step: 1,
+    })
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-none', undefined, { code: 'RATE_LIMIT' })
+    const attempt = (h.service as any).attempts.get(attemptKey)
+    assert.equal(attempt.keyId, 'k-first')
+    assert.equal(attempt.retries, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('active switch budgets survive wall-clock pruning', async () => {
+  const h = await harness()
+  try {
+    const switchKey = 's\u0000p\u00001\u00001'
+    const at = Date.now() - 2 * 60 * 60 * 1000
+    ;(h.service as any).switches.set(switchKey, { count: 1, at })
+    ;(h.service as any).attempts.set('s\u0000p', { keyId: 'k', retries: 0, at, turn: 1, step: 1 })
+    ;(h.service as any).pruneAttempts(Date.now())
+    assert.equal((h.service as any).switches.has(switchKey), true)
+    ;(h.service as any).attempts.get('s\u0000p').turn = 2
+    ;(h.service as any).pruneAttempts(Date.now())
+    assert.equal((h.service as any).switches.has(switchKey), false)
   } finally {
     await h.close()
   }

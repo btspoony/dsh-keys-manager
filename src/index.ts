@@ -293,6 +293,16 @@ interface CredentialWrappers {
   unset: CredentialsLike['unset']
 }
 
+/** How the live provider profile relates to the managed broker reference. */
+type BindingState = 'healthy' | 'mismatch' | 'unknown'
+
+/** Settings snapshot with an explicit readability signal. */
+interface SettingsSnapshot {
+  writable: boolean
+  namespaces: SettingsDescriptorLike[]
+  readable: boolean
+}
+
 /** One credential probe result; `failed` is transient, `missing` is absent. */
 interface KeyProbe {
   hit?: CredentialHit
@@ -528,15 +538,15 @@ export class KeysManagerService {
     }
   }
 
-  /** All settings descriptors, tolerating an unmounted settings service. */
-  private describeSettings(): { writable: boolean; namespaces: SettingsDescriptorLike[] } {
+  /** All settings descriptors, with an explicit unreadable state. */
+  private describeSettings(): SettingsSnapshot {
     const settings = this.settingsService()
-    if (settings === undefined) return { writable: false, namespaces: [] }
+    if (settings === undefined) return { writable: false, namespaces: [], readable: false }
     try {
-      return { writable: settings.writable !== false, namespaces: settings.describe({ redactSecrets: true }) }
+      return { writable: settings.writable !== false, namespaces: settings.describe({ redactSecrets: true }), readable: true }
     } catch (error) {
       this.warn(`settings describe failed: ${error instanceof Error ? error.message : String(error)}`)
-      return { writable: false, namespaces: [] }
+      return { writable: false, namespaces: [], readable: false }
     }
   }
 
@@ -586,9 +596,10 @@ export class KeysManagerService {
       const extra = EXTRA_PROVIDER_MAP.get(entry.provider)
       const support = supportOf(entry, profile, managed)
       const apiKeyEnv = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : null
-      const bindingHealthy = managed !== undefined ? apiKeyEnv === managed.brokerRef : undefined
+      const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
+      const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
       const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now)) : []
-      const warning = managed !== undefined && bindingHealthy === false
+      const warning = binding === 'mismatch'
         ? 'The provider profile no longer points at Keys Manager. Re-adopt it after releasing it, or repair the provider in Models.'
         : undefined
       const models = profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? managed?.models ?? []
@@ -628,6 +639,7 @@ export class KeysManagerService {
     for (const extra of EXTRA_PROVIDERS) {
       if (seen.has(extra.id)) continue
       const managed = this.store.provider(extra.id)
+      const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
       const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now)) : []
       views.push({
         provider: extra.id,
@@ -643,7 +655,7 @@ export class KeysManagerService {
         settingsPath: ['providers', extra.id],
         apiKeyEnv: managed?.brokerRef ?? null,
         brokerRef: managed?.brokerRef ?? null,
-        ...(managed === undefined ? {} : { bindingHealthy: false }),
+        ...(binding === 'healthy' ? { bindingHealthy: true } : binding === 'mismatch' ? { bindingHealthy: false } : {}),
         extra: true,
         extraId: extra.id,
         api: extra.api,
@@ -664,6 +676,7 @@ export class KeysManagerService {
     for (const managed of Object.values(this.store.providers)) {
       if (seen.has(managed.provider)) continue
       const keys = managed.keys.map(key => publicKey(key, now))
+      const binding = this.bindingState(managed, descriptor)
       views.push({
         provider: managed.provider,
         displayName: managed.displayName,
@@ -678,7 +691,7 @@ export class KeysManagerService {
         settingsPath: [...managed.settingsPath],
         apiKeyEnv: managed.brokerRef,
         brokerRef: managed.brokerRef,
-        bindingHealthy: false,
+        ...(binding === 'healthy' ? { bindingHealthy: true } : binding === 'mismatch' ? { bindingHealthy: false } : {}),
         extra: managed.source === 'extra',
         extraId: managed.extraId,
         api: managed.api,
@@ -732,12 +745,18 @@ export class KeysManagerService {
     return this.ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider)
   }
 
-  /** Whether the live provider profile still points at our broker reference. */
-  private isBindingHealthy(record: ProviderRecord): boolean {
-    const descriptor = this.describeSettings()
+  /**
+   * Classify the live binding. An unreadable settings snapshot is `unknown`,
+   * not a confirmed mismatch: transient settings failures must not disable
+   * key-pool recovery for a provider that is still managed.
+   */
+  private bindingState(record: ProviderRecord, descriptor: SettingsSnapshot = this.describeSettings()): BindingState {
+    if (!descriptor.readable) return 'unknown'
     const namespace = this.namespace(descriptor, record.settingsNs)
-    const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, record.settingsPath))
-    return profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv === record.brokerRef
+    if (namespace === undefined) return 'mismatch'
+    const profile = asProfile(getPath(namespace.value, record.settingsPath))
+    if (profile === undefined) return 'mismatch'
+    return profile.apiKeyEnv === record.brokerRef ? 'healthy' : 'mismatch'
   }
 
   /** Candidate credential refs from which an existing key can be imported. */
@@ -1049,6 +1068,29 @@ export class KeysManagerService {
     return namespace === undefined ? undefined : asProfile(getPath(namespace.value, path))
   }
 
+  /** Put the broker reference back if release fails after changing the profile. */
+  private async restoreBrokerBinding(record: ProviderRecord): Promise<void> {
+    if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
+      await this.mutateSettings(record.settingsNs, [{
+        op: 'set',
+        path: ['providers', record.extraId],
+        value: {
+          displayName: record.displayName,
+          ...(record.api === null ? {} : { api: record.api }),
+          ...(record.baseURL === null ? {} : { baseURL: record.baseURL }),
+          apiKeyEnv: record.brokerRef,
+          models: record.models,
+        },
+      }])
+    } else {
+      await this.mutateSettings(record.settingsNs, [{
+        op: 'set',
+        path: [...record.settingsPath, 'apiKeyEnv'],
+        value: record.brokerRef,
+      }])
+    }
+  }
+
   /** Restore the provider profile and drop management; caller owns the queue. */
   private async releaseLocked(provider: string): Promise<void> {
     const record = this.store.provider(provider)
@@ -1056,29 +1098,43 @@ export class KeysManagerService {
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, record.settingsNs)
     if (namespace === undefined) throw new Error(`Settings namespace "${record.settingsNs}" is not mounted`)
-    if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
-      await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
-    } else {
-      // Native and pre-existing extra routes own only apiKeyEnv. Leave every
-      // other profile field (baseURL, models, hand edits) exactly as it is.
-      const path = [...record.settingsPath, 'apiKeyEnv']
-      await this.mutateSettings(record.settingsNs, [
-        record.originalApiKeyEnv !== null
-          ? { op: 'set', path, value: record.originalApiKeyEnv }
-          : { op: 'unset', path },
-      ])
-      // Remove an auto-created profile only when it is still empty after
-      // clearing apiKeyEnv; a profile with later user edits stays.
-      if (!record.hadProfile && record.settingsPath.length > 0) {
-        const current = this.profileAt(record.settingsNs, record.settingsPath)
-        if (current !== undefined && Object.keys(current).length === 0) {
-          await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: record.settingsPath }])
+    let profileMutated = false
+    try {
+      if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
+        await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
+        profileMutated = true
+      } else {
+        // Native and pre-existing extra routes own only apiKeyEnv. Leave every
+        // other profile field (baseURL, models, hand edits) exactly as it is.
+        const path = [...record.settingsPath, 'apiKeyEnv']
+        await this.mutateSettings(record.settingsNs, [
+          record.originalApiKeyEnv !== null
+            ? { op: 'set', path, value: record.originalApiKeyEnv }
+            : { op: 'unset', path },
+        ])
+        profileMutated = true
+        // Remove an auto-created profile only when it is still empty after
+        // clearing apiKeyEnv; a profile with later user edits stays.
+        if (!record.hadProfile && record.settingsPath.length > 0) {
+          const current = this.profileAt(record.settingsNs, record.settingsPath)
+          if (current !== undefined && Object.keys(current).length === 0) {
+            await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: record.settingsPath }])
+          }
         }
       }
+      // The profile mutation came first so a read-only profile fails before
+      // any managed credential is deleted.
+      for (const key of record.keys) await this.unsetOriginal(key.ref)
+    } catch (error) {
+      if (profileMutated) {
+        try {
+          await this.restoreBrokerBinding(record)
+        } catch (restoreError) {
+          this.warn(`release compensation failed for ${provider}: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`)
+        }
+      }
+      throw error
     }
-    // Mutate the profile first. In particular, a read-only profile must fail
-    // before any managed credential is deleted.
-    for (const key of record.keys) await this.unsetOriginal(key.ref)
     delete this.store.providers[provider]
     this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
     this.rebuildBrokerMap()
@@ -1164,9 +1220,10 @@ export class KeysManagerService {
     if (sessionId === undefined) return
     const key = bindingKey(sessionId, providerId)
     const previous = this.attempts.get(key)
+    const effectiveKeyId = keyId ?? previous?.keyId
     this.attempts.set(key, {
-      keyId: keyId ?? previous?.keyId,
-      retries: previous !== undefined && previous.keyId === keyId ? previous.retries : 0,
+      keyId: effectiveKeyId,
+      retries: previous !== undefined && previous.keyId === effectiveKeyId ? previous.retries : 0,
       failure,
       at: Date.now(),
       turn: previous?.turn,
@@ -1210,8 +1267,14 @@ export class KeysManagerService {
         if (now - attempt.at > ATTEMPT_TTL_MS) this.attempts.delete(key)
       }
     }
+    const activeSteps = new Set<string>()
+    for (const [attemptKey, attempt] of this.attempts) {
+      if (attempt.turn !== undefined && attempt.step !== undefined) {
+        activeSteps.add(`${attemptKey}\u0000${attempt.turn}\u0000${attempt.step}`)
+      }
+    }
     for (const [key, entry] of this.switches) {
-      if (now - entry.at > ATTEMPT_TTL_MS) this.switches.delete(key)
+      if (now - entry.at > ATTEMPT_TTL_MS && !activeSteps.has(key)) this.switches.delete(key)
     }
   }
 
@@ -1219,7 +1282,7 @@ export class KeysManagerService {
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
     const record = this.store.provider(providerId)
-    if (record === undefined || !this.isBindingHealthy(record)) return next()
+    if (record === undefined || this.bindingState(record) === 'mismatch') return next()
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
     return this.wrapStream(options, next, providerId, sessionId)
   }
@@ -1332,7 +1395,7 @@ export class KeysManagerService {
     if (payload.signal?.aborted) return next()
     const providerId = payload.provider
     const record = this.store.provider(providerId)
-    if (record === undefined || !this.isBindingHealthy(record)) return next()
+    if (record === undefined || this.bindingState(record) === 'mismatch') return next()
     const settings = this.store.settings
     if (!settings.autoSwitch) return next()
     if (!shouldFailover(payload.failure?.code)) return next()
@@ -1425,13 +1488,13 @@ export function apply(ctx: HostContext): void {
   on('agent/request-error', (payload: unknown, next: () => Promise<RequestErrorAction>) => service.requestErrorListener(payload as RequestErrorPayload, next), { prepend: true })
 
   ;(ctx.provide as unknown as (name: string, value: unknown) => () => void)(SERVICE, service)
-  ctx.typert.register({
+  ctx.effect(() => ctx.typert.register({
     package: 'dsh-keys-manager',
     face: 'host',
     schemas: [],
     model: { services: [], events: [], objects: [] },
     invocations: INVOCATIONS,
-  })
+  }), 'keys-manager: typert registration')
 
   ctx.logger.info(`keys-manager: ${Object.keys(store.providers).length} managed provider(s), ${file}`)
 }

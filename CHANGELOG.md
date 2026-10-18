@@ -49,3 +49,8 @@ git log by the release-prep workflow.
 - Selection excludes already-tried keys and clears legacy `valueMissing`
   markers on load; the client ignores stale refresh responses with a request
   generation guard.
+- Release compensates by restoring the broker binding if a credential unset
+  fails after the profile mutation; an unreadable settings snapshot is treated
+  as unknown rather than a broken binding; client mutations are serialized;
+  retry budgets survive failures with no selected key; active switch budgets
+  survive pruning; the Typert registration is disposed on unload.

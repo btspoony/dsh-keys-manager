@@ -307,3 +307,28 @@ describe('policy form conversions', () => {
     expect(graceMs(1.5)).toBe(90_000)
   })
 })
+
+
+describe('mutation ordering', () => {
+  test('a later failed mutation keeps the earlier successful snapshot', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/addKey') {
+        const state = makeState()
+        state.managedCount = 2
+        state.keyCount = 2
+        return { ok: true, value: state }
+      }
+      return { ok: false, error: { message: 'update failed' } }
+    }
+    const store = createStore(harness.ctx)
+    const first = store.call('addKey', { provider: 'zai-coding-cn', alias: 'second', value: 'sk-second' })
+    const second = store.call('updateKey', { provider: 'zai-coding-cn', keyId: 'k_aaaaaaaa', patch: { enabled: false } })
+    const [firstResult, secondResult] = await Promise.all([first, second])
+    expect(firstResult.ok).toBe(true)
+    expect(secondResult.ok).toBe(false)
+    expect(store.getSnapshot().state?.managedCount).toBe(2)
+    expect(store.getSnapshot().error).toBe('update failed')
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+})
