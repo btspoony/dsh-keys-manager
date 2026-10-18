@@ -186,7 +186,21 @@ function Modal({ title, children, onClose, footer, busy }: ModalProps): React.Re
   React.useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = dialogRef.current
+    const inerted: HTMLElement[] = []
     if (dialog !== null) {
+      // Inert every sibling branch on the path to the dialog so assistive
+      // technology cannot browse the page behind the confirmation.
+      let node: HTMLElement | null = dialog.parentElement
+      while (node !== null && node !== document.body) {
+        for (const child of [...node.children]) {
+          if (!(child instanceof HTMLElement) || child === dialog || child.contains(dialog)) continue
+          if (!child.inert) {
+            child.inert = true
+            inerted.push(child)
+          }
+        }
+        node = node.parentElement
+      }
       const first = dialog.querySelector<HTMLElement>(FOCUSABLE)
       ;(first ?? dialog).focus()
     }
@@ -216,6 +230,7 @@ function Modal({ title, children, onClose, footer, busy }: ModalProps): React.Re
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('keydown', onKey)
+      for (const element of inerted) element.inert = false
       if (previous !== null && previous.isConnected) previous.focus()
     }
   }, [])
