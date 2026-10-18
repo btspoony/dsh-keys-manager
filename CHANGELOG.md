@@ -32,11 +32,12 @@ git log by the release-prep workflow.
 - Explicitly classify Amazon Bedrock, Cloudflare AI Gateway, Cloudflare Workers
   AI, and OpenAI Codex as unsupported key pools.
 - Label routes by origin: DSH built-in, plugin built-in, or custom.
-- Review hardening: transient credential reads no longer disable a key, single
-  key pools delegate without cooling, native release preserves Models edits,
-  cooldown history survives the recovery grace window, non-sticky retries stay
-  bounded, failed state writes remain retryable, derived cooldown statuses
-  refresh, and expired session bindings are pruned.
+- Review hardening: transient credential reads no longer disable a key, a
+  delegated retry preserves the current key while terminal delegation cools
+  it, native release preserves Models edits, cooldown history survives the
+  recovery grace window, non-sticky retries stay bounded, failed state writes
+  remain retryable, failed credential deletions keep their metadata for retry,
+  derived cooldown statuses refresh, and expired session bindings are pruned.
 - Policy forms preserve sub-minute cooldown/grace values; confirmation dialogs
   trap and restore focus.
 - Release workflows reject unsafe prerelease dist-tags and resume after a

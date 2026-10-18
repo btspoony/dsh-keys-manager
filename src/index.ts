@@ -508,16 +508,23 @@ export class KeysManagerService {
     await set.call(raw, ref, value)
   }
 
-  /** Remove one key literal through the unwrapped provider. */
+  /**
+   * Remove one key literal through the unwrapped provider. A rejected unset is
+   * only ignored when the credential is confirmed absent; a transient or
+   * permission failure must keep the metadata so a later retry can finish.
+   */
   private async unsetOriginal(ref: string): Promise<void> {
+    if (!isCredentialRefName(ref)) return
     const raw = this.credentialsRaw()
-    if (raw === undefined) return
+    if (raw === undefined) throw new Error('The credential store is unavailable')
     const original = this.credentialOriginals.get(raw)
     const unset = original?.unset ?? raw.unset
     try {
       await unset.call(raw, ref)
-    } catch {
-      // Removing an already absent key is not a user-visible failure.
+    } catch (error) {
+      const probe = await this.probeKey(ref)
+      if (probe.missing) return
+      throw new Error(`Could not remove credential ${ref}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -803,7 +810,13 @@ export class KeysManagerService {
       try {
         await this.mutateSettings(entry.settingsNs, [{ op: 'set', path, value: brokerRef }])
       } catch (error) {
-        if (imported !== undefined) await this.unsetOriginal(imported.ref)
+        if (imported !== undefined) {
+          try {
+            await this.unsetOriginal(imported.ref)
+          } catch (cleanupError) {
+            this.warn(`adoption cleanup left credential ${imported.ref}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+          }
+        }
         throw error
       }
       const record: ProviderRecord = {
@@ -901,7 +914,11 @@ export class KeysManagerService {
         try {
           await this.mutateSettings('llm-pi-ai', [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }])
         } catch (error) {
-          await this.unsetOriginal(key.ref)
+          try {
+            await this.unsetOriginal(key.ref)
+          } catch (cleanupError) {
+            this.warn(`extra-provider cleanup left credential ${key.ref}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+          }
           throw error
         }
         record.keys.push(key)
@@ -926,7 +943,11 @@ export class KeysManagerService {
       try {
         await this.mutateSettings('llm-pi-ai', [{ op: 'set', path: ['providers', extraId], value: profile }])
       } catch (error) {
-        await this.unsetOriginal(key.ref)
+        try {
+          await this.unsetOriginal(key.ref)
+        } catch (cleanupError) {
+          this.warn(`extra-provider cleanup left credential ${key.ref}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`)
+        }
         throw error
       }
       const record: ProviderRecord = {
@@ -1000,9 +1021,12 @@ export class KeysManagerService {
         await this.releaseLocked(provider)
         return this.buildState()
       }
-      const [key] = record.keys.splice(index, 1)
-      this.store.clearBindings((_key, binding) => binding.keyId === key.id)
+      const key = record.keys[index]
+      // Unset first: if the credential backend refuses, keep the metadata so a
+      // later retry can remove both together.
       await this.unsetOriginal(key.ref)
+      record.keys.splice(index, 1)
+      this.store.clearBindings((_key, binding) => binding.keyId === key.id)
       this.store.touch()
       return this.buildState()
     })
@@ -1022,6 +1046,9 @@ export class KeysManagerService {
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, record.settingsNs)
     if (namespace === undefined) throw new Error(`Settings namespace "${record.settingsNs}" is not mounted`)
+    // Remove credentials first; a rejection keeps the provider record intact so
+    // the user can retry release after the credential store recovers.
+    for (const key of record.keys) await this.unsetOriginal(key.ref)
     if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
       await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
     } else {
@@ -1042,7 +1069,6 @@ export class KeysManagerService {
         }
       }
     }
-    for (const key of record.keys) await this.unsetOriginal(key.ref)
     delete this.store.providers[provider]
     this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
     this.rebuildBrokerMap()
@@ -1264,6 +1290,28 @@ export class KeysManagerService {
     }
   }
 
+  /**
+   * Delegate recovery to the next agent/request-error listener. Preserve the
+   * current key only when that listener actually requests a retry; a declined
+   * (undefined) recovery is terminal and must still cool the exhausted key.
+   */
+  private async delegateAndMaybeCool(
+    payload: RequestErrorPayload,
+    providerId: string,
+    keyId: string,
+    next: () => Promise<RequestErrorAction>,
+  ): Promise<RequestErrorAction> {
+    let action: RequestErrorAction
+    try {
+      action = await next()
+    } catch (error) {
+      this.markFailure(providerId, keyId, payload.failure)
+      throw error
+    }
+    if (action === undefined) this.markFailure(providerId, keyId, payload.failure)
+    return action
+  }
+
   /** Waterfall listener: bounded retry, then key switch and cool-down. */
   async requestErrorListener(payload: RequestErrorPayload, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction> {
     if (payload.signal?.aborted) return next()
@@ -1303,12 +1351,12 @@ export class KeysManagerService {
 
     if (switchCount >= Math.min(MAX_SWITCHES, Math.max(1, record.keys.length))) {
       this.warn(`${providerId} exhausted key switches for this step; delegating recovery`)
-      return next()
+      return this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
     }
     const candidate = pickHealthyExcluding(record, currentKeyId, now)
     if (candidate === undefined) {
       this.warn(`${providerId} has no alternate healthy key; delegating recovery`)
-      return next()
+      return this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
     }
     // Keep the current key usable until an alternate is actually chosen. If
     // the delegated retry re-enters llm/stream, selectKey must still find a

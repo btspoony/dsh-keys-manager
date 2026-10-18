@@ -34,6 +34,7 @@ function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs
   const refs = new Map(Object.entries(initial))
   const raw = {
     failResolve: false,
+    failUnset: false,
     async resolve(ref: string) {
       if (raw.failResolve) throw new Error('credential store unavailable')
       const value = refs.get(ref)
@@ -47,6 +48,7 @@ function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs
       refs.set(ref, value)
     },
     async unset(ref: string) {
+      if (raw.failUnset) throw new Error('credential store locked')
       refs.delete(ref)
     },
   }
@@ -525,7 +527,7 @@ test('anthropic import prefers ANTHROPIC_API_KEY over bearer/OAuth tokens', asyn
   }
 })
 
-test('a single-key pool delegates without cooling its only key', async () => {
+test('a single-key pool preserves its key when delegation requests a retry', async () => {
   const h = await harness()
   try {
     await h.service.adoptProvider('zai-coding-cn')
@@ -539,14 +541,91 @@ test('a single-key pool delegates without cooling its only key', async () => {
       signal: { aborted: false },
       agent: { session: { id: 'session-only' } },
     } as unknown as RequestErrorPayload
-    assert.deepEqual(await h.service.requestErrorListener(payload, async () => undefined), { kind: 'retry' })
-    assert.equal(await h.service.requestErrorListener(payload, async () => undefined), undefined)
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     const state = h.service.getState()
     const view = state.providers.find(provider => provider.provider === 'zai-coding-cn')!
     assert.equal(view.keys[0].status, 'active')
     assert.equal(view.keys[0].cooldownUntil, 0)
     const again = await h.service.selectKey('zai-coding-cn', 'session-only')
     assert.equal(again.key!.id, selected.key!.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('terminal delegation cools the exhausted key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.setSettings({ retryCount: 1 })
+    await h.service.selectKey('zai-coding-cn', 'session-terminal')
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 8,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-terminal' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    assert.equal(await h.service.requestErrorListener(payload, async () => undefined), undefined)
+    const state = h.service.getState()
+    const view = state.providers.find(provider => provider.provider === 'zai-coding-cn')!
+    assert.equal(view.keys[0].status, 'cooling')
+    assert.ok(view.keys[0].cooldownUntil > Date.now())
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failed credential unset keeps the key metadata for retry', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const record = h.store.provider('zai-coding-cn')!
+    const first = record.keys[0]
+    h.credentials.raw.failUnset = true
+    await assert.rejects(() => h.service.deleteKey('zai-coding-cn', first.id), /credential store locked/)
+    assert.equal(record.keys.length, 2)
+    assert.equal(h.credentials.refs.has(first.ref), true)
+    h.credentials.raw.failUnset = false
+    await h.service.deleteKey('zai-coding-cn', first.id)
+    assert.equal(record.keys.length, 1)
+    assert.equal(h.credentials.refs.has(first.ref), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an already-absent credential is still removable when unset rejects', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const record = h.store.provider('zai-coding-cn')!
+    const first = record.keys[0]
+    h.credentials.refs.delete(first.ref)
+    h.credentials.raw.failUnset = true
+    await h.service.deleteKey('zai-coding-cn', first.id)
+    assert.equal(record.keys.length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failed credential unset keeps the provider manageable', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.credentials.raw.failUnset = true
+    await assert.rejects(() => h.service.releaseProvider('zai-coding-cn'), /credential store locked/)
+    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.service.getState().managedCount, 1)
+    h.credentials.raw.failUnset = false
+    await h.service.releaseProvider('zai-coding-cn')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
   } finally {
     await h.close()
   }
