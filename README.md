@@ -184,7 +184,12 @@ a fine-grained PAT secret instead.
 
 ## Known limits
 
-- OAuth2 account pools are designed for but not implemented.
+- OAuth2 account pools are designed for but not implemented. Anthropic key
+  pools manage a plain `ANTHROPIC_API_KEY`; its OAuth/federation token paths
+  are not account pools.
+- Cloudflare AI Gateway and Workers AI require a Cloudflare account ID (and a
+  gateway ID for AI Gateway) in addition to the API key. They are reported as
+  unsupported key pools and should be configured natively in Models.
 - Provider-native cloud credential chains (for example an AWS profile used by
   a Bedrock route) are not split into per-key rows; those providers are shown
   with an explanatory reason unless they also expose an API-key variable.

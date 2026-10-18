@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
@@ -113,6 +113,40 @@ function fakeLlm(): any {
           settingsPath: ['providers', 'openai-codex'],
           nativeAuth: { env: [], oauth: true },
         },
+        {
+          provider: 'anthropic',
+          displayName: 'Anthropic',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'anthropic'],
+          nativeAuth: {
+            env: [
+              'ANTHROPIC_AUTH_TOKEN',
+              'ANTHROPIC_OAUTH_TOKEN',
+              'ANTHROPIC_API_KEY',
+              'ANTHROPIC_FEDERATION_RULE_ID',
+              'ANTHROPIC_ORGANIZATION_ID',
+              'ANTHROPIC_IDENTITY_TOKEN_FILE',
+              'ANTHROPIC_SERVICE_ACCOUNT_ID',
+              'ANTHROPIC_WORKSPACE_ID',
+            ],
+            oauth: true,
+          },
+          defaultBaseURL: 'https://api.anthropic.com',
+        },
+        {
+          provider: 'cloudflare-ai-gateway',
+          displayName: 'Cloudflare AI Gateway',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'cloudflare-ai-gateway'],
+          nativeAuth: { env: ['CLOUDFLARE_API_KEY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_GATEWAY_ID'], oauth: false },
+        },
+        {
+          provider: 'cloudflare-workers-ai',
+          displayName: 'Cloudflare Workers AI',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'cloudflare-workers-ai'],
+          nativeAuth: { env: ['CLOUDFLARE_API_KEY', 'CLOUDFLARE_ACCOUNT_ID'], oauth: false },
+        },
       ]
     },
     listProviders() {
@@ -140,7 +174,12 @@ interface Harness {
 async function harness(): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'keys-manager-host-'))
   const store = new KeysManagerStore(join(dir, 'state.json'))
-  const credentials = fakeCredentials({ ZAI_CODING_CN_API_KEY: 'sk-existing-zai', DEEPSEEK_API_KEY: 'sk-existing-deepseek' })
+  const credentials = fakeCredentials({
+    ZAI_CODING_CN_API_KEY: 'sk-existing-zai',
+    DEEPSEEK_API_KEY: 'sk-existing-deepseek',
+    ANTHROPIC_AUTH_TOKEN: 'oauth-auth-token',
+    ANTHROPIC_API_KEY: 'sk-ant-api',
+  })
   const settings = fakeSettings()
   const llm = fakeLlm()
   const ctx = {
@@ -179,10 +218,18 @@ test('provider state marks OAuth-only routes unsupported and lists extras', asyn
     const codex = state.providers.find(provider => provider.provider === 'openai-codex')!
     const deepseek = state.providers.find(provider => provider.provider === 'deepseek-official')!
     const extra = state.providers.find(provider => provider.provider === 'deepinfra')!!
+    const anthropic = state.providers.find(provider => provider.provider === 'anthropic')!
+    const cloudflareGateway = state.providers.find(provider => provider.provider === 'cloudflare-ai-gateway')!
+    const cloudflareWorkers = state.providers.find(provider => provider.provider === 'cloudflare-workers-ai')!
     assert.equal(zai.supported, true)
     assert.equal(codex.supported, false)
     assert.match(String(codex.reason), /OAuth/)
     assert.equal(deepseek.supported, true)
+    assert.equal(anthropic.supported, true)
+    assert.equal(cloudflareGateway.supported, false)
+    assert.match(String(cloudflareGateway.reason), /Cloudflare/)
+    assert.equal(cloudflareWorkers.supported, false)
+    assert.match(String(cloudflareWorkers.reason), /Cloudflare/)
     assert.equal(extra.extra, true)
     assert.equal(extra.managed, false)
     assert.ok(state.providers.length > 10)
@@ -413,6 +460,66 @@ test('state stays secret-free after mutations and reload', async () => {
     assert.ok(!text.includes('sk-deepinfra-secret'))
     assert.ok(!text.includes('sk-existing-zai'))
     assert.ok(text.includes('KEYSMGR_'))
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('anthropic import prefers ANTHROPIC_API_KEY over bearer/OAuth tokens', async () => {
+  const h = await harness()
+  try {
+    const state = await h.service.adoptProvider('anthropic')
+    const view = state.providers.find(provider => provider.provider === 'anthropic')!
+    const record = h.store.provider('anthropic')!
+    assert.equal(view.keyCount, 1)
+    assert.equal(view.keys[0].importedFrom, 'ANTHROPIC_API_KEY')
+    assert.equal(h.credentials.refs.get(record.keys[0].ref), 'sk-ant-api')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a single-key pool delegates without cooling its only key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.setSettings({ retryCount: 1 })
+    const selected = await h.service.selectKey('zai-coding-cn', 'session-only')
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 7,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-only' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => undefined), { kind: 'retry' })
+    assert.equal(await h.service.requestErrorListener(payload, async () => undefined), undefined)
+    const state = h.service.getState()
+    const view = state.providers.find(provider => provider.provider === 'zai-coding-cn')!
+    assert.equal(view.keys[0].status, 'active')
+    assert.equal(view.keys[0].cooldownUntil, 0)
+    const again = await h.service.selectKey('zai-coding-cn', 'session-only')
+    assert.equal(again.key!.id, selected.key!.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('re-adding a key to an already-managed extra provider persists it', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    await h.store.flush()
+    const state = await h.service.addExtraProvider('deepinfra', 'backup', 'sk-backup')
+    const view = state.providers.find(provider => provider.provider === 'deepinfra')!
+    assert.equal(view.keyCount, 2)
+    await h.store.flush()
+    const persisted = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as {
+      providers: Record<string, { keys: unknown[] }>
+    }
+    assert.equal(persisted.providers.deepinfra?.keys.length, 2)
   } finally {
     await h.close()
   }

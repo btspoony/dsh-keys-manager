@@ -232,16 +232,39 @@ function publicKey(key: KeyRecord, now: number): KeyView {
   }
 }
 
+/** Env names that are a single API-key credential, not an OAuth/federation token. */
+function isKeyishEnv(name: string): boolean {
+  if (!/(?:API_KEY|_TOKEN)$/.test(name)) return false
+  if (/OAUTH/.test(name)) return false
+  if (/AUTH_TOKEN|FEDERATION|ORGANIZATION|IDENTITY_TOKEN_FILE|SERVICE_ACCOUNT|WORKSPACE_ID/.test(name)) return false
+  return true
+}
+
+/**
+ * Providers whose auth needs more than one credential value. A single-key
+ * broker can rotate the API key, but it cannot own the account/gateway ids,
+ * so these routes must stay outside the key pool.
+ */
+const MULTI_CREDENTIAL_PROVIDERS = new Set<string>([
+  'cloudflare-ai-gateway',
+  'cloudflare-workers-ai',
+])
+
 /** Whether the provider looks like it can authenticate with one API key. */
 function supportOf(entry: DirectoryEntry, profile: ProfileShape | undefined, managed: ProviderRecord | undefined): ProviderSupport {
   if (managed !== undefined) return { supported: true }
   if (entry.error !== undefined) return { supported: false, reason: entry.error }
+  if (MULTI_CREDENTIAL_PROVIDERS.has(entry.provider)) {
+    return {
+      supported: false,
+      reason: 'Requires Cloudflare account and gateway IDs in addition to the API key; configure this route natively in Models',
+    }
+  }
   if (entry.provider === 'deepseek-official') return { supported: true }
   if (profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0) return { supported: true }
   const auth = entry.nativeAuth
   if (auth !== undefined) {
-    const keyish = auth.env.some(name => /(?:API_KEY|_TOKEN)$/.test(name) && !/OAUTH/.test(name))
-    if (keyish) return { supported: true }
+    if (auth.env.some(isKeyishEnv)) return { supported: true }
     if (auth.oauth) return { supported: false, reason: 'OAuth sign-in is not managed yet' }
     if (auth.env.length > 0) return { supported: false, reason: 'This provider uses native cloud credentials, not one API key' }
     return { supported: false, reason: 'This provider declares no API-key authentication' }
@@ -664,7 +687,7 @@ export class KeysManagerService {
     const refs: string[] = []
     if (profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0) refs.push(profile.apiKeyEnv)
     for (const name of entry.nativeAuth?.env ?? []) {
-      if (/(?:API_KEY|_TOKEN)$/.test(name) && !/OAUTH/.test(name)) refs.push(name)
+      if (isKeyishEnv(name)) refs.push(name)
     }
     if (entry.provider === 'deepseek-official') refs.push('DEEPSEEK_API_KEY')
     refs.push(derivedKeyRef(entry.provider))
@@ -804,6 +827,7 @@ export class KeysManagerService {
       if (this.store.provider(extraId) !== undefined) {
         this.pushWarning('Provider is already managed; the key was added instead.')
         await this.addKeyLocked(extraId, input.alias, input.value)
+        this.store.touch()
         return this.buildState()
       }
       const descriptor = this.describeSettings()
@@ -1202,7 +1226,6 @@ export class KeysManagerService {
       return { kind: 'retry' }
     }
 
-    this.markFailure(providerId, currentKeyId, payload.failure)
     if (switchCount >= Math.min(MAX_SWITCHES, Math.max(1, record.keys.length))) {
       this.warn(`${providerId} exhausted key switches for this step; delegating recovery`)
       return next()
@@ -1212,6 +1235,10 @@ export class KeysManagerService {
       this.warn(`${providerId} has no alternate healthy key; delegating recovery`)
       return next()
     }
+    // Keep the current key usable until an alternate is actually chosen. If
+    // the delegated retry re-enters llm/stream, selectKey must still find a
+    // credential; cooling it before this point would strand that retry.
+    this.markFailure(providerId, currentKeyId, payload.failure)
     this.store.bind(sessionId, providerId, candidate.id, now)
     attempt.keyId = candidate.id
     attempt.retries = 0
