@@ -1631,7 +1631,7 @@ test('a non-sticky retry uses the key selected for the attempt', async () => {
       agent: { session: { id: 'session-pin' } },
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    const retry = await h.service.selectKey('zai-coding-cn', 'session-pin')
+    const retry = await h.service.selectKey('zai-coding-cn', 'session-pin', { turn: 1, step: 1 })
     assert.equal(retry.key!.id, first.id)
     const fresh = await h.service.selectKey('zai-coding-cn', 'session-pin')
     assert.equal(fresh.key!.id, second.id)
@@ -1701,7 +1701,7 @@ test('a non-sticky failover retry uses the verified alternate', async () => {
     assert.deepEqual(await h.service.requestErrorListener(payload(failureOne), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     linkFailure(h, 'zai-coding-cn', 'session-switch-pin', first.id, failureTwo)
     assert.deepEqual(await h.service.requestErrorListener(payload(failureTwo), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    const retry = await h.service.selectKey('zai-coding-cn', 'session-switch-pin')
+    const retry = await h.service.selectKey('zai-coding-cn', 'session-switch-pin', { turn: 1, step: 1 })
     assert.equal(retry.key!.id, second.id)
     assert.equal(first.cooldownUntil > 0, true)
   } finally {
@@ -1710,7 +1710,7 @@ test('a non-sticky failover retry uses the verified alternate', async () => {
 })
 
 
-test('step-scoped retry pins are not stolen by a concurrent step', async () => {
+test('step-scoped retry pins are consumed only for the matching step', async () => {
   const h = await harness()
   try {
     await h.service.adoptProvider('zai-coding-cn')
@@ -1720,12 +1720,11 @@ test('step-scoped retry pins are not stolen by a concurrent step', async () => {
     provider.cursor = 0
     ;(h.service as any).pinRetry('zai-coding-cn', 'session-pins', 1, 1, first.id)
     ;(h.service as any).pinRetry('zai-coding-cn', 'session-pins', 2, 1, second.id)
-    const ambiguous = await h.service.selectKey('zai-coding-cn', 'session-pins')
-    assert.equal((h.service as any).retryBindings.size, 2)
-    assert.ok(ambiguous.key !== undefined)
-    ;(h.service as any).retryBindings.delete('session-pins\u0000zai-coding-cn\u00002\u00001')
-    const pinned = await h.service.selectKey('zai-coding-cn', 'session-pins')
-    assert.equal(pinned.key!.id, first.id)
+    const firstStep = await h.service.selectKey('zai-coding-cn', 'session-pins', { turn: 1, step: 1 })
+    assert.equal(firstStep.key!.id, first.id)
+    assert.equal((h.service as any).retryBindings.size, 1)
+    const secondStep = await h.service.selectKey('zai-coding-cn', 'session-pins', { turn: 2, step: 1 })
+    assert.equal(secondStep.key!.id, second.id)
     assert.equal((h.service as any).retryBindings.size, 0)
   } finally {
     await h.close()
@@ -1785,6 +1784,128 @@ test('retry budgets are tracked per key within one step', async () => {
     assert.deepEqual(await h.service.requestErrorListener(payload(failureA), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     assert.equal(first.cooldownUntil > 0, true)
     assert.equal(second.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a production retry consumes the pending step pin and clears it on success', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    provider.cursor = 1
+    ;(h.service as any).attempts.set('session-production-pin\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      usedManagedKey: true,
+    })
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    linkFailure(h, 'zai-coding-cn', 'session-production-pin', first.id, failure)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-production-pin' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    let seen: { value?: string } | undefined
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-production-pin', messages: [] },
+      async function* () {
+        seen = await h.credentials.raw.resolve(provider.brokerRef)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    )
+    await consume(iterable)
+    assert.equal(seen!.value, 'sk-existing-zai')
+    assert.equal((h.service as any).retryBindings.size, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('failover carries a candidate key already-spent retry budget', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ retryCount: 1 })
+    const [first, second] = h.store.provider('zai-coding-cn')!.keys
+    const switchKey = 'session-carry\u0000zai-coding-cn\u00001\u00001'
+    ;(h.service as any).stepAttempts.set(switchKey, {
+      keyId: first.id,
+      retries: 1,
+      at: Date.now(),
+      turn: 1,
+      step: 1,
+      usedManagedKey: true,
+      keyRetries: { [first.id]: 1, [second.id]: 1 },
+    })
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    linkFailure(h, 'zai-coding-cn', 'session-carry', first.id, failure)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-carry' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    const switched = (h.service as any).stepAttempts.get(switchKey)
+    assert.equal(switched.keyId, second.id)
+    assert.equal(switched.retries, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a selection without the recovery context does not steal a step pin', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first] = provider.keys
+    ;(h.service as any).attempts.set('session-not-stolen\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      usedManagedKey: true,
+    })
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    linkFailure(h, 'zai-coding-cn', 'session-not-stolen', first.id, failure)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-not-stolen' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    ;(h.service as any).recoverySteps.enterWith(undefined)
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-not-stolen', messages: [] },
+      async function* () {
+        await h.credentials.raw.resolve(provider.brokerRef)
+        yield { type: 'text' }
+      } as any,
+    )
+    await consume(iterable)
+    assert.equal((h.service as any).retryBindings.size, 1)
+    const pinned = await h.service.selectKey('zai-coding-cn', 'session-not-stolen', { turn: 1, step: 1 })
+    assert.equal(pinned.key!.id, first.id)
   } finally {
     await h.close()
   }

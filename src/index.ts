@@ -336,6 +336,7 @@ export class KeysManagerService {
   private readonly streamAttempts = new Map<string, StreamAttempt[]>()
   private readonly linkedAttempts = new WeakMap<object, StreamAttempt>()
   private readonly retryBindings = new Map<string, { keyId: string; at: number }>()
+  private readonly recoverySteps = new AsyncLocalStorage<{ provider: string; sessionId: string; turn: number; step: number; at: number }>()
   private attemptSequence = 0
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
@@ -1240,15 +1241,19 @@ export class KeysManagerService {
    * Serialize the first selection for a sticky session/provider pair so two
    * concurrent requests cannot advance the cursor and bind different keys.
    */
-  async selectKey(providerId: string, sessionId: string | undefined): Promise<KeySelection> {
+  async selectKey(
+    providerId: string,
+    sessionId: string | undefined,
+    step?: { turn: number; step: number },
+  ): Promise<KeySelection> {
     if (!this.store.settings.stickySession || sessionId === undefined) {
-      return this.doSelectKey(providerId, sessionId)
+      return this.doSelectKey(providerId, sessionId, step)
     }
     const queueKey = `${sessionId}\u0000${providerId}`
     const previous = this.selectionQueues.get(queueKey) ?? Promise.resolve()
     const next = previous.then(
-      () => this.doSelectKey(providerId, sessionId),
-      () => this.doSelectKey(providerId, sessionId),
+      () => this.doSelectKey(providerId, sessionId, step),
+      () => this.doSelectKey(providerId, sessionId, step),
     )
     const tail = next.then(() => undefined, () => undefined)
     this.selectionQueues.set(queueKey, tail)
@@ -1271,6 +1276,12 @@ export class KeysManagerService {
     this.retryBindings.set(`${bindingKey(sessionId, providerId)}\u0000${turn}\u0000${step}`, { keyId, at: Date.now() })
   }
 
+  /** Carry this step's identity into the next llm/stream call in this context. */
+  private markRecovery(providerId: string, sessionId: string | undefined, turn: number, step: number): void {
+    if (sessionId === undefined) return
+    this.recoverySteps.enterWith({ provider: providerId, sessionId, turn, step, at: Date.now() })
+  }
+
   /** Drop one step's retry pin once its attempt settles. */
   private clearRetry(providerId: string, sessionId: string | undefined, turn: number, step: number): void {
     if (sessionId === undefined) return
@@ -1278,34 +1289,33 @@ export class KeysManagerService {
   }
 
   /** Selection body; callers reach it through {@link selectKey}. */
-  private async doSelectKey(providerId: string, sessionId: string | undefined): Promise<KeySelection> {
+  private async doSelectKey(
+    providerId: string,
+    sessionId: string | undefined,
+    step?: { turn: number; step: number },
+  ): Promise<KeySelection> {
     const provider = this.store.provider(providerId)
     if (provider === undefined) return { key: undefined, value: undefined }
     const now = Date.now()
     this.pruneBindings(now)
-    if (sessionId !== undefined) {
-      const prefix = `${bindingKey(sessionId, providerId)}\u0000`
-      const pins = [...this.retryBindings.entries()].filter(([key]) => key.startsWith(prefix))
-      // The stream API carries no turn/step, so only an unambiguous single pin
-      // can be consumed; concurrent steps fall through instead of stealing one.
-      if (pins.length === 1) {
-        const [pinKey, pinned] = pins[0]
-        this.retryBindings.delete(pinKey)
-        if (now - pinned.at <= ATTEMPT_TTL_MS) {
-          const candidate = provider.keys.find(entry => entry.id === pinned.keyId)
-          if (isSelectable(candidate, now)) {
-            const probe = await this.probeKey(candidate.ref)
-            if (probe.hit !== undefined) {
-              candidate!.valueMissing = false
-              markKeyUsed(candidate!, now)
-              this.store.touch()
-              if (this.store.settings.stickySession) this.store.bind(sessionId, providerId, candidate!.id, now)
-              return { key: candidate!, value: probe.hit.value }
-            }
-            if (probe.missing) {
-              candidate!.valueMissing = true
-              this.store.touch()
-            }
+    if (sessionId !== undefined && step !== undefined) {
+      const pinKey = `${bindingKey(sessionId, providerId)}\u0000${step.turn}\u0000${step.step}`
+      const pinned = this.retryBindings.get(pinKey)
+      this.retryBindings.delete(pinKey)
+      if (pinned !== undefined && now - pinned.at <= ATTEMPT_TTL_MS) {
+        const candidate = provider.keys.find(entry => entry.id === pinned.keyId)
+        if (isSelectable(candidate, now)) {
+          const probe = await this.probeKey(candidate.ref)
+          if (probe.hit !== undefined) {
+            candidate!.valueMissing = false
+            markKeyUsed(candidate!, now)
+            this.store.touch()
+            if (this.store.settings.stickySession) this.store.bind(sessionId, providerId, candidate!.id, now)
+            return { key: candidate!, value: probe.hit.value }
+          }
+          if (probe.missing) {
+            candidate!.valueMissing = true
+            this.store.touch()
           }
         }
       }
@@ -1376,7 +1386,12 @@ export class KeysManagerService {
   }
 
   /** Record a successful terminal finish. */
-  private recordSuccess(providerId: string, sessionId: string | undefined, keyId: string | undefined): void {
+  private recordSuccess(
+    providerId: string,
+    sessionId: string | undefined,
+    keyId: string | undefined,
+    step?: { turn: number; step: number },
+  ): void {
     const provider = this.store.provider(providerId)
     if (provider !== undefined) {
       const key = provider.keys.find(candidate => candidate.id === keyId)
@@ -1385,6 +1400,7 @@ export class KeysManagerService {
     }
     if (sessionId !== undefined) {
       this.attempts.delete(bindingKey(sessionId, providerId))
+      if (step !== undefined) this.clearRetry(providerId, sessionId, step.turn, step.step)
       // Do not clear step-scoped switch/attempt records here: another step of
       // the same session may still be in flight. Step records expire by TTL or
       // are cleared when their own request-error path terminates.
@@ -1448,12 +1464,25 @@ export class KeysManagerService {
   /** Waterfall listener: bind a key to the request and observe its terminal chunk. */
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
-    const record = this.store.provider(providerId)
-    if (record === undefined) return next()
-    const binding = this.bindingState(record)
-    if (binding === 'mismatch') return next()
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
-    return this.wrapStream(options, next, providerId, sessionId)
+    const recovered = this.recoverySteps.getStore()
+    if (recovered !== undefined) this.recoverySteps.enterWith(undefined as never)
+    const step = recovered !== undefined && sessionId !== undefined
+      && recovered.provider === providerId && recovered.sessionId === sessionId
+      && Date.now() - recovered.at <= ATTEMPT_TTL_MS
+      ? { turn: recovered.turn, step: recovered.step }
+      : undefined
+    const record = this.store.provider(providerId)
+    if (record === undefined) {
+      if (sessionId !== undefined && step !== undefined) this.clearRetry(providerId, sessionId, step.turn, step.step)
+      return next()
+    }
+    const binding = this.bindingState(record)
+    if (binding === 'mismatch') {
+      if (sessionId !== undefined && step !== undefined) this.clearRetry(providerId, sessionId, step.turn, step.step)
+      return next()
+    }
+    return this.wrapStream(options, next, providerId, sessionId, step)
   }
 
   /** Wrap one managed stream so credential resolution sees this key. */
@@ -1462,6 +1491,7 @@ export class KeysManagerService {
     next: () => AsyncIterable<StreamChunkLike>,
     providerId: string,
     sessionId: string | undefined,
+    step?: { turn: number; step: number },
   ): AsyncIterable<StreamChunkLike> {
     const service = this
     let iterator: AsyncIterator<StreamChunkLike> | undefined
@@ -1476,7 +1506,7 @@ export class KeysManagerService {
               started = true
               let selection: KeySelection = { key: undefined, value: undefined }
               try {
-                selection = await service.selectKey(providerId, sessionId)
+                selection = await service.selectKey(providerId, sessionId, step)
               } catch (error) {
                 service.warn(`key selection failed: ${error instanceof Error ? error.message : String(error)}`)
               }
@@ -1524,14 +1554,16 @@ export class KeysManagerService {
                   // The request failed on an external credential; do not
                   // attribute it to a managed key.
                   service.attempts.delete(bindingKey(sessionId, providerId))
+                  if (step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
                 }
                 service.pruneAttempts(Date.now())
               } else if (reason.kind === 'aborted') {
-                // Cancellation is not a key failure.
+                if (sessionId !== undefined && step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
               } else if (used) {
-                service.recordSuccess(providerId, sessionId, keyId)
+                service.recordSuccess(providerId, sessionId, keyId, step)
               } else if (sessionId !== undefined) {
                 service.attempts.delete(bindingKey(sessionId, providerId))
+                if (step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
               }
             }
             return result
@@ -1657,14 +1689,29 @@ export class KeysManagerService {
     // Consume a linked record on every path, including skipped recovery, so a
     // later request cannot claim this failure's evidence.
     const linked = this.takeLinkedAttempt(payload.failure)
-    if (payload.signal?.aborted) return next()
     const providerId = payload.provider
-    const record = this.store.provider(providerId)
-    if (record === undefined || this.bindingState(record) === 'mismatch') return next()
-    const settings = this.store.settings
-    if (!settings.autoSwitch) return next()
-    if (!shouldFailover(payload.failure?.code)) return next()
     const sessionId = payload.agent?.session?.id === undefined ? undefined : String(payload.agent.session.id)
+    const dropPin = (): void => {
+      if (sessionId !== undefined) this.clearRetry(providerId, sessionId, payload.turn, payload.step)
+    }
+    if (payload.signal?.aborted) {
+      dropPin()
+      return next()
+    }
+    const record = this.store.provider(providerId)
+    if (record === undefined || this.bindingState(record) === 'mismatch') {
+      dropPin()
+      return next()
+    }
+    const settings = this.store.settings
+    if (!settings.autoSwitch) {
+      dropPin()
+      return next()
+    }
+    if (!shouldFailover(payload.failure?.code)) {
+      dropPin()
+      return next()
+    }
     if (sessionId === undefined) return next()
     const now = Date.now()
     const attemptKey = bindingKey(sessionId, providerId)
@@ -1725,6 +1772,7 @@ export class KeysManagerService {
       attempt.keyRetries ??= {}
       if (attempt.keyId !== undefined) attempt.keyRetries[attempt.keyId] = attempt.retries
       this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
+      this.markRecovery(providerId, sessionId, payload.turn, payload.step)
       this.warn(`${providerId} key ${currentKeyId} failed (${payload.failure?.code ?? 'error'}); retry ${attempt.retries}/${settings.retryCount}`)
       return { kind: 'retry' }
     }
@@ -1738,6 +1786,7 @@ export class KeysManagerService {
         this.clearRetry(providerId, sessionId, payload.turn, payload.step)
       } else {
         this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
+        this.markRecovery(providerId, sessionId, payload.turn, payload.step)
       }
       return action
     }
@@ -1751,6 +1800,7 @@ export class KeysManagerService {
         this.clearRetry(providerId, sessionId, payload.turn, payload.step)
       } else {
         this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
+        this.markRecovery(providerId, sessionId, payload.turn, payload.step)
       }
       return action
     }
@@ -1760,11 +1810,12 @@ export class KeysManagerService {
     this.markFailure(providerId, currentKeyId, payload.failure)
     this.store.bind(sessionId, providerId, candidate.id, now)
     attempt.keyId = candidate.id
-    attempt.retries = 0
     attempt.keyRetries ??= {}
-    attempt.keyRetries[candidate.id] = 0
+    attempt.keyRetries[candidate.id] ??= 0
+    attempt.retries = attempt.keyRetries[candidate.id]
     attempt.at = now
     this.pinRetry(providerId, sessionId, payload.turn, payload.step, candidate.id)
+    this.markRecovery(providerId, sessionId, payload.turn, payload.step)
     this.switches.set(switchKey, { count: switchCount + 1, at: now })
     this.store.touch()
     this.warn(`${providerId} switched to key ${candidate.id} after ${settings.retryCount} retries`)
