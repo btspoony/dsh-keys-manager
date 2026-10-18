@@ -397,9 +397,11 @@ test('retry budget, key switch, cooldown, and success reset', async () => {
     const retryOne = await h.service.requestErrorListener(payload, async () => undefined)
     assert.deepEqual(retryOne, { kind: 'retry' })
     ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure, true)
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-fail', first.id, true)
     const retryTwo = await h.service.requestErrorListener(payload, async () => undefined)
     assert.deepEqual(retryTwo, { kind: 'retry' })
     ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure, true)
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-fail', first.id, true)
     const retryThree = await h.service.requestErrorListener(payload, async () => undefined)
     assert.deepEqual(retryThree, { kind: 'retry' })
     assert.ok(first.cooldownUntil > Date.now() - 1000)
@@ -628,6 +630,7 @@ test('terminal delegation cools the exhausted key', async () => {
       agent: { session: { id: 'session-terminal' } },
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-terminal', selected.key!.id, true)
     assert.equal(await h.service.requestErrorListener(payload, async () => undefined), undefined)
     const state = h.service.getState()
     const view = state.providers.find(provider => provider.provider === 'zai-coding-cn')!
@@ -1185,6 +1188,7 @@ test('an alternate with a removed credential does not cool the current key', asy
     } as unknown as RequestErrorPayload
     const next = vi.fn(async () => ({ kind: 'retry' as const }))
     assert.deepEqual(await h.service.requestErrorListener(payload, next), { kind: 'retry' })
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-alternate', current.id, true)
     assert.deepEqual(await h.service.requestErrorListener(payload, next), { kind: 'retry' })
     assert.equal(next.mock.calls.length, 1)
     assert.equal(current.cooldownUntil, 0)
@@ -1324,6 +1328,7 @@ test('a retried step refreshes attribution to the key it actually used', async (
     })
     const failureOne = { code: 'RATE_LIMIT', message: 'busy-one' }
     const failureTwo = { code: 'RATE_LIMIT', message: 'busy-two' }
+    const failureThree = { code: 'RATE_LIMIT', message: 'busy-three' }
     linkFailure(h, 'zai-coding-cn', 'session-retry', first.id, failureOne)
     const payload = (failure: object) => ({
       provider: 'zai-coding-cn',
@@ -1336,6 +1341,8 @@ test('a retried step refreshes attribution to the key it actually used', async (
     assert.deepEqual(await h.service.requestErrorListener(payload(failureOne), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     linkFailure(h, 'zai-coding-cn', 'session-retry', second.id, failureTwo)
     assert.deepEqual(await h.service.requestErrorListener(payload(failureTwo), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    linkFailure(h, 'zai-coding-cn', 'session-retry', second.id, failureThree)
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureThree), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     assert.equal(second.cooldownUntil > 0, true)
     assert.equal(first.cooldownUntil, 0)
   } finally {
@@ -1557,6 +1564,107 @@ test('a successful mutation surfaces a durable state write failure', async () =>
     await mkdir(h.dir, { recursive: true })
     await h.store.flush()
     const persisted = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as { settings: { retryCount: number } }
+    assert.equal(persisted.settings.retryCount, 3)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('an existing step without request evidence delegates and clears its budget', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ retryCount: 2 })
+    const [first] = h.store.provider('zai-coding-cn')!.keys
+    ;(h.service as any).attempts.set('session-no-evidence-step\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      usedManagedKey: true,
+    })
+    const failureOne = { code: 'RATE_LIMIT', message: 'busy-one' }
+    linkFailure(h, 'zai-coding-cn', 'session-no-evidence-step', first.id, failureOne)
+    const payload = (failure: object) => ({
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-no-evidence-step' } },
+    }) as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureOne), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    const next = vi.fn(async () => undefined)
+    assert.equal(await h.service.requestErrorListener(payload({ code: 'RATE_LIMIT', message: 'unlinked' }), next), undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal((h.service as any).stepAttempts.get('session-no-evidence-step\u0000zai-coding-cn\u00001\u00001'), undefined)
+    assert.equal(first.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a non-sticky retry uses the key selected for the attempt', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    provider.cursor = 1
+    ;(h.service as any).attempts.set('session-pin\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      usedManagedKey: true,
+    })
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    linkFailure(h, 'zai-coding-cn', 'session-pin', first.id, failure)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-pin' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    const retry = await h.service.selectKey('zai-coding-cn', 'session-pin')
+    assert.equal(retry.key!.id, first.id)
+    const fresh = await h.service.selectKey('zai-coding-cn', 'session-pin')
+    assert.equal(fresh.key!.id, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('shutdown drains a blocked mutation before the final snapshot', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const originalFlush = h.store.flush.bind(h.store)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    ;(h.store as any).flush = async () => {
+      await gate
+      return originalFlush()
+    }
+    const pending = h.service.setSettings({ retryCount: 3 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    const closing = h.service.close()
+    let closed = false
+    void closing.then(() => { closed = true })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(closed, false)
+    release()
+    await pending
+    await closing
+    await assert.rejects(() => h.service.setSettings({ retryCount: 1 }), /shutting down/)
+    const persisted = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as {
+      settings: { retryCount: number }
+    }
     assert.equal(persisted.settings.retryCount, 3)
   } finally {
     await h.close()

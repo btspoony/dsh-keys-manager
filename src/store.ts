@@ -195,8 +195,9 @@ export function readStateFile(file: string): LoadedState {
       loadError: `Could not read ${file}: ${error instanceof Error ? error.message : String(error)}`,
     }
   }
+  let parsed: unknown
   try {
-    return sanitizeState(JSON.parse(text))
+    parsed = JSON.parse(text)
   } catch (error) {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
     const backup = `${file}.corrupt-${stamp}`
@@ -215,7 +216,17 @@ export function readStateFile(file: string): LoadedState {
         : `State file was corrupt and could not be backed up; refusing to overwrite it (${error instanceof Error ? error.message : String(error)})`,
     }
   }
+  const version = parsed !== null && typeof parsed === 'object' ? (parsed as Record<string, unknown>).version : undefined
+  if (version !== undefined && version !== STATE_VERSION) {
+    return {
+      ...emptyState(),
+      readOnly: true,
+      loadError: `Unsupported state schema version ${String(version)}; refusing to overwrite ${file}.`,
+    }
+  }
+  return sanitizeState(parsed)
 }
+
 
 export interface KeysManagerStoreOptions {
   warn?: (message: string) => void

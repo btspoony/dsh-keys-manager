@@ -335,6 +335,7 @@ export class KeysManagerService {
   private readonly stepAttempts = new Map<string, AttemptState>()
   private readonly streamAttempts = new Map<string, StreamAttempt[]>()
   private readonly linkedAttempts = new WeakMap<object, StreamAttempt>()
+  private readonly retryBindings = new Map<string, { keyId: string; at: number }>()
   private attemptSequence = 0
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
@@ -347,6 +348,7 @@ export class KeysManagerService {
   private lastBindingPruneAt = 0
   private readonly selectionQueues = new Map<string, Promise<unknown>>()
   private queue: Promise<unknown> = Promise.resolve()
+  private closing = false
   readonly typertRemote: TypertRemoteBinding
 
   constructor(ctx: HostContext, store: KeysManagerStore) {
@@ -368,14 +370,16 @@ export class KeysManagerService {
   /** Rebuild the broker-reference → provider index. */
   private rebuildBrokerMap(): void {
     this.bindingCache.clear()
+    this.retryBindings.clear()
     this.brokerOwners = new Map()
     for (const provider of Object.values(this.store.providers)) {
       if (provider.brokerRef.length > 0) this.brokerOwners.set(provider.brokerRef, provider.provider)
     }
   }
 
-  /** Serialize mutations. */
+  /** Serialize mutations, rejecting submissions that arrive during shutdown. */
   private run<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.closing) return Promise.reject(new Error('Keys Manager is shutting down'))
     const guarded = async (): Promise<T> => {
       if (this.store.readOnly) {
         throw new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.')
@@ -388,6 +392,17 @@ export class KeysManagerService {
     const next = this.queue.then(guarded, guarded)
     this.queue = next.catch(() => {})
     return next
+  }
+
+  /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
+  async close(): Promise<void> {
+    this.closing = true
+    try {
+      await this.queue
+    } catch {
+      // The mutation queue already reports failures to its caller.
+    }
+    await this.store.close()
   }
 
   /** Push a user-facing warning that rides the next state response. */
@@ -1238,12 +1253,45 @@ export class KeysManagerService {
     }
   }
 
+  /** Pin the key a retry must use, independent of sticky-session mode. */
+  private pinRetry(providerId: string, sessionId: string | undefined, keyId: string): void {
+    if (sessionId === undefined) return
+    this.retryBindings.set(bindingKey(sessionId, providerId), { keyId, at: Date.now() })
+  }
+
+  /** Drop a retry pin once its attempt settles. */
+  private clearRetry(providerId: string, sessionId: string | undefined): void {
+    if (sessionId === undefined) return
+    this.retryBindings.delete(bindingKey(sessionId, providerId))
+  }
+
   /** Selection body; callers reach it through {@link selectKey}. */
   private async doSelectKey(providerId: string, sessionId: string | undefined): Promise<KeySelection> {
     const provider = this.store.provider(providerId)
     if (provider === undefined) return { key: undefined, value: undefined }
     const now = Date.now()
     this.pruneBindings(now)
+    if (sessionId !== undefined) {
+      const pinned = this.retryBindings.get(bindingKey(sessionId, providerId))
+      this.retryBindings.delete(bindingKey(sessionId, providerId))
+      if (pinned !== undefined && now - pinned.at <= ATTEMPT_TTL_MS) {
+        const candidate = provider.keys.find(entry => entry.id === pinned.keyId)
+        if (isSelectable(candidate, now)) {
+          const probe = await this.probeKey(candidate.ref)
+          if (probe.hit !== undefined) {
+            candidate!.valueMissing = false
+            markKeyUsed(candidate!, now)
+            this.store.touch()
+            if (this.store.settings.stickySession) this.store.bind(sessionId, providerId, candidate!.id, now)
+            return { key: candidate!, value: probe.hit.value }
+          }
+          if (probe.missing) {
+            candidate!.valueMissing = true
+            this.store.touch()
+          }
+        }
+      }
+    }
     let key: KeyRecord | undefined
     if (sessionId !== undefined && this.store.settings.stickySession) {
       const binding = this.store.binding(sessionId, providerId)
@@ -1319,6 +1367,7 @@ export class KeysManagerService {
     }
     if (sessionId !== undefined) {
       this.attempts.delete(bindingKey(sessionId, providerId))
+      this.clearRetry(providerId, sessionId)
       // Do not clear step-scoped switch/attempt records here: another step of
       // the same session may still be in flight. Step records expire by TTL or
       // are cleared when their own request-error path terminates.
@@ -1616,13 +1665,21 @@ export class KeysManagerService {
         lastSequence: evidence.sequence,
       }
       this.stepAttempts.set(switchKey, attempt)
-    } else if (evidence !== undefined) {
-      // A retry may have selected a different key or fallen back to an
-      // external credential; refresh this step's attribution.
+    } else {
+      // Every recovery needs evidence for the request that just failed; an
+      // existing step must not reuse stale attribution or budget.
+      if (evidence === undefined) {
+        this.switches.delete(switchKey)
+        this.stepAttempts.delete(switchKey)
+        this.clearRetry(providerId, sessionId)
+        return next()
+      }
+      const keyChanged = attempt.keyId !== evidence.keyId
       attempt.keyId = evidence.keyId
       attempt.usedManagedKey = evidence.usedManagedKey
       attempt.lastSequence = evidence.sequence
       attempt.at = now
+      if (keyChanged) attempt.retries = 0
     }
     if (attempt.usedManagedKey !== true) return next()
     const currentKeyId = attempt.keyId
@@ -1633,6 +1690,7 @@ export class KeysManagerService {
 
     if (attempt.retries < settings.retryCount) {
       attempt.retries += 1
+      this.pinRetry(providerId, sessionId, currentKeyId)
       this.warn(`${providerId} key ${currentKeyId} failed (${payload.failure?.code ?? 'error'}); retry ${attempt.retries}/${settings.retryCount}`)
       return { kind: 'retry' }
     }
@@ -1643,6 +1701,9 @@ export class KeysManagerService {
       if (action === undefined) {
         this.switches.delete(switchKey)
         this.stepAttempts.delete(switchKey)
+        this.clearRetry(providerId, sessionId)
+      } else {
+        this.pinRetry(providerId, sessionId, currentKeyId)
       }
       return action
     }
@@ -1653,6 +1714,9 @@ export class KeysManagerService {
       if (action === undefined) {
         this.switches.delete(switchKey)
         this.stepAttempts.delete(switchKey)
+        this.clearRetry(providerId, sessionId)
+      } else {
+        this.pinRetry(providerId, sessionId, currentKeyId)
       }
       return action
     }
@@ -1664,6 +1728,7 @@ export class KeysManagerService {
     attempt.keyId = candidate.id
     attempt.retries = 0
     attempt.at = now
+    this.pinRetry(providerId, sessionId, candidate.id)
     this.switches.set(switchKey, { count: switchCount + 1, at: now })
     this.store.touch()
     this.warn(`${providerId} switched to key ${candidate.id} after ${settings.retryCount} retries`)
@@ -1679,7 +1744,7 @@ export function apply(ctx: HostContext): void {
   const service = new KeysManagerService(ctx, store)
 
   ctx.effect(() => () => {
-    void store.close()
+    void service.close()
   }, 'keys-manager: persist state')
 
   ctx.inject(['credentials'], child => {

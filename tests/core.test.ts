@@ -418,3 +418,22 @@ test('a permission-denied parent directory is read-only and preserves state', as
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+
+test('an unsupported state version stays read-only and untouched', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-version-'))
+  try {
+    const file = join(dir, 'state.json')
+    const original = JSON.stringify({ version: 2, settings: { retryCount: 3 }, providers: {}, sessionBindings: {} }, null, 2)
+    await writeFile(file, original)
+    const store = new KeysManagerStore(file, { warn: () => {} })
+    assert.equal(store.readOnly, true)
+    assert.match(String(store.loadError), /Unsupported state schema version 2/)
+    store.state.settings.retryCount = 9
+    store.touch()
+    await store.close()
+    assert.equal(await readFile(file, 'utf8'), original)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

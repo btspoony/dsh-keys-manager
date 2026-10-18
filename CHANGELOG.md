@@ -77,5 +77,9 @@ git log by the release-prep workflow.
   reporting success. Attribution no longer falls back to the shared session
   record on an identity miss, and production stream regressions cover skipped
   and reversed error callbacks.
+- Every recovery requires evidence for the current request; retry budgets are
+  scoped per selected key and retries are pinned to their key without sticky
+  sessions. Unsupported state schema versions open read-only, and shutdown
+  drains the mutation queue before the final snapshot.
 - State probing uses stat and distinguishes ENOENT from permission failures;
   a denied parent directory starts read-only and cannot overwrite valid state.
