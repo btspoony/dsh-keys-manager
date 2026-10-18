@@ -1,0 +1,8 @@
+# Standalone plugin repo: @deepseek-ai/* peers are provided by the DSH
+# installation at runtime, so they are declared as peers rather than
+# auto-installed into this checkout.
+autoInstallPeers: false
+nodeLinker: hoisted
+
+allowBuilds:
+  esbuild: true

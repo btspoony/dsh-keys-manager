@@ -1,0 +1,419 @@
+import assert from 'node:assert/strict'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { test } from 'vitest'
+import type { HostContext, RequestErrorPayload } from '../src/host-types'
+import type { ProviderView, StateView } from '../src/domain'
+import { KeysManagerService } from '../src/index'
+import { KeysManagerStore } from '../src/store'
+
+const ORIGINAL = Symbol.for('cordis.original')
+
+function applyOps(root: any, ops: any): any {
+  let next = structuredClone(root)
+  for (const op of ops) {
+    if (op.path.length === 0) {
+      next = op.op === 'set' ? structuredClone(op.value) : {}
+      continue
+    }
+    let cursor = next
+    for (let index = 0; index < op.path.length - 1; index += 1) {
+      const part = op.path[index]
+      if (cursor[part] === undefined || cursor[part] === null || typeof cursor[part] !== 'object') cursor[part] = {}
+      cursor = cursor[part]
+    }
+    const last = op.path[op.path.length - 1]
+    if (op.op === 'set') cursor[last] = structuredClone(op.value)
+    else delete cursor[last]
+  }
+  return next
+}
+
+function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs: Map<string, string> } {
+  const refs = new Map(Object.entries(initial))
+  const raw = {
+    async resolve(ref: string) {
+      const value = refs.get(ref)
+      return value === undefined ? undefined : { value, source: 'test' }
+    },
+    async describe(ref: string) {
+      return { configured: refs.has(ref), ...(refs.has(ref) ? { source: 'test' } : {}), writable: true }
+    },
+    async set(ref: string, value: string) {
+      if (typeof value !== 'string' || value.length === 0) throw new Error('empty credential')
+      refs.set(ref, value)
+    },
+    async unset(ref: string) {
+      refs.delete(ref)
+    },
+  }
+  Object.defineProperty(raw, ORIGINAL, { value: raw })
+  return { raw, refs }
+}
+
+function fakeSettings(): any {
+  const namespaces = [
+    {
+      ns: 'llm-pi-ai',
+      value: { providers: { 'zai-coding-cn': { apiKeyEnv: 'ZAI_CODING_CN_API_KEY' } } },
+      revision: 1,
+    },
+    { ns: 'llm-deepseek-api-key', value: { apiKeyEnv: 'DEEPSEEK_API_KEY' }, revision: 1 },
+  ]
+  return {
+    writable: true,
+    namespaces,
+    describe() {
+      return namespaces.map(entry => ({
+        ns: entry.ns,
+        autoGenerate: false,
+        schema: {},
+        value: structuredClone(entry.value),
+        revision: entry.revision,
+        applies: 'live',
+      }))
+    },
+    async mutate(ns: string, ops: any[], expectedRevision?: number) {
+      const entry = namespaces.find(candidate => candidate.ns === ns)
+      if (!entry) throw new Error(`missing namespace ${ns}`)
+      if (expectedRevision !== undefined && expectedRevision !== entry.revision) throw new Error('revision conflict')
+      entry.value = applyOps(entry.value, ops)
+      entry.revision += 1
+    },
+    valueOf(ns: string) {
+      return namespaces.find(entry => entry.ns === ns)?.value
+    },
+  }
+}
+
+function fakeLlm(): any {
+  return {
+    listConfigurableProviders() {
+      return [
+        {
+          provider: 'zai-coding-cn',
+          displayName: 'Z.AI Coding CN',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'zai-coding-cn'],
+          nativeAuth: { env: ['ZAI_CODING_CN_API_KEY'], oauth: false },
+          defaultBaseURL: 'https://open.bigmodel.cn/api/coding/paas/v4',
+        },
+        {
+          provider: 'deepseek-official',
+          displayName: 'DeepSeek',
+          settingsNs: 'llm-deepseek-api-key',
+          settingsPath: [],
+          nativeAuth: { env: ['DEEPSEEK_API_KEY'], oauth: false },
+        },
+        {
+          provider: 'openai-codex',
+          displayName: 'OpenAI Codex',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'openai-codex'],
+          nativeAuth: { env: [], oauth: true },
+        },
+      ]
+    },
+    listProviders() {
+      return [{ id: 'zai-coding-cn', name: 'Z.AI Coding CN' }, { id: 'deepseek-official', name: 'DeepSeek' }]
+    },
+    async discoverModels() {
+      return [
+        { id: 'discovered-chat', name: 'Discovered Chat', contextWindow: 128000, maxTokens: 8192, inputModalities: ['text'] },
+        { id: 'discovered-vision', name: 'Discovered Vision', inputModalities: ['text', 'image'] },
+      ]
+    },
+  }
+}
+
+interface Harness {
+  dir: string
+  store: KeysManagerStore
+  credentials: any
+  settings: any
+  llm: any
+  service: KeysManagerService
+  close: () => Promise<void>
+}
+
+async function harness(): Promise<Harness> {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-host-'))
+  const store = new KeysManagerStore(join(dir, 'state.json'))
+  const credentials = fakeCredentials({ ZAI_CODING_CN_API_KEY: 'sk-existing-zai', DEEPSEEK_API_KEY: 'sk-existing-deepseek' })
+  const settings = fakeSettings()
+  const llm = fakeLlm()
+  const ctx = {
+    llm,
+    logger: { warn() {}, info() {} },
+    get(name: string) {
+      if (name === 'credentials') return credentials.raw
+      if (name === 'settings') return settings
+      if (name === 'llm') return llm
+      return undefined
+    },
+  }
+  const service = new KeysManagerService(ctx as unknown as HostContext, store)
+  service.settings = settings
+  service.attachCredentials(credentials.raw)
+  return {
+    dir,
+    store,
+    credentials,
+    settings,
+    llm,
+    service,
+    async close() {
+      service.detachCredentials(credentials.raw)
+      await store.close()
+      await rm(dir, { recursive: true, force: true })
+    },
+  }
+}
+
+test('provider state marks OAuth-only routes unsupported and lists extras', async () => {
+  const h = await harness()
+  try {
+    const state = h.service.buildState()
+    const zai = state.providers.find(provider => provider.provider === 'zai-coding-cn')!
+    const codex = state.providers.find(provider => provider.provider === 'openai-codex')!
+    const deepseek = state.providers.find(provider => provider.provider === 'deepseek-official')!
+    const extra = state.providers.find(provider => provider.provider === 'deepinfra')!!
+    assert.equal(zai.supported, true)
+    assert.equal(codex.supported, false)
+    assert.match(String(codex.reason), /OAuth/)
+    assert.equal(deepseek.supported, true)
+    assert.equal(extra.extra, true)
+    assert.equal(extra.managed, false)
+    assert.ok(state.providers.length > 10)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adoption imports the existing credential and points the profile at the broker', async () => {
+  const h = await harness()
+  try {
+    const state = await h.service.adoptProvider('zai-coding-cn')
+    const zai = state.providers.find(provider => provider.provider === 'zai-coding-cn')!
+    assert.equal(zai.managed, true)
+    assert.equal(zai.keyCount, 1)
+    assert.equal(zai.keys[0].alias, 'Imported')
+    assert.equal(zai.bindingHealthy, true)
+    assert.match(zai.brokerRef!, /^KEYSMGR_ZAI_CODING_CN_/)
+    const brokerRef = zai.brokerRef
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, brokerRef)
+    const keyRef = h.store.provider('zai-coding-cn')!.keys[0].ref
+    assert.equal(h.credentials.refs.get(keyRef), 'sk-existing-zai')
+    // The original credential is deliberately left in place for release.
+    assert.equal(h.credentials.refs.get('ZAI_CODING_CN_API_KEY'), 'sk-existing-zai')
+  } finally {
+    await h.close()
+  }
+})
+
+test('the credential broker answers per request, lists without moving state, and refuses overwrite', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const first = provider!.keys[0]
+    const listHit = await h.credentials.raw.resolve(provider.brokerRef)
+    assert.equal(listHit!.value, 'sk-existing-zai')
+    const requestHit = await (h.service as any).als.run({ provider: 'zai-coding-cn', keyValue: 'sk-request-scoped' }, () => h.credentials.raw.resolve(provider.brokerRef))
+    assert.equal(requestHit!.value, 'sk-request-scoped')
+    const noKey = await (h.service as any).als.run({ provider: 'zai-coding-cn', keyValue: null }, () => h.credentials.raw.resolve(provider.brokerRef))
+    assert.equal(noKey, undefined)
+    const description = await h.credentials.raw.describe(provider.brokerRef)
+    assert.deepEqual(description, { configured: true, source: 'keys-manager', writable: false })
+    await assert.rejects(() => h.credentials.raw.set(provider.brokerRef, 'nope'), /managed by Keys Manager/)
+    await assert.rejects(() => h.credentials.raw.unset(provider.brokerRef), /managed by Keys Manager/)
+    // The password is not exposed in state.
+    const persisted = JSON.stringify(h.service.buildState())
+    assert.ok(!persisted.includes('sk-existing-zai'))
+    assert.ok(first.ref)
+  } finally {
+    await h.close()
+  }
+})
+
+test('sticky sessions round-robin across keys and pause shifts new sessions', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    let state = await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider!.keys
+    const a = await h.service.selectKey('zai-coding-cn', 'session-a')
+    const b = await h.service.selectKey('zai-coding-cn', 'session-b')
+    const aAgain = await h.service.selectKey('zai-coding-cn', 'session-a')
+    assert.equal(a.key!.id, first.id)
+    assert.equal(b.key!.id, second.id)
+    assert.equal(aAgain.key!.id, first.id)
+    await h.service.updateKey('zai-coding-cn', first.id, { enabled: false })
+    const c = await h.service.selectKey('zai-coding-cn', 'session-c')
+    assert.equal(c.key!.id, second.id)
+    state = h.service.getState()
+    assert.equal(state.providers.find(entry => entry.provider === 'zai-coding-cn')!.status, 'active')
+  } finally {
+    await h.close()
+  }
+})
+
+test('retry budget, key switch, cooldown, and success reset', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider!.keys
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-fail')
+    assert.equal(selection.key!.id, first.id)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-fail' } },
+    } as unknown as RequestErrorPayload;
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure)
+    const retryOne = await h.service.requestErrorListener(payload, async () => undefined)
+    assert.deepEqual(retryOne, { kind: 'retry' })
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure)
+    const retryTwo = await h.service.requestErrorListener(payload, async () => undefined)
+    assert.deepEqual(retryTwo, { kind: 'retry' })
+    ;(h.service as any).recordFailure('zai-coding-cn', 'session-fail', first.id, payload.failure)
+    const retryThree = await h.service.requestErrorListener(payload, async () => undefined)
+    assert.deepEqual(retryThree, { kind: 'retry' })
+    assert.ok(first.cooldownUntil > Date.now() - 1000)
+    const binding = h.store.binding('session-fail', 'zai-coding-cn')!
+    assert.equal(binding!.keyId, second.id)
+    // A successful request on the new key clears retry accounting.
+    ;(h.service as any).recordSuccess('zai-coding-cn', 'session-fail', second.id)
+    assert.equal(h.store.binding('session-fail', 'zai-coding-cn')!.keyId, second.id)
+    const after = h.service.getState()
+    const view = after.providers.find(entry => entry.provider === 'zai-coding-cn')!
+    assert.equal(view.keys.find(key => key.id === first.id)!.status, 'cooling')
+  } finally {
+    await h.close()
+  }
+})
+
+test('request-shaped failures are delegated without cooling a key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-context')
+    assert.equal(selection.key!.id, provider!.keys[0].id)
+    let nextCalled = false
+    const result = await h.service.requestErrorListener({
+      provider: 'zai-coding-cn',
+      turn: 2,
+      step: 1,
+      failure: { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'too long' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-context' } },
+    } as unknown as RequestErrorPayload, async () => {
+      nextCalled = true
+      return undefined
+    })
+    assert.equal(result, undefined)
+    assert.equal(nextCalled, true)
+    assert.equal(provider.keys[0].cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('deleting the last key restores the original apiKeyEnv and removes management', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const brokerRef = provider.brokerRef
+    const keyRef = provider.keys[0].ref
+    const state = await h.service.deleteKey('zai-coding-cn', provider.keys[0].id)
+    const zai = state.providers.find(entry => entry.provider === 'zai-coding-cn')!
+    assert.equal(zai.managed, false)
+    assert.equal(h.store.provider('zai-coding-cn')!, undefined)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, 'ZAI_CODING_CN_API_KEY')
+    assert.equal(h.credentials.refs.has(keyRef), false)
+    assert.equal(h.credentials.refs.has(brokerRef), false)
+    assert.equal(h.credentials.refs.get('ZAI_CODING_CN_API_KEY'), 'sk-existing-zai')
+  } finally {
+    await h.close()
+  }
+})
+
+test('extra provider installation writes a complete pi-ai profile and release removes it', async () => {
+  const h = await harness()
+  try {
+    const state = await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    const view = state.providers.find(entry => entry.provider === 'deepinfra')!
+    assert.equal(view.managed, true)
+    assert.equal(view.extra, true)
+    assert.equal(view.keyCount, 1)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.deepinfra
+    assert.equal(profile.api, 'openai-completions')
+    assert.equal(profile.baseURL, 'https://api.deepinfra.com/v1/openai')
+    assert.match(profile.apiKeyEnv, /^KEYSMGR_DEEPINFRA_/)
+    assert.equal(profile.models[0].id, 'discovered-chat')
+    assert.equal(profile.models[1].id, 'discovered-vision')
+    const keyRef = h.store.provider('deepinfra')!.keys[0].ref
+    assert.equal(h.credentials.refs.get(keyRef), 'sk-deepinfra')
+    const released = await h.service.releaseProvider('deepinfra')
+    assert.equal(released.providers.find(entry => entry.provider === 'deepinfra')!.managed, false)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.deepinfra, undefined)
+    assert.equal(h.credentials.refs.has(keyRef), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('settings update validates and persists retry policy', async () => {
+  const h = await harness()
+  try {
+    const state = await h.service.setSettings({ retryCount: 3, baseCooldownMs: 60_000, recoveryGraceMs: 120_000 })
+    assert.equal(state.settings.retryCount, 3)
+    assert.equal(state.settings.baseCooldownMs, 60_000)
+    assert.equal(state.settings.recoveryGraceMs, 120_000)
+    await assert.rejects(() => h.service.setSettings({ retryCount: 0 }), /retryCount/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a profile changed outside the manager reports a binding warning', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers['zai-coding-cn'].apiKeyEnv = 'SOME_OTHER_REF'
+    const state = h.service.getState()
+    const zai = state.providers.find(entry => entry.provider === 'zai-coding-cn')!
+    assert.equal(zai.bindingHealthy, false)
+    assert.match(String(zai.warning), /Re-adopt/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('state stays secret-free after mutations and reload', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'extra', 'sk-very-secret')
+    await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra-secret')
+    await h.store.flush()
+    const { readFile } = await import('node:fs/promises')
+    const text = await readFile(join(h.dir, 'state.json'), 'utf8')
+    assert.ok(!text.includes('sk-very-secret'))
+    assert.ok(!text.includes('sk-deepinfra-secret'))
+    assert.ok(!text.includes('sk-existing-zai'))
+    assert.ok(text.includes('KEYSMGR_'))
+  } finally {
+    await h.close()
+  }
+})

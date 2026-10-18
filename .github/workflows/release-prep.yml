@@ -1,0 +1,211 @@
+name: Release prep
+
+# Manual entry point: Actions → "Release prep" → Run workflow (optionally pass
+# an explicit X.Y.Z or X.Y.Z-prerelease, e.g. 0.1.1-alpha.1). Bumps
+# package.json (+ lockfile sync), validates the build, and opens a
+# `release v<version>` PR. Merging that PR runs the Release workflow, which
+# publishes dsh-keys-manager@<version> (formal versions to `latest`, prereleases to
+# their prerelease dist-tag), pushes tag v<version>, and creates the GitHub
+# Release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Target version (e.g. 0.2.0, or 0.1.1-alpha.1 for a prerelease). Leave empty for auto patch bump."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release-prep
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so `git describe --tags` can find the previous
+          # release tag (nearest ancestor tag of HEAD).
+          fetch-depth: 0
+
+      # pnpm/action-setup must run before setup-node so that setup-node's
+      # `cache: pnpm` can locate the pnpm store path (same order as ci.yml).
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.0.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Reject already-released version
+        id: want
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          if [ -z "$V" ]; then V="auto"; fi
+          # First-line guard: validate an explicit input before it is echoed
+          # into GITHUB_OUTPUT or passed to git rev-parse. prepare-release.mjs
+          # still validates downstream; this is defense in depth. Accepts
+          # X.Y.Z or X.Y.Z-prerelease (semver; the suffix must contain at
+          # least one digit, matching parseVersion in prepare-release.mjs),
+          # e.g. 0.2.0, 0.1.1-alpha.1; digitless suffixes like 0.1.1-alpha
+          # are rejected.
+          if [ "$V" != "auto" ] && ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]*[0-9][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Invalid version input \"$V\". Expected X.Y.Z or X.Y.Z-prerelease (e.g. 0.2.0, 0.1.1-alpha.1)."
+            exit 1
+          fi
+          if [ "$V" != "auto" ] && git rev-parse "v$V" >/dev/null 2>&1; then
+            echo "::error::Tag v$V already exists."
+            exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version
+        id: ver
+        run: |
+          set -euo pipefail
+          V="${{ steps.want.outputs.version }}"
+          if [ "$V" = "auto" ]; then
+            OUT="$(node scripts/prepare-release.mjs)"
+          else
+            OUT="$(node scripts/prepare-release.mjs "$V")"
+          fi
+          echo "$OUT"
+          echo "version=${OUT#VERSION=}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync lockfile
+        run: pnpm install --lockfile-only
+
+      - name: Sanity gate (typecheck + build + test)
+        run: |
+          set -euo pipefail
+          pnpm run typecheck
+          pnpm run build
+          pnpm run test
+
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+          # PR body source: the `## [<version>]` section of CHANGELOG.md,
+          # written by the Bump version step above (prepare-release.mjs) and
+          # committed in this release PR. Same guarded extraction as the
+          # Release workflow, so the PR body and the GitHub Release body
+          # share the same extraction source (the same CHANGELOG section);
+          # the PR body additionally appends a merge-instruction line when
+          # the PR is opened below. Guard on the file existing: under
+          # `set -e`, awk on a missing CHANGELOG.md exits 2 and aborts the
+          # step before the fallback could run.
+          # Fall back to git log (nearest ancestor tag of HEAD, full history
+          # when no tag exists) only when the file or the section is missing,
+          # e.g. a release PR prepared before CHANGELOG.md existed.
+          VERSION="${{ steps.ver.outputs.version }}"
+          if [ -f CHANGELOG.md ]; then
+            # Escape regex metacharacters in the version inside awk (the gsub
+            # runs after `-v` argument escape processing, which would strip
+            # backslashes from a shell-escaped value) so the anchor matches
+            # literally: dots must not act as any-char. VERSION is validated
+            # upstream (X.Y.Z or X.Y.Z-prerelease); '-' is a literal character
+            # in awk ERE outside a character class, so prerelease suffixes
+            # need no extra escaping.
+            awk -v v="$VERSION" '
+              BEGIN { gsub(/\./, "\\\\&", v) }
+              /^## \[/ { if (in_section) exit }
+              $0 ~ "^## \\[" v "\\]" { in_section = 1 }
+              in_section
+            ' CHANGELOG.md > /tmp/notes.md
+          fi
+          if [ ! -s /tmp/notes.md ]; then
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "")
+            git log --oneline --first-parent ${PREV_TAG:+$PREV_TAG..}HEAD > /tmp/notes.md
+            if [ ! -s /tmp/notes.md ]; then
+              echo "No commits between releases." > /tmp/notes.md
+            fi
+          fi
+
+      - name: Commit prepared release
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH="release/v${{ steps.ver.outputs.version }}"
+          git checkout -B "$BRANCH"
+          git add -A
+          git commit -m "chore(release): prepare v${{ steps.ver.outputs.version }}"
+          git push --force-with-lease origin "$BRANCH"
+
+      - name: Ensure release label
+        env:
+          # If this repository disallows GitHub Actions-created PRs, replace
+          # github.token with a fine-grained PAT secret.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # gh CLI has no --if-not-exists on label create (run 31790422779:
+          # 'unknown flag' swallowed by || true → label missing → pr create fails).
+          # Create, or edit the existing label; fail loudly on both.
+          gh label create release --color 0E8A16 --description "Release PRs" 2>/dev/null \
+            || gh label edit release --color 0E8A16 --description "Release PRs"
+
+      - name: Open or update release PR
+        env:
+          # Same token as the label step. The workflow permissions above grant
+          # pull-requests/issues write for GITHUB_TOKEN.
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          BRANCH="release/v${VERSION}"
+          TITLE="release v${VERSION}"
+          {
+            cat /tmp/notes.md
+            echo
+            echo "Merging this PR tags v${VERSION} and publishes dsh-keys-manager@${VERSION} via the Release workflow."
+          } > /tmp/pr-body.md
+          if gh pr view "$BRANCH" >/dev/null 2>&1; then
+            STATE="$(gh pr view "$BRANCH" --json state --jq .state)"
+            case "$STATE" in
+              OPEN)
+                gh pr edit "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md --add-label release
+                echo "Updated existing release PR for $BRANCH"
+                ;;
+              CLOSED)
+                if gh pr reopen "$BRANCH" 2>/dev/null; then
+                  echo "Reopened previously closed release PR for $BRANCH"
+                  gh pr edit "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md --add-label release
+                  echo "Updated existing release PR for $BRANCH"
+                else
+                  # GitHub rejects reopening a closed PR whose head branch was
+                  # force-pushed (reopenPullRequest error). The release branch is
+                  # force-pushed by the Commit step above, so a stale closed PR
+                  # from an earlier prep run hits this. Degrade: open a fresh PR
+                  # on the same branch (the old closed PR stays as history).
+                  echo "::warning::cannot reopen closed release PR for $BRANCH (head force-pushed?) — opening a fresh PR"
+                  gh pr create --base main --head "$BRANCH" --title "$TITLE" \
+                    --body-file /tmp/pr-body.md --label release
+                fi
+                ;;
+              MERGED)
+                # An earlier release PR with this branch name was merged; the
+                # branch has been force-pushed with new content — open a fresh
+                # PR (old one stays closed as history).
+                echo "::warning::release PR for $BRANCH was previously merged — opening a fresh PR for the new branch state"
+                gh pr create --base main --head "$BRANCH" --title "$TITLE" \
+                  --body-file /tmp/pr-body.md --label release
+                ;;
+            esac
+          else
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" \
+              --body-file /tmp/pr-body.md --label release
+          fi
