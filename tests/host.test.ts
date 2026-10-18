@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { ProviderView, StateView } from '../src/domain'
 import { KeysManagerService } from '../src/index'
@@ -715,6 +715,87 @@ test('a restored missing credential is re-probed on selection', async () => {
     const selected = await h.service.selectKey('zai-coding-cn', 'session-missing')
     assert.equal(selected.key!.id, key.id)
     assert.equal(key.valueMissing, false)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a read-only profile fails release before deleting credentials', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const record = h.store.provider('zai-coding-cn')!
+    const ref = record.keys[0].ref
+    h.settings.writable = false
+    await assert.rejects(() => h.service.releaseProvider('zai-coding-cn'), /read-only/)
+    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.credentials.refs.has(ref), true)
+    h.settings.writable = true
+    await h.service.releaseProvider('zai-coding-cn')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.credentials.refs.has(ref), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adoption stops on a credential-store read error instead of creating an empty pool', async () => {
+  const h = await harness()
+  try {
+    const before = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv
+    h.credentials.raw.failResolve = true
+    await assert.rejects(() => h.service.adoptProvider('zai-coding-cn'), /credential store is unavailable/)
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, before)
+    h.credentials.raw.failResolve = false
+  } finally {
+    await h.close()
+  }
+})
+
+test('a broken broker binding skips request selection and error handling', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const profile = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    profile.apiKeyEnv = 'SOME_OTHER_REF'
+    const selectSpy = vi.spyOn(h.service, 'selectKey')
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-broken', messages: [] },
+      async function* () {
+        yield { type: 'text' }
+      } as any,
+    )
+    for await (const _chunk of iterable) {
+      // consume
+    }
+    assert.equal(selectSpy.mock.calls.length, 0)
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    const next = vi.fn(async () => undefined)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 11,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-broken' } },
+    } as unknown as RequestErrorPayload
+    assert.equal(await h.service.requestErrorListener(payload, next), undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(key.cooldownUntil, 0)
+    selectSpy.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('stale switch counters are pruned', async () => {
+  const h = await harness()
+  try {
+    ;(h.service as any).switches.set('s\u0000p\u0000t\u0000s', { count: 1, at: Date.now() - 2 * 60 * 60 * 1000 })
+    ;(h.service as any).pruneAttempts(Date.now())
+    assert.equal((h.service as any).switches.has('s\u0000p\u0000t\u0000s'), false)
   } finally {
     await h.close()
   }

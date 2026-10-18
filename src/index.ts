@@ -312,7 +312,7 @@ export class KeysManagerService {
   readonly store: KeysManagerStore
   private readonly als = new AsyncLocalStorage<RequestScope>()
   private readonly attempts = new Map<string, AttemptState>()
-  private readonly switches = new Map<string, number>()
+  private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
   settings: SettingsLike | undefined
   private rawCredentials: CredentialsLike | undefined
@@ -565,6 +565,7 @@ export class KeysManagerService {
     if (now - this.lastBindingPruneAt < 60_000) return
     this.lastBindingPruneAt = now
     this.store.pruneBindings(now)
+    this.pruneAttempts(now)
   }
 
   /** Build the complete UI state. */
@@ -731,6 +732,14 @@ export class KeysManagerService {
     return this.ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider)
   }
 
+  /** Whether the live provider profile still points at our broker reference. */
+  private isBindingHealthy(record: ProviderRecord): boolean {
+    const descriptor = this.describeSettings()
+    const namespace = this.namespace(descriptor, record.settingsNs)
+    const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, record.settingsPath))
+    return profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv === record.brokerRef
+  }
+
   /** Candidate credential refs from which an existing key can be imported. */
   private importRefs(entry: DirectoryEntry, profile: ProfileShape | undefined): string[] {
     const refs: string[] = []
@@ -771,9 +780,10 @@ export class KeysManagerService {
   /** Find the first existing key value worth importing. */
   private async findImport(entry: DirectoryEntry, profile: ProfileShape | undefined): Promise<{ ref: string; value: string } | undefined> {
     for (const ref of this.importRefs(entry, profile)) {
-      const hit = await this.resolveOriginal(ref)
-      if (hit !== undefined && typeof hit.value === 'string' && hit.value.length > 0) {
-        return { ref, value: hit.value }
+      const probe = await this.probeKey(ref)
+      if (probe.hit !== undefined) return { ref, value: probe.hit.value }
+      if (probe.failed) {
+        throw new Error(`Could not read credential ${ref}; the credential store is unavailable. Try adoption again after it recovers.`)
       }
     }
     return undefined
@@ -1046,9 +1056,6 @@ export class KeysManagerService {
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, record.settingsNs)
     if (namespace === undefined) throw new Error(`Settings namespace "${record.settingsNs}" is not mounted`)
-    // Remove credentials first; a rejection keeps the provider record intact so
-    // the user can retry release after the credential store recovers.
-    for (const key of record.keys) await this.unsetOriginal(key.ref)
     if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
       await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
     } else {
@@ -1069,6 +1076,9 @@ export class KeysManagerService {
         }
       }
     }
+    // Mutate the profile first. In particular, a read-only profile must fail
+    // before any managed credential is deleted.
+    for (const key of record.keys) await this.unsetOriginal(key.ref)
     delete this.store.providers[provider]
     this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
     this.rebuildBrokerMap()
@@ -1195,16 +1205,21 @@ export class KeysManagerService {
 
   /** Prune stale attempt records. */
   private pruneAttempts(now: number): void {
-    if (this.attempts.size < 128) return
-    for (const [key, attempt] of this.attempts) {
-      if (now - attempt.at > ATTEMPT_TTL_MS) this.attempts.delete(key)
+    if (this.attempts.size >= 128) {
+      for (const [key, attempt] of this.attempts) {
+        if (now - attempt.at > ATTEMPT_TTL_MS) this.attempts.delete(key)
+      }
+    }
+    for (const [key, entry] of this.switches) {
+      if (now - entry.at > ATTEMPT_TTL_MS) this.switches.delete(key)
     }
   }
 
   /** Waterfall listener: bind a key to the request and observe its terminal chunk. */
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
-    if (this.store.provider(providerId) === undefined) return next()
+    const record = this.store.provider(providerId)
+    if (record === undefined || !this.isBindingHealthy(record)) return next()
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
     return this.wrapStream(options, next, providerId, sessionId)
   }
@@ -1317,7 +1332,7 @@ export class KeysManagerService {
     if (payload.signal?.aborted) return next()
     const providerId = payload.provider
     const record = this.store.provider(providerId)
-    if (record === undefined) return next()
+    if (record === undefined || !this.isBindingHealthy(record)) return next()
     const settings = this.store.settings
     if (!settings.autoSwitch) return next()
     if (!shouldFailover(payload.failure?.code)) return next()
@@ -1341,7 +1356,7 @@ export class KeysManagerService {
     const current = record.keys.find(key => key.id === currentKeyId)
     if (current === undefined) return next()
     const switchKey = `${sessionId}\u0000${providerId}\u0000${payload.turn}\u0000${payload.step}`
-    const switchCount = this.switches.get(switchKey) ?? 0
+    const switchCount = this.switches.get(switchKey)?.count ?? 0
 
     if (attempt.retries < settings.retryCount) {
       attempt.retries += 1
@@ -1351,12 +1366,16 @@ export class KeysManagerService {
 
     if (switchCount >= Math.min(MAX_SWITCHES, Math.max(1, record.keys.length))) {
       this.warn(`${providerId} exhausted key switches for this step; delegating recovery`)
-      return this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
+      const action = await this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
+      if (action === undefined) this.switches.delete(switchKey)
+      return action
     }
     const candidate = pickHealthyExcluding(record, currentKeyId, now)
     if (candidate === undefined) {
       this.warn(`${providerId} has no alternate healthy key; delegating recovery`)
-      return this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
+      const action = await this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
+      if (action === undefined) this.switches.delete(switchKey)
+      return action
     }
     // Keep the current key usable until an alternate is actually chosen. If
     // the delegated retry re-enters llm/stream, selectKey must still find a
@@ -1366,7 +1385,7 @@ export class KeysManagerService {
     attempt.keyId = candidate.id
     attempt.retries = 0
     attempt.at = now
-    this.switches.set(switchKey, switchCount + 1)
+    this.switches.set(switchKey, { count: switchCount + 1, at: now })
     this.store.touch()
     this.warn(`${providerId} switched to key ${candidate.id} after ${settings.retryCount} retries`)
     return { kind: 'retry' }

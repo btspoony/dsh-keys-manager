@@ -42,3 +42,7 @@ git log by the release-prep workflow.
   trap and restore focus.
 - Release workflows reject unsafe prerelease dist-tags and resume after a
   partial npm publish without republishing.
+- A read-only profile now fails release before any managed credential is
+  deleted; adoption aborts on a credential-store read error instead of
+  creating an empty pool; a broken broker binding bypasses key selection and
+  failover; stale switch counters are pruned.
