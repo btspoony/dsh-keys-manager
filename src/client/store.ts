@@ -39,7 +39,8 @@ export function createStore(ctx: ClientContext): ClientStore {
       return () => listeners.delete(listener)
     },
     async load(options = {}) {
-      if (snapshot.busy === 'load') return
+      // Do not let a refresh race a mutation; the UI also disables refresh.
+      if (snapshot.busy !== null) return
       update({ busy: 'load', error: options.keepError === true ? snapshot.error : null })
       try {
         const result = await rpc('getState', {})
@@ -64,6 +65,10 @@ export function createStore(ctx: ClientContext): ClientStore {
     },
     tick() {
       update({ now: Date.now() })
+      // Cooldown statuses and summary counters are derived on the Host. Refresh
+      // them while the page is idle so a cooled-down key becomes active in the
+      // UI without waiting for an unrelated mutation.
+      if (snapshot.status === 'ready' && snapshot.busy === null) void this.load({ keepError: true })
     },
     dismissError() {
       update({ error: null })

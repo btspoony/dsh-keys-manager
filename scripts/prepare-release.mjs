@@ -106,6 +106,20 @@ const version =
     ? `${target.major}.${target.minor}.${target.patch}`
     : `${target.major}.${target.minor}.${target.patch}-${target.prerelease}`
 
+// Validate the npm dist-tag derived by the release workflow. A prerelease
+// identifier like "latest" would move the stable tag, and a numeric one like
+// "1" is not a legal npm tag. Reject both before the release PR is opened.
+if (target.prerelease !== undefined) {
+  const distTag = target.prerelease.split('.')[0]
+  if (distTag === 'latest' || !/^[a-z][a-z0-9-]*$/.test(distTag)) {
+    console.error(
+      `Error: prerelease "${target.prerelease}" maps to invalid npm dist-tag "${distTag}". ` +
+        'Use a prerelease such as alpha.1, beta.1, or rc.1.',
+    )
+    process.exit(1)
+  }
+}
+
 // Reject already-released versions: `git rev-parse v<version>` succeeds iff
 // the tag exists. Works unchanged for prerelease tags (v0.1.1-alpha.1 is a
 // plain tag name). Run from REPO_ROOT so the check is cwd-independent.

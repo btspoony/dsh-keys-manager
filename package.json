@@ -15,7 +15,6 @@
     "llm"
   ],
   "license": "MIT",
-  "packageManager": "pnpm@12.0.0",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "icon": "./icon.svg",

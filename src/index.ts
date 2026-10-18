@@ -293,6 +293,13 @@ interface CredentialWrappers {
   unset: CredentialsLike['unset']
 }
 
+/** One credential probe result; `failed` is transient, `missing` is absent. */
+interface KeyProbe {
+  hit?: CredentialHit
+  missing: boolean
+  failed: boolean
+}
+
 /** Service keybinding consumed by the Typert Gateway. */
 interface TypertRemoteBinding {
   service: KeysManagerService
@@ -312,6 +319,7 @@ export class KeysManagerService {
   private readonly credentialOriginals = new WeakMap<object, CredentialOriginals>()
   private readonly credentialWrappers = new WeakMap<object, CredentialWrappers>()
   private brokerOwners = new Map<string, string>()
+  private lastBindingPruneAt = 0
   private queue: Promise<unknown> = Promise.resolve()
   readonly typertRemote: TypertRemoteBinding
 
@@ -469,6 +477,28 @@ export class KeysManagerService {
     }
   }
 
+  /**
+   * Probe one credential reference while distinguishing absence from a
+   * transient credential-store failure. Selection must never persist a
+   * permanent `valueMissing` marker for an error.
+   */
+  private async probeKey(ref: string): Promise<KeyProbe> {
+    if (!isCredentialRefName(ref)) return { missing: false, failed: true }
+    const raw = this.credentialsRaw()
+    if (raw === undefined) return { missing: false, failed: true }
+    const original = this.credentialOriginals.get(raw)
+    const resolve = original?.resolve ?? raw.resolve
+    try {
+      const hit = await resolve.call(raw, ref)
+      if (hit === undefined || typeof hit.value !== 'string' || hit.value.length === 0) {
+        return { missing: true, failed: false }
+      }
+      return { hit, missing: false, failed: false }
+    } catch {
+      return { missing: false, failed: true }
+    }
+  }
+
   /** Write one key literal through the unwrapped provider. */
   private async setOriginal(ref: string, value: string): Promise<void> {
     const raw = this.credentialsRaw()
@@ -523,9 +553,17 @@ export class KeysManagerService {
     await settings.mutate(ns, ops, descriptor.revision)
   }
 
+  /** Prune expired bindings at most once a minute, without a restart. */
+  private pruneBindings(now: number): void {
+    if (now - this.lastBindingPruneAt < 60_000) return
+    this.lastBindingPruneAt = now
+    this.store.pruneBindings(now)
+  }
+
   /** Build the complete UI state. */
   buildState(): StateView {
     const now = Date.now()
+    this.pruneBindings(now)
     const descriptor = this.describeSettings()
     const directory = this.ctx.llm.listConfigurableProviders()
     const active = new Set(this.ctx.llm.listProviders().map(provider => provider.id))
@@ -552,6 +590,7 @@ export class KeysManagerService {
         source: extra !== undefined ? 'extra' : 'dsh',
         origin: extra !== undefined ? 'plugin' : entry.declared === true ? 'custom' : 'dsh',
         managed: managed !== undefined,
+        createdProfile: managed?.createdProfile ?? false,
         configured: active.has(entry.provider) || profile !== undefined,
         active: active.has(entry.provider),
         supported: support.supported,
@@ -588,6 +627,7 @@ export class KeysManagerService {
         source: 'extra',
         origin: 'plugin',
         managed: managed !== undefined,
+        createdProfile: managed?.createdProfile ?? false,
         configured: managed !== undefined,
         active: false,
         supported: true,
@@ -622,6 +662,7 @@ export class KeysManagerService {
         source: managed.source,
         origin: managed.source === 'extra' ? 'plugin' : 'custom',
         managed: true,
+        createdProfile: managed.createdProfile,
         configured: false,
         active: false,
         supported: true,
@@ -967,6 +1008,13 @@ export class KeysManagerService {
     })
   }
 
+  /** Read one live profile for release-time cleanup decisions. */
+  private profileAt(ns: string, path: readonly string[]): ProfileShape | undefined {
+    const descriptor = this.describeSettings()
+    const namespace = this.namespace(descriptor, ns)
+    return namespace === undefined ? undefined : asProfile(getPath(namespace.value, path))
+  }
+
   /** Restore the provider profile and drop management; caller owns the queue. */
   private async releaseLocked(provider: string): Promise<void> {
     const record = this.store.provider(provider)
@@ -976,15 +1024,23 @@ export class KeysManagerService {
     if (namespace === undefined) throw new Error(`Settings namespace "${record.settingsNs}" is not mounted`)
     if (record.createdProfile && record.extraId !== null && record.settingsNs === 'llm-pi-ai') {
       await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
-    } else if (!record.hadProfile && record.settingsPath.length > 0) {
-      await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: record.settingsPath }])
     } else {
+      // Native and pre-existing extra routes own only apiKeyEnv. Leave every
+      // other profile field (baseURL, models, hand edits) exactly as it is.
       const path = [...record.settingsPath, 'apiKeyEnv']
       await this.mutateSettings(record.settingsNs, [
         record.originalApiKeyEnv !== null
           ? { op: 'set', path, value: record.originalApiKeyEnv }
           : { op: 'unset', path },
       ])
+      // Remove an auto-created profile only when it is still empty after
+      // clearing apiKeyEnv; a profile with later user edits stays.
+      if (!record.hadProfile && record.settingsPath.length > 0) {
+        const current = this.profileAt(record.settingsNs, record.settingsPath)
+        if (current !== undefined && Object.keys(current).length === 0) {
+          await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: record.settingsPath }])
+        }
+      }
     }
     for (const key of record.keys) await this.unsetOriginal(key.ref)
     delete this.store.providers[provider]
@@ -1018,6 +1074,7 @@ export class KeysManagerService {
     const provider = this.store.provider(providerId)
     if (provider === undefined) return { key: undefined, value: undefined }
     const now = Date.now()
+    this.pruneBindings(now)
     let key: KeyRecord | undefined
     if (sessionId !== undefined && this.store.settings.stickySession) {
       const binding = this.store.binding(sessionId, providerId)
@@ -1026,28 +1083,42 @@ export class KeysManagerService {
         if (isSelectable(bound, now)) key = bound
       }
     }
-    if (key === undefined) {
-      key = pickRoundRobin(provider, now)
-      if (key !== undefined && sessionId !== undefined && this.store.settings.stickySession) {
-        this.store.bind(sessionId, providerId, key.id, now)
+    if (key === undefined) key = pickRoundRobin(provider, now)
+
+    const tryCandidate = async (candidate: KeyRecord | undefined): Promise<KeySelection | undefined> => {
+      if (candidate === undefined) return undefined
+      const probe = await this.probeKey(candidate.ref)
+      if (probe.hit !== undefined) {
+        candidate.valueMissing = false
+        markKeyUsed(candidate, now)
+        this.store.touch()
+        if (sessionId !== undefined && this.store.settings.stickySession) {
+          this.store.bind(sessionId, providerId, candidate.id, now)
+        }
+        return { key: candidate, value: probe.hit.value }
       }
+      if (probe.missing) {
+        candidate.valueMissing = true
+        this.store.touch()
+      }
+      return undefined
     }
+
     const tried = new Set<string>()
     while (key !== undefined && !tried.has(key.id)) {
       tried.add(key.id)
-      const hit = await this.resolveOriginal(key.ref)
-      if (hit !== undefined && typeof hit.value === 'string' && hit.value.length > 0) {
-        key.valueMissing = false
-        markKeyUsed(key, now)
-        this.store.touch()
-        return { key, value: hit.value }
-      }
-      key.valueMissing = true
-      this.store.touch()
+      const selected = await tryCandidate(key)
+      if (selected !== undefined) return selected
       key = pickRoundRobin(provider, now)
-      if (key !== undefined && sessionId !== undefined && this.store.settings.stickySession) {
-        this.store.bind(sessionId, providerId, key.id, now)
-      }
+    }
+
+    // A previously missing key may have been restored in the credential store.
+    // Re-probe those candidates when no healthy key remains; a transient read
+    // failure is never written back as missing.
+    for (const candidate of provider.keys) {
+      if (candidate.valueMissing !== true || candidate.enabled === false || Number(candidate.cooldownUntil) > now) continue
+      const selected = await tryCandidate(candidate)
+      if (selected !== undefined) return selected
     }
     return { key: undefined, value: undefined }
   }
@@ -1147,7 +1218,10 @@ export class KeysManagerService {
                 const previous = service.attempts.get(key)
                 service.attempts.set(key, {
                   keyId,
-                  retries: previous !== undefined && previous.keyId === keyId ? previous.retries : 0,
+                  // Preserve the retry budget across key changes. With sticky
+                  // sessions off, round-robin picks a different key each request;
+                  // resetting here would make the retry budget unbounded.
+                  retries: previous?.retries ?? 0,
                   failure: undefined,
                   at: Date.now(),
                   turn: previous?.turn,

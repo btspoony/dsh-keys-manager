@@ -131,7 +131,33 @@ jobs:
           grep -Eq "lib/client\.js( |$)" "$RUNNER_TEMP/pack-listing.txt"
           grep -Eq "bundle/cordis\.patch\.yml( |$)" "$RUNNER_TEMP/pack-listing.txt"
 
+      - name: Check npm version
+        id: npm-version
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # A partial run may have published the version before tag/Release
+          # failed. Skip only the completed publish step, and only when the
+          # published commit is the merge commit checked out here.
+          if npm view "dsh-keys-manager@${VERSION}" version >/dev/null 2>&1; then
+            PUBLISHED_SHA="$(npm view "dsh-keys-manager@${VERSION}" gitHead 2>/dev/null || true)"
+            LOCAL_SHA="$(git rev-parse HEAD)"
+            if [ -z "$PUBLISHED_SHA" ]; then
+              echo "::error::dsh-keys-manager@${VERSION} is already published without a gitHead; refusing to tag a possibly different commit."
+              exit 1
+            fi
+            if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
+              echo "::error::dsh-keys-manager@${VERSION} was published from ${PUBLISHED_SHA}, not ${LOCAL_SHA}."
+              exit 1
+            fi
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
+        if: steps.npm-version.outputs.exists != 'true'
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
@@ -153,6 +179,12 @@ jobs:
           if [[ "${VERSION}" == *-* ]]; then
             PRETAG="${VERSION#*-}"
             PRETAG="${PRETAG%%.*}"
+            # prepare-release.mjs rejects these earlier; keep the workflow
+            # guard so a hand-edited release PR cannot move `latest`.
+            if [[ "$PRETAG" == "latest" || ! "$PRETAG" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "::error::Invalid prerelease dist-tag '${PRETAG}' for ${VERSION}."
+              exit 1
+            fi
             npm publish --provenance --access public --tag "$PRETAG"
           else
             npm publish --provenance --access public

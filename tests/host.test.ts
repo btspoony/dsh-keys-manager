@@ -33,7 +33,9 @@ function applyOps(root: any, ops: any): any {
 function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs: Map<string, string> } {
   const refs = new Map(Object.entries(initial))
   const raw = {
+    failResolve: false,
     async resolve(ref: string) {
+      if (raw.failResolve) throw new Error('credential store unavailable')
       const value = refs.get(ref)
       return value === undefined ? undefined : { value, source: 'test' }
     },
@@ -425,6 +427,7 @@ test('extra provider installation writes a complete pi-ai profile and release re
     const view = state.providers.find(entry => entry.provider === 'deepinfra')!
     assert.equal(view.managed, true)
     assert.equal(view.extra, true)
+    assert.equal(view.createdProfile, true)
     assert.equal(view.keyCount, 1)
     const profile = h.settings.valueOf('llm-pi-ai').providers.deepinfra
     assert.equal(profile.api, 'openai-completions')
@@ -466,6 +469,24 @@ test('a profile changed outside the manager reports a binding warning', async ()
     const zai = state.providers.find(entry => entry.provider === 'zai-coding-cn')!
     assert.equal(zai.bindingHealthy, false)
     assert.match(String(zai.warning), /Re-adopt/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('native release keeps Models edits and only clears apiKeyEnv', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('anthropic')
+    const edited = h.settings.valueOf('llm-pi-ai').providers.anthropic
+    edited.baseURL = 'https://proxy.example/v1'
+    edited.models = [{ id: 'claude-edited' }]
+    await h.service.releaseProvider('anthropic')
+    assert.equal(h.store.provider('anthropic'), undefined)
+    const retained = h.settings.valueOf('llm-pi-ai').providers.anthropic
+    assert.equal(retained.baseURL, 'https://proxy.example/v1')
+    assert.deepEqual(retained.models, [{ id: 'claude-edited' }])
+    assert.equal(retained.apiKeyEnv, undefined)
   } finally {
     await h.close()
   }
@@ -544,6 +565,77 @@ test('re-adding a key to an already-managed extra provider persists it', async (
       providers: Record<string, { keys: unknown[] }>
     }
     assert.equal(persisted.providers.deepinfra?.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('non-sticky round-robin preserves the retry budget across key changes', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    provider.cursor = 1 // make the next round-robin pick the second key
+    const attemptKey = 'session-round\u0000zai-coding-cn'
+    ;(h.service as any).attempts.set(attemptKey, {
+      keyId: first.id,
+      retries: 1,
+      at: Date.now(),
+      turn: 3,
+      step: 1,
+    })
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-round', messages: [] },
+      async function* () {
+        yield { type: 'text' }
+        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT' } } }
+      } as any,
+    )
+    for await (const _chunk of iterable) {
+      // consume the wrapped stream
+    }
+    const attempt = (h.service as any).attempts.get(attemptKey)
+    assert.equal(attempt.keyId, second.id)
+    assert.equal(attempt.retries, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a transient credential read failure does not permanently mark a key missing', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    h.credentials.raw.failResolve = true
+    assert.equal((await h.service.selectKey('zai-coding-cn', 'session-transient')).key, undefined)
+    assert.equal(key.valueMissing, false)
+    h.credentials.raw.failResolve = false
+    const selected = await h.service.selectKey('zai-coding-cn', 'session-transient')
+    assert.equal(selected.key!.id, key.id)
+    assert.equal(key.valueMissing, false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a restored missing credential is re-probed on selection', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    h.credentials.refs.delete(key.ref)
+    assert.equal((await h.service.selectKey('zai-coding-cn', 'session-missing')).key, undefined)
+    assert.equal(key.valueMissing, true)
+    h.credentials.refs.set(key.ref, 'sk-restored')
+    const selected = await h.service.selectKey('zai-coding-cn', 'session-missing')
+    assert.equal(selected.key!.id, key.id)
+    assert.equal(key.valueMissing, false)
   } finally {
     await h.close()
   }

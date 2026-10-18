@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
@@ -165,14 +165,17 @@ test('provider-requested delay wins when it is larger, but respects the cap', ()
   assert.equal(huge.cooldownMs, DEFAULT_SETTINGS.maxCooldownMs)
 })
 
-test('success clears cooldown and escalation', () => {
-  const k = key('a', { cooldownUntil: now + MIN, failureLevel: 4, consecutiveFailures: 3 })
+test('success keeps recovery history through the grace window', () => {
+  const k = key('a', { cooldownUntil: now - MIN, failureLevel: 4, consecutiveFailures: 3 })
   markKeySuccess(k, now)
-  assert.equal(k.cooldownUntil, 0)
-  assert.equal(k.failureLevel, 0)
+  assert.equal(k.cooldownUntil, now - MIN)
+  assert.equal(k.failureLevel, 4)
   assert.equal(k.consecutiveFailures, 0)
   assert.equal(k.lastUsedAt, now)
   assert.equal(k.totalUses, 1)
+  const settings = normalizeSettings({ baseCooldownMs: MIN, recoveryGraceMs: 10 * MIN })
+  const next = applyFailureCooldown(k, settings, now + 30 * 1000, { code: 'SERVER' })
+  assert.equal(next.level, 5)
 })
 
 test('statuses cover active, cooling, paused, missing, and empty', () => {
@@ -299,4 +302,36 @@ test('corrupt state is preserved and the store starts fresh', async () => {
 test('statePath honors DSH_HOME', () => {
   assert.equal(statePath({ DSH_HOME: '/tmp/dsh-home' }, '/home/user'), '/tmp/dsh-home/keys-manager/state.json')
   assert.equal(statePath({}, '/home/user'), '/home/user/.dsh/keys-manager/state.json')
+})
+
+
+test('a failed flush keeps state dirty for an explicit retry', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-flush-'))
+  try {
+    const blocked = join(dir, 'blocked')
+    await writeFile(blocked, 'not a directory')
+    const store = new KeysManagerStore(join(blocked, 'state.json'), { warn: () => {} })
+    store.state.settings.retryCount = 3
+    store.touch()
+    await assert.rejects(() => store.flush())
+    await rm(blocked)
+    await mkdir(blocked, { recursive: true })
+    await store.flush()
+    const persisted = JSON.parse(await readFile(join(blocked, 'state.json'), 'utf8')) as { settings: { retryCount: number } }
+    assert.equal(persisted.settings.retryCount, 3)
+    await store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+
+test('pruneBindings drops expired session bindings', () => {
+  const store = new KeysManagerStore(join(tmpdir(), `keys-manager-bindings-${process.pid}.json`))
+  const now = Date.now()
+  store.state.sessionBindings['fresh\u0000p'] = { keyId: 'k1', boundAt: now }
+  store.state.sessionBindings['old\u0000p'] = { keyId: 'k2', boundAt: now - 31 * 24 * 60 * 60 * 1000 }
+  assert.equal(store.pruneBindings(now), true)
+  assert.deepEqual(Object.keys(store.state.sessionBindings), ['fresh\u0000p'])
+  assert.equal(store.pruneBindings(now), false)
 })

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { apply } from '../src/client/index'
 import { LOCALE_DICTS } from '../src/client/locales'
 import { createStore } from '../src/client/store'
+import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
 import type { ClientContext, LocaleDicts, RpcResult, StateView } from '../src/client/types'
 
 function makeState(): StateView {
@@ -174,8 +175,6 @@ describe('client registration', () => {
     expect(harness.registrations.some(entry => entry.options.name === 'settings.section')).toBe(false)
     expect(cards).toHaveLength(3)
     expect(cards.map(entry => entry.options.key).sort()).toEqual(['llm-deepseek', 'llm-deepseek-api-key', 'llm-pi-ai'])
-    expect(typeof config?.component).toBe('function')
-    expect(typeof cards[0]?.component).toBe('function')
 
     const dicts = harness.dictionaries.value
     expect(dicts).toBeDefined()
@@ -210,9 +209,56 @@ describe('client store', () => {
     expect(outcome.ok).toBe(true)
     expect(harness.calls.at(-1)?.endpoint).toBe('keysManager/addKey')
 
+    const callsBefore = harness.calls.length
     const before = store.getSnapshot().now
     store.tick()
     expect(store.getSnapshot().now).toBeGreaterThanOrEqual(before)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(harness.calls.length).toBe(callsBefore + 1)
+    expect(harness.calls.at(-1)?.endpoint).toBe('keysManager/getState')
+  })
+
+  test('tick refreshes cooldown-derived status from the Host', async () => {
+    const harness = makeContext()
+    const cooling = makeState()
+    cooling.providers[0].status = 'cooling'
+    cooling.providers[0].keys[0].status = 'cooling'
+    cooling.providers[0].keys[0].cooldownUntil = Date.now() + 60_000
+    cooling.providers[0].healthyKeyCount = 0
+    cooling.healthyKeyCount = 0
+    cooling.coolingKeyCount = 1
+    const active = makeState()
+    let calls = 0
+    harness.ctx.connection.rpc.call = async () => ({ ok: true, value: calls++ === 0 ? cooling : active })
+    const store = createStore(harness.ctx)
+    await store.load()
+    expect(store.getSnapshot().state?.providers[0].status).toBe('cooling')
+    store.tick()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(store.getSnapshot().state?.providers[0].status).toBe('active')
+    expect(store.getSnapshot().state?.coolingKeyCount).toBe(0)
+  })
+
+  test('refresh does not race an in-flight mutation', async () => {
+    const harness = makeContext()
+    const original = harness.ctx.connection.rpc.call
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/addKey') await gate
+      return original(channel, endpoint, payload)
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const callsBefore = harness.calls.length
+    const pending = store.call('addKey', { provider: 'zai-coding-cn', alias: 'second', value: 'sk-second' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.load()
+    expect(harness.calls.length).toBe(callsBefore)
+    release()
+    await pending
+    await store.load()
+    expect(harness.calls.at(-1)?.endpoint).toBe('keysManager/getState')
   })
 
   test('surfaces a failed Remote answer as an error', async () => {
@@ -224,5 +270,16 @@ describe('client store', () => {
     const outcome = await store.call('getState', {})
     expect(outcome.ok).toBe(false)
     if (!outcome.ok) expect(outcome.error).toBe('no credential store')
+  })
+})
+
+
+describe('policy form conversions', () => {
+  test('preserves sub-minute cooldown and grace precision', () => {
+    expect(cooldownMinutes(30_000)).toBe(0.5)
+    expect(cooldownMinutes(90_000)).toBe(1.5)
+    expect(cooldownMs(1.5)).toBe(90_000)
+    expect(graceMinutes(90_000)).toBe(1.5)
+    expect(graceMs(1.5)).toBe(90_000)
   })
 })

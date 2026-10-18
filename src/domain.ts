@@ -124,6 +124,8 @@ export interface ProviderView {
   source: 'dsh' | 'extra'
   /** Where the route came from: DSH catalog, this plugin's catalog, or a hand-declared profile. */
   origin?: 'dsh' | 'plugin' | 'custom'
+  /** True when this plugin created the route profile and release removes it. */
+  createdProfile?: boolean
   managed: boolean
   configured: boolean
   active: boolean

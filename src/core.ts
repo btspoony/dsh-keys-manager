@@ -185,12 +185,14 @@ export function applyFailureCooldown(
   return { cooldownMs, level, cooldownUntil: key.cooldownUntil }
 }
 
-/** Record one successful use: clear failure escalation and cooldown. */
+/**
+ * Record one successful use: clear the failure streak, but keep the previous
+ * cooldown timestamp/level until the recovery grace window has elapsed. A
+ * failure shortly after recovery must still escalate.
+ */
 export function markKeySuccess(key: KeyRecord, now: number): void {
   key.lastUsedAt = now
   key.consecutiveFailures = 0
-  key.failureLevel = 0
-  key.cooldownUntil = 0
   key.lastFailureCode = ''
   key.totalUses = (Number(key.totalUses) || 0) + 1
 }

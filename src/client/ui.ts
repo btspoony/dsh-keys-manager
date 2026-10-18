@@ -4,6 +4,7 @@ import React from 'react'
 import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
+import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from './format'
 
 const h = React.createElement
 
@@ -16,6 +17,8 @@ type IconName =
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ')
 }
+
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 function countText(t: T, count: number, oneKey: string, manyKey: string): string {
   return count === 1 ? t(oneKey) : t(manyKey, { n: count })
@@ -174,20 +177,63 @@ interface ModalProps {
 }
 
 function Modal({ title, children, onClose, footer, busy }: ModalProps): React.ReactElement {
+  const dialogRef = React.useRef<HTMLDivElement>(null)
+  const onCloseRef = React.useRef(onClose)
+  const busyRef = React.useRef(busy)
+  onCloseRef.current = onClose
+  busyRef.current = busy
+
   React.useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const dialog = dialogRef.current
+    if (dialog !== null) {
+      const first = dialog.querySelector<HTMLElement>(FOCUSABLE)
+      ;(first ?? dialog).focus()
+    }
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && !busy) onClose()
+      if (event.key === 'Escape' && busyRef.current !== true) {
+        event.preventDefault()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab' || dialog === null) return
+      const nodes = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(node => node.offsetParent !== null)
+      if (nodes.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const first = nodes[0]
+      const last = nodes[nodes.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
     document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose, busy])
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      if (previous !== null && previous.isConnected) previous.focus()
+    }
+  }, [])
+
   return h('div', {
     className: 'km-modal-backdrop',
     role: 'presentation',
     onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => {
       if (event.target === event.currentTarget && !busy) onClose()
     },
-  }, h('div', { className: 'km-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+  }, h('div', {
+    className: 'km-modal',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': title,
+    tabIndex: -1,
+    ref: dialogRef,
+  },
     h('div', { className: 'km-modal-title' }, title),
     h('div', { className: 'km-modal-body' }, children),
     h('div', { className: 'km-modal-footer' }, footer),
@@ -563,7 +609,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         h(Button, { key: 'cancel', onClick: () => setConfirmRelease(false), disabled: releasing }, t('cancel')),
         h(Button, { key: 'release', variant: 'danger', onClick: release, disabled: releasing }, releasing ? t('releasing') : t('releaseConfirm')),
       ],
-    }, h('p', { className: 'km-modal-copy' }, t('releaseBody'))) : null,
+    }, h('p', { className: 'km-modal-copy' }, t(provider.createdProfile === true ? 'releaseBodyCreated' : 'releaseBody'))) : null,
   )
 }
 
@@ -584,8 +630,8 @@ function SettingsCard(): React.ReactElement {
   React.useEffect(() => {
     if (settings === null || dirty.current) return
     setRetry(String(settings.retryCount))
-    setBase(String(Math.round(settings.baseCooldownMs / 60000)))
-    setGrace(String(Math.round(settings.recoveryGraceMs / 60000)))
+    setBase(String(cooldownMinutes(settings.baseCooldownMs)))
+    setGrace(String(graceMinutes(settings.recoveryGraceMs)))
   }, [settings])
 
   function change(setter: React.Dispatch<React.SetStateAction<string>>) {
@@ -604,8 +650,8 @@ function SettingsCard(): React.ReactElement {
     const result = await runtime.store.call('setSettings', {
       patch: {
         retryCount: Number(retry),
-        baseCooldownMs: Math.max(0.5, Number(base)) * 60000,
-        recoveryGraceMs: Math.max(0, Number(grace)) * 60000,
+        baseCooldownMs: cooldownMs(Number(base)),
+        recoveryGraceMs: graceMs(Number(grace)),
       },
     })
     setBusy(false)
@@ -635,12 +681,12 @@ function SettingsCard(): React.ReactElement {
       ),
       h('label', { className: 'km-field' },
         h('span', { className: 'km-field-label' }, t('baseCooldown')),
-        h('input', { className: 'km-input', type: 'number', min: 0.5, step: 0.5, value: base, onChange: change(setBase), disabled: busy || state?.writable === false }),
+        h('input', { className: 'km-input', type: 'number', min: 0.5, step: 'any', value: base, onChange: change(setBase), disabled: busy || state?.writable === false }),
         h('span', { className: 'km-field-hint' }, t('baseHint')),
       ),
       h('label', { className: 'km-field' },
         h('span', { className: 'km-field-label' }, t('grace')),
-        h('input', { className: 'km-input', type: 'number', min: 0, step: 1, value: grace, onChange: change(setGrace), disabled: busy || state?.writable === false }),
+        h('input', { className: 'km-input', type: 'number', min: 0, step: 'any', value: grace, onChange: change(setGrace), disabled: busy || state?.writable === false }),
         h('span', { className: 'km-field-hint' }, t('graceHint')),
       ),
       h('div', { className: 'km-field km-field-note' },
@@ -741,7 +787,7 @@ function KeysManagerBody(): React.ReactElement {
           variant: 'ghost',
           size: 'small',
           onClick: () => void runtime.store.load(),
-          disabled: snapshot.busy === 'load',
+          disabled: snapshot.busy !== null,
           title: t('refresh'),
         }, h(Icon, { name: 'refresh', size: 14 }), t('refresh')),
       ),

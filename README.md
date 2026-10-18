@@ -217,6 +217,8 @@ a fine-grained PAT secret instead.
   a Bedrock route) are not split into per-key rows; those providers are shown
   with an explanatory reason unless they also expose an API-key variable.
 - A release restores the profile's `apiKeyEnv`, but other provider edits made
-  by the user in Models are preserved.
+  by the user in Models are preserved. Releasing an extra provider whose route
+  profile the plugin created removes that route, including later edits; the
+  confirmation text says so.
 - Cooldown counters are local to this Harness home; they are not shared
   between hosts.

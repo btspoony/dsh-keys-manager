@@ -243,6 +243,19 @@ export class KeysManagerStore {
     if (changed) this.touch()
   }
 
+  /** Drop session bindings older than the TTL; safe to call periodically. */
+  pruneBindings(now: number = Date.now()): boolean {
+    let changed = false
+    for (const [key, binding] of Object.entries(this.state.sessionBindings)) {
+      if (now - binding.boundAt > BINDING_TTL_MS) {
+        delete this.state.sessionBindings[key]
+        changed = true
+      }
+    }
+    if (changed) this.touch()
+    return changed
+  }
+
   /** Mark state dirty and schedule a write. */
   touch(): void {
     if (this.closed) return
@@ -250,7 +263,9 @@ export class KeysManagerStore {
     if (this.timer !== undefined) return
     this.timer = setTimeout(() => {
       this.timer = undefined
-      void this.flush()
+      void this.flush().catch(error => {
+        this.warn(`keys-manager: failed to persist state: ${error instanceof Error ? error.message : String(error)}`)
+      })
     }, 150)
     this.timer.unref?.()
   }
@@ -265,8 +280,8 @@ export class KeysManagerStore {
     this.dirty = false
     const snapshot = JSON.stringify(this.state, null, 2)
     const file = this.file
-    this.writeChain = this.writeChain
-      .then(async () => {
+    const attempt = this.writeChain.then(async () => {
+      try {
         await mkdir(dirname(file), { recursive: true, mode: 0o700 })
         const temp = `${file}.${process.pid}.${Date.now()}.tmp`
         await writeFile(temp, snapshot, { mode: 0o600 })
@@ -276,11 +291,16 @@ export class KeysManagerStore {
         } catch {
           // Non-POSIX platforms have no mode to tighten.
         }
-      })
-      .catch(error => {
-        this.warn(`keys-manager: failed to persist state: ${error instanceof Error ? error.message : String(error)}`)
-      })
-    return this.writeChain
+      } catch (error) {
+        // Keep the latest snapshot pending and let an explicit flush retry it.
+        this.dirty = true
+        throw error
+      }
+    })
+    // The internal chain must stay usable after a rejected attempt; callers
+    // that care about the result receive `attempt` itself.
+    this.writeChain = attempt.catch(() => {})
+    return attempt
   }
 
   /** Stop the timer and persist once. */
@@ -291,7 +311,11 @@ export class KeysManagerStore {
       this.timer = undefined
     }
     this.dirty = true
-    await this.flush()
+    try {
+      await this.flush()
+    } catch (error) {
+      this.warn(`keys-manager: failed to persist state on close: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 }
 
