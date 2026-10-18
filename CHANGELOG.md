@@ -81,5 +81,8 @@ git log by the release-prep workflow.
   scoped per selected key and retries are pinned to their key without sticky
   sessions. Unsupported state schema versions open read-only, and shutdown
   drains the mutation queue before the final snapshot.
+- Retry pins are scoped per turn/step (ambiguous concurrent pins are not
+  consumed), index rebuilds preserve unrelated pins, and each key in a step
+  keeps its own retry counter.
 - State probing uses stat and distinguishes ENOENT from permission failures;
   a denied parent directory starts read-only and cannot overwrite valid state.

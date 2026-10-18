@@ -155,6 +155,8 @@ export interface AttemptState {
   usedManagedKey?: boolean
   /** Monotonic stream-sequence attribution for this step. */
   lastSequence?: number
+  /** Retry budget consumed per selected key. */
+  keyRetries?: Record<string, number>
 }
 
 /** Provider support verdict used by the UI. */

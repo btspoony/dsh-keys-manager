@@ -370,10 +370,16 @@ export class KeysManagerService {
   /** Rebuild the broker-reference → provider index. */
   private rebuildBrokerMap(): void {
     this.bindingCache.clear()
-    this.retryBindings.clear()
     this.brokerOwners = new Map()
     for (const provider of Object.values(this.store.providers)) {
       if (provider.brokerRef.length > 0) this.brokerOwners.set(provider.brokerRef, provider.provider)
+    }
+    for (const [key, pin] of this.retryBindings) {
+      const providerId = key.split('\u0000')[1]
+      const provider = providerId === undefined ? undefined : this.store.provider(providerId)
+      if (provider === undefined || !provider.keys.some(candidate => candidate.id === pin.keyId)) {
+        this.retryBindings.delete(key)
+      }
     }
   }
 
@@ -1253,16 +1259,22 @@ export class KeysManagerService {
     }
   }
 
-  /** Pin the key a retry must use, independent of sticky-session mode. */
-  private pinRetry(providerId: string, sessionId: string | undefined, keyId: string): void {
+  /** Pin the key a retry must use, scoped to the failing step. */
+  private pinRetry(
+    providerId: string,
+    sessionId: string | undefined,
+    turn: number,
+    step: number,
+    keyId: string,
+  ): void {
     if (sessionId === undefined) return
-    this.retryBindings.set(bindingKey(sessionId, providerId), { keyId, at: Date.now() })
+    this.retryBindings.set(`${bindingKey(sessionId, providerId)}\u0000${turn}\u0000${step}`, { keyId, at: Date.now() })
   }
 
-  /** Drop a retry pin once its attempt settles. */
-  private clearRetry(providerId: string, sessionId: string | undefined): void {
+  /** Drop one step's retry pin once its attempt settles. */
+  private clearRetry(providerId: string, sessionId: string | undefined, turn: number, step: number): void {
     if (sessionId === undefined) return
-    this.retryBindings.delete(bindingKey(sessionId, providerId))
+    this.retryBindings.delete(`${bindingKey(sessionId, providerId)}\u0000${turn}\u0000${step}`)
   }
 
   /** Selection body; callers reach it through {@link selectKey}. */
@@ -1272,22 +1284,28 @@ export class KeysManagerService {
     const now = Date.now()
     this.pruneBindings(now)
     if (sessionId !== undefined) {
-      const pinned = this.retryBindings.get(bindingKey(sessionId, providerId))
-      this.retryBindings.delete(bindingKey(sessionId, providerId))
-      if (pinned !== undefined && now - pinned.at <= ATTEMPT_TTL_MS) {
-        const candidate = provider.keys.find(entry => entry.id === pinned.keyId)
-        if (isSelectable(candidate, now)) {
-          const probe = await this.probeKey(candidate.ref)
-          if (probe.hit !== undefined) {
-            candidate!.valueMissing = false
-            markKeyUsed(candidate!, now)
-            this.store.touch()
-            if (this.store.settings.stickySession) this.store.bind(sessionId, providerId, candidate!.id, now)
-            return { key: candidate!, value: probe.hit.value }
-          }
-          if (probe.missing) {
-            candidate!.valueMissing = true
-            this.store.touch()
+      const prefix = `${bindingKey(sessionId, providerId)}\u0000`
+      const pins = [...this.retryBindings.entries()].filter(([key]) => key.startsWith(prefix))
+      // The stream API carries no turn/step, so only an unambiguous single pin
+      // can be consumed; concurrent steps fall through instead of stealing one.
+      if (pins.length === 1) {
+        const [pinKey, pinned] = pins[0]
+        this.retryBindings.delete(pinKey)
+        if (now - pinned.at <= ATTEMPT_TTL_MS) {
+          const candidate = provider.keys.find(entry => entry.id === pinned.keyId)
+          if (isSelectable(candidate, now)) {
+            const probe = await this.probeKey(candidate.ref)
+            if (probe.hit !== undefined) {
+              candidate!.valueMissing = false
+              markKeyUsed(candidate!, now)
+              this.store.touch()
+              if (this.store.settings.stickySession) this.store.bind(sessionId, providerId, candidate!.id, now)
+              return { key: candidate!, value: probe.hit.value }
+            }
+            if (probe.missing) {
+              candidate!.valueMissing = true
+              this.store.touch()
+            }
           }
         }
       }
@@ -1367,7 +1385,6 @@ export class KeysManagerService {
     }
     if (sessionId !== undefined) {
       this.attempts.delete(bindingKey(sessionId, providerId))
-      this.clearRetry(providerId, sessionId)
       // Do not clear step-scoped switch/attempt records here: another step of
       // the same session may still be in flight. Step records expire by TTL or
       // are cleared when their own request-error path terminates.
@@ -1422,6 +1439,9 @@ export class KeysManagerService {
       const kept = attempts.filter(entry => now - entry.at <= ATTEMPT_TTL_MS)
       if (kept.length === 0) this.streamAttempts.delete(key)
       else this.streamAttempts.set(key, kept)
+    }
+    for (const [key, pin] of this.retryBindings) {
+      if (now - pin.at > ATTEMPT_TTL_MS) this.retryBindings.delete(key)
     }
   }
 
@@ -1663,6 +1683,7 @@ export class KeysManagerService {
         step: payload.step,
         usedManagedKey: true,
         lastSequence: evidence.sequence,
+        keyRetries: {},
       }
       this.stepAttempts.set(switchKey, attempt)
     } else {
@@ -1671,7 +1692,7 @@ export class KeysManagerService {
       if (evidence === undefined) {
         this.switches.delete(switchKey)
         this.stepAttempts.delete(switchKey)
-        this.clearRetry(providerId, sessionId)
+        this.clearRetry(providerId, sessionId, payload.turn, payload.step)
         return next()
       }
       const keyChanged = attempt.keyId !== evidence.keyId
@@ -1679,18 +1700,31 @@ export class KeysManagerService {
       attempt.usedManagedKey = evidence.usedManagedKey
       attempt.lastSequence = evidence.sequence
       attempt.at = now
-      if (keyChanged) attempt.retries = 0
+      if (keyChanged) {
+        attempt.keyRetries ??= {}
+        attempt.retries = evidence.keyId === undefined ? 0 : attempt.keyRetries[evidence.keyId] ?? 0
+      }
     }
-    if (attempt.usedManagedKey !== true) return next()
+    if (attempt.usedManagedKey !== true) {
+      this.switches.delete(switchKey)
+      this.stepAttempts.delete(switchKey)
+      this.clearRetry(providerId, sessionId, payload.turn, payload.step)
+      return next()
+    }
     const currentKeyId = attempt.keyId
-    if (currentKeyId === undefined) return next()
+    if (currentKeyId === undefined) {
+      this.clearRetry(providerId, sessionId, payload.turn, payload.step)
+      return next()
+    }
     const current = record.keys.find(key => key.id === currentKeyId)
     if (current === undefined) return next()
     const switchCount = this.switches.get(switchKey)?.count ?? 0
 
     if (attempt.retries < settings.retryCount) {
       attempt.retries += 1
-      this.pinRetry(providerId, sessionId, currentKeyId)
+      attempt.keyRetries ??= {}
+      if (attempt.keyId !== undefined) attempt.keyRetries[attempt.keyId] = attempt.retries
+      this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
       this.warn(`${providerId} key ${currentKeyId} failed (${payload.failure?.code ?? 'error'}); retry ${attempt.retries}/${settings.retryCount}`)
       return { kind: 'retry' }
     }
@@ -1701,9 +1735,9 @@ export class KeysManagerService {
       if (action === undefined) {
         this.switches.delete(switchKey)
         this.stepAttempts.delete(switchKey)
-        this.clearRetry(providerId, sessionId)
+        this.clearRetry(providerId, sessionId, payload.turn, payload.step)
       } else {
-        this.pinRetry(providerId, sessionId, currentKeyId)
+        this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
       }
       return action
     }
@@ -1714,9 +1748,9 @@ export class KeysManagerService {
       if (action === undefined) {
         this.switches.delete(switchKey)
         this.stepAttempts.delete(switchKey)
-        this.clearRetry(providerId, sessionId)
+        this.clearRetry(providerId, sessionId, payload.turn, payload.step)
       } else {
-        this.pinRetry(providerId, sessionId, currentKeyId)
+        this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
       }
       return action
     }
@@ -1727,8 +1761,10 @@ export class KeysManagerService {
     this.store.bind(sessionId, providerId, candidate.id, now)
     attempt.keyId = candidate.id
     attempt.retries = 0
+    attempt.keyRetries ??= {}
+    attempt.keyRetries[candidate.id] = 0
     attempt.at = now
-    this.pinRetry(providerId, sessionId, candidate.id)
+    this.pinRetry(providerId, sessionId, payload.turn, payload.step, candidate.id)
     this.switches.set(switchKey, { count: switchCount + 1, at: now })
     this.store.touch()
     this.warn(`${providerId} switched to key ${candidate.id} after ${settings.retryCount} retries`)
