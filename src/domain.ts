@@ -122,6 +122,8 @@ export interface ProviderView {
   provider: string
   displayName: string
   source: 'dsh' | 'extra'
+  /** Where the route came from: DSH catalog, this plugin's catalog, or a hand-declared profile. */
+  origin?: 'dsh' | 'plugin' | 'custom'
   managed: boolean
   configured: boolean
   active: boolean

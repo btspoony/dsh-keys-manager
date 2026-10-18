@@ -241,25 +241,23 @@ function isKeyishEnv(name: string): boolean {
 }
 
 /**
- * Providers whose auth needs more than one credential value. A single-key
- * broker can rotate the API key, but it cannot own the account/gateway ids,
- * so these routes must stay outside the key pool.
+ * DSH catalog routes that are explicitly outside the single-key pool. Keeping
+ * this as a named table (rather than only deriving it from env names) makes a
+ * reviewed decision visible and stable when a provider adds another auth path.
  */
-const MULTI_CREDENTIAL_PROVIDERS = new Set<string>([
-  'cloudflare-ai-gateway',
-  'cloudflare-workers-ai',
-])
+const UNSUPPORTED_KEY_POOL_PROVIDERS: Readonly<Record<string, string>> = Object.freeze({
+  'amazon-bedrock': 'Uses an AWS credential chain (profile, IAM keys, container/IRSA tokens), not a single API key',
+  'cloudflare-ai-gateway': 'Needs Cloudflare account and gateway IDs in addition to the API key',
+  'cloudflare-workers-ai': 'Needs a Cloudflare account ID in addition to the API key',
+  'openai-codex': 'Uses ChatGPT OAuth sign-in only; no API-key credential',
+})
 
 /** Whether the provider looks like it can authenticate with one API key. */
 function supportOf(entry: DirectoryEntry, profile: ProfileShape | undefined, managed: ProviderRecord | undefined): ProviderSupport {
   if (managed !== undefined) return { supported: true }
   if (entry.error !== undefined) return { supported: false, reason: entry.error }
-  if (MULTI_CREDENTIAL_PROVIDERS.has(entry.provider)) {
-    return {
-      supported: false,
-      reason: 'Requires Cloudflare account and gateway IDs in addition to the API key; configure this route natively in Models',
-    }
-  }
+  const unsupportedReason = UNSUPPORTED_KEY_POOL_PROVIDERS[entry.provider]
+  if (unsupportedReason !== undefined) return { supported: false, reason: unsupportedReason }
   if (entry.provider === 'deepseek-official') return { supported: true }
   if (profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0) return { supported: true }
   const auth = entry.nativeAuth
@@ -552,6 +550,7 @@ export class KeysManagerService {
         provider: entry.provider,
         displayName: extra?.name ?? entry.displayName ?? entry.provider,
         source: extra !== undefined ? 'extra' : 'dsh',
+        origin: extra !== undefined ? 'plugin' : entry.declared === true ? 'custom' : 'dsh',
         managed: managed !== undefined,
         configured: active.has(entry.provider) || profile !== undefined,
         active: active.has(entry.provider),
@@ -587,6 +586,7 @@ export class KeysManagerService {
         provider: extra.id,
         displayName: extra.name,
         source: 'extra',
+        origin: 'plugin',
         managed: managed !== undefined,
         configured: managed !== undefined,
         active: false,
@@ -620,6 +620,7 @@ export class KeysManagerService {
         provider: managed.provider,
         displayName: managed.displayName,
         source: managed.source,
+        origin: managed.source === 'extra' ? 'plugin' : 'custom',
         managed: true,
         configured: false,
         active: false,

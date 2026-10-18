@@ -113,6 +113,29 @@ discovery is unavailable or blocked, the seed catalog is installed instead.
 Releasing an extra provider that the manager created removes the whole route
 profile, so the Models page returns to its previous state.
 
+## Provider classification
+
+Every provider card carries its origin:
+
+- **DSH 内置 / DSH built-in** — a route from the shipped DSH pi-ai catalog.
+- **插件内置 / Plugin built-in** — a route from this plugin's extra catalog in
+  `src/providers.ts`.
+- **自定义 / Custom** — a hand-declared route in the active profile.
+
+The following DSH built-ins are explicitly outside single-key pool management:
+
+| Provider | Why |
+|---|---|
+| `amazon-bedrock` | AWS credential chain (profile, IAM keys, ECS/IRSA/EC2), not one API key |
+| `cloudflare-ai-gateway` | API key plus a Cloudflare account ID and gateway ID |
+| `cloudflare-workers-ai` | API key plus a Cloudflare account ID |
+| `openai-codex` | ChatGPT OAuth sign-in only; no API-key credential |
+
+All other DSH catalog routes expose an API-key credential. Providers that also
+support OAuth (Anthropic, GitHub Copilot, Kimi, OpenRouter, xAI, Radius) remain
+manageable through their API-key path; OAuth accounts are tracked separately
+in the roadmap issue.
+
 ## OAuth2 extension point
 
 The state shape already distinguishes `kind: "api-key"` from `kind: "oauth"` and

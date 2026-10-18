@@ -452,6 +452,8 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
   const keyCount = provider.keyCount
   const warning = provider.warning
   const isExtra = provider.extra
+  const origin = provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
+  const originLabel = origin === 'plugin' ? t('pluginBuiltin') : origin === 'dsh' ? t('dshBuiltin') : t('customProvider')
   const providerMeta = [
     provider.provider,
     provider.active ? t('active') : provider.configured ? t('configured') : t('notConfigured'),
@@ -489,7 +491,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
       h('span', { className: 'km-provider-main' },
         h('span', { className: 'km-provider-title-line' },
           h('span', { className: 'km-provider-name' }, provider.displayName || provider.provider),
-          isExtra ? h('span', { className: 'km-tag' }, t('extra')) : null,
+          h('span', { className: 'km-tag' }, originLabel),
           managed ? h('span', { className: 'km-tag km-tag-accent' }, t('managedBadge')) : null,
           !managed && !provider.supported ? h('span', { className: 'km-tag km-tag-warn' }, t('unsupported')) : null,
         ),

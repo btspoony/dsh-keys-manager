@@ -114,6 +114,24 @@ function fakeLlm(): any {
           nativeAuth: { env: [], oauth: true },
         },
         {
+          provider: 'amazon-bedrock',
+          displayName: 'Amazon Bedrock',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'amazon-bedrock'],
+          nativeAuth: {
+            env: [
+              'AWS_BEARER_TOKEN_BEDROCK',
+              'AWS_PROFILE',
+              'AWS_ACCESS_KEY_ID',
+              'AWS_SECRET_ACCESS_KEY',
+              'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI',
+              'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+              'AWS_WEB_IDENTITY_TOKEN_FILE',
+            ],
+            oauth: false,
+          },
+        },
+        {
           provider: 'anthropic',
           displayName: 'Anthropic',
           settingsNs: 'llm-pi-ai',
@@ -221,7 +239,13 @@ test('provider state marks OAuth-only routes unsupported and lists extras', asyn
     const anthropic = state.providers.find(provider => provider.provider === 'anthropic')!
     const cloudflareGateway = state.providers.find(provider => provider.provider === 'cloudflare-ai-gateway')!
     const cloudflareWorkers = state.providers.find(provider => provider.provider === 'cloudflare-workers-ai')!
+    const bedrock = state.providers.find(provider => provider.provider === 'amazon-bedrock')!
     assert.equal(zai.supported, true)
+    assert.equal(zai.origin, 'dsh')
+    assert.equal(extra.origin, 'plugin')
+    assert.equal(anthropic.origin, 'dsh')
+    assert.equal(bedrock.supported, false)
+    assert.match(String(bedrock.reason), /AWS/)
     assert.equal(codex.supported, false)
     assert.match(String(codex.reason), /OAuth/)
     assert.equal(deepseek.supported, true)

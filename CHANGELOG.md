@@ -29,3 +29,6 @@ git log by the release-prep workflow.
   single-key broker cannot own.
 - Anthropic imports now prefer `ANTHROPIC_API_KEY` and skip bearer/OAuth token
   variables such as `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_OAUTH_TOKEN`.
+- Explicitly classify Amazon Bedrock, Cloudflare AI Gateway, Cloudflare Workers
+  AI, and OpenAI Codex as unsupported key pools.
+- Label routes by origin: DSH built-in, plugin built-in, or custom.
