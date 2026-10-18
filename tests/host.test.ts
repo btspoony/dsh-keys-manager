@@ -1670,3 +1670,41 @@ test('shutdown drains a blocked mutation before the final snapshot', async () =>
     await h.close()
   }
 })
+
+
+test('a non-sticky failover retry uses the verified alternate', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    provider.cursor = 0
+    ;(h.service as any).attempts.set('session-switch-pin\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      usedManagedKey: true,
+    })
+    const failureOne = { code: 'RATE_LIMIT', message: 'busy-one' }
+    const failureTwo = { code: 'RATE_LIMIT', message: 'busy-two' }
+    const payload = (failure: object) => ({
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-switch-pin' } },
+    }) as unknown as RequestErrorPayload
+    linkFailure(h, 'zai-coding-cn', 'session-switch-pin', first.id, failureOne)
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureOne), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    linkFailure(h, 'zai-coding-cn', 'session-switch-pin', first.id, failureTwo)
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureTwo), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    const retry = await h.service.selectKey('zai-coding-cn', 'session-switch-pin')
+    assert.equal(retry.key!.id, second.id)
+    assert.equal(first.cooldownUntil > 0, true)
+  } finally {
+    await h.close()
+  }
+})
