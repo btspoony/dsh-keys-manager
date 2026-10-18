@@ -85,8 +85,9 @@ git log by the release-prep workflow.
 - Retry pins are scoped per turn/step (ambiguous concurrent pins are not
   consumed), index rebuilds preserve unrelated pins, and each key in a step
   keeps its own retry counter.
-- Recovery carries its turn/step identity into the next stream via request
-  context, so only that step's pin is consumed; success/cancel clear it, and
-  failover carries a candidate's already-spent per-key budget.
+- Recovery identity comes from the agent/request turn/step, so the actual
+  retry stream consumes only its own pin; a new step clears abandoned pins,
+  success/cancel clear them too, and failover carries a candidate's
+  already-spent per-key budget.
 - State probing uses stat and distinguishes ENOENT from permission failures;
   a denied parent directory starts read-only and cannot overwrite valid state.

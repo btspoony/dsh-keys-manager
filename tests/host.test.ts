@@ -1816,6 +1816,7 @@ test('a production retry consumes the pending step pin and clears it on success'
       agent: { session: { id: 'session-production-pin' } },
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    h.service.noteRequestStep({ agent: { session: { id: 'session-production-pin' } }, turn: 1, step: 1 })
     let seen: { value?: string } | undefined
     const iterable = h.service.streamListener(
       { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-production-pin', messages: [] },
@@ -1894,7 +1895,7 @@ test('a selection without the recovery context does not steal a step pin', async
       agent: { session: { id: 'session-not-stolen' } },
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    ;(h.service as any).recoverySteps.enterWith(undefined)
+    ;(h.service as any).requestSteps.delete('session-not-stolen')
     const iterable = h.service.streamListener(
       { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-not-stolen', messages: [] },
       async function* () {
@@ -1906,6 +1907,87 @@ test('a selection without the recovery context does not steal a step pin', async
     assert.equal((h.service as any).retryBindings.size, 1)
     const pinned = await h.service.selectKey('zai-coding-cn', 'session-not-stolen', { turn: 1, step: 1 })
     assert.equal(pinned.key!.id, first.id)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a non-sticky three-key failover retry uses the verified alternate', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.addKey('zai-coding-cn', 'third', 'sk-third')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const switchKey = 'session-three\u0000zai-coding-cn\u00001\u00001'
+    ;(h.service as any).stepAttempts.set(switchKey, {
+      keyId: first.id,
+      retries: 1,
+      at: Date.now(),
+      turn: 1,
+      step: 1,
+      usedManagedKey: true,
+      keyRetries: { [first.id]: 1 },
+    })
+    provider.cursor = 1
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    linkFailure(h, 'zai-coding-cn', 'session-three', first.id, failure)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-three' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    h.service.noteRequestStep({ agent: { session: { id: 'session-three' } }, turn: 1, step: 1 })
+    let seen: { value?: string } | undefined
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-three', messages: [] },
+      async function* () {
+        seen = await h.credentials.raw.resolve(provider.brokerRef)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    )
+    await consume(iterable)
+    assert.equal(seen!.value, 'sk-second')
+    assert.equal(second.totalUses, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a new step clears a retry pin abandoned by cancellation', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const [first] = h.store.provider('zai-coding-cn')!.keys
+    ;(h.service as any).attempts.set('session-abandon\u0000zai-coding-cn', {
+      keyId: first.id,
+      retries: 0,
+      at: Date.now(),
+      usedManagedKey: true,
+    })
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    linkFailure(h, 'zai-coding-cn', 'session-abandon', first.id, failure)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-abandon' } },
+    } as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    assert.equal((h.service as any).retryBindings.size, 1)
+    h.service.noteRequestStep({ agent: { session: { id: 'session-abandon' } }, turn: 2, step: 1 })
+    assert.equal((h.service as any).retryBindings.size, 0)
   } finally {
     await h.close()
   }

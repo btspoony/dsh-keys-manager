@@ -53,6 +53,7 @@ import type {
   LlmFailureLike,
   ProviderSupport,
   RequestErrorAction,
+  AgentRequestPayload,
   RequestErrorPayload,
   SettingsDescriptorLike,
   SettingsLike,
@@ -336,7 +337,7 @@ export class KeysManagerService {
   private readonly streamAttempts = new Map<string, StreamAttempt[]>()
   private readonly linkedAttempts = new WeakMap<object, StreamAttempt>()
   private readonly retryBindings = new Map<string, { keyId: string; at: number }>()
-  private readonly recoverySteps = new AsyncLocalStorage<{ provider: string; sessionId: string; turn: number; step: number; at: number }>()
+  private readonly requestSteps = new Map<string, { turn: number; step: number; at: number }>()
   private attemptSequence = 0
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
@@ -1276,10 +1277,18 @@ export class KeysManagerService {
     this.retryBindings.set(`${bindingKey(sessionId, providerId)}\u0000${turn}\u0000${step}`, { keyId, at: Date.now() })
   }
 
-  /** Carry this step's identity into the next llm/stream call in this context. */
-  private markRecovery(providerId: string, sessionId: string | undefined, turn: number, step: number): void {
-    if (sessionId === undefined) return
-    this.recoverySteps.enterWith({ provider: providerId, sessionId, turn, step, at: Date.now() })
+  /** Record the turn/step the agent loop is about to request. */
+  noteRequestStep(payload: AgentRequestPayload): void {
+    const raw = payload.agent?.session?.id
+    if (raw === undefined) return
+    const sessionId = String(raw)
+    const prefix = `${sessionId}\u0000`
+    for (const key of this.retryBindings.keys()) {
+      if (!key.startsWith(prefix)) continue
+      const parts = key.split('\u0000')
+      if (Number(parts[2]) !== payload.turn || Number(parts[3]) !== payload.step) this.retryBindings.delete(key)
+    }
+    this.requestSteps.set(sessionId, { turn: payload.turn, step: payload.step, at: Date.now() })
   }
 
   /** Drop one step's retry pin once its attempt settles. */
@@ -1459,18 +1468,18 @@ export class KeysManagerService {
     for (const [key, pin] of this.retryBindings) {
       if (now - pin.at > ATTEMPT_TTL_MS) this.retryBindings.delete(key)
     }
+    for (const [key, step] of this.requestSteps) {
+      if (now - step.at > ATTEMPT_TTL_MS) this.requestSteps.delete(key)
+    }
   }
 
   /** Waterfall listener: bind a key to the request and observe its terminal chunk. */
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
-    const recovered = this.recoverySteps.getStore()
-    if (recovered !== undefined) this.recoverySteps.enterWith(undefined as never)
-    const step = recovered !== undefined && sessionId !== undefined
-      && recovered.provider === providerId && recovered.sessionId === sessionId
-      && Date.now() - recovered.at <= ATTEMPT_TTL_MS
-      ? { turn: recovered.turn, step: recovered.step }
+    const current = sessionId === undefined ? undefined : this.requestSteps.get(sessionId)
+    const step = current !== undefined && Date.now() - current.at <= ATTEMPT_TTL_MS
+      ? { turn: current.turn, step: current.step }
       : undefined
     const record = this.store.provider(providerId)
     if (record === undefined) {
@@ -1772,7 +1781,6 @@ export class KeysManagerService {
       attempt.keyRetries ??= {}
       if (attempt.keyId !== undefined) attempt.keyRetries[attempt.keyId] = attempt.retries
       this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
-      this.markRecovery(providerId, sessionId, payload.turn, payload.step)
       this.warn(`${providerId} key ${currentKeyId} failed (${payload.failure?.code ?? 'error'}); retry ${attempt.retries}/${settings.retryCount}`)
       return { kind: 'retry' }
     }
@@ -1786,8 +1794,7 @@ export class KeysManagerService {
         this.clearRetry(providerId, sessionId, payload.turn, payload.step)
       } else {
         this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
-        this.markRecovery(providerId, sessionId, payload.turn, payload.step)
-      }
+        }
       return action
     }
     const candidate = await this.findVerifiedAlternate(record, currentKeyId, now)
@@ -1800,8 +1807,7 @@ export class KeysManagerService {
         this.clearRetry(providerId, sessionId, payload.turn, payload.step)
       } else {
         this.pinRetry(providerId, sessionId, payload.turn, payload.step, currentKeyId)
-        this.markRecovery(providerId, sessionId, payload.turn, payload.step)
-      }
+        }
       return action
     }
     // Keep the current key usable until an alternate is actually chosen. If
@@ -1815,7 +1821,6 @@ export class KeysManagerService {
     attempt.retries = attempt.keyRetries[candidate.id]
     attempt.at = now
     this.pinRetry(providerId, sessionId, payload.turn, payload.step, candidate.id)
-    this.markRecovery(providerId, sessionId, payload.turn, payload.step)
     this.switches.set(switchKey, { count: switchCount + 1, at: now })
     this.store.touch()
     this.warn(`${providerId} switched to key ${candidate.id} after ${settings.retryCount} retries`)
@@ -1851,6 +1856,10 @@ export function apply(ctx: HostContext): void {
     options?: boolean | { prepend?: boolean },
   ) => () => void
   on('llm/stream', (options: unknown, next: () => AsyncIterable<StreamChunkLike>) => service.streamListener(options as GenerateOptionsLike, next))
+  on('agent/request', (payload: unknown, next: () => Promise<unknown>) => {
+    service.noteRequestStep(payload as AgentRequestPayload)
+    return next()
+  })
   on('agent/request-error', (payload: unknown, next: () => Promise<RequestErrorAction>) => service.requestErrorListener(payload as RequestErrorPayload, next), { prepend: true })
 
   ;(ctx.provide as unknown as (name: string, value: unknown) => () => void)(SERVICE, service)

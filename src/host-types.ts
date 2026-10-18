@@ -123,6 +123,13 @@ export interface GenerateOptionsLike {
   messages: readonly unknown[]
 }
 
+/** Payload of the `agent/request` waterfall (subset used here). */
+export interface AgentRequestPayload {
+  agent?: { session?: { id?: string } }
+  turn: number
+  step: number
+}
+
 /** Payload of the `agent/request-error` waterfall. */
 export interface RequestErrorPayload {
   agent: { session: { id: string } }
