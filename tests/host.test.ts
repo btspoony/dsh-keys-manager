@@ -1755,15 +1755,18 @@ test('retry budgets are tracked per key within one step', async () => {
     await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
     await h.service.setSettings({ retryCount: 1 })
     const [first, second] = h.store.provider('zai-coding-cn')!.keys
-    ;(h.service as any).attempts.set('session-per-key\u0000zai-coding-cn', {
+    const switchKey = 'session-per-key\u0000zai-coding-cn\u00001\u00001'
+    ;(h.service as any).stepAttempts.set(switchKey, {
       keyId: first.id,
-      retries: 0,
+      retries: 1,
       at: Date.now(),
+      turn: 1,
+      step: 1,
       usedManagedKey: true,
+      keyRetries: { [first.id]: 1 },
     })
-    const failureOne = { code: 'RATE_LIMIT', message: 'busy-a1' }
-    const failureTwo = { code: 'RATE_LIMIT', message: 'busy-b1' }
-    const failureThree = { code: 'RATE_LIMIT', message: 'busy-a2' }
+    const failureB = { code: 'RATE_LIMIT', message: 'busy-b1' }
+    const failureA = { code: 'RATE_LIMIT', message: 'busy-a2' }
     const payload = (failure: object) => ({
       provider: 'zai-coding-cn',
       turn: 1,
@@ -1772,12 +1775,14 @@ test('retry budgets are tracked per key within one step', async () => {
       signal: { aborted: false },
       agent: { session: { id: 'session-per-key' } },
     }) as unknown as RequestErrorPayload
-    linkFailure(h, 'zai-coding-cn', 'session-per-key', first.id, failureOne)
-    assert.deepEqual(await h.service.requestErrorListener(payload(failureOne), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    linkFailure(h, 'zai-coding-cn', 'session-per-key', second.id, failureTwo)
-    assert.deepEqual(await h.service.requestErrorListener(payload(failureTwo), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    linkFailure(h, 'zai-coding-cn', 'session-per-key', first.id, failureThree)
-    assert.deepEqual(await h.service.requestErrorListener(payload(failureThree), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    linkFailure(h, 'zai-coding-cn', 'session-per-key', second.id, failureB)
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureB), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    const afterB = (h.service as any).stepAttempts.get(switchKey)
+    assert.equal(afterB.keyId, second.id)
+    assert.equal(afterB.retries, 1)
+    assert.equal(afterB.keyRetries[second.id], 1)
+    linkFailure(h, 'zai-coding-cn', 'session-per-key', first.id, failureA)
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureA), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     assert.equal(first.cooldownUntil > 0, true)
     assert.equal(second.cooldownUntil, 0)
   } finally {
