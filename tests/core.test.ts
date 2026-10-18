@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
@@ -308,16 +308,15 @@ test('statePath honors DSH_HOME', () => {
 test('a failed flush keeps state dirty for an explicit retry', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'keys-manager-flush-'))
   try {
-    const blocked = join(dir, 'blocked')
-    await writeFile(blocked, 'not a directory')
-    const store = new KeysManagerStore(join(blocked, 'state.json'), { warn: () => {} })
+    const file = join(dir, 'state.json')
+    const store = new KeysManagerStore(file, { warn: () => {} })
+    await mkdir(file)
     store.state.settings.retryCount = 3
     store.touch()
     await assert.rejects(() => store.flush())
-    await rm(blocked)
-    await mkdir(blocked, { recursive: true })
+    await rm(file, { recursive: true, force: true })
     await store.flush()
-    const persisted = JSON.parse(await readFile(join(blocked, 'state.json'), 'utf8')) as { settings: { retryCount: number } }
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as { settings: { retryCount: number } }
     assert.equal(persisted.settings.retryCount, 3)
     await store.close()
   } finally {
@@ -370,7 +369,7 @@ test('a state read failure keeps the file untouched and refuses writes', async (
     await mkdir(file)
     const store = new KeysManagerStore(file, { warn: () => {} })
     assert.equal(store.readOnly, true)
-    assert.match(String(store.loadError), /Could not read/)
+    assert.match(String(store.loadError), /not a regular file|Could not read/)
     store.state.settings.retryCount = 3
     store.touch()
     await store.flush()
@@ -393,6 +392,29 @@ test('corrupt state is backed up and the fresh store is writable', async () => {
     const entries = await readdir(dir)
     assert.ok(entries.some(name => name.includes('state.json.corrupt-')))
   } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+
+test('a permission-denied parent directory is read-only and preserves state', async () => {
+  if (process.getuid?.() === 0) return
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-permissions-'))
+  const file = join(dir, 'state.json')
+  const original = JSON.stringify({ settings: { retryCount: 2 }, providers: {}, sessionBindings: {} }, null, 2)
+  try {
+    await writeFile(file, original)
+    await chmod(dir, 0o000)
+    const store = new KeysManagerStore(file, { warn: () => {} })
+    assert.equal(store.readOnly, true)
+    assert.match(String(store.loadError), /Could not inspect|not a regular file/)
+    await chmod(dir, 0o700)
+    store.state.settings.retryCount = 9
+    store.touch()
+    await store.close()
+    assert.equal(await readFile(file, 'utf8'), original)
+  } finally {
+    await chmod(dir, 0o700).catch(() => {})
     await rm(dir, { recursive: true, force: true })
   }
 })

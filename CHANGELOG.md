@@ -70,3 +70,8 @@ git log by the release-prep workflow.
 - Each failed stream attempt is attributed to the step that claims it, so a
   retry on another key or on an external credential refreshes the step's key
   and evidence instead of reusing stale state.
+- Failover evidence is linked to the exact failure object the agent loop
+  forwards, consumed on every delegation path, and no longer claimed by a
+  later request; unscoped broker resolution skips paused/missing/cooling keys.
+- State probing uses stat and distinguishes ENOENT from permission failures;
+  a denied parent directory starts read-only and cannot overwrite valid state.

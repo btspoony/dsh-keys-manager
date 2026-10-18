@@ -334,6 +334,7 @@ export class KeysManagerService {
   private readonly attempts = new Map<string, AttemptState>()
   private readonly stepAttempts = new Map<string, AttemptState>()
   private readonly streamAttempts = new Map<string, StreamAttempt[]>()
+  private readonly linkedAttempts = new WeakMap<object, StreamAttempt>()
   private attemptSequence = 0
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
@@ -435,8 +436,9 @@ export class KeysManagerService {
         // without moving the session cursor or changing health.
         const provider = service.store.provider(owner)
         if (provider !== undefined) {
+          const now = Date.now()
           for (const key of provider.keys) {
-            if (key.ref.length === 0) continue
+            if (key.ref.length === 0 || !isSelectable(key, now)) continue
             const hit = await original.resolve.call(raw, key.ref)
             if (hit !== undefined && typeof hit.value === 'string' && hit.value.length > 0) {
               return { ...hit, source: 'keys-manager' }
@@ -1438,7 +1440,9 @@ export class KeysManagerService {
               const reason = chunk.reason
               const used = store?.keyUsed === true
               if (reason.kind === 'error') {
-                service.recordStreamAttempt(providerId, sessionId, keyId, used)
+                if (reason.failure !== undefined && shouldFailover(reason.failure.code) && service.store.settings.autoSwitch) {
+                  service.recordStreamAttempt(providerId, sessionId, keyId, used, reason.failure)
+                }
                 if (used && reason.failure !== undefined) {
                   service.recordFailure(providerId, sessionId, keyId, reason.failure, true)
                 } else if (sessionId !== undefined) {
@@ -1497,19 +1501,41 @@ export class KeysManagerService {
   }
 
   /** Record one failed stream attempt for turn/step attribution. */
-  private recordStreamAttempt(providerId: string, sessionId: string | undefined, keyId: string | undefined, usedManagedKey: boolean): void {
+  private recordStreamAttempt(
+    providerId: string,
+    sessionId: string | undefined,
+    keyId: string | undefined,
+    usedManagedKey: boolean,
+    failure?: unknown,
+  ): void {
     if (sessionId === undefined) return
-    const key = bindingKey(sessionId, providerId)
-    const attempts = this.streamAttempts.get(key) ?? []
-    attempts.push({
+    const entry: StreamAttempt = {
       keyId,
       usedManagedKey,
       at: Date.now(),
       sequence: ++this.attemptSequence,
       claimed: false,
-    })
+    }
+    if (typeof failure === 'object' && failure !== null) {
+      // The agent loop forwards this exact failure object to
+      // agent/request-error; it is a request-scoped identity.
+      this.linkedAttempts.set(failure, entry)
+      return
+    }
+    const key = bindingKey(sessionId, providerId)
+    const attempts = this.streamAttempts.get(key) ?? []
+    attempts.push(entry)
     while (attempts.length > 8) attempts.shift()
     this.streamAttempts.set(key, attempts)
+  }
+
+  /** Consume the stream record linked to this exact failure object. */
+  private takeLinkedAttempt(failure: unknown): StreamAttempt | undefined {
+    if (typeof failure !== 'object' || failure === null) return undefined
+    const entry = this.linkedAttempts.get(failure)
+    if (entry === undefined) return undefined
+    this.linkedAttempts.delete(failure)
+    return entry
   }
 
   /** Claim the next unclaimed stream attempt after a step's last sequence. */
@@ -1553,6 +1579,9 @@ export class KeysManagerService {
 
   /** Waterfall listener: bounded retry, then key switch and cool-down. */
   async requestErrorListener(payload: RequestErrorPayload, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction> {
+    // Consume a linked record on every path, including skipped recovery, so a
+    // later request cannot claim this failure's evidence.
+    const linked = this.takeLinkedAttempt(payload.failure)
     if (payload.signal?.aborted) return next()
     const providerId = payload.provider
     const record = this.store.provider(providerId)
@@ -1566,7 +1595,7 @@ export class KeysManagerService {
     const attemptKey = bindingKey(sessionId, providerId)
     const switchKey = `${attemptKey}\u0000${payload.turn}\u0000${payload.step}`
     let attempt = this.stepAttempts.get(switchKey)
-    const evidence = this.claimStreamAttempt(providerId, sessionId, attempt?.lastSequence ?? 0)
+    const evidence = linked ?? this.claimStreamAttempt(providerId, sessionId, attempt?.lastSequence ?? 0)
     if (attempt === undefined) {
       const currentAttempt = this.attempts.get(attemptKey)
       const source = evidence ?? currentAttempt

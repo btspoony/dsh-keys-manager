@@ -8,7 +8,7 @@
  * record can sit beside `kind: 'api-key'` without a migration that rewrites
  * existing rows.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { chmod, mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -165,7 +165,24 @@ export function sanitizeState(raw: unknown): StateDocument {
 
 /** Read a state file; only parse corruption is preserved and reset. */
 export function readStateFile(file: string): LoadedState {
-  if (!existsSync(file)) return emptyState()
+  let stats: ReturnType<typeof statSync>
+  try {
+    stats = statSync(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyState()
+    return {
+      ...emptyState(),
+      readOnly: true,
+      loadError: `Could not inspect ${file}: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
+  if (!stats.isFile()) {
+    return {
+      ...emptyState(),
+      readOnly: true,
+      loadError: `${file} is not a regular file; refusing to overwrite it.`,
+    }
+  }
   let text: string
   try {
     text = readFileSync(file, 'utf8')
@@ -352,7 +369,12 @@ export class KeysManagerStore {
  * state once. The regular debounced writer owns later updates.
  */
 export function ensureStateFile(file: string): void {
-  if (existsSync(file)) return
+  try {
+    statSync(file)
+    return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return
+  }
   try {
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
     const temp = `${file}.${process.pid}.tmp`

@@ -1358,3 +1358,78 @@ test('first errors of concurrent steps claim separate stream attempts', async ()
     await h.close()
   }
 })
+
+
+test('unscoped broker resolution skips paused keys', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    await h.service.updateKey('zai-coding-cn', first.id, { enabled: false })
+    const paused = await h.credentials.raw.resolve(provider.brokerRef)
+    assert.equal(paused!.value, 'sk-second')
+    await h.service.updateKey('zai-coding-cn', second.id, { enabled: false })
+    assert.equal(await h.credentials.raw.resolve(provider.brokerRef), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a delegated non-failover failure is consumed before the next attribution', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ retryCount: 1 })
+    const [first, second] = h.store.provider('zai-coding-cn')!.keys
+    const failureA = { code: 'INVALID_REQUEST', message: 'bad request' }
+    const failureB = { code: 'RATE_LIMIT', message: 'busy' }
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-linked', first.id, true, failureA)
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-linked', second.id, true, failureB)
+    const payload = (failure: object, turn: number) => ({
+      provider: 'zai-coding-cn',
+      turn,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-linked' } },
+    }) as unknown as RequestErrorPayload
+    const next = vi.fn(async () => undefined)
+    assert.equal(await h.service.requestErrorListener(payload(failureA, 1), next), undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureB, 2), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    assert.equal((h.service as any).stepAttempts.get('session-linked\u0000zai-coding-cn\u00002\u00001').keyId, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('linked failures are attributed even when callbacks arrive out of order', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ retryCount: 2 })
+    const [first, second] = h.store.provider('zai-coding-cn')!.keys
+    const failureA = { code: 'RATE_LIMIT', message: 'busy-a' }
+    const failureB = { code: 'RATE_LIMIT', message: 'busy-b' }
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-reversed', first.id, true, failureA)
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-reversed', second.id, true, failureB)
+    const payload = (failure: object, turn: number) => ({
+      provider: 'zai-coding-cn',
+      turn,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-reversed' } },
+    }) as unknown as RequestErrorPayload
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureB, 2), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    assert.deepEqual(await h.service.requestErrorListener(payload(failureA, 1), async () => ({ kind: 'retry' as const })), { kind: 'retry' })
+    assert.equal((h.service as any).stepAttempts.get('session-reversed\u0000zai-coding-cn\u00002\u00001').keyId, second.id)
+    assert.equal((h.service as any).stepAttempts.get('session-reversed\u0000zai-coding-cn\u00001\u00001').keyId, first.id)
+  } finally {
+    await h.close()
+  }
+})
