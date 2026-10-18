@@ -324,6 +324,7 @@ export class KeysManagerService {
   readonly store: KeysManagerStore
   private readonly als = new AsyncLocalStorage<RequestScope>()
   private readonly attempts = new Map<string, AttemptState>()
+  private readonly stepAttempts = new Map<string, AttemptState>()
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
   settings: SettingsLike | undefined
@@ -1297,9 +1298,9 @@ export class KeysManagerService {
     }
     if (sessionId !== undefined) {
       this.attempts.delete(bindingKey(sessionId, providerId))
-      for (const mapKey of this.switches.keys()) {
-        if (mapKey.startsWith(`${sessionId}\u0000${providerId}\u0000`)) this.switches.delete(mapKey)
-      }
+      // Do not clear step-scoped switch/attempt records here: another step of
+      // the same session may still be in flight. Step records expire by TTL or
+      // are cleared when their own request-error path terminates.
     }
   }
 
@@ -1324,21 +1325,28 @@ export class KeysManagerService {
         const stepKey = attempt.turn !== undefined && attempt.step !== undefined
           ? `${key}\u0000${attempt.turn}\u0000${attempt.step}`
           : undefined
-        const switchAt = stepKey === undefined ? undefined : this.switches.get(stepKey)?.at
-        // A recent switch entry means the step is still active even if the
-        // attempt's own timestamp is older; keep the attempt and its budget.
-        if (switchAt !== undefined && now - switchAt <= ATTEMPT_TTL_MS) continue
+        // A step-scoped record or a recent switch means the step still owns a
+        // budget; do not drop the in-flight attribution record first.
+        if (stepKey !== undefined && (this.stepAttempts.has(stepKey) || (this.switches.get(stepKey)?.at ?? 0) > now - ATTEMPT_TTL_MS)) continue
         this.attempts.delete(key)
       }
     }
-    const activeSteps = new Set<string>()
-    for (const [attemptKey, attempt] of this.attempts) {
-      if (attempt.turn !== undefined && attempt.step !== undefined) {
-        activeSteps.add(`${attemptKey}\u0000${attempt.turn}\u0000${attempt.step}`)
+
+    const liveSteps = new Set<string>()
+    const maxRetention = 24 * 60 * 60 * 1000
+    for (const [key, attempt] of this.stepAttempts) {
+      const age = now - attempt.at
+      const hasSwitch = this.switches.has(key)
+      if (age <= ATTEMPT_TTL_MS || (hasSwitch && age <= maxRetention)) {
+        liveSteps.add(key)
+        continue
       }
+      this.stepAttempts.delete(key)
     }
     for (const [key, entry] of this.switches) {
-      if (now - entry.at > ATTEMPT_TTL_MS && !activeSteps.has(key)) this.switches.delete(key)
+      if (liveSteps.has(key)) continue
+      if (now - entry.at <= ATTEMPT_TTL_MS) continue
+      this.switches.delete(key)
     }
   }
 
@@ -1350,7 +1358,7 @@ export class KeysManagerService {
     const binding = this.bindingState(record)
     if (binding === 'mismatch') return next()
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
-    return this.wrapStream(options, next, providerId, sessionId, binding === 'healthy')
+    return this.wrapStream(options, next, providerId, sessionId)
   }
 
   /** Wrap one managed stream so credential resolution sees this key. */
@@ -1359,7 +1367,6 @@ export class KeysManagerService {
     next: () => AsyncIterable<StreamChunkLike>,
     providerId: string,
     sessionId: string | undefined,
-    trustBinding: boolean,
   ): AsyncIterable<StreamChunkLike> {
     const service = this
     let iterator: AsyncIterator<StreamChunkLike> | undefined
@@ -1383,7 +1390,9 @@ export class KeysManagerService {
                 provider: providerId,
                 keyId: keyId ?? null,
                 keyValue: selection.value ?? null,
-                keyUsed: trustBinding && keyId !== undefined && selection.value !== undefined,
+                // Only the broker resolver proves that this request actually
+                // used a managed credential.
+                keyUsed: false,
               }
               if (sessionId !== undefined && keyId !== undefined) {
                 const key = bindingKey(sessionId, providerId)
@@ -1398,7 +1407,7 @@ export class KeysManagerService {
                   at: Date.now(),
                   turn: previous?.turn,
                   step: previous?.step,
-                  usedManagedKey: store.keyUsed,
+                  usedManagedKey: false,
                 })
               }
               iterator = await service.als.run(store!, () => next()[Symbol.asyncIterator]())
@@ -1505,18 +1514,27 @@ export class KeysManagerService {
     if (sessionId === undefined) return next()
     const now = Date.now()
     const attemptKey = bindingKey(sessionId, providerId)
-    const attempt = this.attempts.get(attemptKey)
-    if (attempt === undefined || attempt.usedManagedKey !== true) return next()
-    if (attempt.turn !== payload.turn || attempt.step !== payload.step) {
-      attempt.turn = payload.turn
-      attempt.step = payload.step
-      attempt.retries = 0
+    const switchKey = `${attemptKey}\u0000${payload.turn}\u0000${payload.step}`
+    let attempt = this.stepAttempts.get(switchKey)
+    if (attempt === undefined) {
+      const currentAttempt = this.attempts.get(attemptKey)
+      if (currentAttempt === undefined || currentAttempt.usedManagedKey !== true) return next()
+      attempt = {
+        keyId: currentAttempt.keyId,
+        retries: 0,
+        failure: currentAttempt.failure,
+        at: now,
+        turn: payload.turn,
+        step: payload.step,
+        usedManagedKey: true,
+      }
+      this.stepAttempts.set(switchKey, attempt)
     }
+    if (attempt.usedManagedKey !== true) return next()
     const currentKeyId = attempt.keyId
     if (currentKeyId === undefined) return next()
     const current = record.keys.find(key => key.id === currentKeyId)
     if (current === undefined) return next()
-    const switchKey = `${sessionId}\u0000${providerId}\u0000${payload.turn}\u0000${payload.step}`
     const switchCount = this.switches.get(switchKey)?.count ?? 0
 
     if (attempt.retries < settings.retryCount) {
@@ -1528,14 +1546,20 @@ export class KeysManagerService {
     if (switchCount >= Math.min(MAX_SWITCHES, Math.max(1, record.keys.length))) {
       this.warn(`${providerId} exhausted key switches for this step; delegating recovery`)
       const action = await this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
-      if (action === undefined) this.switches.delete(switchKey)
+      if (action === undefined) {
+        this.switches.delete(switchKey)
+        this.stepAttempts.delete(switchKey)
+      }
       return action
     }
     const candidate = await this.findVerifiedAlternate(record, currentKeyId, now)
     if (candidate === undefined) {
       this.warn(`${providerId} has no alternate with a resolvable credential; preserving the current key via delegation`)
       const action = await this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
-      if (action === undefined) this.switches.delete(switchKey)
+      if (action === undefined) {
+        this.switches.delete(switchKey)
+        this.stepAttempts.delete(switchKey)
+      }
       return action
     }
     // Keep the current key usable until an alternate is actually chosen. If

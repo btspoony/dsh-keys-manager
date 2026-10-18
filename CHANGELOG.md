@@ -61,3 +61,6 @@ git log by the release-prep workflow.
   deletion progress, refuses an unreadable release, never re-enables a cached
   mismatch, serializes first sticky selection per session/provider, and only
   attributes failures to a managed key when the broker actually served it.
+- Retry/switch attempts are scoped per session/provider/turn/step so concurrent
+  steps cannot reset each other's budget; pruning retains steps that still own
+  a switch budget.

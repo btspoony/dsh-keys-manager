@@ -694,6 +694,7 @@ test('non-sticky round-robin preserves the retry budget across key changes', asy
     const iterable = h.service.streamListener(
       { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-round', messages: [] },
       async function* () {
+        ;(h.service as any).als.getStore().keyUsed = true
         yield { type: 'text' }
         yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT' } } }
       } as any,
@@ -950,10 +951,17 @@ test('active switch budgets survive wall-clock pruning', async () => {
     const switchKey = 's\u0000p\u00001\u00001'
     const at = Date.now() - 2 * 60 * 60 * 1000
     ;(h.service as any).switches.set(switchKey, { count: 1, at })
-    ;(h.service as any).attempts.set('s\u0000p', { keyId: 'k', retries: 0, at, turn: 1, step: 1 })
+    ;(h.service as any).stepAttempts.set(switchKey, {
+      keyId: 'k',
+      retries: 0,
+      at,
+      turn: 1,
+      step: 1,
+      usedManagedKey: true,
+    })
     ;(h.service as any).pruneAttempts(Date.now())
     assert.equal((h.service as any).switches.has(switchKey), true)
-    ;(h.service as any).attempts.get('s\u0000p').turn = 2
+    ;(h.service as any).stepAttempts.delete(switchKey)
     ;(h.service as any).pruneAttempts(Date.now())
     assert.equal((h.service as any).switches.has(switchKey), false)
   } finally {
@@ -1140,6 +1148,112 @@ test('an alternate with a removed credential does not cool the current key', asy
     assert.equal(current.cooldownUntil, 0)
     assert.equal(alternate.valueMissing, true)
     assert.equal(h.store.binding('session-alternate', 'zai-coding-cn')!.keyId, current.id)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('concurrent steps keep separate retry budgets', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.setSettings({ retryCount: 1 })
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    ;(h.service as any).attempts.set('session-steps\u0000zai-coding-cn', {
+      keyId: key.id,
+      retries: 0,
+      at: Date.now(),
+      turn: 1,
+      step: 1,
+      usedManagedKey: true,
+    })
+    const payload = (turn: number) => ({
+      provider: 'zai-coding-cn',
+      turn,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-steps' } },
+    }) as unknown as RequestErrorPayload
+    const next = vi.fn(async () => undefined)
+    assert.deepEqual(await h.service.requestErrorListener(payload(1), next), { kind: 'retry' })
+    assert.deepEqual(await h.service.requestErrorListener(payload(2), next), { kind: 'retry' })
+    assert.equal(await h.service.requestErrorListener(payload(1), next), undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal((h.service as any).stepAttempts.get('session-steps\u0000zai-coding-cn\u00001\u00001'), undefined)
+    assert.equal((h.service as any).stepAttempts.get('session-steps\u0000zai-coding-cn\u00002\u00001').retries, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a finish without broker evidence is not attributed to a managed key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-no-evidence', messages: [] },
+      async function* () {
+        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'RATE_LIMIT' } } }
+      } as any,
+    )
+    for await (const _chunk of iterable) {
+      // consume
+    }
+    assert.equal((h.service as any).attempts.has('session-no-evidence\u0000zai-coding-cn'), false)
+    const next = vi.fn(async () => undefined)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-no-evidence' } },
+    } as unknown as RequestErrorPayload
+    assert.equal(await h.service.requestErrorListener(payload, next), undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(key.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('root-namespace compensation restores the live apiKeyEnv', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('deepseek-official')
+    const record = h.store.provider('deepseek-official')!
+    h.credentials.raw.failUnset = true
+    await assert.rejects(() => h.service.releaseProvider('deepseek-official'), /credential store locked/)
+    assert.equal(h.settings.valueOf('llm-deepseek-api-key').apiKeyEnv, record.brokerRef)
+    h.credentials.raw.failUnset = false
+    await h.service.releaseProvider('deepseek-official')
+    assert.equal(h.settings.valueOf('llm-deepseek-api-key').apiKeyEnv, 'DEEPSEEK_API_KEY')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a mismatch release records partial deletion without touching the profile', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const record = h.store.provider('zai-coding-cn')!
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv = 'SOME_OTHER_REF'
+    h.credentials.raw.failUnsetRefs.add(record.keys[1].ref)
+    await assert.rejects(() => h.service.releaseProvider('zai-coding-cn'), /credential store locked/)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, 'SOME_OTHER_REF')
+    assert.equal(record.keys[0].valueMissing, true)
+    assert.equal(record.keys[1].valueMissing, false)
+    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
+    h.credentials.raw.failUnsetRefs.clear()
+    await h.service.releaseProvider('zai-coding-cn')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, 'SOME_OTHER_REF')
   } finally {
     await h.close()
   }
