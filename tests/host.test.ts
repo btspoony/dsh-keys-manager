@@ -1816,7 +1816,7 @@ test('a production retry consumes the pending step pin and clears it on success'
       agent: { session: { id: 'session-production-pin' } },
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    h.service.noteRequestStep({ agent: { session: { id: 'session-production-pin' } }, turn: 1, step: 1 })
+    h.service.noteRequestStep({ agent: { session: { id: 'session-production-pin' } }, turn: 1, step: 1 }, 'zai-coding-cn')
     let seen: { value?: string } | undefined
     const iterable = h.service.streamListener(
       { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-production-pin', messages: [] },
@@ -1944,7 +1944,7 @@ test('a non-sticky three-key failover retry uses the verified alternate', async 
       agent: { session: { id: 'session-three' } },
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    h.service.noteRequestStep({ agent: { session: { id: 'session-three' } }, turn: 1, step: 1 })
+    h.service.noteRequestStep({ agent: { session: { id: 'session-three' } }, turn: 1, step: 1 }, 'zai-coding-cn')
     let seen: { value?: string } | undefined
     const iterable = h.service.streamListener(
       { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-three', messages: [] },
@@ -1986,8 +1986,21 @@ test('a new step clears a retry pin abandoned by cancellation', async () => {
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     assert.equal((h.service as any).retryBindings.size, 1)
-    h.service.noteRequestStep({ agent: { session: { id: 'session-abandon' } }, turn: 2, step: 1 })
+    h.service.noteRequestStep({ agent: { session: { id: 'session-abandon' } }, turn: 2, step: 1 }, 'zai-coding-cn')
     assert.equal((h.service as any).retryBindings.size, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('request steps are keyed per provider', async () => {
+  const h = await harness()
+  try {
+    h.service.noteRequestStep({ agent: { session: { id: 'session-provider' } }, turn: 1, step: 1 }, 'zai-coding-cn')
+    h.service.noteRequestStep({ agent: { session: { id: 'session-provider' } }, turn: 2, step: 1 }, 'anthropic')
+    assert.equal((h.service as any).requestSteps.get('session-provider\u0000zai-coding-cn').turn, 1)
+    assert.equal((h.service as any).requestSteps.get('session-provider\u0000anthropic').turn, 2)
   } finally {
     await h.close()
   }

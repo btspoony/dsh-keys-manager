@@ -1277,18 +1277,18 @@ export class KeysManagerService {
     this.retryBindings.set(`${bindingKey(sessionId, providerId)}\u0000${turn}\u0000${step}`, { keyId, at: Date.now() })
   }
 
-  /** Record the turn/step the agent loop is about to request. */
-  noteRequestStep(payload: AgentRequestPayload): void {
+  /** Record the turn/step the agent loop is about to request for one provider. */
+  noteRequestStep(payload: AgentRequestPayload, providerId: string): void {
     const raw = payload.agent?.session?.id
-    if (raw === undefined) return
+    if (raw === undefined || providerId.length === 0) return
     const sessionId = String(raw)
-    const prefix = `${sessionId}\u0000`
+    const prefix = `${sessionId}\u0000${providerId}\u0000`
     for (const key of this.retryBindings.keys()) {
       if (!key.startsWith(prefix)) continue
       const parts = key.split('\u0000')
       if (Number(parts[2]) !== payload.turn || Number(parts[3]) !== payload.step) this.retryBindings.delete(key)
     }
-    this.requestSteps.set(sessionId, { turn: payload.turn, step: payload.step, at: Date.now() })
+    this.requestSteps.set(`${sessionId}\u0000${providerId}`, { turn: payload.turn, step: payload.step, at: Date.now() })
   }
 
   /** Drop one step's retry pin once its attempt settles. */
@@ -1477,7 +1477,7 @@ export class KeysManagerService {
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
-    const current = sessionId === undefined ? undefined : this.requestSteps.get(sessionId)
+    const current = sessionId === undefined ? undefined : this.requestSteps.get(`${sessionId}\u0000${providerId}`)
     const step = current !== undefined && Date.now() - current.at <= ATTEMPT_TTL_MS
       ? { turn: current.turn, step: current.step }
       : undefined
@@ -1856,9 +1856,13 @@ export function apply(ctx: HostContext): void {
     options?: boolean | { prepend?: boolean },
   ) => () => void
   on('llm/stream', (options: unknown, next: () => AsyncIterable<StreamChunkLike>) => service.streamListener(options as GenerateOptionsLike, next))
-  on('agent/request', (payload: unknown, next: () => Promise<unknown>) => {
-    service.noteRequestStep(payload as AgentRequestPayload)
-    return next()
+  on('agent/request', async (payload: unknown, next: () => Promise<unknown>) => {
+    const config = await next()
+    const provider = config !== null && typeof config === 'object' && typeof (config as { provider?: unknown }).provider === 'string'
+      ? (config as { provider: string }).provider
+      : ''
+    service.noteRequestStep(payload as AgentRequestPayload, provider)
+    return config
   })
   on('agent/request-error', (payload: unknown, next: () => Promise<RequestErrorAction>) => service.requestErrorListener(payload as RequestErrorPayload, next), { prepend: true })
 
