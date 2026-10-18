@@ -54,6 +54,8 @@ git log by the release-prep workflow.
   as unknown rather than a broken binding; client mutations are serialized;
   retry budgets survive failures with no selected key; active switch budgets
   survive pruning; the Typert registration is disposed on unload.
+- Failover probes an alternate credential before cooling the current key, and
+  workflow actions are pinned to reviewed full commit SHAs.
 - Release now leaves an externally replaced provider profile untouched,
   restores the exact live profile snapshot on a failed unset, records per-key
   deletion progress, refuses an unreadable release, never re-enables a cached

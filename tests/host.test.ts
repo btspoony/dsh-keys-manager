@@ -1104,3 +1104,43 @@ test('release refuses to proceed when settings are unreadable', async () => {
     await h.close()
   }
 })
+
+
+test('an alternate with a removed credential does not cool the current key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ retryCount: 1 })
+    const record = h.store.provider('zai-coding-cn')!
+    const [current, alternate] = record.keys
+    const selected = await h.service.selectKey('zai-coding-cn', 'session-alternate')
+    assert.equal(selected.key!.id, current.id)
+    ;(h.service as any).attempts.set('session-alternate\u0000zai-coding-cn', {
+      keyId: current.id,
+      retries: 0,
+      at: Date.now(),
+      turn: 9,
+      step: 1,
+      usedManagedKey: true,
+    })
+    h.credentials.refs.delete(alternate.ref)
+    const payload = {
+      provider: 'zai-coding-cn',
+      turn: 9,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-alternate' } },
+    } as unknown as RequestErrorPayload
+    const next = vi.fn(async () => ({ kind: 'retry' as const }))
+    assert.deepEqual(await h.service.requestErrorListener(payload, next), { kind: 'retry' })
+    assert.deepEqual(await h.service.requestErrorListener(payload, next), { kind: 'retry' })
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(current.cooldownUntil, 0)
+    assert.equal(alternate.valueMissing, true)
+    assert.equal(h.store.binding('session-alternate', 'zai-coding-cn')!.keyId, current.id)
+  } finally {
+    await h.close()
+  }
+})

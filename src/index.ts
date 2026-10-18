@@ -1468,6 +1468,30 @@ export class KeysManagerService {
     return action
   }
 
+  /**
+   * Find a metadata-selectable alternate whose credential actually resolves.
+   * A key whose credential was removed outside the manager must not cause the
+   * current, working key to be cooled and the session rebound.
+   */
+  private async findVerifiedAlternate(
+    record: ProviderRecord,
+    currentKeyId: string,
+    now: number,
+  ): Promise<KeyRecord | undefined> {
+    const tried = new Set<string>()
+    for (;;) {
+      const candidate = pickHealthyExcluding(record, currentKeyId, now)
+      if (candidate === undefined || tried.has(candidate.id)) return undefined
+      tried.add(candidate.id)
+      const probe = await this.probeKey(candidate.ref)
+      if (probe.hit !== undefined) return candidate
+      if (probe.missing) {
+        candidate.valueMissing = true
+        this.store.touch()
+      }
+    }
+  }
+
   /** Waterfall listener: bounded retry, then key switch and cool-down. */
   async requestErrorListener(payload: RequestErrorPayload, next: () => Promise<RequestErrorAction>): Promise<RequestErrorAction> {
     if (payload.signal?.aborted) return next()
@@ -1507,9 +1531,9 @@ export class KeysManagerService {
       if (action === undefined) this.switches.delete(switchKey)
       return action
     }
-    const candidate = pickHealthyExcluding(record, currentKeyId, now)
+    const candidate = await this.findVerifiedAlternate(record, currentKeyId, now)
     if (candidate === undefined) {
-      this.warn(`${providerId} has no alternate healthy key; delegating recovery`)
+      this.warn(`${providerId} has no alternate with a resolvable credential; preserving the current key via delegation`)
       const action = await this.delegateAndMaybeCool(payload, providerId, currentKeyId, next)
       if (action === undefined) this.switches.delete(switchKey)
       return action
