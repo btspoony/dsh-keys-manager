@@ -51,9 +51,8 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-Neither install path runs a build on your machine. The published
-`dsh plugin --profile web add dsh-keys-manager` path installs the npm
-tarball as-is: package lifecycle scripts (`prepare` / `prepack`) do not run
+Only the published-package path avoids a local build: `dsh plugin --profile web add dsh-keys-manager` installs the npm
+tarball as-is — package lifecycle scripts (`prepare` / `prepack`) do not run
 for registry installs, and the tarball already ships the built `lib/` and
 the client bundle. The local `dsh plugin --profile web link .` path is
 different — installing a local directory runs `prepare` during `pnpm i`,

@@ -40,7 +40,7 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-两种安装路径都不会在你的机器上执行构建。已发布的 `dsh plugin --profile web add dsh-keys-manager` 路径按原样安装 npm tarball：注册表安装不会运行包生命周期脚本（`prepare` / `prepack`），tarball 内已带构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径不同——安装本地目录会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程不需要手动构建步骤。
+只有已发布包的安装路径不会在本地执行构建：`dsh plugin --profile web add dsh-keys-manager` 按原样安装 npm tarball——注册表安装不会运行包生命周期脚本（`prepare` / `prepack`），tarball 内已带构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径不同——安装本地目录会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程不需要手动构建步骤。
 
 安装完成后刷新 Web 页面，让浏览器侧代码被取到。
 
