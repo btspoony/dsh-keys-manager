@@ -1,0 +1,12 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="dsh-keys-manager-icon-bg" x1="6" y1="4" x2="30" y2="33" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5B9BFF"/>
+      <stop offset="1" stop-color="#315BE6"/>
+    </linearGradient>
+  </defs>
+  <rect x="2.5" y="2.5" width="31" height="31" rx="9" fill="url(#dsh-keys-manager-icon-bg)"/>
+  <circle cx="18" cy="13.1" r="4.1" stroke="#F9FAFB" stroke-width="2.2"/>
+  <path d="M18 17.2V26.6" stroke="#F9FAFB" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M18 21.8H22.2M18 24.7H21.2" stroke="#F9FAFB" stroke-width="2.2" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,92 @@
+{
+  "name": "dsh-keys-manager",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Multi-key management for DSH providers: sticky per-session round-robin, retry failover, cooldown recovery, and searchable extra providers.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/btspoony/dsh-keys-manager"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "keys",
+    "provider",
+    "llm"
+  ],
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./bundle/cordis.patch.yml": "./bundle/cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "bundle",
+    "locale",
+    "icon.svg",
+    "scripts"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./bundle/cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-models",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.spec.json --noEmit",
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs && node scripts/verify-dist.mjs",
+    "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
+    "test": "vitest run",
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "prepare": "pnpm run build",
+    "prepack": "pnpm run build"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-client-connection": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-models": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "^0.2.1-rc.2",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@types/node": "^22.20.0",
+    "@types/react": "~18.3.31",
+    "esbuild": "^0.28.2",
+    "react": "^18.3.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.8"
+  }
+}

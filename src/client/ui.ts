@@ -1,0 +1,922 @@
+/** Keys Manager browser components, rendered from the plugin-detail card and
+ * the Models provider-card extension slot. */
+import React from 'react'
+import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView } from './types'
+import type { ManagerSettings } from '../domain'
+import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
+import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from './format'
+
+const h = React.createElement
+
+type T = (key: string, params?: Record<string, string | number>) => string
+type Tone = 'success' | 'warn' | 'idle' | 'error'
+type IconName =
+  | 'search' | 'plus' | 'dots' | 'chevron' | 'eye' | 'eyeOff' | 'key' | 'check'
+  | 'pause' | 'play' | 'trash' | 'close' | 'refresh' | 'warning' | 'shield'
+
+function cx(...values: Array<string | false | null | undefined>): string {
+  return values.filter(Boolean).join(' ')
+}
+
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+function countText(t: T, count: number, oneKey: string, manyKey: string): string {
+  return count === 1 ? t(oneKey) : t(manyKey, { n: count })
+}
+
+function formatClock(timestamp: number, locale: string, t: T): string {
+  if (!timestamp) return t('never')
+  try {
+    return new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(timestamp))
+  } catch {
+    return new Date(timestamp).toLocaleString()
+  }
+}
+
+function relativeTime(timestamp: number, now: number, t: T): string {
+  if (!timestamp) return t('never')
+  const diff = Math.max(0, now - timestamp)
+  if (diff < 60_000) return t('timeJustNow')
+  if (diff < 3_600_000) return t('timeMinutesAgo', { n: Math.floor(diff / 60_000) })
+  if (diff < 86_400_000) return t('timeHoursAgo', { n: Math.floor(diff / 3_600_000) })
+  return t('timeDaysAgo', { n: Math.floor(diff / 86_400_000) })
+}
+
+function durationText(milliseconds: number, t: T): string {
+  const ms = Math.max(0, milliseconds)
+  if (ms < 60_000) return t('timeSeconds', { n: Math.max(1, Math.ceil(ms / 1000)) })
+  if (ms < 3_600_000) return t('timeMinutes', { n: Math.ceil(ms / 60_000) })
+  if (ms < 86_400_000) return t('timeHours', { n: Math.ceil(ms / 3_600_000) })
+  return t('timeDays', { n: Math.ceil(ms / 86_400_000) })
+}
+
+function providerInitial(provider: ProviderView | undefined): string {
+  const source = String(provider?.displayName || provider?.provider || '?').trim()
+  return source.length === 0 ? '?' : source.slice(0, 1).toUpperCase()
+}
+
+function statusKey(status: KeyStatus | ProviderStatus): string {
+  switch (status) {
+    case 'active': return 'keyStatusActive'
+    case 'cooling': return 'keyStatusCooling'
+    case 'paused': return 'keyStatusPaused'
+    case 'missing': return 'keyStatusMissing'
+    default: return 'keyStatusUnmanaged'
+  }
+}
+
+function statusTone(status: KeyStatus | ProviderStatus): Tone {
+  switch (status) {
+    case 'active': return 'success'
+    case 'cooling': return 'warn'
+    case 'paused': return 'idle'
+    case 'missing': return 'error'
+    default: return 'idle'
+  }
+}
+
+interface IconProps {
+  name: IconName
+  size?: number
+  className?: string
+}
+
+function Icon({ name, size = 16, className }: IconProps): React.ReactElement {
+  const common = {
+    width: size,
+    height: size,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+    className,
+    'aria-hidden': true,
+  }
+  if (name === 'search') return h('svg', common, h('circle', { cx: 11, cy: 11, r: 6.5 }), h('path', { d: 'M16 16l4 4' }))
+  if (name === 'plus') return h('svg', common, h('path', { d: 'M12 5v14M5 12h14' }))
+  if (name === 'dots') return h('svg', common, h('circle', { cx: 5, cy: 12, r: 1.2, fill: 'currentColor', stroke: 'none' }), h('circle', { cx: 12, cy: 12, r: 1.2, fill: 'currentColor', stroke: 'none' }), h('circle', { cx: 19, cy: 12, r: 1.2, fill: 'currentColor', stroke: 'none' }))
+  if (name === 'chevron') return h('svg', common, h('path', { d: 'M6 9l6 6 6-6' }))
+  if (name === 'eye') return h('svg', common, h('path', { d: 'M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z' }), h('circle', { cx: 12, cy: 12, r: 2.5 }))
+  if (name === 'eyeOff') return h('svg', common, h('path', { d: 'M3 3l18 18M10.6 6.2A9.8 9.8 0 0112 6c6 0 9.5 6 9.5 6a17 17 0 01-3.2 3.8M6.2 6.7A16.4 16.4 0 002.5 12s3.5 6 9.5 6a9.7 9.7 0 004.2-.9M9.9 9.9a3 3 0 004.2 4.2' }))
+  if (name === 'key') return h('svg', common, h('circle', { cx: 8, cy: 12, r: 3.5 }), h('path', { d: 'M11.5 12H21M17 12v3M20 12v2.5' }))
+  if (name === 'check') return h('svg', common, h('path', { d: 'M5 12.5l4.5 4.5L19 7.5' }))
+  if (name === 'pause') return h('svg', common, h('path', { d: 'M9 6v12M15 6v12' }))
+  if (name === 'play') return h('svg', common, h('path', { d: 'M8 5l11 7-11 7V5z' }))
+  if (name === 'trash') return h('svg', common, h('path', { d: 'M4 7h16M9 7V5h6v2M7 7l1 13h8l1-13M10 11v5M14 11v5' }))
+  if (name === 'close') return h('svg', common, h('path', { d: 'M6 6l12 12M18 6L6 18' }))
+  if (name === 'refresh') return h('svg', common, h('path', { d: 'M20 11a8 8 0 10-2.3 6M20 5v6h-6' }))
+  if (name === 'warning') return h('svg', common, h('path', { d: 'M12 3l9.5 17h-19L12 3zM12 9v5M12 17.2v.1' }))
+  if (name === 'shield') return h('svg', common, h('path', { d: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM9 12l2 2 4-4' }))
+  return h('svg', common)
+}
+
+interface ButtonProps {
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
+  size?: 'normal' | 'small'
+  type?: 'button' | 'submit'
+  disabled?: boolean
+  onClick?: () => void
+  children?: React.ReactNode
+  title?: string
+}
+
+function Button({ variant = 'secondary', size = 'normal', type = 'button', disabled, onClick, children, title }: ButtonProps): React.ReactElement {
+  return h('button', {
+    type,
+    className: cx('km-btn', `km-btn-${variant}`, size === 'small' && 'km-btn-small'),
+    disabled,
+    onClick,
+    title,
+  }, children)
+}
+
+interface StatusPillProps {
+  status: KeyStatus | ProviderStatus
+  t: T
+}
+
+function StatusPill({ status, t }: StatusPillProps): React.ReactElement {
+  return h('span', { className: cx('km-status', `km-status-${statusTone(status)}`) },
+    h('span', { className: cx('km-dot', `km-dot-${statusTone(status)}`) }),
+    h('span', null, t(statusKey(status))),
+  )
+}
+
+interface NoticeProps {
+  tone?: 'info' | 'warn' | 'error'
+  icon?: IconName
+  title?: React.ReactNode
+  children?: React.ReactNode
+  action?: React.ReactNode
+}
+
+function Notice({ tone = 'info', icon = 'warning', title, children, action }: NoticeProps): React.ReactElement {
+  return h('div', { className: cx('km-notice', `km-notice-${tone}`), role: tone === 'error' ? 'alert' : 'note' },
+    h(Icon, { name: icon, size: 15, className: 'km-notice-icon' }),
+    h('div', { className: 'km-notice-body' },
+      title ? h('div', { className: 'km-notice-title' }, title) : null,
+      h('div', { className: 'km-notice-text' }, children),
+    ),
+    action ? h('div', { className: 'km-notice-action' }, action) : null,
+  )
+}
+
+interface ModalProps {
+  title: string
+  children?: React.ReactNode
+  onClose: () => void
+  footer?: React.ReactNode
+  busy?: boolean
+}
+
+function Modal({ title, children, onClose, footer, busy }: ModalProps): React.ReactElement {
+  const dialogRef = React.useRef<HTMLDivElement>(null)
+  const onCloseRef = React.useRef(onClose)
+  const busyRef = React.useRef(busy)
+  onCloseRef.current = onClose
+  busyRef.current = busy
+
+  React.useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const dialog = dialogRef.current
+    const inerted: HTMLElement[] = []
+    if (dialog !== null) {
+      // Inert every sibling branch on the path to the dialog so assistive
+      // technology cannot browse the page behind the confirmation.
+      let node: HTMLElement | null = dialog.parentElement
+      while (node !== null && node !== document.body) {
+        for (const child of [...node.children]) {
+          if (!(child instanceof HTMLElement) || child === dialog || child.contains(dialog)) continue
+          if (!child.inert) {
+            child.inert = true
+            inerted.push(child)
+          }
+        }
+        node = node.parentElement
+      }
+      const first = dialog.querySelector<HTMLElement>(FOCUSABLE)
+      ;(first ?? dialog).focus()
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && busyRef.current !== true) {
+        event.preventDefault()
+        onCloseRef.current()
+        return
+      }
+      if (event.key !== 'Tab' || dialog === null) return
+      const nodes = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(node => node.offsetParent !== null)
+      if (nodes.length === 0) {
+        event.preventDefault()
+        dialog.focus()
+        return
+      }
+      const first = nodes[0]
+      const last = nodes[nodes.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      for (const element of inerted) element.inert = false
+      if (previous !== null && previous.isConnected) previous.focus()
+    }
+  }, [])
+
+  return h('div', {
+    className: 'km-modal-backdrop',
+    role: 'presentation',
+    onMouseDown: (event: React.MouseEvent<HTMLDivElement>) => {
+      if (event.target === event.currentTarget && !busy) onClose()
+    },
+  }, h('div', {
+    className: 'km-modal',
+    role: 'dialog',
+    'aria-modal': 'true',
+    'aria-label': title,
+    tabIndex: -1,
+    ref: dialogRef,
+  },
+    h('div', { className: 'km-modal-title' }, title),
+    h('div', { className: 'km-modal-body' }, children),
+    h('div', { className: 'km-modal-footer' }, footer),
+  ))
+}
+
+interface KeyFormProps {
+  provider: ProviderView
+  onDone?: () => void
+  autoFocus?: boolean
+}
+
+function KeyForm({ provider, onDone, autoFocus = false }: KeyFormProps): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const [alias, setAlias] = React.useState('')
+  const [value, setValue] = React.useState('')
+  const [show, setShow] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const isExtra = !provider.managed && provider.extra
+  const disabled = busy || alias.trim().length === 0 || value.trim().length === 0
+
+  async function submit(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    if (disabled) return
+    setBusy(true)
+    setError(null)
+    const method = provider.managed ? 'addKey' : 'addExtraProvider'
+    const args = provider.managed
+      ? { provider: provider.provider, alias: alias.trim(), value }
+      : { extraId: provider.extraId ?? provider.provider, alias: alias.trim(), value }
+    const result = await runtime.store.call(method, args)
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setAlias('')
+    setValue('')
+    setShow(false)
+    onDone?.()
+  }
+
+  return h('form', { className: 'km-form', onSubmit: submit },
+    h('div', { className: 'km-form-lead' },
+      h('div', { className: 'km-form-title' }, t('addKeyTitle')),
+      h('div', { className: 'km-muted' }, isExtra ? t('adoptExtraHint') : t('addKeyHint')),
+    ),
+    h('div', { className: 'km-form-grid' },
+      h('label', { className: 'km-field' },
+        h('span', { className: 'km-field-label' }, t('alias')),
+        h('input', {
+          className: 'km-input',
+          value: alias,
+          onChange: (event: React.ChangeEvent<HTMLInputElement>) => setAlias(event.target.value),
+          placeholder: t('aliasPlaceholder'),
+          maxLength: 80,
+          autoFocus: autoFocus || isExtra,
+          disabled: busy,
+        }),
+      ),
+      h('label', { className: 'km-field km-field-wide' },
+        h('span', { className: 'km-field-label' }, t('secret')),
+        h('div', { className: 'km-secret' },
+          h('input', {
+            className: 'km-input km-secret-input',
+            type: show ? 'text' : 'password',
+            value,
+            onChange: (event: React.ChangeEvent<HTMLInputElement>) => setValue(event.target.value),
+            placeholder: t('secretPlaceholder'),
+            autoComplete: 'new-password',
+            spellCheck: false,
+            disabled: busy,
+          }),
+          h('button', {
+            type: 'button',
+            className: 'km-secret-toggle',
+            onClick: () => setShow(current => !current),
+            disabled: busy,
+            title: show ? t('hide') : t('show'),
+          }, h(Icon, { name: show ? 'eyeOff' : 'eye', size: 15 })),
+        ),
+      ),
+    ),
+    error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
+    h('div', { className: 'km-form-actions' },
+      h(Button, { variant: 'primary', type: 'submit', disabled },
+        busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'plus', size: 14 }),
+        h('span', null, busy ? (isExtra ? t('adding') : t('saving')) : (isExtra ? t('addExtra') : t('save'))),
+      ),
+    ),
+  )
+}
+
+interface KeyRowProps {
+  provider: ProviderView
+  keyRecord: KeyView
+  now: number
+}
+
+function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
+  const key = keyRecord
+  const runtime = useRuntime()
+  const t = useT()
+  const locale = useLocaleId()
+  const [menu, setMenu] = React.useState(false)
+  const [editing, setEditing] = React.useState(false)
+  const [alias, setAlias] = React.useState(key.alias)
+  const [confirm, setConfirm] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const rootRef = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    setAlias(key.alias)
+  }, [key.alias])
+
+  React.useEffect(() => {
+    if (!menu) return undefined
+    const onDown = (event: MouseEvent): void => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) setMenu(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setMenu(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  async function update(patch: { alias?: string; enabled?: boolean }): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.call('updateKey', { provider: provider.provider, keyId: key.id, patch })
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+    else setEditing(false)
+  }
+
+  async function submitRename(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    const next = alias.trim()
+    if (next.length === 0 || next === key.alias) {
+      setEditing(false)
+      return
+    }
+    await update({ alias: next })
+  }
+
+  async function remove(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.call('deleteKey', { provider: provider.provider, keyId: key.id })
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+    else setConfirm(false)
+  }
+
+  const cold = key.status === 'cooling' && key.cooldownUntil > now
+  const meta = key.status === 'missing'
+    ? t('keyStatusMissing')
+    : key.totalUses > 0
+      ? t('uses', { n: key.totalUses })
+      : ''
+
+  return h('div', { className: 'km-key-row', ref: rootRef },
+    h('div', { className: 'km-key-identity' },
+      h('div', { className: 'km-key-alias-line' },
+        editing
+          ? h('form', { className: 'km-rename', onSubmit: submitRename },
+              h('input', {
+                className: 'km-input km-rename-input',
+                'aria-label': t('alias'),
+                value: alias,
+                onChange: (event: React.ChangeEvent<HTMLInputElement>) => setAlias(event.target.value),
+                maxLength: 80,
+                autoFocus: true,
+                disabled: busy,
+                onKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (event.key === 'Escape') setEditing(false)
+                },
+              }),
+              h('button', { type: 'submit', className: 'km-icon-btn', disabled: busy, title: t('save') }, h(Icon, { name: 'check', size: 15 })),
+              h('button', { type: 'button', className: 'km-icon-btn', onClick: () => { setEditing(false); setAlias(key.alias) }, title: t('cancel') }, h(Icon, { name: 'close', size: 15 })),
+            )
+          : h('span', { className: 'km-key-alias' }, key.alias),
+        key.importedFrom !== null ? h('span', { className: 'km-tag' }, t('imported')) : null,
+        key.kind === 'oauth' ? h('span', { className: 'km-tag' }, 'OAuth') : null,
+      ),
+      h('div', { className: 'km-key-sub' },
+        h('span', { className: 'km-mono km-muted' }, `•••• ${key.id.slice(-4)}`),
+        key.totalFailures > 0 ? h('span', { className: 'km-muted' }, t('failures', { n: key.totalFailures })) : null,
+      ),
+    ),
+    h('div', { className: 'km-key-status' },
+      h(StatusPill, { status: key.status, t }),
+      cold ? h('div', { className: 'km-key-time km-warn' }, t('coolingUntil', { time: formatClock(key.cooldownUntil, locale, t) })) : null,
+      cold ? h('div', { className: 'km-key-time' }, t('remaining', { time: durationText(key.cooldownUntil - now, t) })) : null,
+    ),
+    h('div', { className: 'km-key-last' },
+      h('div', { className: 'km-key-time' }, `${t('lastUsed')}: ${relativeTime(key.lastUsedAt, now, t)}`),
+      meta ? h('div', { className: 'km-key-time km-muted' }, meta) : null,
+    ),
+    h('div', { className: 'km-key-actions' },
+      h('button', {
+        type: 'button',
+        className: 'km-icon-btn',
+        'aria-haspopup': 'menu',
+        'aria-expanded': menu,
+        title: t('moreActions'),
+        'aria-label': t('moreActions'),
+        onClick: () => setMenu(current => !current),
+        disabled: busy,
+      }, h(Icon, { name: 'dots', size: 17 })),
+      menu ? h('div', { className: 'km-menu', role: 'menu' },
+        h('button', { type: 'button', className: 'km-menu-item', role: 'menuitem', onClick: () => { setMenu(false); setEditing(true) } }, h(Icon, { name: 'key', size: 15 }), t('rename')),
+        h('button', {
+          type: 'button',
+          className: 'km-menu-item',
+          role: 'menuitem',
+          onClick: () => { setMenu(false); void update({ enabled: !key.enabled }) },
+          disabled: busy,
+        }, h(Icon, { name: key.enabled ? 'pause' : 'play', size: 15 }), key.enabled ? t('pause') : t('resume')),
+        h('div', { className: 'km-menu-sep' }),
+        h('button', { type: 'button', className: 'km-menu-item km-menu-danger', role: 'menuitem', onClick: () => { setMenu(false); setConfirm(true) }, disabled: busy }, h(Icon, { name: 'trash', size: 15 }), t('delete')),
+      ) : null,
+    ),
+    error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
+    confirm ? h(Modal, {
+      title: t('deleteTitle', { alias: key.alias }),
+      onClose: () => setConfirm(false),
+      busy,
+      footer: [
+        h(Button, { key: 'cancel', onClick: () => setConfirm(false), disabled: busy }, t('cancel')),
+        h(Button, { key: 'delete', variant: 'danger', onClick: remove, disabled: busy }, busy ? t('deleting') : t('deleteConfirm')),
+      ],
+    }, h('p', { className: 'km-modal-copy' }, t('deleteBody'))) : null,
+  )
+}
+
+interface ProviderCardProps {
+  provider: ProviderView
+  expanded: boolean
+  onToggle: () => void
+  now: number
+}
+
+function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const [adding, setAdding] = React.useState(false)
+  const [adopting, setAdopting] = React.useState(false)
+  const [releasing, setReleasing] = React.useState(false)
+  const [confirmRelease, setConfirmRelease] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const managed = provider.managed
+  const broken = managed && provider.bindingHealthy === false
+  const keyCount = provider.keyCount
+  const warning = provider.warning
+  const isExtra = provider.extra
+  const origin = provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
+  const originLabel = origin === 'plugin' ? t('pluginBuiltin') : origin === 'dsh' ? t('dshBuiltin') : t('customProvider')
+  const providerMeta = [
+    provider.provider,
+    provider.active ? t('active') : provider.configured ? t('configured') : t('notConfigured'),
+    provider.api ?? null,
+  ].filter((value): value is string => Boolean(value))
+
+  async function adopt(): Promise<void> {
+    setAdopting(true)
+    setError(null)
+    const result = await runtime.store.call('adoptProvider', { provider: provider.provider })
+    setAdopting(false)
+    if (!result.ok) setError(result.error)
+  }
+
+  async function release(): Promise<void> {
+    setReleasing(true)
+    setError(null)
+    const result = await runtime.store.call('releaseProvider', { provider: provider.provider })
+    setReleasing(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setConfirmRelease(false)
+  }
+
+  return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', managed && 'km-provider-managed') },
+    h('button', {
+      type: 'button',
+      className: 'km-provider-head',
+      onClick: onToggle,
+      'aria-expanded': expanded,
+    },
+      h('span', { className: 'km-avatar', 'aria-hidden': true }, providerInitial(provider)),
+      h('span', { className: 'km-provider-main' },
+        h('span', { className: 'km-provider-title-line' },
+          h('span', { className: 'km-provider-name' }, provider.displayName || provider.provider),
+          h('span', { className: 'km-tag' }, originLabel),
+          managed ? h('span', { className: 'km-tag km-tag-accent' }, t('managedBadge')) : null,
+          !managed && !provider.supported ? h('span', { className: 'km-tag km-tag-warn' }, t('unsupported')) : null,
+        ),
+        h('span', { className: 'km-provider-meta' },
+          h('span', { className: 'km-mono' }, provider.provider),
+          h('span', { className: 'km-dot-sep', 'aria-hidden': true }, '·'),
+          h('span', null, providerMeta.slice(1).join(' · ')),
+          provider.env.length > 0 ? h('span', { className: 'km-mono km-muted' }, provider.env.join(', ')) : null,
+        ),
+      ),
+      h('span', { className: 'km-provider-side' },
+        managed
+          ? h('span', { className: 'km-count' }, countText(t, keyCount, 'providerKeyOne', 'providerKeys'))
+          : h('span', { className: 'km-count km-muted' }, provider.supported ? t('unmanaged') : t('unsupported')),
+        managed ? h(StatusPill, { status: provider.status, t }) : null,
+        h(Icon, { name: 'chevron', size: 16, className: cx('km-chevron', expanded && 'km-chevron-open') }),
+      ),
+    ),
+    expanded ? h('div', { className: 'km-provider-body' },
+      error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
+      warning !== undefined || broken ? h(Notice, { tone: 'warn', title: t('warning') }, broken ? t('bindingBroken') : warning) : null,
+      !managed ? h('div', { className: 'km-adopt' },
+        h('div', { className: 'km-adopt-copy' },
+          h('div', { className: 'km-adopt-title' }, provider.supported ? t(isExtra ? 'adoptExtraHint' : 'adoptHint') : t('unsupported')),
+          !provider.supported && provider.reason !== undefined ? h('div', { className: 'km-muted' }, provider.reason) : null,
+          provider.apiKeyEnv !== null ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('secret')}:`), h('span', { className: 'km-mono' }, provider.apiKeyEnv)) : null,
+          provider.baseURL !== null ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('baseUrl')}:`), h('span', { className: 'km-mono km-truncate' }, provider.baseURL)) : null,
+          provider.models.length > 0 ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('models')}:`), h('span', null, t('countModels', { n: provider.models.length }))) : null,
+        ),
+        isExtra
+          ? h(KeyForm, { provider, autoFocus: true })
+          : h('div', { className: 'km-adopt-actions' },
+              h(Button, { variant: 'primary', onClick: adopt, disabled: adopting || !provider.supported },
+                adopting ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'shield', size: 14 }),
+                h('span', null, adopting ? t('adopting') : t('adopt')),
+              ),
+            ),
+      ) : h('div', { className: 'km-managed-body' },
+        h('div', { className: 'km-managed-toolbar' },
+          h('div', { className: 'km-managed-summary' },
+            h('span', { className: 'km-mono km-muted' }, `${t('secret')}: ${provider.brokerRef ?? '—'}`),
+            provider.baseURL !== null ? h('span', { className: 'km-mono km-muted km-truncate' }, provider.baseURL) : null,
+          ),
+          h('div', { className: 'km-managed-actions' },
+            h(Button, { variant: 'secondary', size: 'small', onClick: () => setAdding(current => !current), disabled: releasing },
+              h(Icon, { name: 'plus', size: 14 }),
+              h('span', null, t('addKey')),
+            ),
+            h(Button, { variant: 'ghost', size: 'small', onClick: () => setConfirmRelease(true), disabled: releasing },
+              releasing ? t('releasing') : t('release'),
+            ),
+          ),
+        ),
+        adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
+        provider.keys.length === 0
+          ? h('div', { className: 'km-empty-keys' }, t('noKeys'))
+          : h('div', { className: 'km-keys' }, provider.keys.map(key => h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
+      ),
+      h('div', { className: 'km-provider-foot' },
+        h('span', { className: 'km-muted' }, provider.extra ? `${t('api')}: ${provider.api ?? '—'} · ${t('models')}: ${provider.models.length}` : null),
+        provider.defaultBaseURL !== null ? h('span', { className: 'km-mono km-muted km-truncate' }, provider.defaultBaseURL) : null,
+      ),
+    ) : null,
+    confirmRelease ? h(Modal, {
+      title: t('releaseTitle', { provider: provider.displayName || provider.provider }),
+      onClose: () => setConfirmRelease(false),
+      busy: releasing,
+      footer: [
+        h(Button, { key: 'cancel', onClick: () => setConfirmRelease(false), disabled: releasing }, t('cancel')),
+        h(Button, { key: 'release', variant: 'danger', onClick: release, disabled: releasing }, releasing ? t('releasing') : t('releaseConfirm')),
+      ],
+    }, h('p', { className: 'km-modal-copy' }, t(provider.createdProfile === true ? 'releaseBodyCreated' : 'releaseBody'))) : null,
+  )
+}
+
+function SettingsCard(): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const snapshot = useStore()
+  const state = snapshot.state
+  const settings: ManagerSettings | null = state?.settings ?? null
+  const [retry, setRetry] = React.useState('2')
+  const [base, setBase] = React.useState('5')
+  const [grace, setGrace] = React.useState('10')
+  const [busy, setBusy] = React.useState(false)
+  const [saved, setSaved] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const dirty = React.useRef(false)
+
+  React.useEffect(() => {
+    if (settings === null || dirty.current) return
+    setRetry(String(settings.retryCount))
+    setBase(String(cooldownMinutes(settings.baseCooldownMs)))
+    setGrace(String(graceMinutes(settings.recoveryGraceMs)))
+  }, [settings])
+
+  function change(setter: React.Dispatch<React.SetStateAction<string>>) {
+    return (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>): void => {
+      dirty.current = true
+      setSaved(false)
+      setter(event.target.value)
+    }
+  }
+
+  async function save(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    setSaved(false)
+    const result = await runtime.store.call('setSettings', {
+      patch: {
+        retryCount: Number(retry),
+        baseCooldownMs: cooldownMs(Number(base)),
+        recoveryGraceMs: graceMs(Number(grace)),
+      },
+    })
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    dirty.current = false
+    setSaved(true)
+  }
+
+  return h('form', { className: 'km-card km-settings', onSubmit: save },
+    h('div', { className: 'km-settings-head' },
+      h('div', null,
+        h('h3', { className: 'km-settings-title' }, t('settingsTitle')),
+        h('p', { className: 'km-settings-intro' }, t('settingsIntro')),
+      ),
+      h('span', { className: 'km-settings-icon' }, h(Icon, { name: 'shield', size: 20 })),
+    ),
+    h('div', { className: 'km-settings-grid' },
+      h('label', { className: 'km-field' },
+        h('span', { className: 'km-field-label' }, t('retryCount')),
+        h('select', { className: 'km-input', value: retry, onChange: change(setRetry), disabled: busy || state?.writable === false },
+          ['1', '2', '3'].map(value => h('option', { key: value, value }, value)),
+        ),
+        h('span', { className: 'km-field-hint' }, t('retryHint')),
+      ),
+      h('label', { className: 'km-field' },
+        h('span', { className: 'km-field-label' }, t('baseCooldown')),
+        h('input', { className: 'km-input', type: 'number', min: 0.5, step: 'any', value: base, onChange: change(setBase), disabled: busy || state?.writable === false }),
+        h('span', { className: 'km-field-hint' }, t('baseHint')),
+      ),
+      h('label', { className: 'km-field' },
+        h('span', { className: 'km-field-label' }, t('grace')),
+        h('input', { className: 'km-input', type: 'number', min: 0, step: 'any', value: grace, onChange: change(setGrace), disabled: busy || state?.writable === false }),
+        h('span', { className: 'km-field-hint' }, t('graceHint')),
+      ),
+      h('div', { className: 'km-field km-field-note' },
+        h('div', { className: 'km-policy-note' },
+          h('div', { className: 'km-policy-title' }, h(Icon, { name: 'warning', size: 14 }), t('cap')),
+          h('p', { className: 'km-muted' }, t('strategyBody')),
+        ),
+      ),
+    ),
+    error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
+    h('div', { className: 'km-settings-actions' },
+      saved ? h('span', { className: 'km-saved' }, h(Icon, { name: 'check', size: 14 }), t('saved')) : null,
+      h(Button, { variant: 'primary', type: 'submit', disabled: busy || state?.writable === false || snapshot.busy !== null },
+        busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : null,
+        busy ? t('savingSettings') : t('saveSettings'),
+      ),
+    ),
+  )
+}
+
+function KeysManagerBody(): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const snapshot = useStore()
+  const state = snapshot.state
+  const now = snapshot.now
+  const [query, setQuery] = React.useState('')
+  const [showAllAvailable, setShowAllAvailable] = React.useState(false)
+  const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
+  const loadedRef = React.useRef(false)
+
+  React.useEffect(() => {
+    if (loadedRef.current) return
+    loadedRef.current = true
+    if (snapshot.status === 'idle') void runtime.store.load()
+  }, [runtime, snapshot.status])
+
+  const providers = state?.providers ?? []
+  const normalizedQuery = query.trim().toLowerCase()
+  const matches = (provider: ProviderView): boolean => {
+    if (normalizedQuery.length === 0) return true
+    const haystack = [
+      provider.displayName,
+      provider.provider,
+      provider.extraId,
+      provider.api,
+      provider.baseURL,
+      ...provider.env,
+    ].filter((value): value is string => Boolean(value)).join(' ').toLowerCase()
+    return haystack.includes(normalizedQuery)
+  }
+  const managed = providers.filter(provider => provider.managed && matches(provider))
+  const available = providers.filter(provider => !provider.managed && matches(provider))
+  const visibleAvailable = showAllAvailable || normalizedQuery.length > 0 ? available : available.slice(0, 12)
+
+  function toggle(provider: string): void {
+    setExpanded(current => {
+      const next = new Set(current)
+      if (next.has(provider)) next.delete(provider)
+      else next.add(provider)
+      return next
+    })
+  }
+
+  const loading = snapshot.status === 'loading' || (snapshot.status === 'idle' && state === null)
+  const failed = snapshot.status === 'error' || (snapshot.status === 'ready' && state === null)
+
+  return h('div', { className: 'km-page' },
+    snapshot.error !== null ? h('div', { className: 'km-banner km-banner-error', role: 'alert' },
+      h(Icon, { name: 'warning', size: 16 }),
+      h('span', { className: 'km-banner-text' }, snapshot.error),
+      h('button', { type: 'button', className: 'km-banner-close', onClick: () => runtime.store.dismissError(), 'aria-label': t('dismiss') }, h(Icon, { name: 'close', size: 14 })),
+    ) : null,
+
+    state !== null && state.warnings.length > 0
+      ? h('div', { className: 'km-banner km-banner-warn', role: 'note' },
+          h(Icon, { name: 'warning', size: 16 }),
+          h('div', { className: 'km-banner-text' }, state.warnings.map((warning, index) => h('div', { key: index }, warning))),
+        )
+      : null,
+
+    state !== null && !state.writable
+      ? h('div', { className: 'km-banner km-banner-warn', role: 'note' },
+          h(Icon, { name: 'shield', size: 16 }),
+          h('span', { className: 'km-banner-text' }, t('writableFalse')),
+        )
+      : null,
+
+    h('div', { className: 'km-embedded-head' },
+      h('div', { className: 'km-summary' },
+        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.managedCount ?? 0), h('span', null, t('managed'))),
+        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.keyCount ?? 0), h('span', null, t('keys'))),
+        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.healthyKeyCount ?? 0), h('span', null, t('healthy'))),
+        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.coolingKeyCount ?? 0), h('span', null, t('cooling'))),
+      ),
+      h('div', { className: 'km-embedded-actions' },
+        h(Button, {
+          variant: 'ghost',
+          size: 'small',
+          onClick: () => void runtime.store.load(),
+          disabled: snapshot.busy !== null,
+          title: t('refresh'),
+        }, h(Icon, { name: 'refresh', size: 14 }), t('refresh')),
+      ),
+    ),
+
+    h('div', { className: 'km-search' },
+      h(Icon, { name: 'search', size: 17, className: 'km-search-icon' }),
+      h('input', {
+        className: 'km-search-input',
+        value: query,
+        onChange: (event: React.ChangeEvent<HTMLInputElement>) => setQuery(event.target.value),
+        placeholder: t('search'),
+        type: 'search',
+        autoFocus: true,
+        'aria-label': t('search'),
+      }),
+      query.length > 0
+        ? h('button', { type: 'button', className: 'km-search-clear', onClick: () => setQuery(''), 'aria-label': t('reset') }, h(Icon, { name: 'close', size: 14 }))
+        : null,
+    ),
+
+    loading ? h('div', { className: 'km-loading' }, h(Icon, { name: 'refresh', size: 18, className: 'km-spin' }), t('loading')) : null,
+    failed ? h('div', { className: 'km-load-failure' },
+      h('div', { className: 'km-empty-title' }, t('loadError')),
+      h(Button, { variant: 'primary', onClick: () => void runtime.store.load() }, t('reload')),
+    ) : null,
+
+    !loading && !failed ? h('section', { className: 'km-section' },
+      h('div', { className: 'km-section-head' },
+        h('h2', { className: 'km-section-title' }, t('managed')),
+        h('span', { className: 'km-section-count' }, managed.length),
+      ),
+      managed.length === 0
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, t('managedEmpty')))
+        : h('div', { className: 'km-provider-list' }, managed.map(provider => h(ProviderCard, {
+            key: provider.provider,
+            provider,
+            now,
+            expanded: expanded.has(provider.provider),
+            onToggle: () => toggle(provider.provider),
+          }))),
+    ) : null,
+
+    !loading && !failed ? h('section', { className: 'km-section' },
+      h('div', { className: 'km-section-head' },
+        h('h2', { className: 'km-section-title' }, t('available')),
+        h('span', { className: 'km-section-count' }, available.length),
+      ),
+      available.length === 0
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'search', size: 20 }), h('span', null, normalizedQuery.length > 0 ? t('noSearch') : t('availableEmpty')))
+        : h('div', { className: 'km-provider-list' }, visibleAvailable.map(provider => h(ProviderCard, {
+            key: provider.provider,
+            provider,
+            now,
+            expanded: expanded.has(provider.provider),
+            onToggle: () => toggle(provider.provider),
+          }))),
+      available.length > visibleAvailable.length
+        ? h('div', { className: 'km-show-more' },
+            h(Button, { variant: 'ghost', size: 'small', onClick: () => setShowAllAvailable(true) }, t('showAll', { n: available.length })),
+          )
+        : showAllAvailable && available.length > 12
+          ? h('div', { className: 'km-show-more' },
+              h(Button, { variant: 'ghost', size: 'small', onClick: () => setShowAllAvailable(false) }, t('showLess')),
+            )
+          : null,
+    ) : null,
+
+    !loading && !failed ? h('section', { className: 'km-section' }, h(SettingsCard)) : null,
+
+    h('footer', { className: 'km-footer' },
+      h(Icon, { name: 'shield', size: 14 }),
+      h('span', null, t('storageNote')),
+    ),
+  )
+}
+
+interface KeysManagerCardProps {
+  view?: 'summary' | 'page'
+  form?: unknown
+}
+
+function KeysManagerCard({ view }: KeysManagerCardProps): React.ReactElement | null {
+  const t = useT()
+  const snapshot = useStore()
+  if (view === 'summary') {
+    const state = snapshot.state
+    if (state === null) return h('span', { className: 'km-summary-line' }, snapshot.status === 'error' ? t('loadError') : t('loading'))
+    if (state.managedCount === 0) return h('span', { className: 'km-summary-line' }, t('summaryEmpty'))
+    return h('span', { className: 'km-summary-line' }, t('summaryText', { providers: state.managedCount, keys: state.keyCount }))
+  }
+  return h(KeysManagerBody)
+}
+
+interface ManagedProviderBadgeProps {
+  provider?: { provider?: string }
+  view?: 'summary' | 'page'
+}
+
+function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElement | null {
+  const t = useT()
+  const snapshot = useStore()
+  const state = snapshot.state
+  const providerId = props.provider?.provider
+  if (state === null || providerId === undefined) return null
+  const managed = state.providers.find(provider => provider.provider === providerId && provider.managed)
+  if (managed === undefined) return null
+  const broken = managed.bindingHealthy === false
+  return h('div', { className: cx('km-models-note', broken && 'km-models-note-warn'), role: 'note' },
+    h('span', { className: cx('km-dot', broken ? 'km-dot-warn' : 'km-dot-success') }),
+    h('span', { className: 'km-models-note-text' }, t('modelsBadge', { n: managed.keyCount })),
+    h('span', { className: 'km-models-note-hint' }, broken ? t('bindingBroken') : t('modelsHint')),
+  )
+}
+
+export { KeysManagerCard, ManagedProviderBadge, KeysManagerBody }
+export type { KeysManagerCardProps, ManagedProviderBadgeProps }

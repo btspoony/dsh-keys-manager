@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "密钥管理",
+    "description": "为同一个 Provider 配置多个 API Key，支持单会话固定、Round Robin、重试切换、冷却恢复，并提供可搜索的扩展 Provider。"
+  }
+}

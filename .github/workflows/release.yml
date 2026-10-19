@@ -1,0 +1,261 @@
+name: Release
+
+# PR-driven release. Merging a `release vX.Y.Z` PR (opened by the Release prep
+# workflow) runs the whole release inline on the pull_request event:
+# validate -> sanity gate -> npm publish dsh-keys-manager@X.Y.Z -> create+push the
+# vX.Y.Z tag (skipped if it already exists) -> GitHub Release. Prerelease
+# versions (e.g. v0.1.1-alpha.1) are supported: they publish to a prerelease
+# npm dist-tag and never touch the `latest` tag.
+#
+# npm publish uses OIDC trusted publishing (`permissions: id-token: write`
+# below): no NODE_AUTH_TOKEN / NPM_TOKEN secret is required — npm exchanges
+# the workflow's OIDC token for a short-lived publish token. The npm account or organization
+# must configure a trusted publisher for this repository + workflow (see
+# https://docs.npmjs.com/generating-provenance-statements). The tag and
+# GitHub Release are created with the workflow's GITHUB_TOKEN.
+#
+# NOTE: publish happens BEFORE tag creation (mirror mstar-harness). If the tag
+# already exists (e.g. a re-run after a partial failure), publish still
+# proceeds and the tag step skips.
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+  # id-token: write enables OIDC token exchange for npm trusted publishing
+  # (publish step below); the GitHub Release + tag steps use GITHUB_TOKEN.
+  id-token: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >
+      github.event.pull_request.merged == true
+      && startsWith(github.event.pull_request.title, 'release v')
+      && startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout merge commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Release the exact merge commit of the merged release PR, with full
+          # history so `git describe --tags` can find the previous release tag.
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+
+      # pnpm/action-setup must run before setup-node so that setup-node's
+      # `cache: pnpm` can locate the pnpm store path (same order as ci.yml).
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 12.0.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24.19.0"
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve version
+        id: ver
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # The Release prep workflow derives the version from the PR title
+      # ("release v<version>") and bumps package.json to match. If the merged
+      # PR drifted from that contract (e.g. the version was edited inside the
+      # PR without re-running prep), publishing the drifted version would
+      # silently produce a mismatched tag and an empty GitHub Release — fail
+      # loudly instead.
+      - name: Cross-check version vs PR title
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          TITLE_VER="${TITLE#release v}"
+          if [ "$TITLE_VER" != "$VERSION" ]; then
+            echo "::error::PR title version \"${TITLE_VER}\" does not match package.json version \"${VERSION}\". Re-run Release prep for v${VERSION} instead of hand-editing the PR."
+            exit 1
+          fi
+          echo "PR title and package.json agree on ${VERSION}"
+
+      - name: Validate version
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if [ -z "$VERSION" ]; then
+            echo "::error::package.json version is empty; refusing to release."
+            exit 1
+          fi
+          # Version guard (mirror release-prep): X.Y.Z or X.Y.Z-prerelease
+          # (semver; the suffix must contain at least one digit, matching
+          # parseVersion in prepare-release.mjs — digitless suffixes like
+          # 0.1.1-alpha are rejected). The version flows into an awk regex
+          # anchor below; reject metacharacters up front so a malformed
+          # package.json version cannot break the extraction (awk exit-2)
+          # after publish. '-' is a literal character in awk ERE outside a
+          # character class, so prerelease suffixes need no extra escaping
+          # there.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]*[0-9][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Invalid version \"$VERSION\" in package.json. Expected X.Y.Z or X.Y.Z-prerelease (e.g. 0.2.0, 0.1.1-alpha.1)."
+            exit 1
+          fi
+          # Tag-exists policy (mirror mstar-harness): publish proceeds even if
+          # v$VERSION already exists (e.g. re-run after a partial failure); the
+          # tag step below skips creation when the tag is already present.
+          echo "Releasing dsh-keys-manager@${VERSION}"
+
+      - name: Sanity gate (typecheck + build + test)
+        run: |
+          pnpm run typecheck
+          pnpm run build
+          pnpm run test
+
+      - name: Assert packed tarball contents (pre-publish guard)
+        run: |
+          set -euo pipefail
+          # Same guard as ci.yml: npm 11 writes the Tarball Contents listing to
+          # STDERR (stdout carries only the tarball filename), so capture both
+          # streams; refuse to publish a tarball missing the built entrypoint
+          # or the cordis bundle patch.
+          npm pack --dry-run --ignore-scripts 2>&1 | tee "$RUNNER_TEMP/pack-listing.txt"
+          grep -Eq "lib/index\.js( |$)" "$RUNNER_TEMP/pack-listing.txt"
+          grep -Eq "lib/client\.js( |$)" "$RUNNER_TEMP/pack-listing.txt"
+          grep -Eq "bundle/cordis\.patch\.yml( |$)" "$RUNNER_TEMP/pack-listing.txt"
+
+      - name: Check npm version
+        id: npm-version
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # A partial run may have published the version before tag/Release
+          # failed. Skip only the completed publish step, and only when the
+          # published commit is the merge commit checked out here.
+          if npm view "dsh-keys-manager@${VERSION}" version >/dev/null 2>&1; then
+            PUBLISHED_SHA="$(npm view "dsh-keys-manager@${VERSION}" gitHead 2>/dev/null || true)"
+            LOCAL_SHA="$(git rev-parse HEAD)"
+            if [ -z "$PUBLISHED_SHA" ]; then
+              echo "::error::dsh-keys-manager@${VERSION} is already published without a gitHead; refusing to tag a possibly different commit."
+              exit 1
+            fi
+            if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
+              echo "::error::dsh-keys-manager@${VERSION} was published from ${PUBLISHED_SHA}, not ${LOCAL_SHA}."
+              exit 1
+            fi
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm
+        if: steps.npm-version.outputs.exists != 'true'
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # OIDC trusted publishing: no NODE_AUTH_TOKEN / NPM_TOKEN env or
+          # secret — npm exchanges the workflow's id-token (permissions above)
+          # for a short-lived publish token with provenance. The npmjs org must
+          # have a trusted publisher configured for this repo + workflow.
+          #
+          # Prerelease dist-tag: a version containing '-' (e.g.
+          # 0.1.1-alpha.1) publishes to the prerelease-prefix tag (text
+          # between the first '-' and the first '.' after it -> "alpha")
+          # instead of the default `latest`, so prereleases never clobber the
+          # latest release and consumers opting into the tag can install it.
+          # Formal X.Y.Z versions publish without --tag (default latest).
+          # --provenance is explicitly requested: it makes sigstore signing
+          # deterministic under OIDC trusted publishing (matches the sibling
+          # dsh-llm-fallbacks release workflow).
+          if [[ "${VERSION}" == *-* ]]; then
+            PRETAG="${VERSION#*-}"
+            PRETAG="${PRETAG%%.*}"
+            # prepare-release.mjs rejects these earlier; keep the workflow
+            # guard so a hand-edited release PR cannot move `latest`.
+            if [[ "$PRETAG" == "latest" || ! "$PRETAG" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "::error::Invalid prerelease dist-tag '${PRETAG}' for ${VERSION}."
+              exit 1
+            fi
+            npm publish --provenance --access public --tag "$PRETAG"
+          else
+            npm publish --provenance --access public
+          fi
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Extract release notes
+        run: |
+          set -euo pipefail
+          # Release body source: the `## [<version>]` section of CHANGELOG.md,
+          # written by prepare-release.mjs during release-prep and committed in
+          # the release PR — the same section the PR body uses (the PR body
+          # additionally appends a merge-instruction line; the Release body is
+          # the section only).
+          # Guard on the file existing: under `set -e`, awk on a missing
+          # CHANGELOG.md exits 2 and aborts the step. The version anchor is
+          # prefix-safe: the pattern is anchored at `^## \[<version>\]`, so
+          # `0.1.1` cannot match a `## [0.1.10]` header.
+          # No git-log fallback on the Release side: every release PR prepared
+          # by the current prep writes its CHANGELOG section before the PR
+          # opens, so a missing section is a contract break — fail loudly
+          # instead of shipping an empty GitHub Release (mirror
+          # dsh-llm-fallbacks; an empty Release is a silent quality
+          # regression, not a recoverable one).
+          VERSION="${{ steps.ver.outputs.version }}"
+          if [ -f CHANGELOG.md ]; then
+            # Escape regex metacharacters in the version inside awk (the gsub
+            # runs after `-v` argument escape processing, which would strip
+            # backslashes from a shell-escaped value) so the anchor matches
+            # literally: dots must not act as any-char. VERSION is validated
+            # upstream (X.Y.Z or X.Y.Z-prerelease); '-' is a literal character
+            # in awk ERE outside a character class, so prerelease suffixes
+            # need no extra escaping.
+            awk -v v="$VERSION" '
+              BEGIN { gsub(/\./, "\\\\&", v) }
+              /^## \[/ { if (in_section) exit }
+              $0 ~ "^## \\[" v "\\]" { in_section = 1 }
+              in_section
+            ' CHANGELOG.md > /tmp/notes.md
+          fi
+          if [ ! -s /tmp/notes.md ]; then
+            echo "::error::No changelog section found for v${VERSION} in CHANGELOG.md; refusing to create an empty GitHub Release."
+            exit 1
+          fi
+
+      - name: Create + push tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; skipping tag creation."
+            exit 0
+          fi
+          git tag -a -m "Release ${TAG}" "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
+          body_path: /tmp/notes.md
+          draft: false
+          # A version containing '-' (e.g. 0.1.1-alpha.1) is a prerelease —
+          # mark the GitHub Release as pre-release so it is never presented as
+          # the latest stable release, matching the npm prerelease dist-tag
+          # used by the publish step above.
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}

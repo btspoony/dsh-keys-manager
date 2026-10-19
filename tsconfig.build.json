@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "sourceMap": true,
+    "outDir": "lib",
+    "rootDir": "src",
+    "module": "nodenext",
+    "moduleResolution": "nodenext"
+  },
+  "include": ["src"],
+  "exclude": ["src/client"]
+}
