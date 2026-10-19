@@ -704,6 +704,32 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
     if (result.value !== null) setLogin({ alias, attemptId: result.value.id })
   }
 
+  /**
+   * MF1 reachability: an unmanaged OAuth-capable route adopts first (zero
+   * keys when no key credential exists), then opens its sign-in dialog.
+   */
+  async function adoptThenLogin(): Promise<void> {
+    if (provider.managed) {
+      await openLogin()
+      return
+    }
+    setAdopting(true)
+    setError(null)
+    const result = await runtime.store.call('adoptProvider', { provider: provider.provider })
+    setAdopting(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    await openLogin()
+  }
+
+  // MF1: adoption is reachable through either capability — key-pool support
+  // or OAuth account sign-in. An OAuth-only route stays adoptable while the
+  // key entry (Add key) stays gated by key support alone.
+  const accountAdoptable = provider.accountSupported === true
+  const adoptable = provider.supported || accountAdoptable
+
   return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', managed && 'km-provider-managed') },
     h('button', {
       type: 'button',
@@ -717,7 +743,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
           h('span', { className: 'km-provider-name' }, provider.displayName || provider.provider),
           h('span', { className: 'km-tag' }, originLabel),
           managed ? h('span', { className: 'km-tag km-tag-accent' }, t('managedBadge')) : null,
-          !managed && !provider.supported ? h('span', { className: 'km-tag km-tag-warn' }, t('unsupported')) : null,
+          !managed && !provider.supported && !accountAdoptable ? h('span', { className: 'km-tag km-tag-warn' }, t('unsupported')) : null,
         ),
         h('span', { className: 'km-provider-meta' },
           h('span', { className: 'km-mono' }, provider.provider),
@@ -729,7 +755,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
       h('span', { className: 'km-provider-side' },
         managed
           ? h('span', { className: 'km-count' }, countText(t, keyCount, 'providerKeyOne', 'providerKeys'))
-          : h('span', { className: 'km-count km-muted' }, provider.supported ? t('unmanaged') : t('unsupported')),
+          : h('span', { className: 'km-count km-muted' }, adoptable ? t('unmanaged') : t('unsupported')),
         managed ? h(StatusPill, { status: provider.status, t }) : null,
         h(Icon, { name: 'chevron', size: 16, className: cx('km-chevron', expanded && 'km-chevron-open') }),
       ),
@@ -748,10 +774,18 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         isExtra
           ? h(KeyForm, { provider, autoFocus: true })
           : h('div', { className: 'km-adopt-actions' },
-              h(Button, { variant: 'primary', onClick: adopt, disabled: adopting || !provider.supported },
+              h(Button, { variant: 'primary', onClick: adopt, disabled: adopting || !adoptable },
                 adopting ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'shield', size: 14 }),
                 h('span', null, adopting ? t('adopting') : t('adopt')),
               ),
+              // MF1: Add account is reachable from the unmanaged/adopt flow —
+              // adopt (zero keys for OAuth-only routes) then sign in.
+              oauthCapable(provider)
+                ? h(Button, { variant: 'secondary', onClick: () => void adoptThenLogin(), disabled: adopting || startingLogin },
+                    startingLogin ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'user', size: 14 }),
+                    h('span', null, startingLogin ? t('adopting') : t('addAccount')),
+                  )
+                : null,
             ),
       ) : h('div', { className: 'km-managed-body' },
         h('div', { className: 'km-managed-toolbar' },
@@ -760,7 +794,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
             provider.baseURL !== null ? h('span', { className: 'km-mono km-muted km-truncate' }, provider.baseURL) : null,
           ),
           h('div', { className: 'km-managed-actions' },
-            h(Button, { variant: 'secondary', size: 'small', onClick: () => setAdding(current => !current), disabled: releasing },
+            h(Button, { variant: 'secondary', size: 'small', onClick: () => setAdding(current => !current), disabled: releasing || !provider.supported, title: provider.supported ? undefined : provider.reason },
               h(Icon, { name: 'plus', size: 14 }),
               h('span', null, t('addKey')),
             ),

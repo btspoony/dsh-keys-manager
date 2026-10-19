@@ -376,9 +376,11 @@ function isKeyishEnv(name: string): boolean {
 }
 
 /**
- * DSH catalog routes that are explicitly outside the single-key pool. Keeping
- * this as a named table (rather than only deriving it from env names) makes a
- * reviewed decision visible and stable when a provider adds another auth path.
+ * DSH catalog routes that are explicitly outside the single-key pool. This
+ * is a KEY-POOL verdict only (capabilityOf): an OAuth-capable route listed
+ * here stays adoptable for account management. Keeping it as a named table
+ * (rather than only deriving it from env names) makes a reviewed decision
+ * visible and stable when a provider adds another auth path.
  */
 const UNSUPPORTED_KEY_POOL_PROVIDERS: Readonly<Record<string, string>> = Object.freeze({
   'amazon-bedrock': 'Uses an AWS credential chain (profile, IAM keys, container/IRSA tokens), not a single API key',
@@ -387,25 +389,57 @@ const UNSUPPORTED_KEY_POOL_PROVIDERS: Readonly<Record<string, string>> = Object.
   'openai-codex': 'Uses ChatGPT OAuth sign-in only; no API-key credential',
 })
 
-/** Whether the provider looks like it can authenticate with one API key. */
-function supportOf(entry: DirectoryEntry, profile: ProfileShape | undefined, managed: ProviderRecord | undefined): ProviderSupport {
-  if (managed !== undefined) return { supported: true }
-  if (entry.error !== undefined) return { supported: false, reason: entry.error }
+/**
+ * How one route can be managed, split by mode (MF1): the single-key pool
+ * and OAuth account management are separate capabilities. A route may be
+ * account-adoptable while carrying no key-pool credential at all
+ * (`openai-codex`), and the reverse (amazon-bedrock, cloudflare) stays
+ * key-unsupported without ever reaching the account path.
+ */
+interface CapabilitySplit {
+  /** The route can join the single-key pool (Add key / addKey). */
+  keys: boolean
+  /** The route can be adopted for OAuth account management (Add account). */
+  accounts: boolean
+  /** Why the key pool does not apply, when a specific reason is known. */
+  reason?: string
+}
+
+/**
+ * Split one route's management capability by mode. The
+ * {@link UNSUPPORTED_KEY_POOL_PROVIDERS} table keeps its meaning: it is a
+ * verdict about API keys, so an OAuth-capable route listed there remains
+ * adoptable for accounts while its key entry stays blocked.
+ */
+function capabilityOf(entry: DirectoryEntry, profile: ProfileShape | undefined): CapabilitySplit {
+  if (entry.error !== undefined) return { keys: false, accounts: false, reason: entry.error }
   const unsupportedReason = UNSUPPORTED_KEY_POOL_PROVIDERS[entry.provider]
-  if (unsupportedReason !== undefined) return { supported: false, reason: unsupportedReason }
-  if (entry.provider === 'deepseek-official') return { supported: true }
-  if (profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0) return { supported: true }
+  if (unsupportedReason !== undefined) {
+    return { keys: false, accounts: entry.nativeAuth?.oauth === true, reason: unsupportedReason }
+  }
+  const accounts = entry.nativeAuth?.oauth === true
+  if (entry.provider === 'deepseek-official') return { keys: true, accounts }
+  if (profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0) return { keys: true, accounts }
   const auth = entry.nativeAuth
   if (auth !== undefined) {
-    if (auth.env.some(isKeyishEnv)) return { supported: true }
-    // Post-increment-1 truth: these routes are managed through OAuth
-    // account sign-in (Add account), not an API key — the key pool itself
-    // does not apply to them.
-    if (auth.oauth) return { supported: false, reason: 'This provider signs in with an OAuth account; no API key is used' }
-    if (auth.env.length > 0) return { supported: false, reason: 'This provider uses native cloud credentials, not one API key' }
-    return { supported: false, reason: 'This provider declares no API-key authentication' }
+    // A dual-auth route (key env + OAuth, e.g. anthropic) keeps BOTH
+    // capabilities; the oauth-only verdict below is for routes with no
+    // key credential at all.
+    if (auth.env.some(isKeyishEnv)) return { keys: true, accounts }
+    if (auth.oauth) return { keys: false, accounts: true, reason: 'This provider signs in with an OAuth account; no API key is used' }
+    if (auth.env.length > 0) return { keys: false, accounts: false, reason: 'This provider uses native cloud credentials, not one API key' }
+    return { keys: false, accounts: false, reason: 'This provider declares no API-key authentication' }
   }
-  return { supported: true }
+  return { keys: true, accounts }
+}
+
+/** Whether the route can be adopted for OAuth account management (MF1). */
+function accountSupportOf(entry: DirectoryEntry | undefined, managed: ProviderRecord | undefined): ProviderSupport {
+  if (managed !== undefined) return { supported: true }
+  if (entry === undefined) return { supported: false, reason: 'This provider route is not registered' }
+  if (entry.error !== undefined) return { supported: false, reason: entry.error }
+  if (entry.nativeAuth?.oauth === true) return { supported: true }
+  return { supported: false, reason: 'This provider offers no OAuth account sign-in' }
 }
 
 /** Request-local credential context established by the stream listener. */
@@ -1409,7 +1443,9 @@ export class KeysManagerService {
       const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, entry.settingsPath))
       const managed = this.store.provider(entry.provider)
       const extra = EXTRA_PROVIDER_MAP.get(entry.provider)
-      const support = supportOf(entry, profile, managed)
+      const caps = capabilityOf(entry, profile)
+      const support: ProviderSupport = { supported: caps.keys, ...(caps.reason === undefined ? {} : { reason: caps.reason }) }
+      const accountSupport = accountSupportOf(entry, managed)
       const apiKeyEnv = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : null
       const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
       const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
@@ -1429,6 +1465,7 @@ export class KeysManagerService {
         active: active.has(entry.provider),
         supported: support.supported,
         ...(support.reason === undefined ? {} : { reason: support.reason }),
+        accountSupported: accountSupport.supported,
         settingsNs: entry.settingsNs,
         settingsPath: [...entry.settingsPath],
         apiKeyEnv,
@@ -1466,6 +1503,8 @@ export class KeysManagerService {
         configured: managed !== undefined,
         active: false,
         supported: true,
+        // Extra providers are key-pool routes; they offer no OAuth flow.
+        accountSupported: false,
         settingsNs: 'llm-pi-ai',
         settingsPath: ['providers', extra.id],
         apiKeyEnv: managed?.brokerRef ?? null,
@@ -1502,6 +1541,7 @@ export class KeysManagerService {
         configured: false,
         active: false,
         supported: true,
+        accountSupported: false,
         settingsNs: managed.settingsNs,
         settingsPath: [...managed.settingsPath],
         apiKeyEnv: managed.brokerRef,
@@ -1642,8 +1682,15 @@ export class KeysManagerService {
       const namespace = this.namespace(descriptor, entry.settingsNs)
       if (namespace === undefined) throw new Error(`Settings namespace "${entry.settingsNs}" is not mounted`)
       const profile = asProfile(getPath(namespace.value, entry.settingsPath))
-      const support = supportOf(entry, profile, undefined)
-      if (!support.supported) throw new Error(support.reason ?? 'This provider cannot be managed')
+      // MF1: adoption is reachable through EITHER capability. An OAuth-only
+      // route adopts with zero keys (account-only management); a key-only
+      // route adopts as before; the key-pool table alone no longer blocks
+      // an adoptable account route.
+      const caps = capabilityOf(entry, profile)
+      const accountSupport = accountSupportOf(entry, undefined)
+      if (!caps.keys && !accountSupport.supported) {
+        throw new Error(caps.reason ?? accountSupport.reason ?? 'This provider cannot be managed')
+      }
       if (entry.declared === true && profile === undefined) {
         throw new Error('Add this hand-declared provider in Models first, then adopt it here')
       }
@@ -1828,6 +1875,15 @@ export class KeysManagerService {
   private async addKeyLocked(provider: string, alias: string, value: string): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
+    // MF1: the key-pool restriction lives on the key entry path. A route
+    // adopted for accounts only (no key-pool credential) refuses new keys.
+    const entry = this.directoryEntry(provider)
+    if (entry !== undefined) {
+      const namespace = this.namespace(this.describeSettings(), entry.settingsNs)
+      const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, entry.settingsPath))
+      const caps = capabilityOf(entry, profile)
+      if (!caps.keys) throw new Error(caps.reason ?? `Provider "${provider}" does not accept API keys`)
+    }
     const input = validateKeyInput(alias, value)
     if (record.keys.length >= KEY_LIMIT) throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
     const key = await this.createKeyRecord(provider, input.alias, input.value)

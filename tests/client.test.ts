@@ -811,6 +811,69 @@ describe('account ui', () => {
     setRuntimeContext(null)
   })
 
+  test('unmanaged OAuth-capable providers enable Adopt and offer Add account; Add key stays gated by key support', async () => {
+    // MF1: an OAuth-only route is adoptable for accounts even though the
+    // key pool does not apply — Adopt is enabled, Add account rides the
+    // adopt flow, and Add key stays disabled on the managed route.
+    const unmanaged = makeState()
+    unmanaged.providers[0] = {
+      ...makeState().providers[0]!,
+      provider: 'openai-codex',
+      displayName: 'OpenAI Codex',
+      managed: false,
+      configured: false,
+      active: false,
+      supported: false,
+      accountSupported: true,
+      reason: 'Uses ChatGPT OAuth sign-in only; no API-key credential',
+      nativeAuth: { env: [], oauth: true },
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'unmanaged',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: unmanaged })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+
+    const adopt = findButtons(view.nodes, 'adopt')[0]
+    expect(adopt).toBeDefined()
+    expect(adopt!.props!.disabled).toBe(false)
+    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    view.unmount()
+
+    // On the managed OAuth-only route, Add key is disabled (server refuses
+    // it too) while Add account stays available.
+    const managed = makeState()
+    managed.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: true,
+      reason: 'Uses ChatGPT OAuth sign-in only; no API-key credential',
+    }
+    const managedHarness = makeContext({ ok: true, value: managed })
+    const managedStore = createStore(managedHarness.ctx)
+    setRuntimeContext({ ctx: managedHarness.ctx, store: managedStore })
+    const managedView = mountView(KeysManagerBody)
+    await managedView.flush()
+    const managedHead = findByClass(managedView.nodes, 'km-provider-head')[0]
+    expect(managedHead).toBeDefined()
+    ;(managedHead!.props!.onClick as () => void)()
+    managedView.render()
+    const addKey = findButtons(managedView.nodes, 'addKey')[0]
+    expect(addKey).toBeDefined()
+    expect(addKey!.props!.disabled).toBe(true)
+    expect(findButtons(managedView.nodes, 'addAccount')).toHaveLength(1)
+    managedView.unmount()
+    setRuntimeContext(null)
+  })
+
   test('oauth rows render as distinct account rows with identity, glyph, and counters', async () => {
     const state = makeState()
     state.providers[0] = makeOauthProvider()

@@ -156,7 +156,14 @@ export interface ProviderView {
   managed: boolean
   configured: boolean
   active: boolean
+  /** Key-pool verdict: can this route take API keys (Add key / addKey). */
   supported: boolean
+  /**
+   * Account-management verdict: can this route be adopted for OAuth
+   * account sign-in. Distinct from `supported` (MF1): an OAuth-only route
+   * is account-adoptable while carrying no key-pool credential.
+   */
+  accountSupported?: boolean
   reason?: string
   settingsNs: string
   settingsPath: string[]

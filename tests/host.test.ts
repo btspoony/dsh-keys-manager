@@ -539,10 +539,15 @@ test('provider state marks OAuth-only routes unsupported and lists extras', asyn
     assert.equal(anthropic.origin, 'dsh')
     assert.equal(bedrock.supported, false)
     assert.match(String(bedrock.reason), /AWS/)
+    // The key-pool exclusion is mode-scoped: bedrock stays unreachable for
+    // accounts too, while an OAuth-only route is account-adoptable.
+    assert.equal(bedrock.accountSupported, false)
     assert.equal(codex.supported, false)
     assert.match(String(codex.reason), /OAuth/)
+    assert.equal(codex.accountSupported, true)
     assert.equal(deepseek.supported, true)
     assert.equal(anthropic.supported, true)
+    assert.equal(anthropic.accountSupported, true)
     assert.equal(cloudflareGateway.supported, false)
     assert.match(String(cloudflareGateway.reason), /Cloudflare/)
     assert.equal(cloudflareWorkers.supported, false)
@@ -571,6 +576,62 @@ test('adoption imports the existing credential and points the profile at the bro
     assert.equal(h.credentials.refs.get(keyRef), 'sk-existing-zai')
     // The original credential is deliberately left in place for release.
     assert.equal(h.credentials.refs.get('ZAI_CODING_CN_API_KEY'), 'sk-existing-zai')
+  } finally {
+    await h.close()
+  }
+})
+
+// MF1: account management is a capability distinct from key-pool support.
+// An OAuth-only route (openai-codex) must be adoptable for accounts — as a
+// managed provider with zero keys — while the key entry path stays refused.
+
+test('an OAuth-only provider is adoptable for accounts with zero keys', async () => {
+  const h = await harness()
+  try {
+    const state = await h.service.adoptProvider('openai-codex')
+    const codex = state.providers.find(provider => provider.provider === 'openai-codex')!
+    assert.equal(codex.managed, true)
+    assert.equal(codex.keyCount, 0)
+    assert.equal(codex.bindingHealthy, true)
+    // Key-pool support stays refused for the adopted route; the account
+    // capability is the separate verdict that made adoption possible.
+    assert.equal(codex.supported, false)
+    assert.match(String(codex.reason), /OAuth/)
+    assert.equal(codex.accountSupported, true)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, codex.brokerRef)
+  } finally {
+    await h.close()
+  }
+})
+
+test('beginAccountLogin succeeds on an adopted OAuth-only provider', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('openai-codex')
+    const codexGrantKey = 'llm-pi-ai/openai-codex'
+    h.credentials.records.set(codexGrantKey, grantPayload({ accountId: 'acc-codex', email: 'codex@example.com' }))
+    const view = await h.service.beginAccountLogin('openai-codex', 'Codex account')
+    h.emitEvent('authorization/settled', codexGrantKey, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    const row = h.store.provider('openai-codex')!.keys.find(key => key.kind === 'oauth')!
+    assert.equal(row.oauth!.provider, 'openai-codex')
+    assert.equal(row.oauth!.accountId, 'acc-codex')
+    assert.equal(h.credentials.records.has(row.oauth!.grantRef), true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('Add key stays refused on an adopted OAuth-only provider', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('openai-codex')
+    await assert.rejects(
+      () => h.service.addKey('openai-codex', 'second', 'sk-second'),
+      /OAuth|API key|API-key/,
+    )
+    assert.equal(h.store.provider('openai-codex')!.keys.length, 0)
   } finally {
     await h.close()
   }
