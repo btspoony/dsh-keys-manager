@@ -504,31 +504,11 @@ test('classifyOAuthFailure preserves ordinary key-failure semantics', () => {
   assert.equal(shouldFailover('CONTEXT_WINDOW_EXCEEDED'), false)
 })
 
-/**
- * pi-ai failure-code pin (T1 review "Cannot verify (a)").
- *
- * pi-ai raises `ModelsError` with `code` as its first constructor argument,
- * stored on the instance (`dist/utils/models-error.js`: `this.code = code`;
- * the `ModelsErrorCode` union includes `"oauth"`). Every OAuth-specific
- * throw in the request path carries exactly that code — installed bundle
- * `dist/auth/resolve.js:81` (`throw new ModelsError("oauth",
- * \`OAuth refresh failed for ${providerId}\`)`), `:114` ("refresh returned a
- * token that expires too soon"), `:121` ("OAuth auth derivation failed").
- * A store-level failure surfaces as `"auth"` (`resolve.js:89`), which stays
- * failover-eligible through the ordinary path, not the oauth classifier.
- * `LlmFailureLike.code` mirrors that field, so the classifier below is the
- * pin: if upstream ever renames the code, this test fails.
- */
-test('the oauth failure code is pinned to the pi-ai ModelsError contract', async () => {
-  const { OAUTH_FAILURE_CODE } = await import('../src/core')
-  assert.equal(OAUTH_FAILURE_CODE, 'oauth')
-  assert.equal(classifyOAuthFailure({ code: OAUTH_FAILURE_CODE }), 'oauth')
-  // The ModelsError instance shape, exactly as pi-ai constructs it.
-  const modelsError = Object.assign(new Error('OAuth refresh failed for anthropic'), { name: 'ModelsError', code: 'oauth' })
-  assert.equal(classifyOAuthFailure(modelsError), 'oauth')
-  // A store-level failure ("auth") is an ordinary failover, not oauth.
-  assert.equal(classifyOAuthFailure({ code: 'auth' }), 'failover')
-})
+// N4: the former OAUTH_FAILURE_CODE constant pin is gone. The pi-ai
+// contract is now covered by behaviour on the host path: an oauth-coded
+// stream failure cools the owning account and demotes the projection
+// (tests/host.test.ts, "an oauth-coded stream failure under an active
+// projection …"), which fails if upstream ever renames the code.
 
 test('account refs stay in the plugin scope with lowercase-hyphen ids', () => {
   assert.equal(accountRef('anthropic', '3fa2c1'), 'keys-manager/anthropic-3fa2c1')

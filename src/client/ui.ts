@@ -862,18 +862,25 @@ interface LoginDialogProps {
   onClose: () => void
 }
 
+/** Consecutive polling failures tolerated before the dialog gives up (N1). */
+const LOGIN_POLL_FAILURE_LIMIT = 3
+
 /**
  * Interactive OAuth sign-in dialog. State arrives by polling
  * `accountAttempt` (a dialog-local cadence layered on the store's read-only
  * poller); `null` means the flow is gone — a neutral ended state, never
  * success. Prompt answers go through the `answerAccountPrompt` ack, and
- * polling continues until a terminal status.
+ * polling continues until a terminal status. A permanent polling failure
+ * (host restart pruned the attempt, revoked RPC) stops the poller after
+ * three consecutive misses and renders the failure notice (N1) instead of
+ * waiting forever.
  */
 function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.ReactElement {
   const runtime = useRuntime()
   const t = useT()
   const [attempt, setAttempt] = React.useState<AccountAttemptView | null>(null)
   const [flowEnded, setFlowEnded] = React.useState(false)
+  const [pollError, setPollError] = React.useState<string | null>(null)
   const [answer, setAnswer] = React.useState('')
   const [answering, setAnswering] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
@@ -884,11 +891,20 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
   React.useEffect(() => {
     let stopped = false
     let timer: ReturnType<typeof setInterval> | undefined
+    let failures = 0
     const poll = async (): Promise<void> => {
       if (stopped) return
       const result = await runtime.store.accountAttempt(attemptId)
       if (stopped) return
-      if (!result.ok) return // transient RPC failure: keep polling
+      if (!result.ok) {
+        failures += 1
+        if (failures >= LOGIN_POLL_FAILURE_LIMIT) {
+          if (timer !== undefined) clearInterval(timer)
+          setPollError(result.error)
+        }
+        return // transient failures keep polling until the limit
+      }
+      failures = 0
       if (result.value === null) {
         // Unknown id: the flow is gone (pruned/expired), which is not success.
         if (timer !== undefined) clearInterval(timer)
@@ -942,7 +958,10 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
   const answerable = prompt !== undefined && !answering && answer.trim().length > 0
 
   let body: React.ReactNode
-  if (flowEnded) {
+  if (pollError !== null) {
+    // N1: the poller gave up on a permanent RPC failure.
+    body = h(Notice, { tone: 'error', icon: 'warning', title: t('loginFailed') }, pollError)
+  } else if (flowEnded) {
     body = h(Notice, { tone: 'warn', icon: 'warning' }, t('loginFlowEnded'))
   } else if (attempt === null || attempt.status === 'pending') {
     body = h('div', { className: 'km-login-flow' },

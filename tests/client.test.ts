@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test, vi } from 'vitest'
 import React from 'react'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
@@ -112,7 +112,15 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
   const registrations: Harness['registrations'] = []
   const dictionaries: Harness['dictionaries'] = {}
   const cleanups: Harness['cleanups'] = []
-  const labels: Record<string, string> = { nav: '密钥管理' }
+  // Dictionary values the UI tests resolve (N5): a stub t that echoes key
+  // names can never catch a copy regression, so the surface under test is
+  // rendered with real dictionary values.
+  const labels: Record<string, string> = {
+    nav: '密钥管理',
+    accountIdentity: '账户',
+    uses: '使用 {n} 次',
+    failures: '失败 {n} 次',
+  }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
     return String(template).replace(/\{(\w+)\}/g, (_, name: string) => String(params[name] ?? `{${name}}`))
@@ -192,30 +200,34 @@ describe('client registration', () => {
     for (const cleanup of harness.cleanups.reverse()) cleanup()
   })
 
-  test('the registered dictionaries carry all 12 OAuth account strings in both languages', () => {
-    // W6 pin: these strings must live in the live registration source
-    // (LOCALE_DICTS), not only in the package's locale/*.json files.
-    const oauthStrings: Record<string, { en: string; zh: string }> = {
-      addAccount: { en: 'Add account', zh: '添加账户' },
-      accountIdentity: { en: 'Account', zh: '账户' },
-      accountReauth: { en: 'Re-authenticate', zh: '重新认证' },
-      accountActivate: { en: 'Set active', zh: '设为当前' },
-      loginTitle: { en: 'Account sign-in', zh: '账户登录' },
-      loginPending: { en: 'Waiting for authorization…', zh: '等待授权…' },
-      loginBrowserOpen: { en: 'Open in browser', zh: '在浏览器中打开' },
-      loginPromptTitle: { en: 'Complete sign-in', zh: '完成登录' },
-      loginPromptSubmit: { en: 'Submit', zh: '提交' },
-      loginFailed: { en: 'Login failed', zh: '登录失败' },
-      loginFlowEnded: { en: 'This sign-in session has ended. Close the dialog and start again.', zh: '本次登录流程已结束，请关闭窗口后重新开始。' },
-      loginReady: { en: 'Signed in.', zh: '登录成功。' },
-    }
+  test('the registered dictionaries carry the OAuth account key set in both languages', () => {
+    // N3: key-set + non-empty assertion. The W6 intent stays — these keys
+    // must exist in the live registration source (LOCALE_DICTS) for both
+    // languages — without mirroring every translation literal here.
+    const oauthKeys = [
+      'addAccount',
+      'accountIdentity',
+      'accountReauth',
+      'accountActivate',
+      'loginTitle',
+      'loginPending',
+      'loginBrowserOpen',
+      'loginPromptTitle',
+      'loginPromptSubmit',
+      'loginFailed',
+      'loginFlowEnded',
+      'loginReady',
+    ]
     const harness = makeContext()
     apply(harness.ctx)
     const dicts = harness.dictionaries.value
     expect(dicts).toBeDefined()
-    for (const [key, expected] of Object.entries(oauthStrings)) {
-      expect(dicts!.en[key]).toBe(expected.en)
-      expect(dicts!.zh[key]).toBe(expected.zh)
+    for (const key of oauthKeys) {
+      expect(typeof dicts!.en[key]).toBe('string')
+      expect(dicts!.en[key]!.length).toBeGreaterThan(0)
+      expect(typeof dicts!.zh[key]).toBe('string')
+      expect(dicts!.zh[key]!.length).toBeGreaterThan(0)
+      expect(dicts!.en[key]).not.toBe(dicts!.zh[key])
     }
     for (const cleanup of harness.cleanups.reverse()) cleanup()
   })
@@ -893,8 +905,9 @@ describe('account ui', () => {
     const inside = descendants(view.nodes, row)
     expect(inside.some(node => node.text === 'work@anthropic.example')).toBe(true)
     expect(findByClass(view.nodes, 'km-account-glyph')).toHaveLength(1)
-    expect(inside.some(node => node.text === 'accountIdentity')).toBe(true)
-    expect(inside.some(node => node.text === 'uses · failures')).toBe(true)
+    // N5: resolved dictionary values, not key names or a pinned separator.
+    expect(inside.some(node => node.text === '账户')).toBe(true)
+    expect(inside.some(node => node.text === '使用 3 次 · 失败 1 次')).toBe(true)
     expect(findByClass(view.nodes, 'km-status').length).toBeGreaterThanOrEqual(1)
     view.unmount()
     setRuntimeContext(null)
@@ -1028,5 +1041,53 @@ describe('account ui', () => {
     expect(accountAttemptCalls).toBe(pollsAtEnd)
     view.unmount()
     setRuntimeContext(null)
+  })
+
+  test('three consecutive polling failures stop polling and render the failure notice (N1)', async () => {
+    // Fake only the dialog's polling interval: the mount harness awaits
+    // real setTimeout(0) ticks in flush().
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const state = makeState()
+      state.providers[0] = makeOauthProvider()
+      let accountAttemptCalls = 0
+      const harness = makeContext()
+      harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+        if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+        if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePendingAttemptView() }
+        if (endpoint === 'keysManager/accountAttempt') {
+          accountAttemptCalls += 1
+          return { ok: false, error: { message: 'host restarted under the dialog' } }
+        }
+        return { ok: false, error: { message: `unexpected ${endpoint}` } }
+      }
+      const store = createStore(harness.ctx)
+      setRuntimeContext({ ctx: harness.ctx, store })
+      const view = mountView(KeysManagerBody)
+      await view.flush()
+      ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+      view.render()
+      ;(findButtons(view.nodes, 'addAccount')[0]!.props!.onClick as () => void)()
+      await view.flush()
+      // Initial poll + two interval ticks = three consecutive failures.
+      await vi.advanceTimersByTimeAsync(1000)
+      await view.flush()
+      await vi.advanceTimersByTimeAsync(1000)
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      // The failure notice renders with the RPC error instead of an endless
+      // "Waiting for authorization…".
+      expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+      expect(view.nodes.some(node => node.text === 'loginFailed')).toBe(true)
+      expect(view.nodes.some(node => node.text.includes('host restarted under the dialog'))).toBe(true)
+      // Polling stopped: further time adds no calls.
+      await vi.advanceTimersByTimeAsync(5000)
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
+      setRuntimeContext(null)
+    }
   })
 })

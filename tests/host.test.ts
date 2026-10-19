@@ -288,8 +288,8 @@ interface Harness {
 /**
  * The flows `llm-pi-ai/login.ts:131-171` registers: one flow per installed
  * catalog provider, keyed `recordKeyFor(providerId)` = `llm-pi-ai/<id>`
- * (auth.ts:29,36-38), methods sorted oauth-first (login.ts:40-47). The oauth
- * members and this method order are the pin the login driver depends on.
+ * (auth.ts:29,36-38). The oauth members are the pin the login driver
+ * depends on; the fixture's method order is not asserted (N2).
  */
 const OAUTH_PROVIDERS = ['anthropic', 'github-copilot', 'kimi-coding', 'openai-codex', 'openrouter', 'radius', 'xai'] as const
 
@@ -2706,9 +2706,6 @@ test('the service resolves the oauth flow for every pi-ai oauth provider', async
     for (const provider of OAUTH_PROVIDERS) {
       assert.deepEqual(h.service.oauthFlowFor(provider), { key: `llm-pi-ai/${provider}`, method: 'oauth' })
     }
-    // Method order is oauth-first on dual-auth flows (login.ts:40-47).
-    const anthropic = h.authorization.describe('llm-pi-ai/anthropic')
-    assert.deepEqual(anthropic.methods.map((method: { id: string }) => method.id), ['oauth', 'api-key'])
     // A provider with no oauth method (not in the flow table, or oauth: false
     // upstream) yields nothing: the manager must not begin a flow it cannot name.
     assert.equal(h.service.oauthFlowFor('zai-coding-cn'), undefined)
