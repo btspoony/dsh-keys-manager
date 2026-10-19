@@ -7,8 +7,6 @@
 
 [English](README.md) | **简体中文**
 
-文档：[开发](docs/development.zh-CN.md) · [发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md) — English docs: [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)
-
 DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 变成托管密钥池。它扩展而非替换 Models 页面：提供商、模型和模型选择器都在原处，只有 API key 来源移到管理器之后。
 
 ## 特性
@@ -41,6 +39,8 @@ cd dsh-keys-manager
 pnpm i
 dsh plugin --profile web link .
 ```
+
+两种安装路径都不会在你的机器上执行构建。已发布的 `dsh plugin --profile web add dsh-keys-manager` 路径按原样安装 npm tarball：注册表安装不会运行包生命周期脚本（`prepare` / `prepack`），tarball 内已带构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径不同——安装本地目录会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程不需要手动构建步骤。
 
 安装完成后刷新 Web 页面，让浏览器侧代码被取到。
 
@@ -107,7 +107,7 @@ $DSH_HOME/keys-manager/state.json
 | [发布](docs/release.zh-CN.md) | CI 检查与 npm 发布流程 |
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含延后提供商 |
 
-英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md`。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
+英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
 
 ## 许可证
 
