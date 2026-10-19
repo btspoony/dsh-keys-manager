@@ -145,6 +145,8 @@ export interface KeyView {
   /**
    * True when this account's grant IS the provider's live projection
    * (round-2 review, step 6); only ever set on `kind: 'oauth'` rows.
+   * Round-3 N3: this per-key flag is the single wire carrier of ownership —
+   * the provider-view `projectedAccountId` duplicate was removed.
    */
   projected?: boolean
 }
@@ -169,12 +171,6 @@ export interface ProviderView {
    * is account-adoptable while carrying no key-pool credential.
    */
   accountSupported?: boolean
-  /**
-   * Pool row id of the account whose grant currently serves this provider
-   * (the live projection), or null when no managed account does (round-2
-   * review, step 6).
-   */
-  projectedAccountId?: string | null
   reason?: string
   settingsNs: string
   settingsPath: string[]

@@ -576,10 +576,12 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
   }
 
   const cold = key.status === 'cooling' && key.cooldownUntil > now
-  const meta = [
+  // Round-3 N1: the counters render as separate nodes (separator included),
+  // so tests can assert the parts instead of pinning the joined string.
+  const metaParts = [
     key.totalUses > 0 ? t('uses', { n: key.totalUses }) : null,
     key.totalFailures > 0 ? t('failures', { n: key.totalFailures }) : null,
-  ].filter((value): value is string => value !== null).join(' · ')
+  ].filter((value): value is string => value !== null)
 
   return h('div', { className: 'km-account-row', ref: rootRef },
     h('div', { className: 'km-key-identity' },
@@ -601,7 +603,11 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
     ),
     h('div', { className: 'km-key-last' },
       h('div', { className: 'km-key-time' }, `${t('lastUsed')}: ${relativeTime(key.lastUsedAt, now, t)}`),
-      meta.length > 0 ? h('div', { className: 'km-key-time km-muted' }, meta) : null,
+      metaParts.length > 0 ? h('div', { className: 'km-key-time km-muted' },
+        metaParts.map((value, index) => [
+          index > 0 ? h('span', { key: `sep-${index}`, className: 'km-dot-sep', 'aria-hidden': true }, '·') : null,
+          h('span', { key: `part-${index}` }, value),
+        ])) : null,
     ),
     h('div', { className: 'km-key-actions' },
       h('button', {

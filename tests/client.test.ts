@@ -125,6 +125,10 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     keyStatusEmpty: '暂无密钥',
     keyStatusUnmanaged: '未接管',
     unmanaged: '未接管',
+    // Round-3 N2: the delete-account copy is asserted through its
+    // distinguishing phrases, so the stub resolves the real values.
+    deleteAccountBody: '这会从凭证库中删除该账户保存的 OAuth 授权。如果它是当前账户，该 Provider 路由将停用它并回落到 API-key 池；Provider 仍保持接管状态。',
+    deleteAccountBodyNoKeys: '这会从凭证库中删除该账户保存的 OAuth 授权。该路由没有 API-key 池，删除后将停止服务，直到重新登录账户。',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
@@ -217,6 +221,7 @@ describe('client registration', () => {
       'accountProjected',
       'accountReauth',
       'accountActivate',
+      'adoptAccountTitle',
       'loginTitle',
       'loginPending',
       'loginBrowserOpen',
@@ -963,7 +968,10 @@ describe('account ui', () => {
     expect(findByClass(view.nodes, 'km-account-glyph')).toHaveLength(1)
     // N5: resolved dictionary values, not key names or a pinned separator.
     expect(inside.some(node => node.text === '账户')).toBe(true)
-    expect(inside.some(node => node.text === '使用 3 次 · 失败 1 次')).toBe(true)
+    // Round-3 N1: the counter parts asserted individually, never as a
+    // joined string pin of the separator format.
+    expect(inside.some(node => node.text === '使用 3 次')).toBe(true)
+    expect(inside.some(node => node.text === '失败 1 次')).toBe(true)
     expect(findByClass(view.nodes, 'km-status').length).toBeGreaterThanOrEqual(1)
     view.unmount()
     setRuntimeContext(null)
@@ -975,7 +983,7 @@ describe('account ui', () => {
     const state = makeState()
     const projected = { ...makeOauthKey(), projected: true }
     const other = { ...makeOauthKey(), id: 'k_oauth8', oauth: { provider: 'zai-coding-cn', email: 'other@anthropic.example', accountId: 'acc_8', expiresAt: Date.now() + 3_600_000 } }
-    state.providers[0] = { ...makeOauthProvider(), keys: [projected, other], projectedAccountId: projected.id }
+    state.providers[0] = { ...makeOauthProvider(), keys: [projected, other] }
     const harness = makeContext({ ok: true, value: state })
     const store = createStore(harness.ctx)
     setRuntimeContext({ ctx: harness.ctx, store })
@@ -1058,9 +1066,12 @@ describe('account ui', () => {
       setRuntimeContext(null)
       return copy.text
     }
-    expect(await buildCopy(true)).toContain('deleteAccountBody')
-    expect(await buildCopy(true)).not.toContain('deleteAccountBodyNoKeys')
-    expect(await buildCopy(false)).toContain('deleteAccountBodyNoKeys')
+    // Round-3 N2: assert the copy itself through its distinguishing
+    // phrases — a swapped translation or key-name echo can no longer pass.
+    expect(await buildCopy(true)).toContain('回落到 API-key 池')
+    expect(await buildCopy(true)).not.toContain('停止服务')
+    expect(await buildCopy(false)).toContain('停止服务')
+    expect(await buildCopy(false)).not.toContain('回落到 API-key 池')
   })
 
   test('the account re-authentication entry carries the target row id', async () => {

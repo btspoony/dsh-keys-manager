@@ -3223,7 +3223,8 @@ test('buildState surfaces the projection owner on the provider and badges exactl
     seedOAuthAccount(h, 'anthropic', { accountId: 'acc-8', email: 'other@example.com', refresh: 'rt-other-account' })
     let state = h.service.buildState()
     const provider = state.providers.find(entry => entry.provider === 'anthropic')!
-    assert.equal(provider.projectedAccountId, rowId)
+    // Round-3 N3: the per-key flag is the only wire carrier of ownership —
+    // exactly one row is badged.
     const projected = provider.keys.filter(key => key.projected === true)
     assert.equal(projected.length, 1)
     assert.equal(projected[0]!.id, rowId)
@@ -3232,7 +3233,6 @@ test('buildState surfaces the projection owner on the provider and badges exactl
     void refA
     state = h.service.buildState()
     const emptied = state.providers.find(entry => entry.provider === 'anthropic')!
-    assert.equal(emptied.projectedAccountId, null)
     assert.equal(emptied.keys.some(key => key.projected === true), false)
   } finally {
     await h.close()
@@ -4145,7 +4145,7 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
     ])
     const params = (method: string): string[] =>
       invocations.find(invocation => invocation.method === method)!.parameters.map(parameter => parameter.name)
-    assert.deepEqual(params('beginAccountLogin'), ['provider', 'alias'])
+    assert.deepEqual(params('beginAccountLogin'), ['provider', 'alias', 'targetAccountId'])
     assert.deepEqual(params('answerAccountPrompt'), ['attemptId', 'value'])
     assert.deepEqual(params('accountAttempt'), ['attemptId'])
     assert.deepEqual(params('listAccountAttempts'), [])

@@ -1766,7 +1766,6 @@ export class KeysManagerService {
         supported: support.supported,
         ...(support.reason === undefined ? {} : { reason: support.reason }),
         accountSupported: accountSupport.supported,
-        projectedAccountId,
         settingsNs: entry.settingsNs,
         settingsPath: [...entry.settingsPath],
         apiKeyEnv,
@@ -1807,7 +1806,6 @@ export class KeysManagerService {
         supported: true,
         // Extra providers are key-pool routes; they offer no OAuth flow.
         accountSupported: false,
-        projectedAccountId,
         settingsNs: 'llm-pi-ai',
         settingsPath: ['providers', extra.id],
         apiKeyEnv: managed?.brokerRef ?? null,
@@ -1846,7 +1844,6 @@ export class KeysManagerService {
         active: false,
         supported: true,
         accountSupported: false,
-        projectedAccountId,
         settingsNs: managed.settingsNs,
         settingsPath: [...managed.settingsPath],
         apiKeyEnv: managed.brokerRef,
