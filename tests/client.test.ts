@@ -713,6 +713,27 @@ function makeOauthProvider(): ProviderView {
   }
 }
 
+function makeAttemptView(): AccountAttemptView {
+  return {
+    id: 'la_1_ab',
+    provider: 'zai-coding-cn',
+    alias: 'Work account',
+    status: 'prompt',
+    notices: [{ message: 'Open this page to continue signing in.', url: 'https://example.com/authorize' }],
+    prompt: { kind: 'text', message: 'Paste the verification code' },
+    createdAt: 1,
+    updatedAt: 2,
+  }
+}
+
+function makePendingAttemptView(): AccountAttemptView {
+  return { ...makeAttemptView(), status: 'pending', prompt: undefined }
+}
+
+function makeReadyAttemptView(): AccountAttemptView {
+  return { ...makeAttemptView(), status: 'ready', prompt: undefined, accountId: 'k_oauth9', updatedAt: 3 }
+}
+
 describe('account ui', () => {
   beforeAll(() => {
     // The node test environment has no DOM; modal effects only need the
@@ -726,6 +747,7 @@ describe('account ui', () => {
       body: {},
       head: { appendChild: () => {} },
     }
+    ;(globalThis as unknown as { HTMLElement?: unknown }).HTMLElement = class FakeHTMLElement {}
   })
 
   test('oauth-capable managed providers show Add account beside Add key; others keep Add key only', async () => {
@@ -783,6 +805,108 @@ describe('account ui', () => {
     expect(inside.some(node => node.text === 'accountIdentity')).toBe(true)
     expect(inside.some(node => node.text === 'uses · failures')).toBe(true)
     expect(findByClass(view.nodes, 'km-status').length).toBeGreaterThanOrEqual(1)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('login dialog walks prompt → answer → ready and closes after a state refresh', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    let answered = false
+    let getStateCalls = 0
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/getState') {
+        getStateCalls += 1
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        expect(payload).toEqual({ args: { provider: 'zai-coding-cn', alias: undefined } })
+        return { ok: true, value: makeAttemptView() }
+      }
+      if (endpoint === 'keysManager/answerAccountPrompt') {
+        expect(payload).toEqual({ args: { attemptId: 'la_1_ab', value: '123-456' } })
+        answered = true
+        return { ok: true, value: null }
+      }
+      if (endpoint === 'keysManager/accountAttempt') {
+        return { ok: true, value: answered ? makeReadyAttemptView() : makeAttemptView() }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    // The dialog shows the browser-open notice and the parked prompt.
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+    const link = hostNodes(view.nodes).find(node => node.type === 'a')
+    expect(link?.props?.href).toBe('https://example.com/authorize')
+    expect(link?.text).toContain('loginBrowserOpen')
+    expect(findButtons(view.nodes, 'loginPromptSubmit')).toHaveLength(1)
+    expect(view.nodes.some(node => node.text === 'Paste the verification code')).toBe(true)
+
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form).toBeDefined()
+    const promptInput = descendants(view.nodes, form!).find(node => node.type === 'input')
+    expect(promptInput).toBeDefined()
+    ;(promptInput!.props!.onChange as (event: unknown) => void)({ target: { value: '123-456' } })
+    view.render()
+    const submittedForm = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(submittedForm).toBeDefined()
+    ;(submittedForm!.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+    await view.flush()
+
+    expect(answered).toBe(true)
+    // ready: snapshot refresh, then the dialog closes itself.
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(0)
+    expect(getStateCalls).toBeGreaterThanOrEqual(2)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a vanished login flow ends the dialog with the neutral flow-ended state', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    let accountAttemptCalls = 0
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePendingAttemptView() }
+      if (endpoint === 'keysManager/accountAttempt') {
+        accountAttemptCalls += 1
+        return { ok: true, value: null }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    // null means the flow is gone: a neutral ended state, not success.
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+    expect(view.nodes.some(node => node.text === 'loginFlowEnded')).toBe(true)
+    expect(view.nodes.some(node => node.text === 'loginReady')).toBe(false)
+    const pollsAtEnd = accountAttemptCalls
+    await view.flush()
+    await view.flush()
+    expect(accountAttemptCalls).toBe(pollsAtEnd)
     view.unmount()
     setRuntimeContext(null)
   })

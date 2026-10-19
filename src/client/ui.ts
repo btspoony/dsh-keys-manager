@@ -1,7 +1,7 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView } from './types'
+import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from './format'
@@ -516,6 +516,8 @@ interface AccountRowProps {
   provider: ProviderView
   keyRecord: KeyView
   now: number
+  /** Start a fresh OAuth sign-in that replaces this account's grant. */
+  onReauthenticate: () => void
 }
 
 /**
@@ -524,18 +526,58 @@ interface AccountRowProps {
  * account glyph, the brand accent bar, and the identity line: accounts are
  * addressed by their provider-disclosed identity instead of a human alias.
  */
-function AccountRow({ provider, keyRecord, now }: AccountRowProps): React.ReactElement {
+function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowProps): React.ReactElement {
+  const runtime = useRuntime()
   const t = useT()
   const locale = useLocaleId()
   const key = keyRecord
   const identity = accountIdentityOf(key, provider)
+  const [menu, setMenu] = React.useState(false)
+  const [confirm, setConfirm] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const rootRef = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    if (!menu) return undefined
+    const onDown = (event: MouseEvent): void => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) setMenu(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setMenu(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  async function activate(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.activateAccount(provider.provider, key.id)
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+  }
+
+  async function remove(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.removeAccount(provider.provider, key.id)
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+    else setConfirm(false)
+  }
+
   const cold = key.status === 'cooling' && key.cooldownUntil > now
   const meta = [
     key.totalUses > 0 ? t('uses', { n: key.totalUses }) : null,
     key.totalFailures > 0 ? t('failures', { n: key.totalFailures }) : null,
   ].filter((value): value is string => value !== null).join(' · ')
 
-  return h('div', { className: 'km-account-row' },
+  return h('div', { className: 'km-account-row', ref: rootRef },
     h('div', { className: 'km-key-identity' },
       h('div', { className: 'km-key-alias-line' },
         h('span', { className: 'km-account-glyph', 'aria-hidden': true }, h(Icon, { name: 'user', size: 13 })),
@@ -555,7 +597,46 @@ function AccountRow({ provider, keyRecord, now }: AccountRowProps): React.ReactE
       h('div', { className: 'km-key-time' }, `${t('lastUsed')}: ${relativeTime(key.lastUsedAt, now, t)}`),
       meta.length > 0 ? h('div', { className: 'km-key-time km-muted' }, meta) : null,
     ),
-    h('div', { className: 'km-key-actions' }),
+    h('div', { className: 'km-key-actions' },
+      h('button', {
+        type: 'button',
+        className: 'km-icon-btn',
+        'aria-haspopup': 'menu',
+        'aria-expanded': menu,
+        title: t('moreActions'),
+        'aria-label': t('moreActions'),
+        onClick: () => setMenu(current => !current),
+        disabled: busy,
+      }, h(Icon, { name: 'dots', size: 17 })),
+      menu ? h('div', { className: 'km-menu', role: 'menu' },
+        h('button', {
+          type: 'button',
+          className: 'km-menu-item',
+          role: 'menuitem',
+          onClick: () => { setMenu(false); void activate() },
+          disabled: busy,
+        }, h(Icon, { name: 'check', size: 15 }), t('accountActivate')),
+        h('button', {
+          type: 'button',
+          className: 'km-menu-item',
+          role: 'menuitem',
+          onClick: () => { setMenu(false); onReauthenticate() },
+          disabled: busy,
+        }, h(Icon, { name: 'refresh', size: 15 }), t('accountReauth')),
+        h('div', { className: 'km-menu-sep' }),
+        h('button', { type: 'button', className: 'km-menu-item km-menu-danger', role: 'menuitem', onClick: () => { setMenu(false); setConfirm(true) }, disabled: busy }, h(Icon, { name: 'trash', size: 15 }), t('delete')),
+      ) : null,
+    ),
+    error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
+    confirm ? h(Modal, {
+      title: t('deleteTitle', { alias: identity }),
+      onClose: () => setConfirm(false),
+      busy,
+      footer: [
+        h(Button, { key: 'cancel', onClick: () => setConfirm(false), disabled: busy }, t('cancel')),
+        h(Button, { key: 'delete', variant: 'danger', onClick: remove, disabled: busy }, busy ? t('deleting') : t('deleteConfirm')),
+      ],
+    }, h('p', { className: 'km-modal-copy' }, t('deleteBody'))) : null,
   )
 }
 
@@ -573,6 +654,8 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
   const [adopting, setAdopting] = React.useState(false)
   const [releasing, setReleasing] = React.useState(false)
   const [confirmRelease, setConfirmRelease] = React.useState(false)
+  const [login, setLogin] = React.useState<{ alias?: string; attemptId: string } | null>(null)
+  const [startingLogin, setStartingLogin] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const managed = provider.managed
   const broken = managed && provider.bindingHealthy === false
@@ -605,6 +688,20 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
       return
     }
     setConfirmRelease(false)
+  }
+
+  /** Start one interactive OAuth sign-in and open the login dialog for it. */
+  async function openLogin(alias?: string): Promise<void> {
+    if (startingLogin) return
+    setStartingLogin(true)
+    setError(null)
+    const result = await runtime.store.beginAccountLogin(provider.provider, alias)
+    setStartingLogin(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    if (result.value !== null) setLogin({ alias, attemptId: result.value.id })
   }
 
   return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', managed && 'km-provider-managed') },
@@ -667,7 +764,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
               h(Icon, { name: 'plus', size: 14 }),
               h('span', null, t('addKey')),
             ),
-            oauthCapable(provider) ? h(Button, { variant: 'secondary', size: 'small', disabled: releasing },
+            oauthCapable(provider) ? h(Button, { variant: 'secondary', size: 'small', onClick: () => void openLogin(), disabled: releasing || startingLogin },
               h(Icon, { name: 'user', size: 14 }),
               h('span', null, t('addAccount')),
             ) : null,
@@ -680,7 +777,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         provider.keys.length === 0
           ? h('div', { className: 'km-empty-keys' }, t('noKeys'))
           : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
-              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now })
+              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.alias) })
               : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
       ),
       h('div', { className: 'km-provider-foot' },
@@ -697,7 +794,162 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         h(Button, { key: 'release', variant: 'danger', onClick: release, disabled: releasing }, releasing ? t('releasing') : t('releaseConfirm')),
       ],
     }, h('p', { className: 'km-modal-copy' }, t(provider.createdProfile === true ? 'releaseBodyCreated' : 'releaseBody'))) : null,
+    login !== null ? h(LoginDialog, {
+      provider,
+      attemptId: login.attemptId,
+      onClose: () => setLogin(null),
+    }) : null,
   )
+}
+
+const LOGIN_POLL_MS = 1000
+
+interface LoginDialogProps {
+  provider: ProviderView
+  attemptId: string
+  onClose: () => void
+}
+
+/**
+ * Interactive OAuth sign-in dialog. State arrives by polling
+ * `accountAttempt` (a dialog-local cadence layered on the store's read-only
+ * poller); `null` means the flow is gone — a neutral ended state, never
+ * success. Prompt answers go through the `answerAccountPrompt` ack, and
+ * polling continues until a terminal status.
+ */
+function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const [attempt, setAttempt] = React.useState<AccountAttemptView | null>(null)
+  const [flowEnded, setFlowEnded] = React.useState(false)
+  const [answer, setAnswer] = React.useState('')
+  const [answering, setAnswering] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const pollNowRef = React.useRef<(() => void) | null>(null)
+  const onCloseRef = React.useRef(onClose)
+  onCloseRef.current = onClose
+
+  React.useEffect(() => {
+    let stopped = false
+    let timer: ReturnType<typeof setInterval> | undefined
+    const poll = async (): Promise<void> => {
+      if (stopped) return
+      const result = await runtime.store.accountAttempt(attemptId)
+      if (stopped) return
+      if (!result.ok) return // transient RPC failure: keep polling
+      if (result.value === null) {
+        // Unknown id: the flow is gone (pruned/expired), which is not success.
+        if (timer !== undefined) clearInterval(timer)
+        setFlowEnded(true)
+        return
+      }
+      const view = result.value
+      setAttempt(current => current !== null && current.updatedAt === view.updatedAt && current.status === view.status ? current : view)
+      if (view.status === 'ready') {
+        if (timer !== undefined) clearInterval(timer)
+        await runtime.store.load()
+        if (!stopped) onCloseRef.current()
+        return
+      }
+      if (view.status === 'failed' || view.status === 'cancelled') {
+        if (timer !== undefined) clearInterval(timer)
+      }
+    }
+    const pollNow = (): void => { void poll() }
+    pollNowRef.current = pollNow
+    pollNow()
+    timer = setInterval(pollNow, LOGIN_POLL_MS)
+    return () => {
+      stopped = true
+      if (timer !== undefined) clearInterval(timer)
+    }
+  }, [attemptId, runtime])
+
+  async function submitAnswer(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    const prompt = attempt?.prompt
+    if (prompt === undefined || answering) return
+    const value = answer.trim()
+    if (value.length === 0) return
+    setAnswering(true)
+    setError(null)
+    const result = await runtime.store.answerAccountPrompt(attemptId, value)
+    setAnswering(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setAnswer('')
+    // The answer is only an ack: poll immediately for the next state.
+    pollNowRef.current?.()
+  }
+
+  const lastNotice = attempt !== null && attempt.notices.length > 0 ? attempt.notices[attempt.notices.length - 1]! : null
+  const urlNotice = attempt !== null ? [...attempt.notices].reverse().find(notice => notice.url !== undefined) ?? null : null
+  const prompt = attempt?.prompt
+  const answerable = prompt !== undefined && !answering && answer.trim().length > 0
+
+  let body: React.ReactNode
+  if (flowEnded) {
+    body = h(Notice, { tone: 'warn', icon: 'warning' }, t('loginFlowEnded'))
+  } else if (attempt === null || attempt.status === 'pending') {
+    body = h('div', { className: 'km-login-flow' },
+      h('div', { className: 'km-login-pending' }, h(Icon, { name: 'refresh', size: 15, className: 'km-spin' }), h('span', null, t('loginPending'))),
+      lastNotice !== null ? h('div', { className: 'km-login-notices' }, lastNotice.message) : null,
+      urlNotice !== null ? h('div', { className: 'km-login-notices' },
+        h('a', { className: 'km-login-link', href: urlNotice.url, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
+      ) : null,
+    )
+  } else if (attempt.status === 'ready') {
+    body = h('div', { className: 'km-login-pending' }, h(Icon, { name: 'check', size: 15 }), h('span', null, t('loginReady')))
+  } else if (attempt.status === 'failed' || attempt.status === 'cancelled') {
+    body = h(Notice, { tone: 'error', icon: 'warning', title: t('loginFailed') }, attempt.error ?? lastNotice?.message ?? provider.displayName)
+  } else {
+    body = h('div', { className: 'km-login-flow' },
+      lastNotice !== null ? h('div', { className: 'km-login-notices' }, lastNotice.message) : null,
+      urlNotice !== null ? h('div', { className: 'km-login-notices' },
+        h('a', { className: 'km-login-link', href: urlNotice.url, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
+      ) : null,
+      prompt !== undefined ? h('form', { className: 'km-login-prompt', onSubmit: submitAnswer },
+        h('div', { className: 'km-login-prompt-title' }, t('loginPromptTitle')),
+        h('div', { className: 'km-field' },
+          h('span', { className: 'km-field-label' }, prompt.message),
+          prompt.kind === 'select' && prompt.options !== undefined
+            ? h('select', {
+                className: 'km-input',
+                value: answer,
+                onChange: (event: React.ChangeEvent<HTMLSelectElement>) => setAnswer(event.target.value),
+                disabled: answering,
+                autoFocus: true,
+              }, prompt.options.map(option => h('option', { key: option.id, value: option.id }, option.label)))
+            : h('input', {
+                className: 'km-input',
+                type: prompt.kind === 'secret' ? 'password' : 'text',
+                value: answer,
+                onChange: (event: React.ChangeEvent<HTMLInputElement>) => setAnswer(event.target.value),
+                placeholder: prompt.placeholder,
+                spellCheck: false,
+                disabled: answering,
+                autoFocus: true,
+              }),
+        ),
+        error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
+        h('div', { className: 'km-form-actions' },
+          h(Button, { variant: 'primary', type: 'submit', disabled: !answerable },
+            answering ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'check', size: 14 }),
+            h('span', null, answering ? t('loginPending') : t('loginPromptSubmit')),
+          ),
+        ),
+      ) : null,
+    )
+  }
+
+  return h(Modal, {
+    title: t('loginTitle'),
+    onClose,
+    busy: false,
+    footer: h(Button, { onClick: onClose, disabled: answering }, t('close')),
+  }, body)
 }
 
 function SettingsCard(): React.ReactElement {

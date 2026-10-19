@@ -162,6 +162,13 @@ select.km-input{appearance:auto}
 .km-modal-title{font-weight:650;font-size:14px;margin-bottom:7px}
 .km-modal-body{color:var(--dsw-alias-label-secondary);font-size:12.5px}
 .km-modal-copy{margin:0;line-height:1.55}
+.km-login-flow{display:flex;flex-direction:column;gap:10px}
+.km-login-pending{display:flex;align-items:center;gap:8px;color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.km-login-notices{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;word-break:break-word}
+.km-login-link{color:var(--dsw-alias-state-business-primary);text-decoration:underline;text-underline-offset:2px}
+.km-login-link:hover{color:var(--dsw-alias-label-primary)}
+.km-login-prompt{display:flex;flex-direction:column;gap:10px;padding-top:2px;border-top:1px dashed var(--dsw-alias-border-l1)}
+.km-login-prompt-title{font-weight:600;font-size:12.5px;color:var(--dsw-alias-label-primary)}
 .km-modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
 @keyframes km-spin{to{transform:rotate(360deg)}}
 @media(max-width:720px){
