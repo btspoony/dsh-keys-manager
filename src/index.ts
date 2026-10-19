@@ -337,7 +337,7 @@ function discoveredModel(model: DiscoveredModel): ModelRecord | undefined {
 }
 
 /** Public, secret-free key row. */
-function publicKey(key: KeyRecord, now: number): KeyView {
+function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null): KeyView {
   return {
     id: key.id,
     alias: key.alias,
@@ -362,6 +362,10 @@ function publicKey(key: KeyRecord, now: number): KeyView {
             ...(key.oauth.accountId === undefined ? {} : { accountId: key.oauth.accountId }),
             ...(key.oauth.expiresAt === undefined ? {} : { expiresAt: key.oauth.expiresAt }),
           },
+          // Step 6: surface which account row IS the live projection.
+          ...(projectedAccountId !== undefined && projectedAccountId !== null && projectedAccountId === key.id
+            ? { projected: true }
+            : {}),
         }
       : {}),
   }
@@ -1641,7 +1645,8 @@ export class KeysManagerService {
       const apiKeyEnv = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : null
       const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
       const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
-      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now)) : []
+      const projectedAccountId = managed === undefined ? null : this.oauthOwnerFor(managed.provider)
+      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId)) : []
       const warning = binding === 'mismatch'
         ? 'The provider profile no longer points at Keys Manager. Re-adopt it after releasing it, or repair the provider in Models.'
         : undefined
@@ -1658,6 +1663,7 @@ export class KeysManagerService {
         supported: support.supported,
         ...(support.reason === undefined ? {} : { reason: support.reason }),
         accountSupported: accountSupport.supported,
+        projectedAccountId,
         settingsNs: entry.settingsNs,
         settingsPath: [...entry.settingsPath],
         apiKeyEnv,
@@ -1684,7 +1690,8 @@ export class KeysManagerService {
       if (seen.has(extra.id)) continue
       const managed = this.store.provider(extra.id)
       const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
-      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now)) : []
+      const projectedAccountId = managed === undefined ? null : this.oauthOwnerFor(managed.provider)
+      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId)) : []
       views.push({
         provider: extra.id,
         displayName: extra.name,
@@ -1697,6 +1704,7 @@ export class KeysManagerService {
         supported: true,
         // Extra providers are key-pool routes; they offer no OAuth flow.
         accountSupported: false,
+        projectedAccountId,
         settingsNs: 'llm-pi-ai',
         settingsPath: ['providers', extra.id],
         apiKeyEnv: managed?.brokerRef ?? null,
@@ -1721,7 +1729,8 @@ export class KeysManagerService {
 
     for (const managed of Object.values(this.store.providers)) {
       if (seen.has(managed.provider)) continue
-      const keys = managed.keys.map(key => publicKey(key, now))
+      const projectedAccountId = this.oauthOwnerFor(managed.provider)
+      const keys = managed.keys.map(key => publicKey(key, now, projectedAccountId))
       const binding = this.bindingState(managed, descriptor)
       views.push({
         provider: managed.provider,
@@ -1734,6 +1743,7 @@ export class KeysManagerService {
         active: false,
         supported: true,
         accountSupported: false,
+        projectedAccountId,
         settingsNs: managed.settingsNs,
         settingsPath: [...managed.settingsPath],
         apiKeyEnv: managed.brokerRef,

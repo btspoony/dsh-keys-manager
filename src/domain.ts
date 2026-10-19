@@ -142,6 +142,11 @@ export interface KeyView {
   kind: 'api-key' | 'oauth'
   /** Identity line + expiry for `kind: 'oauth'` rows; absent for API keys. */
   oauth?: OAuthAccountView | null
+  /**
+   * True when this account's grant IS the provider's live projection
+   * (round-2 review, step 6); only ever set on `kind: 'oauth'` rows.
+   */
+  projected?: boolean
 }
 
 /** Public provider row returned to the UI. */
@@ -164,6 +169,12 @@ export interface ProviderView {
    * is account-adoptable while carrying no key-pool credential.
    */
   accountSupported?: boolean
+  /**
+   * Pool row id of the account whose grant currently serves this provider
+   * (the live projection), or null when no managed account does (round-2
+   * review, step 6).
+   */
+  projectedAccountId?: string | null
   reason?: string
   settingsNs: string
   settingsPath: string[]

@@ -131,6 +131,7 @@ const zh = {
       // until the host's dsh-client-locale merge semantics are confirmed).
       addAccount: '添加账户',
       accountIdentity: '账户',
+      accountProjected: '服务中',
       accountReauth: '重新认证',
       accountActivate: '设为当前',
       loginTitle: '账户登录',
@@ -275,6 +276,7 @@ const en = {
       // until the host's dsh-client-locale merge semantics are confirmed).
       addAccount: 'Add account',
       accountIdentity: 'Account',
+      accountProjected: 'Serving provider',
       accountReauth: 'Re-authenticate',
       accountActivate: 'Set active',
       loginTitle: 'Account sign-in',

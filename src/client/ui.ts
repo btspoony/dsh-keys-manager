@@ -583,6 +583,8 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
         h('span', { className: 'km-account-glyph', 'aria-hidden': true }, h(Icon, { name: 'user', size: 13 })),
         h('span', { className: 'km-key-alias' }, identity),
         h('span', { className: 'km-tag km-tag-accent' }, t('accountIdentity')),
+        // Step 6: the row whose grant IS the live projection is badged.
+        key.projected === true ? h('span', { className: 'km-tag km-tag-accent' }, t('accountProjected')) : null,
       ),
       h('div', { className: 'km-key-sub' },
         h('span', { className: 'km-mono km-muted' }, `•••• ${key.id.slice(-4)}`),
@@ -614,7 +616,9 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
           className: 'km-menu-item',
           role: 'menuitem',
           onClick: () => { setMenu(false); void activate() },
-          disabled: busy,
+          // Step 6: the projected row already serves the route; setting it
+          // active again is a no-op, so the entry stays disabled.
+          disabled: busy || key.projected === true,
         }, h(Icon, { name: 'check', size: 15 }), t('accountActivate')),
         h('button', {
           type: 'button',

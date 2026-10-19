@@ -3183,6 +3183,34 @@ test('activateAccount projects the grant payload into the llm-pi-ai record', asy
   }
 })
 
+// Round-2 review step 6: the projection owner is surfaced through the
+// state view — the provider names the owning row, and exactly one account
+// row is badged as the projected one.
+
+test('buildState surfaces the projection owner on the provider and badges exactly one account row', async () => {
+  const { h, rowId, grantRef: refA } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // A second account competes for the same provider.
+    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-8', email: 'other@example.com', refresh: 'rt-other-account' })
+    let state = h.service.buildState()
+    const provider = state.providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(provider.projectedAccountId, rowId)
+    const projected = provider.keys.filter(key => key.projected === true)
+    assert.equal(projected.length, 1)
+    assert.equal(projected[0]!.id, rowId)
+    // After removing the projected account, no row is projected.
+    await h.service.removeAccount('anthropic', rowId)
+    void refA
+    state = h.service.buildState()
+    const emptied = state.providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(emptied.projectedAccountId, null)
+    assert.equal(emptied.keys.some(key => key.projected === true), false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('activateAccount refuses unknown rows and api-key rows', async () => {
   const { h, rowId } = await harnessWithSeededAccount()
   try {

@@ -5,6 +5,7 @@
   },
   "addAccount": "Add account",
   "accountIdentity": "Account",
+  "accountProjected": "Serving provider",
   "accountReauth": "Re-authenticate",
   "accountActivate": "Set active",
   "loginTitle": "Account sign-in",

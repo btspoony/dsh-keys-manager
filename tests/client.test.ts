@@ -118,6 +118,7 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
   const labels: Record<string, string> = {
     nav: '密钥管理',
     accountIdentity: '账户',
+    accountProjected: '服务中',
     uses: '使用 {n} 次',
     failures: '失败 {n} 次',
   }
@@ -909,6 +910,44 @@ describe('account ui', () => {
     expect(inside.some(node => node.text === '账户')).toBe(true)
     expect(inside.some(node => node.text === '使用 3 次 · 失败 1 次')).toBe(true)
     expect(findByClass(view.nodes, 'km-status').length).toBeGreaterThanOrEqual(1)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the projected account row is badged and its Set active entry is disabled', async () => {
+    // Step 6: exactly one account row carries the projection badge, and
+    // only that row's Set active entry is disabled.
+    const state = makeState()
+    const projected = { ...makeOauthKey(), projected: true }
+    const other = { ...makeOauthKey(), id: 'k_oauth8', oauth: { provider: 'zai-coding-cn', email: 'other@anthropic.example', accountId: 'acc_8', expiresAt: Date.now() + 3_600_000 } }
+    state.providers[0] = { ...makeOauthProvider(), keys: [projected, other], projectedAccountId: projected.id }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const rows = findByClass(view.nodes, 'km-account-row')
+    expect(rows).toHaveLength(2)
+    const badged = rows.filter(row => descendants(view.nodes, row).some(node => node.text === '服务中'))
+    expect(badged).toHaveLength(1)
+    const dots = descendants(view.nodes, badged[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(dots[0]!.props!.onClick as () => void)()
+    view.render()
+    const activate = descendants(view.nodes, badged[0]!).filter(node => node.type === 'button' && node.text.includes('accountActivate'))
+    expect(activate).toHaveLength(1)
+    expect(activate[0]!.props!.disabled).toBe(true)
+
+    // The non-projected row keeps Set active enabled.
+    const otherRow = rows.find(row => row.path !== badged[0]!.path)!
+    const otherDots = descendants(view.nodes, otherRow).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(otherDots[0]!.props!.onClick as () => void)()
+    view.render()
+    const otherActivate = descendants(view.nodes, otherRow).filter(node => node.type === 'button' && node.text.includes('accountActivate'))
+    expect(otherActivate).toHaveLength(1)
+    expect(otherActivate[0]!.props!.disabled).toBe(false)
     view.unmount()
     setRuntimeContext(null)
   })
