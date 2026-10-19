@@ -517,6 +517,20 @@ test('cascade order returns nothing when every candidate is unavailable', () => 
   assert.deepEqual(cascadeOrder(p, now), [])
 })
 
+test('cascade order ranks multiple accounts in cursor-anchored ring order', () => {
+  const acct1 = account('acct-1')
+  const acct2 = account('acct-2')
+  const a = key('a')
+  const p = provider([a, acct1, acct2])
+  // Accounts keep the same cursor-anchored ring order as keys, ranked ahead
+  // of them: offset 1 starts the ring at acct-1, offset 2 at acct-2.
+  p.cursor = 1
+  assert.deepEqual(cascadeOrder(p, now), [acct1, acct2, a])
+  p.cursor = 2
+  assert.deepEqual(cascadeOrder(p, now), [acct2, acct1, a])
+  assert.equal(p.cursor, 2)
+})
+
 test('classifyOAuthFailure maps the oauth code to failover-eligible cooldown', () => {
   assert.equal(classifyOAuthFailure({ code: 'oauth' }), 'oauth')
   assert.equal(classifyOAuthFailure({ code: 'oauth', message: 'grant expired' }), 'oauth')
@@ -545,6 +559,17 @@ test('account refs stay in the plugin scope with lowercase-hyphen ids', () => {
     const name = accountRef(providerId, hash).split('/')[1]!
     assert.match(name, /^[a-z][a-z0-9-]*$/)
   }
+})
+
+test('account refs guard digit-leading provider stems to the credential charset', () => {
+  // A provider id whose first alphanumerics are digits would otherwise emit a
+  // name no credential key grammar accepts (`/^[a-z][a-z0-9-]*$/`).
+  assert.equal(accountRef('1foo', 'ab12'), 'keys-manager/p-1foo-ab12')
+  for (const [providerId, hash] of [['1foo', 'ab12'], ['9x', 'z'], ['123', '']] as const) {
+    const name = accountRef(providerId, hash).split('/')[1]!
+    assert.match(name, /^[a-z][a-z0-9-]*$/)
+  }
+  assert.equal(accountRef('', 'ff'), 'keys-manager/provider-ff')
 })
 
 test('isOAuthCapable reads the provider route native OAuth flag', () => {

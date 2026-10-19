@@ -264,10 +264,14 @@ export function isOAuthCapable(provider: { nativeAuth?: { env?: readonly string[
 /**
  * Build the plugin-scope credential reference that holds one account's
  * grant payload, e.g. `keys-manager/anthropic-3fa2c1`. The name part stays
- * within the lowercase-hyphen credential key charset.
+ * within the lowercase-hyphen credential key charset: a stem whose first
+ * character is a digit is prefixed with `p-` so the reference is always
+ * acceptable to the credential store's key grammar.
  */
 export function accountRef(provider: string, hash: string): string {
-  const stem = provider.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'provider'
+  const folded = provider.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const guarded = folded.length === 0 ? 'provider' : /^[0-9]/.test(folded) ? `p-${folded}` : folded
+  const stem = guarded.slice(0, 40)
   const suffix = hash.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12) || '0'
   return `${OAUTH_GRANT_SCOPE}/${stem}-${suffix}`
 }
@@ -275,11 +279,12 @@ export function accountRef(provider: string, hash: string): string {
 /**
  * Rank one provider's candidates for the next request.
  *
- * Selectable OAuth accounts come first (creation order among themselves),
- * then API keys in the existing round-robin order starting at the
- * provider's cursor. Cooled-down, paused, and value-missing candidates are
- * skipped exactly as `isSelectable` decides. Pure: the cursor is not
- * advanced — the caller consumes the ranking through the usual pickers.
+ * Selectable OAuth accounts rank ahead of API keys, and each group keeps the
+ * provider's cursor-anchored ring order: the loop starts at
+ * `normalizeCursor(provider.cursor, keys.length)` and wraps, exactly like the
+ * round-robin pickers. Cooled-down, paused, and value-missing candidates are
+ * skipped as `isSelectable` decides. Pure: the cursor is not advanced — the
+ * caller consumes the ranking through the usual pickers.
  */
 export function cascadeOrder(provider: ProviderRecord, now: number): KeyRecord[] {
   const keys = Array.isArray(provider.keys) ? provider.keys : []
