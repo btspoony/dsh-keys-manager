@@ -84,6 +84,9 @@ function statusKey(status: KeyStatus | ProviderStatus): string {
     case 'cooling': return 'keyStatusCooling'
     case 'paused': return 'keyStatusPaused'
     case 'missing': return 'keyStatusMissing'
+    // A managed route with zero keys (round-3 finding 7): "Not managed"
+    // would contradict the Managed badge rendered beside it.
+    case 'empty': return 'keyStatusEmpty'
     default: return 'keyStatusUnmanaged'
   }
 }
@@ -94,6 +97,7 @@ function statusTone(status: KeyStatus | ProviderStatus): Tone {
     case 'cooling': return 'warn'
     case 'paused': return 'idle'
     case 'missing': return 'error'
+    case 'empty': return 'idle'
     default: return 'idle'
   }
 }

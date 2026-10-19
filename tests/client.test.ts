@@ -122,6 +122,9 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     adoptAccountTitle: '使用 OAuth 账户登录后即可使用该 Provider。',
     uses: '使用 {n} 次',
     failures: '失败 {n} 次',
+    keyStatusEmpty: '暂无密钥',
+    keyStatusUnmanaged: '未接管',
+    unmanaged: '未接管',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
@@ -901,6 +904,41 @@ describe('account ui', () => {
     expect(addKey!.props!.disabled).toBe(true)
     expect(findButtons(managedView.nodes, 'addAccount')).toHaveLength(1)
     managedView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a managed keyless provider renders the empty-state pill, not the unmanaged label', async () => {
+    // Round-3 finding 7: adopting an OAuth-only route sits at
+    // managed + zero keys until the first sign-in; the pill must read as
+    // the empty state, never as "Not managed" beside the Managed badge.
+    const state = makeState()
+    state.providers[0] = { ...makeOauthProvider(), keyCount: 0, healthyKeyCount: 0, status: 'empty', keys: [] }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    const headText = descendants(view.nodes, head!).map(node => node.text).filter(Boolean)
+    expect(headText).toContain('暂无密钥')
+    expect(headText).not.toContain('未接管')
+    view.unmount()
+    setRuntimeContext(null)
+
+    // The unmanaged route keeps the default arm.
+    const unmanaged = makeState()
+    const unmanagedHarness = makeContext({ ok: true, value: unmanaged })
+    const unmanagedStore = createStore(unmanagedHarness.ctx)
+    setRuntimeContext({ ctx: unmanagedHarness.ctx, store: unmanagedStore })
+    const unmanagedView = mountView(KeysManagerBody)
+    await unmanagedView.flush()
+    const deepInfraHead = findByClass(unmanagedView.nodes, 'km-provider-head')[1]
+    expect(deepInfraHead).toBeDefined()
+    const deepInfraText = descendants(unmanagedView.nodes, deepInfraHead!).map(node => node.text).filter(Boolean)
+    expect(deepInfraText).toContain('未接管')
+    expect(deepInfraText).not.toContain('暂无密钥')
+    unmanagedView.unmount()
     setRuntimeContext(null)
   })
 

@@ -9,6 +9,7 @@
   "accountProjected": "Serving provider",
   "accountReauth": "Re-authenticate",
   "accountActivate": "Set active",
+  "keyStatusEmpty": "No keys",
   "loginTitle": "Account sign-in",
   "loginPending": "Waiting for authorization…",
   "loginBrowserOpen": "Open in browser",

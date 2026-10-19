@@ -9,6 +9,7 @@
   "accountProjected": "服务中",
   "accountReauth": "重新认证",
   "accountActivate": "设为当前",
+  "keyStatusEmpty": "暂无密钥",
   "loginTitle": "账户登录",
   "loginPending": "等待授权…",
   "loginBrowserOpen": "在浏览器中打开",
