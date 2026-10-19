@@ -2867,6 +2867,24 @@ test('concurrent logins for one provider are refused until the attempt settles',
   }
 })
 
+test('a wedged sign-in attempt times out and releases the provider slot', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const view = await h.service.beginAccountLogin('anthropic')
+    // Age the attempt past the sign-in TTL, then run the pruner.
+    const internal = (h.service as unknown as { loginAttempts: Map<string, { updatedAt: number }> }).loginAttempts.get(view.id)!
+    internal.updatedAt = Date.now() - 11 * 60 * 1000
+    h.service.pruneTransient()
+    const settled = h.service.getAccountAttempt(view.id)!
+    assert.equal(settled.status, 'failed')
+    assert.match(settled.error ?? '', /timed out/)
+    // The single-attempt slot is free again.
+    await h.service.beginAccountLogin('anthropic')
+  } finally {
+    await h.close()
+  }
+})
+
 test('login is refused without a managed provider or an oauth flow', async () => {
   const h = await harness()
   try {
