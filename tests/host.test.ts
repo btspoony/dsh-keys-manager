@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
-import type { ProviderView, StateView } from '../src/domain'
+import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
 import { apply, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
 
@@ -2325,5 +2325,143 @@ test('a retry pin expires after 60 seconds', async () => {
     }
   } finally {
     vi.useRealTimers()
+  }
+})
+
+
+function recordWithKeys(keys: KeyRecord[]): ProviderRecord {
+  return {
+    provider: 'anthropic',
+    displayName: 'Anthropic',
+    source: 'dsh',
+    settingsNs: 'llm-pi-ai',
+    settingsPath: ['providers', 'anthropic'],
+    adapter: 'pi-ai',
+    brokerRef: 'KEYSMGR_ANTHROPIC_AAAAAA',
+    originalApiKeyEnv: null,
+    createdProfile: false,
+    hadProfile: true,
+    extraId: null,
+    api: null,
+    baseURL: null,
+    models: [],
+    adoptedAt: 0,
+    cursor: 0,
+    keys,
+  }
+}
+
+function accountRow(oauth: KeyRecord['oauth']): KeyRecord {
+  return {
+    id: 'acct',
+    alias: 'Work account',
+    ref: 'KEYSMGR_ANTHROPIC_AAAAAA_K_3FA2C1',
+    kind: 'oauth',
+    enabled: true,
+    createdAt: 0,
+    lastUsedAt: 0,
+    valueMissing: false,
+    cooldownUntil: 0,
+    lastFailureAt: 0,
+    lastFailureCode: '',
+    failureLevel: 0,
+    consecutiveFailures: 0,
+    totalUses: 0,
+    totalFailures: 0,
+    importedFrom: null,
+    oauth,
+  }
+}
+
+test('an oauth account row round-trips through the store', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-oauth-'))
+  try {
+    const file = join(dir, 'state.json')
+    const store = new KeysManagerStore(file)
+    store.state.providers.anthropic = recordWithKeys([
+      accountRow({
+        provider: 'anthropic',
+        email: 'dev@example.com',
+        accountId: 'acc-1',
+        expiresAt: 1_700_060_000_000,
+        grantRef: 'keys-manager/anthropic-3fa2c1',
+      }),
+    ])
+    store.touch()
+    await store.flush()
+    const reloaded = new KeysManagerStore(file)
+    const row = reloaded.provider('anthropic')!.keys[0]
+    assert.equal(row.kind, 'oauth')
+    assert.deepEqual(row.oauth, {
+      provider: 'anthropic',
+      email: 'dev@example.com',
+      accountId: 'acc-1',
+      expiresAt: 1_700_060_000_000,
+      grantRef: 'keys-manager/anthropic-3fa2c1',
+    })
+    await reloaded.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the persisted state document serializes without oauth token payloads', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-oauth-secret-'))
+  try {
+    const file = join(dir, 'state.json')
+    const store = new KeysManagerStore(file)
+    // Simulate a buggy writer handing the account a full grant payload: the
+    // sanitizer must keep only the typed reference + metadata fields.
+    store.state.providers.anthropic = recordWithKeys([
+      accountRow({
+        provider: 'anthropic',
+        grantRef: 'keys-manager/anthropic-3fa2c1',
+        accessToken: 'at-secret-value',
+        refreshToken: 'rt-secret-value',
+        idToken: 'id-secret-value',
+      } as KeyRecord['oauth']),
+    ])
+    store.touch()
+    await store.flush()
+    const text = await readFile(file, 'utf8')
+    assert.ok(!text.includes('at-secret-value'))
+    assert.ok(!text.includes('rt-secret-value'))
+    assert.ok(!text.includes('id-secret-value'))
+    assert.ok(text.includes('keys-manager/anthropic-3fa2c1'))
+    await store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('old state documents without account rows load unchanged', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-oauth-legacy-'))
+  try {
+    const file = join(dir, 'state.json')
+    const legacy = {
+      version: 1,
+      settings: { retryCount: 2, baseCooldownMs: 300_000, recoveryGraceMs: 600_000, maxCooldownMs: 604_800_000, stickySession: true, autoSwitch: true },
+      providers: {
+        anthropic: {
+          provider: 'anthropic',
+          displayName: 'Anthropic',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'anthropic'],
+          brokerRef: 'KEYSMGR_ANTHROPIC_AAAAAA',
+          hadProfile: true,
+          keys: [{ id: 'k1', alias: 'Imported', ref: 'KEYSMGR_ANTHROPIC_AAAAAA_K_111111' }],
+        },
+      },
+      sessionBindings: {},
+    }
+    await writeFile(file, JSON.stringify(legacy), 'utf8')
+    const store = new KeysManagerStore(file)
+    const row = store.provider('anthropic')!.keys[0]
+    assert.equal(row.id, 'k1')
+    assert.equal(row.kind, 'api-key')
+    assert.equal(row.oauth, null)
+    await store.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })

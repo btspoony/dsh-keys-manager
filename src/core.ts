@@ -227,6 +227,75 @@ export function shouldFailover(code: string | undefined): boolean {
   return typeof code === 'string' && code.length > 0 && !NON_KEY_FAILURE_CODES.has(code)
 }
 
+/** Failure code pi-ai raises for OAuth-specific problems (grant expired, refresh rejected, ...). */
+export const OAUTH_FAILURE_CODE = 'oauth'
+
+/** Credential-reference scope prefix under which OAuth grant payloads live. */
+export const OAUTH_GRANT_SCOPE = 'keys-manager'
+
+/** How one model-request failure affects pool health. */
+export type FailureDisposition =
+  /** OAuth-specific failure: failover-eligible and starts a cooldown. */
+  | 'oauth'
+  /** Ordinary key failure: failover-eligible and starts a cooldown (existing semantics). */
+  | 'failover'
+  /** Request/config-shaped failure: the candidate's health is untouched. */
+  | 'ignore'
+
+/**
+ * Classify one model-request failure against the pool policy.
+ *
+ * pi-ai raises `ModelsError("oauth", ...)` when the OAuth grant itself is
+ * the problem; that must cool the account down and fail over, while the
+ * existing `NON_KEY_FAILURE_CODES` exclusions (e.g.
+ * `CONTEXT_WINDOW_EXCEEDED`) stay excluded unchanged.
+ */
+export function classifyOAuthFailure(failure: LlmFailureLike | undefined): FailureDisposition {
+  const code = typeof failure?.code === 'string' ? failure.code : ''
+  if (code === OAUTH_FAILURE_CODE) return 'oauth'
+  return shouldFailover(code) ? 'failover' : 'ignore'
+}
+
+/** Whether a provider route supports OAuth account sign-in. */
+export function isOAuthCapable(provider: { nativeAuth?: { env?: readonly string[]; oauth?: boolean } | null } | undefined): boolean {
+  return provider?.nativeAuth?.oauth === true
+}
+
+/**
+ * Build the plugin-scope credential reference that holds one account's
+ * grant payload, e.g. `keys-manager/anthropic-3fa2c1`. The name part stays
+ * within the lowercase-hyphen credential key charset.
+ */
+export function accountRef(provider: string, hash: string): string {
+  const stem = provider.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'provider'
+  const suffix = hash.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12) || '0'
+  return `${OAUTH_GRANT_SCOPE}/${stem}-${suffix}`
+}
+
+/**
+ * Rank one provider's candidates for the next request.
+ *
+ * Selectable OAuth accounts come first (creation order among themselves),
+ * then API keys in the existing round-robin order starting at the
+ * provider's cursor. Cooled-down, paused, and value-missing candidates are
+ * skipped exactly as `isSelectable` decides. Pure: the cursor is not
+ * advanced — the caller consumes the ranking through the usual pickers.
+ */
+export function cascadeOrder(provider: ProviderRecord, now: number): KeyRecord[] {
+  const keys = Array.isArray(provider.keys) ? provider.keys : []
+  if (keys.length === 0) return []
+  const accounts: KeyRecord[] = []
+  const apiKeys: KeyRecord[] = []
+  const start = normalizeCursor(provider.cursor, keys.length)
+  for (let offset = 0; offset < keys.length; offset += 1) {
+    const key = keys[(start + offset) % keys.length]
+    if (!isSelectable(key, now)) continue
+    if (key.kind === 'oauth') accounts.push(key)
+    else apiKeys.push(key)
+  }
+  return [...accounts, ...apiKeys]
+}
+
 /** Session/provider binding key. */
 export function bindingKey(sessionId: string, provider: string): string {
   return `${sessionId}\u0000${provider}`

@@ -28,8 +28,33 @@ export interface ManagerSettings {
   autoSwitch: boolean
 }
 
-/** Reserved OAuth2 account payload; unset for API-key rows. */
-export type OAuthRecord = Record<string, unknown>
+/**
+ * OAuth account metadata persisted for one `kind: 'oauth'` pool member.
+ *
+ * The manager state stays secret-free: the grant payload (refresh/access
+ * tokens) lives in the credential store under `grantRef`, and only this
+ * reference plus display metadata is stored here.
+ */
+export interface OAuthAccount {
+  /** OAuth2 provider id the account belongs to, e.g. 'anthropic'. */
+  provider: string
+  /** Account email when the provider disclosed one. */
+  email?: string
+  /** Provider-side account identifier when disclosed. */
+  accountId?: string
+  /** Epoch ms when the current access token expires; informational only. */
+  expiresAt?: number
+  /** Plugin-scope credential reference holding this account's grant payload. */
+  grantRef: string
+}
+
+/** OAuth account facts surfaced to the UI; the grant reference stays host-side. */
+export interface OAuthAccountView {
+  provider: string
+  email?: string
+  accountId?: string
+  expiresAt?: number
+}
 
 /** One persisted key. Key literals live only in the credential store. */
 export interface KeyRecord {
@@ -50,8 +75,8 @@ export interface KeyRecord {
   totalFailures: number
   valueMissing: boolean
   importedFrom: string | null
-  /** Reserved for subscription OAuth2 accounts. */
-  oauth: OAuthRecord | null
+  /** OAuth account metadata; null for API-key rows. */
+  oauth: OAuthAccount | null
 }
 
 /** One model entry installed into a pi-ai route profile. */
@@ -115,6 +140,8 @@ export interface KeyView {
   importedFrom: string | null
   valueMissing: boolean
   kind: 'api-key' | 'oauth'
+  /** Identity line + expiry for `kind: 'oauth'` rows; absent for API keys. */
+  oauth?: OAuthAccountView | null
 }
 
 /** Public provider row returned to the UI. */

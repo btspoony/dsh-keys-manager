@@ -6,7 +6,11 @@ import { test } from 'vitest'
 import type { KeyRecord, ProviderRecord } from '../src/domain'
 import {
   DEFAULT_SETTINGS,
+  accountRef,
   applyFailureCooldown,
+  cascadeOrder,
+  classifyOAuthFailure,
+  isOAuthCapable,
   isSelectable,
   markKeySuccess,
   normalizeSettings,
@@ -46,6 +50,20 @@ function key(id: string, patch: Partial<KeyRecord> = {}): KeyRecord {
     oauth: null,
     ...patch,
   }
+}
+
+function account(id: string, patch: Partial<KeyRecord> = {}): KeyRecord {
+  return key(id, {
+    kind: 'oauth',
+    oauth: {
+      provider: 'anthropic',
+      email: 'dev@example.com',
+      accountId: 'acc-1',
+      expiresAt: now + 60 * MIN,
+      grantRef: 'keys-manager/anthropic-3fa2c1',
+    },
+    ...patch,
+  })
 }
 
 function provider(keys: KeyRecord[]): ProviderRecord {
@@ -208,7 +226,7 @@ test('key input validation trims and rejects blanks', () => {
   assert.throws(() => validateKeyPatch({ alias: '' }))
 })
 
-test('state sanitization drops secret fields and keeps OAuth-compatible rows', () => {
+test('state sanitization drops secret fields and keeps OAuth account rows', () => {
   const state = sanitizeState({
     version: 1,
     settings: { retryCount: 1 },
@@ -225,8 +243,15 @@ test('state sanitization drops secret fields and keeps OAuth-compatible rows', (
             id: 'k1',
             alias: 'one',
             ref: 'KEYSMGR_P_AAAAAA_K_111111',
+            kind: 'oauth',
             value: 'sk-must-not-survive',
-            oauth: { type: 'oauth', access: 'x' },
+            oauth: {
+              provider: 'anthropic',
+              email: 'dev@example.com',
+              grantRef: 'keys-manager/anthropic-3fa2c1',
+              accessToken: 'at-must-not-survive',
+              refreshToken: 'rt-must-not-survive',
+            },
           },
         ],
       },
@@ -238,10 +263,31 @@ test('state sanitization drops secret fields and keeps OAuth-compatible rows', (
   })
   assert.equal((state.providers.p.keys[0] as unknown as { value?: unknown }).value, undefined)
   assert.equal(state.providers.p.hadProfile, true)
-  assert.equal(state.providers.p.keys[0].kind, 'api-key')
-  assert.equal(state.providers.p.keys[0].oauth!.access, 'x')
+  assert.equal(state.providers.p.keys[0].kind, 'oauth')
+  assert.deepEqual(state.providers.p.keys[0].oauth, { provider: 'anthropic', email: 'dev@example.com', grantRef: 'keys-manager/anthropic-3fa2c1' })
   assert.equal(state.sessionBindings['session\u0000p'].keyId, 'k1')
   assert.equal(state.sessionBindings.old, undefined)
+})
+
+test('legacy oauth placeholders normalize to null and old documents load unchanged', () => {
+  const state = sanitizeState({
+    version: 1,
+    providers: {
+      p: {
+        provider: 'p',
+        settingsNs: 'llm-pi-ai',
+        settingsPath: ['providers', 'p'],
+        keys: [
+          { id: 'k', ref: 'REF_K', oauth: { type: 'oauth', access: 'x' } },
+          { id: 'k2', ref: 'REF_K2', oauth: null },
+        ],
+      },
+    },
+  })
+  const [legacy, plain] = state.providers.p.keys
+  assert.equal(legacy.id, 'k')
+  assert.equal(legacy.oauth, null)
+  assert.equal(plain.oauth, null)
 })
 
 test('store persists atomically and reloads', async () => {
@@ -436,4 +482,75 @@ test('an unsupported state version stays read-only and untouched', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+
+test('cascade order ranks an active account ahead of key candidates', () => {
+  const acct = account('acct')
+  const a = key('a')
+  const b = key('b')
+  const p = provider([a, b, acct])
+  assert.deepEqual(cascadeOrder(p, now), [acct, a, b])
+  assert.equal(p.cursor, 0) // arbitration must not consume the round-robin cursor
+})
+
+test('cooled-down and paused accounts are skipped so the key pool serves', () => {
+  const cooling = account('acct-cooling', { cooldownUntil: now + MIN })
+  const paused = account('acct-paused', { enabled: false })
+  const a = key('a')
+  const p = provider([cooling, paused, a])
+  assert.deepEqual(cascadeOrder(p, now), [a])
+})
+
+test('cascade order keeps existing round-robin order for keys from the cursor', () => {
+  const acct = account('acct')
+  const a = key('a')
+  const b = key('b')
+  const c = key('c')
+  const p = provider([a, b, c, acct])
+  p.cursor = 2
+  assert.deepEqual(cascadeOrder(p, now), [acct, c, a, b])
+})
+
+test('cascade order returns nothing when every candidate is unavailable', () => {
+  const p = provider([account('acct', { cooldownUntil: now + MIN }), key('a', { enabled: false })])
+  assert.deepEqual(cascadeOrder(p, now), [])
+})
+
+test('classifyOAuthFailure maps the oauth code to failover-eligible cooldown', () => {
+  assert.equal(classifyOAuthFailure({ code: 'oauth' }), 'oauth')
+  assert.equal(classifyOAuthFailure({ code: 'oauth', message: 'grant expired' }), 'oauth')
+})
+
+test('classifyOAuthFailure keeps non-key failure codes excluded', () => {
+  assert.equal(classifyOAuthFailure({ code: 'CONTEXT_WINDOW_EXCEEDED' }), 'ignore')
+  assert.equal(classifyOAuthFailure({ code: 'ABORTED' }), 'ignore')
+  assert.equal(classifyOAuthFailure({ code: 'INVALID_REQUEST' }), 'ignore')
+  assert.equal(classifyOAuthFailure(undefined), 'ignore')
+  assert.equal(classifyOAuthFailure({ code: '' }), 'ignore')
+})
+
+test('classifyOAuthFailure preserves ordinary key-failure semantics', () => {
+  assert.equal(classifyOAuthFailure({ code: 'RATE_LIMIT' }), 'failover')
+  assert.equal(classifyOAuthFailure({ code: 'AUTH' }), 'failover')
+  // The unchanged exclusion list still decides the non-oauth classes.
+  assert.equal(shouldFailover('oauth'), true)
+  assert.equal(shouldFailover('CONTEXT_WINDOW_EXCEEDED'), false)
+})
+
+test('account refs stay in the plugin scope with lowercase-hyphen ids', () => {
+  assert.equal(accountRef('anthropic', '3fa2c1'), 'keys-manager/anthropic-3fa2c1')
+  assert.equal(accountRef('OpenAI Codex', 'ABC123'), 'keys-manager/openai-codex-abc123')
+  for (const [providerId, hash] of [['anthropic', '3fa2c1'], ['OpenAI Codex', 'ABC123']] as const) {
+    const name = accountRef(providerId, hash).split('/')[1]!
+    assert.match(name, /^[a-z][a-z0-9-]*$/)
+  }
+})
+
+test('isOAuthCapable reads the provider route native OAuth flag', () => {
+  assert.equal(isOAuthCapable({ nativeAuth: { env: [], oauth: true } }), true)
+  assert.equal(isOAuthCapable({ nativeAuth: { env: ['X'], oauth: false } }), false)
+  assert.equal(isOAuthCapable({ nativeAuth: null }), false)
+  assert.equal(isOAuthCapable({}), false)
+  assert.equal(isOAuthCapable(undefined), false)
 })

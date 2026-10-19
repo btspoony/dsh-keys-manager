@@ -4,15 +4,16 @@
  * The file at `<DSH_HOME>/keys-manager/state.json` holds provider/key
  * metadata only: aliases, refs, health, counters, and session bindings. API
  * key literals live in the Harness credential store under each key's
- * `ref`. The shape is deliberately additive so a future OAuth2 account
- * record can sit beside `kind: 'api-key'` without a migration that rewrites
- * existing rows.
+ * `ref`, and OAuth account grant payloads live there too, behind the
+ * account row's `oauth.grantRef`. The shape is deliberately additive so
+ * `kind: 'oauth'` rows sit beside `kind: 'api-key'` without a migration
+ * that rewrites existing rows.
  */
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { chmod, mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import type { KeyRecord, ModelRecord, ProviderRecord, StateDocument } from './domain.js'
+import type { KeyRecord, ModelRecord, OAuthAccount, ProviderRecord, StateDocument } from './domain.js'
 import { normalizeCursor, normalizeSettings } from './core.js'
 
 export const STATE_VERSION = 1 as const
@@ -52,6 +53,26 @@ function integerOr(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : fallback
 }
 
+/**
+ * Normalize one persisted OAuth account payload to the typed shape.
+ *
+ * Only the reference + metadata fields survive, so a stray token payload can
+ * never reach the state document. Legacy placeholder objects (pre-account
+ * builds) lack the required `provider`/`grantRef` pair and normalize to
+ * null, which keeps those rows loadable unchanged.
+ */
+function sanitizeOAuthAccount(raw: unknown): OAuthAccount | null {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const source = raw as Record<string, unknown>
+  if (typeof source.provider !== 'string' || source.provider.length === 0) return null
+  if (typeof source.grantRef !== 'string' || source.grantRef.length === 0) return null
+  const account: OAuthAccount = { provider: source.provider, grantRef: source.grantRef }
+  if (typeof source.email === 'string') account.email = source.email
+  if (typeof source.accountId === 'string') account.accountId = source.accountId
+  if (typeof source.expiresAt === 'number' && Number.isFinite(source.expiresAt)) account.expiresAt = source.expiresAt
+  return account
+}
+
 /** Strip any accidental secret-looking field from a key record. */
 function sanitizeKey(raw: unknown): KeyRecord | undefined {
   if (raw === null || typeof raw !== 'object') return undefined
@@ -78,7 +99,7 @@ function sanitizeKey(raw: unknown): KeyRecord | undefined {
     // of carrying a permanent marker across restarts.
     valueMissing: false,
     importedFrom: typeof source.importedFrom === 'string' ? source.importedFrom : null,
-    oauth: source.oauth !== null && typeof source.oauth === 'object' ? (source.oauth as Record<string, unknown>) : null,
+    oauth: sanitizeOAuthAccount(source.oauth),
   }
 }
 
@@ -332,7 +353,9 @@ export class KeysManagerStore {
     }
     if (!this.dirty) return this.writeChain
     this.dirty = false
-    const snapshot = JSON.stringify(this.state, null, 2)
+    // Sanitize at the write boundary too: whatever a caller put into memory,
+    // only the typed, secret-free schema may reach the state document.
+    const snapshot = JSON.stringify(sanitizeState(this.state), null, 2)
     const file = this.file
     const attempt = this.writeChain.then(async () => {
       try {
