@@ -1,10 +1,20 @@
 /**
  * Extra built-in provider catalog for the Keys Manager.
  *
- * Every entry is an OpenAI-compatible / Anthropic-compatible endpoint that
- * the shipped DSH pi-ai directory does not already declare. The seed model
- * rows are a fallback for environments where endpoint discovery is blocked;
- * when discovery succeeds the Host installs the discovered catalog instead.
+ * Every entry is an OpenAI-compatible / Anthropic-compatible endpoint.
+ * Dedup caliber: an extra id is added only when the shipped DSH catalog
+ * does not already declare that route id; same-endpoint entries with
+ * distinct credential identities are allowed by design (precedents:
+ * plugin `alibaba-token-plan` vs DSH `qwen-token-plan(-individual)`, and
+ * plugin `zhipu-coding-plan` vs DSH `zai-coding-cn`, which share base
+ * URLs).
+ *
+ * The seed model rows are a fallback for environments where endpoint
+ * discovery is blocked; when discovery succeeds the Host installs the
+ * discovered catalog instead.
+ *
+ * Layout convention: the catalog grows in addition batches, alphabetical
+ * within each batch.
  *
  * Metadata was curated from oh-my-pi's provider catalog
  * (packages/catalog/src/models.json and compat/rules/providers/*.kdl,
@@ -13,8 +23,22 @@
  */
 import type { ExtraProvider } from './domain.js'
 
+/**
+ * Recursively freeze a value and every array or object nested inside it,
+ * so each entry, its `env`/`models` arrays, and each model row (with its
+ * `input` array) are immutable once the module loads.
+ */
+function deepFreeze<T>(value: T): T {
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreeze(item)
+  } else if (typeof value === 'object' && value !== null) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child)
+  }
+  return Object.freeze(value) as T
+}
+
 /** Curated seed catalog, checked against the shared domain type. */
-export const EXTRA_PROVIDERS: readonly ExtraProvider[] = Object.freeze([
+export const EXTRA_PROVIDERS: readonly ExtraProvider[] = deepFreeze([
   {
     "id": "deepinfra",
     "name": "DeepInfra",
@@ -750,6 +774,550 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = Object.freeze([
         "name": "DeepSeek V4.1 Flash",
         "contextWindow": 1048576,
         "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "alibaba-token-plan",
+    "name": "Alibaba Token Plan",
+    "api": "openai-completions",
+    "baseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    "env": [
+      "ALIBABA_TOKEN_PLAN_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "alibaba-token-plan-cn",
+    "name": "Alibaba Token Plan (CN)",
+    "api": "openai-completions",
+    "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "env": [
+      "BAILIAN_TOKEN_PLAN_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "charm-hyper",
+    "name": "Charm Hyper",
+    "api": "openai-completions",
+    "baseURL": "https://hyper.charm.land/v1",
+    "env": [
+      "CHARM_HYPER_API_KEY",
+      "HYPER_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "prism",
+        "name": "Prism",
+        "contextWindow": 1000000,
+        "maxTokens": 16000,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek-v4.1-flash",
+        "name": "DeepSeek V4.1 Flash",
+        "contextWindow": 1048576,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "glm-5.3",
+        "name": "GLM 5.3",
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8-Max",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "litellm",
+    "name": "LiteLLM Proxy",
+    "api": "openai-completions",
+    "baseURL": "http://localhost:4000/v1",
+    "env": [
+      "LITELLM_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "openai/gpt-4o",
+        "name": "GPT-4o",
+        "contextWindow": 128000,
+        "maxTokens": 16384,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "anthropic/claude-sonnet-4-20250514",
+        "name": "Claude Sonnet 4",
+        "contextWindow": 200000,
+        "maxTokens": 64000,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "siliconflow",
+    "name": "SiliconFlow",
+    "api": "openai-completions",
+    "baseURL": "https://api.siliconflow.com/v1",
+    "env": [
+      "SILICONFLOW_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash",
+        "name": "DeepSeek V4 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1049000,
+        "maxTokens": 262000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K3",
+        "name": "Kimi K3",
+        "contextWindow": 1048576,
+        "maxTokens": 262000,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "siliconflow-cn",
+    "name": "SiliconFlow (CN)",
+    "api": "openai-completions",
+    "baseURL": "https://api.siliconflow.cn/v1",
+    "env": [
+      "SILICONFLOW_CN_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1049000,
+        "maxTokens": 393000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1049000,
+        "maxTokens": 262000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash",
+        "name": "DeepSeek V4 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "zhipu-coding-plan",
+    "name": "Zhipu Coding Plan",
+    "api": "openai-completions",
+    "baseURL": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "env": [
+      "ZHIPU_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3-Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-4.7",
+        "name": "GLM-4.7",
+        "contextWindow": 204800,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "abliteration",
+    "name": "Abliteration",
+    "api": "openai-responses",
+    "baseURL": "https://api.abliteration.ai/v1",
+    "env": [
+      "ABLITERATION_API_KEY",
+      "ABLIT_KEY"
+    ],
+    "models": [
+      {
+        "id": "abliterated-model",
+        "name": "Abliterated Model",
+        "contextWindow": 262144,
+        "maxTokens": 262134,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "abliterated-model-large",
+        "name": "Abliterated Model Large",
+        "contextWindow": 1000000,
+        "maxTokens": 999990,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "abliterated-model-large-v2",
+        "name": "Abliterated Model Large V2",
+        "contextWindow": 1000000,
+        "maxTokens": 999990,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "cline-pass",
+    "name": "ClinePass",
+    "api": "openai-completions",
+    "baseURL": "https://api.cline.bot/api/v1",
+    "env": [
+      "CLINE_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "cline-free/mimo-v2.6-flash",
+        "name": "MiMo-V2.6-Flash (free)",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1048576,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "commandcode",
+    "name": "Command Code",
+    "api": "openai-completions",
+    "baseURL": "https://api.commandcode.ai/provider/v1",
+    "env": [
+      "COMMAND_CODE_API_KEY",
+      "COMMANDCODE_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "Qwen/Qwen3.8-Max",
+        "name": "Qwen 3.8 Max",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K2.7-Code",
+        "name": "Kimi K2.7 Code",
+        "contextWindow": 256000,
+        "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "z-ai/glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek/deepseek-v4-flash-fast",
+        "name": "DeepSeek V4 Flash Fast",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "firepass",
+    "name": "Fire Pass",
+    "api": "openai-completions",
+    "baseURL": "https://api.fireworks.ai/inference/v1",
+    "env": [
+      "FIREPASS_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "glm-5.2-fast",
+        "name": "GLM 5.2 Fast (Fire Pass)",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "kimi-k3-fast",
+        "name": "Kimi K3 Fast (Fire Pass)",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "ollama-cloud",
+    "name": "Ollama Cloud",
+    "api": "openai-completions",
+    "baseURL": "https://ollama.com/v1",
+    "env": [
+      "OLLAMA_CLOUD_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "beam",
+        "name": "Beam",
+        "contextWindow": 1048576,
+        "maxTokens": 8192,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "yolo-auto",
+    "name": "Yolo Auto",
+    "api": "openai-completions",
+    "baseURL": "https://yolo-auto.com/v1",
+    "env": [
+      "YOLO_AUTO_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "deepseek-flash-v4",
+        "name": "DeepSeek Flash V4",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "contextWindow": 262144,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "yolo",
+        "name": "Yolo",
+        "contextWindow": 262144,
+        "maxTokens": 131072,
         "input": [
           "text",
           "image"
