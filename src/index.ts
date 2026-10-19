@@ -1044,8 +1044,11 @@ export class KeysManagerService {
         // The grant pi-ai just committed IS the projection; the fresh row
         // owns it until activation or fallback says otherwise.
         this.activeAccounts.set(attempt.provider, attempt.accountId)
-        this.finishLoginAttempt(attempt, 'ready')
+        // No terminal here: `run` flushes the state document after this
+        // callback resolves, and the ready terminal publishes below — only
+        // once persistence has actually resolved (round-2 review, step 3).
       })
+      this.finishLoginAttempt(attempt, 'ready')
     } catch (error) {
       this.failLoginAttempt(attempt, error)
       this.warn(`oauth sign-in harvest failed for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)

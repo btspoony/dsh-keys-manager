@@ -2986,6 +2986,30 @@ test('a failing harvest flips the settled login to failed instead of ready', asy
   }
 })
 
+// Round-2 review step 3: the ready terminal publishes only after the
+// state persistence step resolves. A rejected flush must fail the attempt
+// — the terminal guard must not swallow it behind an already-published
+// "Signed in.".
+
+test('a rejected state flush fails the settled login instead of publishing ready', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    // Every flush rejects: the harvest mutation itself succeeds, but its
+    // persistence step (inside `run`) does not.
+    ;(h.store as unknown as { flush: () => Promise<void> }).flush = async () => {
+      throw new Error('disk full')
+    }
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    assert.match(h.service.getAccountAttempt(view.id)!.error ?? '', /disk full/)
+  } finally {
+    await h.close()
+  }
+})
+
 test('concurrent logins for one provider are refused until the attempt settles', async () => {
   const h = await harnessWithManagedAnthropic()
   try {
