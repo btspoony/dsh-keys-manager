@@ -3305,6 +3305,32 @@ test('a non-oauth stream failure on the same path does not demote the projection
   }
 })
 
+// Codex P2: symmetric to the failure attribution — a request served by the
+// projected grant records its success on the owning account row
+// (lastUsedAt/totalUses move, the failure streak resets).
+
+test('a projection-served success records success on the owning account row (Codex P2)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    // A stale failure streak proves the success resets it.
+    row.consecutiveFailures = 2
+    const stream = h.service.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-proj-success', messages: [] },
+      async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    )
+    await consume(stream)
+    assert.equal(row.totalUses, 1)
+    assert.ok(row.lastUsedAt > 0)
+    assert.equal(row.consecutiveFailures, 0)
+  } finally {
+    await h.close()
+  }
+})
+
 test('an oauth-coded stream failure without an active projection attributes to nothing', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {

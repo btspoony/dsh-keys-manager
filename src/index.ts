@@ -2458,6 +2458,19 @@ export class KeysManagerService {
     }
   }
 
+  /**
+   * Codex P2: record a projection-served success on the owning account row —
+   * `lastUsedAt`/`totalUses` move and the failure streak resets, symmetric to
+   * the MF2 failure attribution.
+   */
+  private recordProjectionSuccess(providerId: string, accountId: string): void {
+    const provider = this.store.provider(providerId)
+    if (provider === undefined) return
+    const row = provider.keys.find(candidate => candidate.id === accountId)
+    if (row !== undefined) markKeySuccess(row, Date.now())
+    this.store.touch()
+  }
+
   /** Mark one key cooling, preserving escalation across recovery windows. */
   private markFailure(providerId: string, keyId: string | undefined, failure: LlmFailureLike): void {
     const provider = this.store.provider(providerId)
@@ -2631,13 +2644,16 @@ export class KeysManagerService {
             if (chunk.type === 'finish' && chunk.reason !== undefined) {
               const reason = chunk.reason
               const used = store?.keyUsed === true
+              // Captured where the broker resolve path is set up: when a
+              // projection exists, pi-ai serves the stored grant, so both
+              // terminal kinds attribute to the owning account row.
+              const oauthAccountId = store?.oauthAccountId ?? null
               if (reason.kind === 'error') {
                 // MF2 attribution: with an active projection, pi-ai served the
                 // stored grant, so an oauth-coded failure belongs to the
                 // account row — cool it and demote the projection exactly as
                 // markFailure's oauth branch does, instead of delegating with
                 // no recovery evidence.
-                const oauthAccountId = store?.oauthAccountId ?? null
                 const failure = reason.failure
                 if (oauthAccountId !== null && failure !== undefined && classifyOAuthFailure(failure) === 'oauth') {
                   service.recordFailure(providerId, sessionId, oauthAccountId, failure, true)
@@ -2660,6 +2676,16 @@ export class KeysManagerService {
                 if (sessionId !== undefined && step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
               } else if (used) {
                 service.recordSuccess(providerId, sessionId, keyId, step)
+              } else if (oauthAccountId !== null) {
+                // Codex P2: symmetric to the failure attribution — a request
+                // served by the projected grant succeeded on the owning
+                // account row, so its counters and failure streak update
+                // there, not on a broker key.
+                service.recordProjectionSuccess(providerId, oauthAccountId)
+                if (sessionId !== undefined) {
+                  service.attempts.delete(bindingKey(sessionId, providerId))
+                  if (step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
+                }
               } else if (sessionId !== undefined) {
                 service.attempts.delete(bindingKey(sessionId, providerId))
                 if (step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
