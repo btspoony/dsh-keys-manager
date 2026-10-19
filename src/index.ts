@@ -20,6 +20,7 @@ import {
   accountRef,
   applyFailureCooldown,
   bindingKey,
+  classifyOAuthFailure,
   isSelectable,
   markKeySuccess,
   markKeyUsed,
@@ -355,6 +356,17 @@ function publicKey(key: KeyRecord, now: number): KeyView {
     importedFrom: key.importedFrom ?? null,
     valueMissing: key.valueMissing === true,
     kind: key.kind ?? 'api-key',
+    // Identity facts only; the grant reference stays host-side (T1 shapes).
+    ...(key.kind === 'oauth' && key.oauth !== null
+      ? {
+          oauth: {
+            provider: key.oauth.provider,
+            ...(key.oauth.email === undefined ? {} : { email: key.oauth.email }),
+            ...(key.oauth.accountId === undefined ? {} : { accountId: key.oauth.accountId }),
+            ...(key.oauth.expiresAt === undefined ? {} : { expiresAt: key.oauth.expiresAt }),
+          },
+        }
+      : {}),
   }
 }
 
@@ -481,8 +493,19 @@ export class KeysManagerService {
   /** The provider → attempt id index for the single-attempt rule. */
   private readonly loginsInFlight = new Map<string, string>()
   private loginSequence = 0
+  /** The account row whose grant payload currently IS the projection, per provider. */
+  private readonly activeAccounts = new Map<string, string>()
+  /**
+   * Providers whose projection deletion this manager initiated and whose
+   * `record-updated` echo must not read as an out-of-band removal. Cleared
+   * on the next activation, or right after the deletion's synchronous event
+   * fan-out has drained (a microtask later).
+   */
+  private readonly intentionalProjectionRemovals = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
   private settledDisposer: (() => void) | undefined
+  /** Disposer for the `credentials/record-updated` subscription. */
+  private recordUpdatedDisposer: (() => void) | undefined
   readonly typertRemote: TypertRemoteBinding
 
   constructor(ctx: HostContext, store: KeysManagerStore) {
@@ -491,6 +514,7 @@ export class KeysManagerService {
     this.typertRemote = Object.freeze({ service: this, serviceKey: SERVICE, namespace: NAMESPACE })
     this.rebuildBrokerMap()
     this.settledDisposer = this.watchAuthorizationSettled()
+    this.recordUpdatedDisposer = this.watchGrantRecordUpdated()
   }
 
   /** Log without ever echoing secret material. */
@@ -549,6 +573,8 @@ export class KeysManagerService {
     this.closing = true
     this.settledDisposer?.()
     this.settledDisposer = undefined
+    this.recordUpdatedDisposer?.()
+    this.recordUpdatedDisposer = undefined
     for (const attempt of this.loginAttempts.values()) {
       attempt.controller.abort()
       this.dropPrompt(attempt)
@@ -857,6 +883,9 @@ export class KeysManagerService {
         }
         this.store.touch()
         attempt.accountId = existing !== undefined ? existing.id : providerRecord.keys[providerRecord.keys.length - 1]!.id
+        // The grant pi-ai just committed IS the projection; the fresh row
+        // owns it until activation or fallback says otherwise.
+        this.activeAccounts.set(attempt.provider, attempt.accountId)
         this.finishLoginAttempt(attempt, 'ready')
       })
     } catch (error) {
@@ -876,6 +905,182 @@ export class KeysManagerService {
       }
       if (now - attempt.settledAt > ATTEMPT_TTL_MS) this.loginAttempts.delete(id)
     }
+  }
+
+  /**
+   * Subscribe to the credential seam's post-commit record broadcast
+   * (credentials/src/index.ts:271-277; the event carries the key only, so
+   * the handler re-reads the record for its payload).
+   */
+  private watchGrantRecordUpdated(): (() => void) | undefined {
+    const on = (this.ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => unknown) => () => void }).on
+    if (typeof on !== 'function') return undefined
+    try {
+      return on.call(this.ctx, 'credentials/record-updated', (key: unknown) => {
+        if (typeof key === 'string') this.onGrantRecordUpdated(key)
+      })
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Reconcile one `llm-pi-ai/<provider>` record change with the pool.
+   *
+   * The manager writes this record only through {@link activateAccount}
+   * (D1); pi-ai rewrites it on every lazy refresh and owns every login. A
+   * change whose payload belongs to the active account is a rotation and
+   * syncs back into the owning row; anything else the manager did not write
+   * is native management of the route and surfaces as a warning instead of
+   * being adopted silently.
+   */
+  private onGrantRecordUpdated(key: string): void {
+    if (!key.startsWith(`${OAUTH_GRANT_RECORD_SCOPE}/`)) return
+    const provider = key.slice(OAUTH_GRANT_RECORD_SCOPE.length + 1)
+    const providerRecord = this.store.provider(provider)
+    if (providerRecord === undefined) return
+    const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
+    if (accounts.length === 0) return
+    const activeId = this.activeAccounts.get(provider)
+    const active = activeId === undefined
+      ? undefined
+      : accounts.find(candidate => candidate.id === activeId)
+    void (async () => {
+      const records = this.credentialRecords()
+      if (records === undefined) return
+      const record = await records.readRecord(key)
+      if (record === undefined) {
+        this.intentionalProjectionRemovals.delete(provider)
+        if (active !== undefined) {
+          // Not our deletion (fallbackToKeys flags its own): someone removed
+          // the projection, so the route silently serves the key pool while
+          // the account row looks healthy. Mark and warn.
+          active.valueMissing = true
+          this.store.touch()
+          this.pushWarning(`The ${provider} OAuth grant was removed outside Keys Manager; the route now resolves through its API-key pool.`)
+        }
+        return
+      }
+      if (record.kind === 'api-key') {
+        this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
+        return
+      }
+      if (!isOAuthGrantPayload(record.payload)) {
+        this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
+        return
+      }
+      const payload = record.payload
+      const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
+      const owner = accounts.find(candidate => candidate.oauth!.grantRef === accountRef(provider, hash))
+        ?? accounts.find(candidate => payload.accountId !== undefined && candidate.oauth!.accountId === payload.accountId)
+      if (owner === undefined) {
+        this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
+        return
+      }
+      // Rotation sync: refresh tokens survive a rotation, so the payload
+      // hash names the same row; refresh-derived identity fields are
+      // informational and update in place.
+      owner.oauth = {
+        ...owner.oauth!,
+        ...(payload.email === undefined ? {} : { email: payload.email }),
+        ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
+        ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
+      }
+      this.store.touch()
+    })().catch(error => {
+      this.warn(`grant reconciliation failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /**
+   * Make one account's grant payload the route's stored credential
+   * (D1 activation projection). The write goes through the seam's
+   * `modifyRecord` — read-decide-replace under the provider's lock
+   * (credentials/src/index.ts:236-250) — so a concurrent pi-ai refresh
+   * cannot be lost; the account whose payload lands becomes the pool's
+   * active account and is cascade-selectable again.
+   */
+  activateAccount(provider: string, accountId: string): Promise<void> {
+    return this.run(async () => {
+      const providerRecord = this.store.provider(provider)
+      if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
+      const row = providerRecord.keys.find(candidate => candidate.id === accountId)
+      if (row === undefined) throw new Error(`Account "${accountId}" not found on ${provider}`)
+      if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account`)
+      const records = this.credentialRecords()
+      if (records === undefined) throw new Error('The credential store does not support records')
+      const stored = await records.readRecord(row.oauth.grantRef)
+      if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+        throw new Error(`The grant payload at ${row.oauth.grantRef} is missing or unusable; sign in to this account again`)
+      }
+      this.intentionalProjectionRemovals.delete(provider)
+      await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, () =>
+        Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
+      this.activeAccounts.set(provider, row.id)
+      row.valueMissing = false
+      this.store.touch()
+    })
+  }
+
+  /**
+   * Demote the cascade to the key pool by deleting the projection record:
+   * pi-ai's per-request resolution prefers the stored credential and only
+   * falls through to the broker `apiKeyEnv` when none is stored
+   * (research, resolve.js:26-55).
+   *
+   * Recovery is deliberately manual: the cooled account stays demoted until
+   * the user re-activates it or signs in again. An automatic re-activation
+   * on cooldown expiry would replay the failing grant every request; the
+   * user (who can see whether the account recovered upstream) is the
+   * arbiter. `fallbackToKeys` marks every account row value-missing so the
+   * pure `cascadeOrder` keeps ranking only real candidates.
+   */
+  fallbackToKeys(provider: string): Promise<void> {
+    return this.run(() => this.fallbackToKeysUnqueued(provider))
+  }
+
+  /** The fallback body; callers own the mutation queue. */
+  private async fallbackToKeysUnqueued(provider: string): Promise<void> {
+    const providerRecord = this.store.provider(provider)
+    if (providerRecord === undefined) return
+    const records = this.credentialRecords()
+    if (records !== undefined) {
+      this.intentionalProjectionRemovals.add(provider)
+      try {
+        await records.deleteRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
+      } finally {
+        // The deletion's synchronous event fan-out has drained by the time
+        // this microtask runs; later removals are genuinely out-of-band.
+        queueMicrotask(() => this.intentionalProjectionRemovals.delete(provider))
+      }
+    }
+    this.activeAccounts.delete(provider)
+    for (const row of providerRecord.keys) {
+      if (row.kind === 'oauth') row.valueMissing = true
+    }
+    this.store.touch()
+  }
+
+  /**
+   * Drop one account: its plugin-scope grant payload, its row, and — when
+   * it was the active projection — the projection itself, so the route
+   * falls back to the key pool.
+   */
+  removeAccount(provider: string, accountId: string): Promise<void> {
+    return this.run(async () => {
+      const providerRecord = this.store.provider(provider)
+      if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
+      const index = providerRecord.keys.findIndex(candidate => candidate.id === accountId)
+      if (index < 0) throw new Error(`Account "${accountId}" not found on ${provider}`)
+      const row = providerRecord.keys[index]!
+      if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account; use deleteKey`)
+      if (this.activeAccounts.get(provider) === row.id) await this.fallbackToKeysUnqueued(provider)
+      const records = this.credentialRecords()
+      if (records !== undefined && row.oauth !== null) await records.deleteRecord(row.oauth.grantRef)
+      providerRecord.keys.splice(index, 1)
+      this.store.clearBindings((_key, binding) => binding.keyId === row.id)
+      this.store.touch()
+    })
   }
 
   /** Install the broker layer on one credential provider instance. */
@@ -1546,9 +1751,18 @@ export class KeysManagerService {
         return this.buildState()
       }
       const key = record.keys[index]
-      // Unset first: if the credential backend refuses, keep the metadata so a
-      // later retry can remove both together.
-      await this.unsetOriginal(key.ref)
+      // An OAuth account leaves the pool like removeAccount: drop its
+      // plugin-scope payload and, when it was the projection, fall back to
+      // the key pool. API keys remove their broker literal.
+      if (key.kind === 'oauth' && key.oauth !== null) {
+        if (this.activeAccounts.get(provider) === key.id) await this.fallbackToKeysUnqueued(provider)
+        const records = this.credentialRecords()
+        if (records !== undefined) await records.deleteRecord(key.oauth.grantRef)
+      } else {
+        // Unset first: if the credential backend refuses, keep the metadata so a
+        // later retry can remove both together.
+        await this.unsetOriginal(key.ref)
+      }
       record.keys.splice(index, 1)
       this.store.clearBindings((_key, binding) => binding.keyId === key.id)
       this.store.touch()
@@ -1580,10 +1794,16 @@ export class KeysManagerService {
   /** Remove every managed credential, recording progress before a retry. */
   private async deleteManagedCredentials(record: ProviderRecord): Promise<void> {
     for (const key of record.keys) {
-      await this.unsetOriginal(key.ref)
+      if (key.kind === 'oauth' && key.oauth !== null) {
+        const records = this.credentialRecords()
+        if (records !== undefined) await records.deleteRecord(key.oauth.grantRef)
+      } else {
+        await this.unsetOriginal(key.ref)
+      }
       key.valueMissing = true
       this.store.touch()
     }
+    this.activeAccounts.delete(record.provider)
   }
 
   /** Restore the provider profile and drop management; caller owns the queue. */
@@ -1861,6 +2081,16 @@ export class KeysManagerService {
     const now = Date.now()
     if (key.cooldownUntil > now && now - key.lastFailureAt < 10_000) return
     const result = applyFailureCooldown(key, this.store.settings, now, failure)
+    // D1/D2 pool arbitration: when the OAuth grant itself failed (the pinned
+    // pi-ai `ModelsError("oauth", …)` code), the account cools down AND the
+    // cascade demotes to the key pool by deleting the projection record.
+    if (key.kind === 'oauth' && classifyOAuthFailure(failure) === 'oauth') {
+      this.warn(`oauth account ${key.id} on ${providerId} failed (${failure.code}); demoting to the key pool for ${Math.round(result.cooldownMs / 1000)}s`)
+      void this.fallbackToKeys(providerId).catch(error => {
+        this.warn(`key-pool fallback failed for ${providerId}: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      return
+    }
     this.warn(`key ${key.id} on ${providerId} cooled for ${Math.round(result.cooldownMs / 1000)}s`)
     this.store.touch()
   }

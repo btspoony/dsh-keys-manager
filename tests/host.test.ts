@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash, randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, vi } from 'vitest'
@@ -339,10 +340,18 @@ async function harness(): Promise<Harness> {
       const chain = eventListeners.get(name) ?? []
       chain.push(listener)
       eventListeners.set(name, chain)
+      // The credential seam's post-commit broadcast reaches service
+      // listeners through ctx.on; wire the fake store's emit to the same
+      // listeners so tests can fire rotations by hand.
+      let disposeRecord: (() => void) | undefined
+      if (name === 'credentials/record-updated') {
+        disposeRecord = credentials.raw.onRecordUpdated((key: string) => listener(key))
+      }
       return () => {
         const list = eventListeners.get(name)
         const index = list?.indexOf(listener) ?? -1
         if (index >= 0) list!.splice(index, 1)
+        disposeRecord?.()
       }
     },
   }
@@ -2864,6 +2873,250 @@ test('login is refused without a managed provider or an oauth flow', async () =>
     await assert.rejects(() => h.service.beginAccountLogin('anthropic'), /not managed/)
     await h.service.adoptProvider('zai-coding-cn')
     await assert.rejects(() => h.service.beginAccountLogin('zai-coding-cn'), /no OAuth sign-in flow/)
+  } finally {
+    await h.close()
+  }
+})
+
+/** Seed one `kind: 'oauth'` pool row plus its plugin-scope grant record. */
+function seedOAuthAccount(
+  h: Harness,
+  provider: string,
+  options: { accountId?: string; email?: string; expires?: number; refresh?: string; access?: string; alias?: string } = {},
+): { rowId: string; grantRef: string } {
+  const record = h.store.provider(provider)!
+  const refresh = options.refresh ?? 'rt-seed-value'
+  const payload: Record<string, unknown> = {
+    type: 'oauth',
+    refresh,
+    access: options.access ?? 'at-seed-value',
+    expires: options.expires ?? 1_800_000_000_000,
+    ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
+    ...(options.email === undefined ? {} : { email: options.email }),
+  }
+  const grantRef = accountRef(provider, createHash('sha256').update(refresh).digest('hex').slice(0, 12))
+  h.credentials.records.set(grantRef, { kind: 'grant', payload })
+  const row: KeyRecord = {
+    id: `k_${randomBytes(4).toString('hex')}`,
+    alias: options.alias ?? options.email ?? 'Seeded account',
+    ref: grantRef,
+    kind: 'oauth',
+    enabled: true,
+    createdAt: Date.now(),
+    lastUsedAt: 0,
+    cooldownUntil: 0,
+    lastFailureAt: 0,
+    lastFailureCode: '',
+    failureLevel: 0,
+    consecutiveFailures: 0,
+    totalUses: 0,
+    totalFailures: 0,
+    valueMissing: false,
+    importedFrom: null,
+    oauth: {
+      provider,
+      grantRef,
+      ...(options.email === undefined ? {} : { email: options.email }),
+      ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
+      ...(options.expires === undefined ? {} : { expiresAt: options.expires }),
+    },
+  }
+  record.keys.push(row)
+  h.store.touch()
+  return { rowId: row.id, grantRef }
+}
+
+async function harnessWithSeededAccount(options: Parameters<typeof seedOAuthAccount>[2] = {}) {
+  const h = await harnessWithManagedAnthropic()
+  const seeded = seedOAuthAccount(h, 'anthropic', options)
+  return { h, ...seeded }
+}
+
+test('activateAccount projects the grant payload into the llm-pi-ai record', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const record = h.credentials.records.get(GRANT_KEY)!
+    assert.equal(record.kind, 'grant')
+    assert.equal((record.payload as Record<string, unknown>).refresh, 'rt-seed-value')
+    assert.equal((record.payload as Record<string, unknown>).accountId, 'acc-9')
+    // The account row is selectable again once its grant is the projection.
+    assert.equal(h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!.valueMissing, false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('activateAccount refuses unknown rows and api-key rows', async () => {
+  const { h, rowId } = await harnessWithSeededAccount()
+  try {
+    await assert.rejects(() => h.service.activateAccount('anthropic', 'k_missing'), /not found/)
+    await assert.rejects(() => h.service.activateAccount('no-such-provider', rowId), /not managed/)
+    // An api-key row cannot be activated as an account.
+    const apiKeyRow = h.store.provider('anthropic')!.keys.find(key => key.kind === 'api-key')
+    if (apiKeyRow !== undefined) {
+      await assert.rejects(() => h.service.activateAccount('anthropic', apiKeyRow.id), /not an OAuth account/)
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+test('fallbackToKeys deletes the projection so resolution reaches the key pool', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    assert.ok(h.credentials.records.has(GRANT_KEY))
+    await h.service.fallbackToKeys('anthropic')
+    // pi-ai's resolution falls through to the broker apiKeyEnv once the
+    // stored credential is gone (resolve.js:26-55 order).
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    // The account keeps its own payload but is not cascade-selectable until
+    // it is re-activated or a new login happens (manual recovery, by design:
+    // see fallbackToKeys in src/index.ts).
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, true)
+    assert.ok(h.credentials.records.has(grantRef))
+    // Fallback without any projection is a no-op.
+    await h.service.fallbackToKeys('anthropic')
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth failure cools the account down and demotes the cascade to keys', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    // The pi-ai ModelsError("oauth", …) shape pinned in tests/core.test.ts.
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'oauth', message: 'OAuth refresh failed for anthropic' })
+    assert.ok(row.cooldownUntil > Date.now())
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    // A plain key failure on an oauth row does not demote (only the pinned
+    // code does), and api-key rows never demote.
+    await h.service.activateAccount('anthropic', rowId)
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'RATE_LIMIT' })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('record-updated rotations sync back into the owning account row', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // pi-ai rotated the grant inside its own record (per-request refresh,
+    // research resolve.js:62-94): the projection payload changed underneath.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-seed-value', access: 'at-rotated', expires: 1_950_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    await eventually(() => assert.equal(row.oauth!.expiresAt, 1_950_000_000_000))
+    assert.equal(row.oauth!.accountId, 'acc-9')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a login lands its account as the active projection', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.kind === 'oauth')!
+    // The logged-in grant already IS the projection (pi-ai wrote it), so a
+    // rotation right after login must sync into the new row.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ expires: 1_960_000_000_000 }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.equal(row.oauth!.expiresAt, 1_960_000_000_000))
+  } finally {
+    await h.close()
+  }
+})
+
+test('an out-of-band account change surfaces a native-management warning', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    const pendingWarnings = (): string =>
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    // Someone signed a different account in through another surface: no row
+    // owns that payload and the manager did not write the projection.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-other-account', access: 'at-other', expires: 1_800_000_000_000, accountId: 'acc-out-of-band' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => {
+      const warnings = pendingWarnings()
+      assert.match(warnings, /anthropic/)
+      assert.match(warnings, /native/i)
+    })
+    // An api-key record landing on an account-managed route is the same story.
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native' })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(pendingWarnings(), /natively managed API-key/i))
+    // The warnings ride the next state response.
+    assert.match(h.service.buildState().warnings.join('\n'), /native/i)
+    // The manager's own fallback deletion is not a warning.
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.fallbackToKeys('anthropic')
+    assert.equal(h.service.buildState().warnings.join('\n').includes('native'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('removeAccount drops the row, its plugin-scope payload, and falls back when active', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.removeAccount('anthropic', rowId)
+    const providerRecord = h.store.provider('anthropic')!
+    assert.equal(providerRecord.keys.some(key => key.id === rowId), false)
+    assert.equal(h.credentials.records.has(grantRef), false)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    await assert.rejects(() => h.service.removeAccount('anthropic', rowId), /not found/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('deleting an account through the key surface cleans up its grant payload', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.deleteKey('anthropic', rowId)
+    assert.equal(h.store.provider('anthropic')!.keys.some(key => key.id === rowId), false)
+    assert.equal(h.credentials.records.has(grantRef), false)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('state views expose oauth identity without the grant reference', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com', expires: 1_800_000_000_000 })
+  try {
+    const state = h.service.buildState()
+    const view = state.providers.find(provider => provider.provider === 'anthropic')!
+    const oauthRow = view.keys.find(key => key.kind === 'oauth')!
+    assert.deepEqual(oauthRow.oauth, { provider: 'anthropic', email: 'dev@example.com', accountId: 'acc-9', expiresAt: 1_800_000_000_000 })
+    const text = JSON.stringify(state)
+    assert.ok(!text.includes('grantRef'))
+    assert.ok(!text.includes('rt-seed-value'))
+    // API-key rows carry no oauth field at all.
+    const apiKeyRow = view.keys.find(key => key.kind === 'api-key')!
+    assert.equal(apiKeyRow.oauth, undefined)
   } finally {
     await h.close()
   }
