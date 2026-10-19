@@ -506,6 +506,22 @@ interface TypertRemoteBinding {
   namespace: string
 }
 
+/**
+ * The account row whose grant payload matches one live projection payload:
+ * the refresh digest names the row first; on a miss (rotated token) the
+ * payload's identity metadata re-associates, guarded by the same
+ * `accountId === undefined` rule the rotation reconciler applies to its
+ * email-only fallback.
+ */
+function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OAuthGrantPayload): KeyRecord | undefined {
+  const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
+  const projectedRef = accountRef(provider, hash)
+  return accounts.find(candidate => candidate.oauth!.grantRef === projectedRef)
+    ?? accounts.find(candidate =>
+      (payload.accountId !== undefined && candidate.oauth!.accountId === payload.accountId)
+      || (payload.email !== undefined && candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined))
+}
+
 export class KeysManagerService {
   readonly ctx: HostContext
   readonly store: KeysManagerStore
@@ -557,8 +573,48 @@ export class KeysManagerService {
     this.store = store
     this.typertRemote = Object.freeze({ service: this, serviceKey: SERVICE, namespace: NAMESPACE })
     this.rebuildBrokerMap()
+    this.hydrateProjectionOwnership()
     this.settledDisposer = this.watchAuthorizationSettled()
     this.recordUpdatedDisposer = this.watchGrantRecordUpdated()
+  }
+
+  /**
+   * MF3 load-time hydration: a projection outlives this process — pi-ai
+   * wrote `llm-pi-ai/<provider>` during a previous run and it survived in
+   * the credential store. Match each persisted payload back to an account
+   * row (the exact rule the rotation reconciler applies, via
+   * {@link matchOwningAccount}) so removeAccount / deleteManagedCredentials
+   * demote the projection and `onGrantRecordUpdated` can mark valueMissing
+   * after a restart. An orphan projection — no matching row, e.g. a foreign
+   * or stale grant — is left untouched: the manager never adopts a grant it
+   * does not own, and out-of-band updates keep surfacing the native-
+   * management warning.
+   */
+  private hydrateProjectionOwnership(): void {
+    void (async () => {
+      const records = this.credentialRecords()
+      if (records === undefined) {
+        this.warnSubscriptionLost('credentials record access')
+        return
+      }
+      for (const providerRecord of Object.values(this.store.providers)) {
+        const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
+        if (accounts.length === 0) continue
+        const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${providerRecord.provider}`
+        let record: Awaited<ReturnType<typeof records.readRecord>>
+        try {
+          record = await records.readRecord(grantKey)
+        } catch (error) {
+          this.warn(`projection ownership hydration could not read ${grantKey}: ${error instanceof Error ? error.message : String(error)}`)
+          continue
+        }
+        if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) continue
+        const owner = matchOwningAccount(providerRecord.provider, accounts, record.payload)
+        if (owner !== undefined) this.activeAccounts.set(providerRecord.provider, owner.id)
+      }
+    })().catch(error => {
+      this.warn(`projection ownership hydration failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   /** Log without ever echoing secret material. */
@@ -1097,17 +1153,10 @@ export class KeysManagerService {
       const payload = record.payload
       const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
       const rotatedRef = accountRef(provider, hash)
-      // Owner resolution: the refresh digest names the row first. On a miss
-      // (the provider rotated the refresh token), identity metadata
-      // re-associates — identity is the account, not one token generation.
-      // The email-only fallback carries the same `accountId === undefined`
-      // guard harvestLogin applies: a row already bound to an accountId is
-      // never re-attributed on email alone, so same-email dual rows cannot
-      // swallow a rotation echo that matches neither accountId.
-      const owner = accounts.find(candidate => candidate.oauth!.grantRef === rotatedRef)
-        ?? accounts.find(candidate =>
-          (payload.accountId !== undefined && candidate.oauth!.accountId === payload.accountId)
-          || (payload.email !== undefined && candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined))
+      // Owner resolution runs through the shared matcher (refresh digest
+      // first, then identity metadata) — the same rule load-time hydration
+      // applies, so a restarted process and the live reconciler agree.
+      const owner = matchOwningAccount(provider, accounts, payload)
       if (owner === undefined) {
         this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
         return

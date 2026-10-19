@@ -276,6 +276,8 @@ interface Harness {
   llm: any
   authorization: any
   service: KeysManagerService
+  /** The raw fake host context, for constructing restarted service instances. */
+  ctx: HostContext
   emitEvent: (name: string, ...args: unknown[]) => void
   close: () => Promise<void>
 }
@@ -378,6 +380,7 @@ async function harness(): Promise<Harness> {
     llm,
     authorization,
     service,
+    ctx: ctx as unknown as HostContext,
     emitEvent(name: string, ...args: unknown[]) {
       for (const listener of [...(eventListeners.get(name) ?? [])]) listener(...args)
     },
@@ -3413,6 +3416,61 @@ test('removeAccount drops the row, its plugin-scope payload, and falls back when
     assert.equal(h.credentials.records.has(grantRef), false)
     assert.equal(h.credentials.records.has(GRANT_KEY), false)
     await assert.rejects(() => h.service.removeAccount('anthropic', rowId), /not found/)
+  } finally {
+    await h.close()
+  }
+})
+
+// MF3: projection ownership must survive restarts. A fresh service
+// re-derives the active projection from the persisted record payload; an
+// orphan projection (no matching row) is never adopted and keeps warning.
+
+test('a restarted service rehydrates projection ownership and demotes on removal', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    assert.ok(h.credentials.records.has(GRANT_KEY))
+    // "Restart": a fresh service over the same store and seam. Its
+    // constructor hydration matches the persisted projection payload back
+    // to the row (refresh digest → grantRef).
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await eventually(() => assert.equal(
+      (restarted as unknown as { activeAccounts: Map<string, string> }).activeAccounts.get('anthropic'),
+      rowId,
+    ))
+    await restarted.removeAccount('anthropic', rowId)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(h.store.provider('anthropic')!.keys.some(key => key.id === rowId), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a restarted service does not adopt an orphan projection and still warns on its updates', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('anthropic')
+    // One unrelated account row: the projection's payload matches neither
+    // it nor anything else — an orphan (foreign or stale) projection.
+    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-other-row', email: 'other@example.com', refresh: 'rt-other-row' })
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-foreign', access: 'at-foreign', expires: 1_800_000_000_000, accountId: 'acc-foreign' },
+    })
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    // Give the constructor hydration a beat: it must NOT adopt the foreign grant.
+    await new Promise(resolve => setTimeout(resolve, 30))
+    assert.equal((restarted as unknown as { activeAccounts: Map<string, string> }).activeAccounts.size, 0)
+    // Out-of-band updates on the orphan projection still surface the warning.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-foreign-2', access: 'at-foreign-2', expires: 1_800_000_000_000, accountId: 'acc-foreign' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => {
+      const warnings = (restarted as unknown as { warnings: string[] }).warnings.join('\n')
+      assert.match(warnings, /managed natively outside/)
+    })
   } finally {
     await h.close()
   }
