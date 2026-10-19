@@ -787,7 +787,55 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = deepFreeze([
     "api": "openai-completions",
     "baseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
     "env": [
-      "ALIBABA_TOKEN_PLAN_API_KEY",
+      "ALIBABA_TOKEN_PLAN_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "alibaba-token-plan-cn",
+    "name": "Alibaba Token Plan (CN)",
+    "api": "openai-completions",
+    "baseURL": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    "env": [
       "BAILIAN_TOKEN_PLAN_API_KEY"
     ],
     "models": [

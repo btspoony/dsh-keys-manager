@@ -23,7 +23,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ### 额外提供商
 
-`src/providers.ts` 收录 33 个精选提供商（原有 21 个加本次发布新增 12 个，例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud），目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
+`src/providers.ts` 收录 34 个精选提供商（原有 21 个加本次发布新增 13 个，例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud、Alibaba Token Plan (CN)），目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
 
 ## 快速开始
 
@@ -49,7 +49,7 @@ dsh plugin --profile web link .
 打开 **Plugins → 密钥管理 → 查看**（英文 locale 下显示为 `Plugins → Keys Manager → View`）。管理器渲染在插件详情页上，位于描述与包含行之间，与随附的插件配置卡片一致。
 
 1. 搜索提供商。既有 DSH 提供商排在前面；插件同时附带上述精选扩展目录。
-2. 接管提供商。对既有提供商，管理器导入当前解析出的凭据、把 broker 引用写进提供商档案，并把原 key 留在凭据存储里，以便发布时还原。
+2. 接管提供商。对既有提供商，管理器导入当前解析出的凭据、把 broker 引用写进提供商档案，并把原 key 留在凭据存储里，以便停止接管时还原。
 3. 用别名添加更多 key。每把 key 都以自己的引用存进 Harness 凭据存储；管理器状态文档从不包含 key 字面量。
 4. 在三点菜单中管理 key：重命名、暂停/恢复、删除。key 行显示状态、最近使用，以及冷却中的恢复时间。
 5. 在设置卡片中调整重试次数（1–3）、基础冷却与恢复宽限。

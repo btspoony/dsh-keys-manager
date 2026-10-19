@@ -26,9 +26,10 @@ manager.
 
 ### Extra providers
 
-`src/providers.ts` contains a curated catalog of 33 extra providers (21 from
-the original catalog plus 12 added in this release, for example SiliconFlow,
-Zhipu coding plan, Cline Pass, and Ollama Cloud), derived from
+`src/providers.ts` contains a curated catalog of 34 extra providers (21 from
+the original catalog plus 13 added in this release, for example SiliconFlow,
+Zhipu coding plan, Cline Pass, Ollama Cloud, and Alibaba Token Plan (CN)),
+derived from
 [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
 An extra id is added only when the shipped DSH catalog does not already
 declare that route id (for example, `meta` and `typesafe` are not
