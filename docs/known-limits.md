@@ -42,3 +42,7 @@ Current design boundaries of the Keys Manager plugin:
   falls back to the provider's key pool. Re-authentication is manual —
   re-login from the account menu.
 - Only one active grant per provider is kept.
+- Increment 1 keeps the selection model key-centric: the provider's API
+  keys form the sticky/round-robin/failover/cooldown ring, and exactly one
+  projected OAuth grant serves the provider. Per-account ranking
+  (rotating between accounts) is future work, not part of this increment.

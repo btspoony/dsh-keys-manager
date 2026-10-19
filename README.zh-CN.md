@@ -18,7 +18,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 - 插件详情页上提供可搜索的 Keys Manager 页面。
 - 既有 Models 提供商卡片内出现"由 Keys Manager 托管"徽标。
 - 额外内置提供商以普通 `llm-pi-ai` 路由安装。
-- 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，与 API key 同池管理。
+- 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，凭据与 API key 并存管理。
 
 ### 额外提供商
 
@@ -61,7 +61,7 @@ dsh plugin --profile web link .
 
 支持的提供商——`llm-pi-ai` 实现了 OAuth 流的七家：Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI。
 
-账户行的行为与 key 一致：会话粘滞、轮询选择、重试切换与冷却全部照常生效。授权失败（过期或刷新被拒）时，该账户进入冷却，级联回退到该提供商的 key 池；恢复方式是从账户菜单手动重新登录。每个提供商同时只保留一个活跃授权。
+增量 1 的真实模型是：**API key 构成选择环**——会话粘滞、轮询选择、重试切换与冷却都作用在该提供商的 API key 之间；**每个提供商由一条被投影的 OAuth 授权服务**——被投影的账户直接响应请求，同时只保留一个活跃授权。按账户排名（在多个账户间轮换或分流）是后续工作。账户行上的计数只反映该账户自身的成功与失败，不代表按账户的流量拆分。被投影的授权失败（过期或刷新被拒）时，该账户进入冷却，路由回退到该提供商的 key 池；恢复方式是从账户菜单手动重新登录。
 
 添加账户只把提供商签发的授权存进 Harness 凭据存储（挂在账户的 `grantRef` 之下）；管理器状态里只存引用与非敏感元数据（邮箱、账户 ID、过期时间）——与 API key 相同的无明文布局。
 

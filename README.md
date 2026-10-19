@@ -21,8 +21,8 @@ manager.
 - A search-driven Keys Manager page on the plugin's own detail page.
 - A "managed by Keys Manager" badge inside the existing Models provider cards.
 - Extra built-in providers installed as ordinary `llm-pi-ai` routes.
-- OAuth account sign-in for seven pi-ai-backed providers, pooled alongside
-  API keys.
+- OAuth account sign-in for seven pi-ai-backed providers, stored beside
+  the API keys.
 
 ### Extra providers
 
@@ -95,11 +95,17 @@ Supported providers — the seven whose OAuth flows `llm-pi-ai` implements:
 Anthropic, GitHub Copilot, Kimi Coding, OpenAI Codex, OpenRouter, Radius,
 and xAI.
 
-An account row behaves like a key: sticky session binding, round-robin
-selection, retry failover, and cooldown apply unchanged. When the grant
-fails (expired or refresh rejected), the account cools down and the cascade
-falls back to the provider's key pool; recovery is a manual re-login from
-the account menu. One active grant per provider is kept.
+The increment-1 model is honest about scope: **API keys form the selection
+ring** — sticky sessions, round-robin, retry failover, and cooldowns
+operate across the provider's API keys — while **one projected OAuth grant
+serves its provider**: the account whose grant is projected answers
+requests directly, and one active grant per provider is kept. Per-account
+ranking (rotating or load-balancing between accounts) is future work. An
+account row's counters reflect that account's own successes and failures,
+not a per-account traffic split. When the projected grant fails (expired
+or refresh rejected), the account cools down and the route falls back to
+the provider's key pool; recovery is a manual re-login from the account
+menu.
 
 Adding an account stores only the provider-issued grant in the Harness
 credential store, behind the account's `grantRef`; the manager state keeps
