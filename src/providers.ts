@@ -756,6 +756,272 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = Object.freeze([
         ]
       }
     ]
+  },
+  {
+    "id": "alibaba-token-plan",
+    "name": "Alibaba Token Plan",
+    "api": "openai-completions",
+    "baseURL": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+    "env": [
+      "ALIBABA_TOKEN_PLAN_API_KEY",
+      "BAILIAN_TOKEN_PLAN_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8 Max",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "charm-hyper",
+    "name": "Charm Hyper",
+    "api": "openai-completions",
+    "baseURL": "https://hyper.charm.land/v1",
+    "env": [
+      "CHARM_HYPER_API_KEY",
+      "HYPER_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "prism",
+        "name": "Prism",
+        "contextWindow": 1000000,
+        "maxTokens": 16000,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek-v4.1-flash",
+        "name": "DeepSeek V4.1 Flash",
+        "contextWindow": 1048576,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "glm-5.3",
+        "name": "GLM 5.3",
+        "contextWindow": 1000000,
+        "maxTokens": 128000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "qwen3.8-max",
+        "name": "Qwen3.8-Max",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "litellm",
+    "name": "LiteLLM Proxy",
+    "api": "openai-completions",
+    "baseURL": "http://localhost:4000/v1",
+    "env": [
+      "LITELLM_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "openai/gpt-4o",
+        "name": "GPT-4o",
+        "contextWindow": 128000,
+        "maxTokens": 16384,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "anthropic/claude-sonnet-4-20250514",
+        "name": "Claude Sonnet 4",
+        "contextWindow": 200000,
+        "maxTokens": 64000,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "siliconflow",
+    "name": "SiliconFlow",
+    "api": "openai-completions",
+    "baseURL": "https://api.siliconflow.com/v1",
+    "env": [
+      "SILICONFLOW_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash",
+        "name": "DeepSeek V4 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1049000,
+        "maxTokens": 262000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K3",
+        "name": "Kimi K3",
+        "contextWindow": 1048576,
+        "maxTokens": 262000,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "siliconflow-cn",
+    "name": "SiliconFlow (CN)",
+    "api": "openai-completions",
+    "baseURL": "https://api.siliconflow.cn/v1",
+    "env": [
+      "SILICONFLOW_CN_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1049000,
+        "maxTokens": 393000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1049000,
+        "maxTokens": 262000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash",
+        "name": "DeepSeek V4 Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "zhipu-coding-plan",
+    "name": "Zhipu Coding Plan",
+    "api": "openai-completions",
+    "baseURL": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "env": [
+      "ZHIPU_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3-Flash",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "contextWindow": 1000000,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "glm-4.7",
+        "name": "GLM-4.7",
+        "contextWindow": 204800,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      }
+    ]
   }
 ])
 
