@@ -144,6 +144,7 @@ const zh = {
       loginReady: '登录成功。',
       deleteAccountTitle: '删除账户“{alias}”？',
       deleteAccountBody: '这会从凭证库中删除该账户保存的 OAuth 授权。如果它是当前账户，该 Provider 路由将停用它并回落到 API-key 池；Provider 仍保持接管状态。',
+      deleteAccountBodyNoKeys: '这会从凭证库中删除该账户保存的 OAuth 授权。该路由没有 API-key 池，删除后将停止服务，直到重新登录账户。',
     }
 
 const en = {
@@ -289,6 +290,7 @@ const en = {
       loginReady: 'Signed in.',
       deleteAccountTitle: 'Delete account “{alias}”?',
       deleteAccountBody: 'This removes the account’s stored OAuth grant from the credential store. If it is the active account, the provider route stops serving it and falls back to its API-key pool; the provider stays managed.',
+      deleteAccountBodyNoKeys: 'This removes the account’s stored OAuth grant from the credential store. This route has no API-key pool, so it stops serving requests until an account is signed in again.',
     }
 
 /** Dictionaries registered under the plugin's locale namespace. */

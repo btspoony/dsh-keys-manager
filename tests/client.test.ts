@@ -202,12 +202,15 @@ describe('client registration', () => {
   })
 
   test('the registered dictionaries carry the OAuth account key set in both languages', () => {
-    // N3: key-set + non-empty assertion. The W6 intent stays — these keys
-    // must exist in the live registration source (LOCALE_DICTS) for both
-    // languages — without mirroring every translation literal here.
+    // N3/N-C: key-set + non-empty assertion. The key set is derived from
+    // the surfaces under test — the login dialog, the account row menu
+    // (including the projection badge), and the delete-account dialog —
+    // and must exist in the live registration source (LOCALE_DICTS) for
+    // both languages, without mirroring every translation literal here.
     const oauthKeys = [
       'addAccount',
       'accountIdentity',
+      'accountProjected',
       'accountReauth',
       'accountActivate',
       'loginTitle',
@@ -218,6 +221,9 @@ describe('client registration', () => {
       'loginFailed',
       'loginFlowEnded',
       'loginReady',
+      'deleteAccountTitle',
+      'deleteAccountBody',
+      'deleteAccountBodyNoKeys',
     ]
     const harness = makeContext()
     apply(harness.ctx)
@@ -230,6 +236,11 @@ describe('client registration', () => {
       expect(dicts!.zh[key]!.length).toBeGreaterThan(0)
       expect(dicts!.en[key]).not.toBe(dicts!.zh[key])
     }
+    // Counter-parts asserted individually, never as a joined string.
+    expect(dicts!.en.deleteAccountTitle).toContain('{alias}')
+    expect(dicts!.zh.deleteAccountTitle).toContain('{alias}')
+    expect(dicts!.en.deleteAccountBody).not.toBe(dicts!.en.deleteAccountBodyNoKeys)
+    expect(dicts!.zh.deleteAccountBody).not.toBe(dicts!.zh.deleteAccountBodyNoKeys)
     for (const cleanup of harness.cleanups.reverse()) cleanup()
   })
 
@@ -950,6 +961,35 @@ describe('account ui', () => {
     expect(otherActivate[0]!.props!.disabled).toBe(false)
     view.unmount()
     setRuntimeContext(null)
+  })
+
+  test('the delete-account copy states the key-pool fallback only for key-capable routes', async () => {
+    // Step 8: an OAuth-only route states the real consequence (no serving
+    // until re-login); a key-capable route keeps the fallback clause.
+    const buildCopy = async (supported: boolean): Promise<string> => {
+      const state = makeState()
+      state.providers[0] = { ...makeOauthProvider(), supported, reason: supported ? undefined : 'Uses ChatGPT OAuth sign-in only; no API-key credential' }
+      const harness = makeContext({ ok: true, value: state })
+      const store = createStore(harness.ctx)
+      setRuntimeContext({ ctx: harness.ctx, store })
+      const view = mountView(KeysManagerBody)
+      await view.flush()
+      ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+      view.render()
+      const dots = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+      ;(dots[0]!.props!.onClick as () => void)()
+      view.render()
+      const del = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.text === 'delete')
+      ;(del[0]!.props!.onClick as () => void)()
+      view.render()
+      const copy = findByClass(view.nodes, 'km-modal-copy')[0]!
+      view.unmount()
+      setRuntimeContext(null)
+      return copy.text
+    }
+    expect(await buildCopy(true)).toContain('deleteAccountBody')
+    expect(await buildCopy(true)).not.toContain('deleteAccountBodyNoKeys')
+    expect(await buildCopy(false)).toContain('deleteAccountBodyNoKeys')
   })
 
   test('login dialog walks prompt → answer → ready and closes after a state refresh', async () => {

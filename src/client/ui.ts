@@ -634,7 +634,9 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
     confirm ? h(Modal, {
       // SF4: account-specific copy — the grant removal consequence, not a
-      // key-deletion/provider-release promise.
+      // key-deletion/provider-release promise. Step 8: the key-pool
+      // fallback clause appears only when the route actually has key
+      // support; an OAuth-only route states the real consequence instead.
       title: t('deleteAccountTitle', { alias: identity }),
       onClose: () => setConfirm(false),
       busy,
@@ -642,7 +644,7 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
         h(Button, { key: 'cancel', onClick: () => setConfirm(false), disabled: busy }, t('cancel')),
         h(Button, { key: 'delete', variant: 'danger', onClick: remove, disabled: busy }, busy ? t('deleting') : t('deleteConfirm')),
       ],
-    }, h('p', { className: 'km-modal-copy' }, t('deleteAccountBody'))) : null,
+    }, h('p', { className: 'km-modal-copy' }, t(provider.supported === true ? 'deleteAccountBody' : 'deleteAccountBodyNoKeys'))) : null,
   )
 }
 
