@@ -1060,6 +1060,20 @@ export class KeysManagerService {
   }
 
   /**
+   * Drop one OAuth account's plugin-scope grant payload and — when the row
+   * was the active projection — demote the cascade to the key pool first,
+   * so the route falls through to the API-key pool instead of serving a
+   * grant whose owning row is gone. Non-oauth rows are a no-op; every
+   * OAuth-removal call site goes through this helper.
+   */
+  private async removeOAuthGrant(provider: string, row: KeyRecord): Promise<void> {
+    if (row.kind !== 'oauth' || row.oauth === null) return
+    if (this.activeAccounts.get(provider) === row.id) await this.fallbackToKeysUnqueued(provider)
+    const records = this.credentialRecords()
+    if (records !== undefined) await records.deleteRecord(row.oauth.grantRef)
+  }
+
+  /**
    * Drop one account: its plugin-scope grant payload, its row, and — when
    * it was the active projection — the projection itself, so the route
    * falls back to the key pool.
@@ -1072,9 +1086,7 @@ export class KeysManagerService {
       if (index < 0) throw new Error(`Account "${accountId}" not found on ${provider}`)
       const row = providerRecord.keys[index]!
       if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account; use deleteKey`)
-      if (this.activeAccounts.get(provider) === row.id) await this.fallbackToKeysUnqueued(provider)
-      const records = this.credentialRecords()
-      if (records !== undefined && row.oauth !== null) await records.deleteRecord(row.oauth.grantRef)
+      await this.removeOAuthGrant(provider, row)
       providerRecord.keys.splice(index, 1)
       this.store.clearBindings((_key, binding) => binding.keyId === row.id)
       this.store.touch()
@@ -1754,9 +1766,7 @@ export class KeysManagerService {
       // plugin-scope payload and, when it was the projection, fall back to
       // the key pool. API keys remove their broker literal.
       if (key.kind === 'oauth' && key.oauth !== null) {
-        if (this.activeAccounts.get(provider) === key.id) await this.fallbackToKeysUnqueued(provider)
-        const records = this.credentialRecords()
-        if (records !== undefined) await records.deleteRecord(key.oauth.grantRef)
+        await this.removeOAuthGrant(provider, key)
       } else {
         // Unset first: if the credential backend refuses, keep the metadata so a
         // later retry can remove both together.
