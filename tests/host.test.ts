@@ -292,12 +292,21 @@ function fakeAuthorization(flows: Array<{ key: string; label: string; methods: A
     flows,
     failBegin: undefined as Error | undefined,
     beganRequests: [] as Array<Record<string, unknown>>,
+    /** The single in-flight begin, for tests to settle by hand. */
+    pending: undefined as undefined | { request: Record<string, unknown>; resolve: (outcome: { status: string }) => void; reject: (error: Error) => void },
     list() {
       return this.flows.map((flow: any) => ({ ...flow, methods: [...flow.methods], inFlight: false }))
     },
     describe(key: string) {
       const flow = this.flows.find((candidate: any) => candidate.key === key)
       return flow === undefined ? undefined : { ...flow, methods: [...flow.methods], inFlight: false }
+    },
+    begin(request: Record<string, unknown>) {
+      this.beganRequests.push(request)
+      if (this.failBegin !== undefined) return Promise.reject(this.failBegin)
+      return new Promise((resolve, reject) => {
+        this.pending = { request, resolve: resolve as (outcome: { status: string }) => void, reject: reject as (error: Error) => void }
+      })
     },
   }
 }
@@ -2649,6 +2658,212 @@ test('the credential seam accepts record keys in both scopes the manager writes'
       /must be two/,
     )
     await assert.rejects(() => h.credentials.raw.readRecord('no-slash'), /must be two/)
+  } finally {
+    await h.close()
+  }
+})
+
+/** Poll an async transition; the final check throws if it never happened. */
+async function eventually(check: () => void): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      check()
+      return
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+  }
+  check()
+}
+
+const GRANT_KEY = 'llm-pi-ai/anthropic'
+
+function grantPayload(overrides: Record<string, unknown> = {}): FakeCredentialRecord {
+  return {
+    kind: 'grant',
+    payload: {
+      type: 'oauth',
+      refresh: 'rt-secret-value',
+      access: 'at-secret-value',
+      expires: 1_800_000_000_000,
+      accountId: 'acc-9',
+      email: 'dev@example.com',
+      ...overrides,
+    },
+  }
+}
+
+async function harnessWithManagedAnthropic() {
+  const h = await harness()
+  await h.service.adoptProvider('anthropic')
+  return h
+}
+
+test('beginAccountLogin drives the seam with the pinned flow key and bridges the interaction', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    assert.equal(view.status, 'pending')
+    assert.ok(view.id.length > 0)
+    const request = h.authorization.beganRequests[0]!
+    // The pinned flow key + method (see the flow-key pin test and
+    // llm-pi-ai/login.ts:149-171).
+    assert.equal(request.key, 'llm-pi-ai/anthropic')
+    assert.equal(request.method, 'oauth')
+    const interaction = request.interaction as { notify: (n: unknown) => void; prompt: (p: unknown) => Promise<string> }
+    assert.equal(typeof interaction.notify, 'function')
+    assert.equal(typeof interaction.prompt, 'function')
+
+    // notify lands in the attempt state, never as a secret.
+    interaction.notify({ message: 'Open this page to continue signing in.', url: 'https://example.com/authorize' })
+    interaction.notify({ message: 'Enter this code on the verification page.', url: 'https://example.com/verify', code: 'ABC-123' })
+    let current = h.service.getAccountAttempt(view.id)!
+    assert.deepEqual(current.notices, [
+      { message: 'Open this page to continue signing in.', url: 'https://example.com/authorize' },
+      { message: 'Enter this code on the verification page.', url: 'https://example.com/verify', code: 'ABC-123' },
+    ])
+
+    // prompt parks the attempt; answerAccountPrompt resolves the flow.
+    const flowAnswer = interaction.prompt({ kind: 'text', message: 'Paste the verification code' })
+    current = h.service.getAccountAttempt(view.id)!
+    assert.equal(current.status, 'prompt')
+    assert.deepEqual(current.prompt, { kind: 'text', message: 'Paste the verification code' })
+    await h.service.answerAccountPrompt(view.id, '123-456')
+    assert.equal(await flowAnswer, '123-456')
+    current = h.service.getAccountAttempt(view.id)!
+    assert.equal(current.status, 'pending')
+    assert.equal(current.prompt, undefined)
+
+    // The attempt is listed for T3 surfaces.
+    assert.ok(h.service.listAccountAttempts().some(entry => entry.id === view.id))
+  } finally {
+    await h.close()
+  }
+})
+
+test('a settled login harvests the stored grant into an oauth account row', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+
+    const providerRecord = h.store.provider('anthropic')!
+    const row = providerRecord.keys.find(key => key.kind === 'oauth')!
+    assert.equal(row.alias, 'Work account')
+    assert.match(row.ref, /^keys-manager\/anthropic-[a-z0-9]+$/)
+    assert.equal(row.oauth!.provider, 'anthropic')
+    assert.equal(row.oauth!.email, 'dev@example.com')
+    assert.equal(row.oauth!.accountId, 'acc-9')
+    assert.equal(row.oauth!.expiresAt, 1_800_000_000_000)
+    // The grant payload is persisted under the plugin-scope ref, and the
+    // account metadata mirrors what the store actually holds.
+    const stored = h.credentials.records.get(row.oauth!.grantRef)!
+    assert.equal(stored.kind, 'grant')
+    assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-secret-value')
+    assert.equal((row.oauth!.expiresAt), (stored.payload as Record<string, unknown>).expires)
+    // The activation projection record itself is untouched by harvest.
+    assert.equal(h.credentials.records.get(GRANT_KEY)!.kind, 'grant')
+    // The attempt carries the pool member id, serializable for T3.
+    const settled = h.service.getAccountAttempt(view.id)!
+    assert.equal(settled.accountId, row.id)
+    assert.equal(settled.prompt, undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('harvest keeps the state document free of token payloads', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    h.store.touch()
+    await h.store.flush()
+    const text = await readFile(join(h.dir, 'state.json'), 'utf8')
+    assert.ok(!text.includes('rt-secret-value'))
+    assert.ok(!text.includes('at-secret-value'))
+  } finally {
+    await h.close()
+  }
+})
+
+test('a repeated login refreshes the existing account row instead of duplicating it', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const first = await h.service.beginAccountLogin('anthropic', 'Work account')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(first.id)!.status, 'ready'))
+
+    h.credentials.records.set(GRANT_KEY, grantPayload({ expires: 1_900_000_000_000, email: 'renamed@example.com' }))
+    const second = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(second.id)!.status, 'ready'))
+
+    const rows = h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]!.oauth!.expiresAt, 1_900_000_000_000)
+    assert.equal(rows[0]!.oauth!.email, 'renamed@example.com')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failed or cancelled login marks the attempt with a reason', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+
+    const failed = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'failed')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(failed.id)!.status, 'failed'))
+    assert.match(h.service.getAccountAttempt(failed.id)!.error ?? '', /failed/)
+
+    const cancelled = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'cancelled')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(cancelled.id)!.status, 'cancelled'))
+
+    const thrown = await h.service.beginAccountLogin('anthropic')
+    h.authorization.failBegin = new Error('seam refused the attempt')
+    // The seam rejection surfaces as a failed attempt with the reason.
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    try {
+      await h.authorization.pending!.reject(new Error('seam refused the attempt'))
+    } catch {
+      // fake rejection bookkeeping
+    }
+    await eventually(() => assert.equal(h.service.getAccountAttempt(thrown.id)!.status, 'failed'))
+    assert.match(h.service.getAccountAttempt(thrown.id)!.error ?? '', /seam refused/)
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('concurrent logins for one provider are refused until the attempt settles', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    await h.service.beginAccountLogin('anthropic')
+    await assert.rejects(() => h.service.beginAccountLogin('anthropic'), /already/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('login is refused without a managed provider or an oauth flow', async () => {
+  const h = await harness()
+  try {
+    await assert.rejects(() => h.service.beginAccountLogin('anthropic'), /not managed/)
+    await h.service.adoptProvider('zai-coding-cn')
+    await assert.rejects(() => h.service.beginAccountLogin('zai-coding-cn'), /no OAuth sign-in flow/)
   } finally {
     await h.close()
   }

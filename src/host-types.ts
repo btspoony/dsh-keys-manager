@@ -59,7 +59,7 @@ export interface CredentialDescription {
   writable: boolean
 }
 
-/** One login method a flow offers (shape of `AuthorizationMethod`). */
+/** One way a flow can obtain its credential, named by the flow that offers it. */
 export interface AuthorizationMethodEntry {
   id: string
   label: string
@@ -74,10 +74,33 @@ export interface AuthorizationFlowEntry {
   inFlight: boolean
 }
 
+/** The interaction surface a begin() caller supplies (shape of `AuthorizationInteraction`). */
+export interface AuthorizationInteractionLike {
+  notify(notice: { message: string; url?: string; code?: string }): void
+  prompt(prompt: {
+    kind?: 'text' | 'secret' | 'select'
+    message: string
+    placeholder?: string
+    options?: ReadonlyArray<{ id: string; label: string; description?: string }>
+    signal?: AbortSignal
+  }): Promise<string>
+}
+
+/** The outcome of one begin() attempt (shape of `AuthorizationOutcome`). */
+export interface AuthorizationOutcomeLike {
+  status: 'authorized' | 'cancelled'
+}
+
 /** The authorization service methods Keys Manager uses. */
 export interface AuthorizationLike {
   list(): readonly AuthorizationFlowEntry[]
   describe(key: string): AuthorizationFlowEntry | undefined
+  begin(request: {
+    key: string
+    method?: string
+    interaction: AuthorizationInteractionLike
+    signal?: AbortSignal
+  }): Promise<AuthorizationOutcomeLike>
 }
 
 /** The credential provider methods the broker wraps. */

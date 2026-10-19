@@ -17,6 +17,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
 import {
   KEY_LIMIT,
+  accountRef,
   applyFailureCooldown,
   bindingKey,
   isSelectable,
@@ -76,6 +77,127 @@ const MAX_SWITCHES = 6
 const ATTEMPT_TTL_MS = 60 * 60 * 1000
 /** A retry pin only lives for this long; an expired pin is treated as absent. */
 const PIN_TTL_MS = 60_000
+/**
+ * An interactive sign-in that has not settled within this window is failed
+ * and withdrawn: real flows finish in minutes, and a wedged attempt would
+ * otherwise hold the provider's single authorization slot forever.
+ */
+const LOGIN_ATTEMPT_TTL_MS = 10 * 60 * 1000
+/** Same display-name cap the api-key aliases use (core.ts MAX_ALIAS_LENGTH). */
+const MAX_ALIAS = 80
+/** The credential-record scope pi-ai stores its per-provider grants under (llm-pi-ai/src/auth.ts:29). */
+export const OAUTH_GRANT_RECORD_SCOPE = 'llm-pi-ai'
+
+/** The pi-ai OAuth credential shape a grant record must carry (research: `OAuthCredential`). */
+interface OAuthGrantPayload {
+  type: 'oauth'
+  refresh: string
+  access: string
+  expires?: number
+  accountId?: string
+  email?: string
+  [key: string]: unknown
+}
+
+/** Whether an opaque grant payload is the OAuth credential pi-ai owns. */
+function isOAuthGrantPayload(value: unknown): value is OAuthGrantPayload {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const source = value as Record<string, unknown>
+  return source.type === 'oauth'
+    && typeof source.refresh === 'string' && source.refresh.length > 0
+    && typeof source.access === 'string'
+}
+
+/** Serializable notice captured on a login attempt. */
+interface LoginNoticeView {
+  message: string
+  url?: string
+  code?: string
+}
+
+/** Serializable prompt parked on a login attempt. */
+interface LoginPromptView {
+  kind: 'text' | 'secret' | 'select'
+  message: string
+  placeholder?: string
+  options?: ReadonlyArray<{ id: string; label: string; description?: string }>
+}
+
+/** Serializable login-attempt state for T3 surfaces. */
+export interface LoginAttemptView {
+  id: string
+  provider: string
+  alias?: string
+  status: 'pending' | 'prompt' | 'ready' | 'failed' | 'cancelled'
+  notices: LoginNoticeView[]
+  prompt?: LoginPromptView
+  error?: string
+  /** Pool member id of the account row a successful login produced. */
+  accountId?: string
+  createdAt: number
+  updatedAt: number
+}
+
+/** Internal attempt record; the controller and prompt resolvers stay host-side. */
+interface LoginAttempt {
+  id: string
+  provider: string
+  alias?: string
+  status: LoginAttemptView['status']
+  notices: LoginNoticeView[]
+  prompt?: LoginPromptView
+  error?: string
+  accountId?: string
+  createdAt: number
+  updatedAt: number
+  settledAt?: number
+  controller: AbortController
+  resolvePrompt?: (value: string) => void
+  rejectPrompt?: (reason: Error) => void
+}
+
+/** Copy a seam prompt into its serializable view (the AbortSignal stays out). */
+function promptView(prompt: { kind?: string; message: string; placeholder?: string; options?: unknown }): LoginPromptView {
+  const options = Array.isArray(prompt.options)
+    ? prompt.options
+      .filter((entry): entry is { id: string; label: string; description?: string } =>
+        entry !== null && typeof entry === 'object'
+        && typeof (entry as Record<string, unknown>).id === 'string'
+        && typeof (entry as Record<string, unknown>).label === 'string')
+    : undefined
+  const kind = prompt.kind === 'secret' || prompt.kind === 'select' ? prompt.kind : 'text'
+  return {
+    kind,
+    message: prompt.message,
+    ...(prompt.placeholder === undefined ? {} : { placeholder: prompt.placeholder }),
+    ...(options === undefined || options.length === 0 ? {} : { options }),
+  }
+}
+
+/** Copy a seam notice into its serializable view. */
+function noticeView(notice: { message: string; url?: string; code?: string }): LoginNoticeView {
+  return {
+    message: notice.message,
+    ...(notice.url === undefined ? {} : { url: notice.url }),
+    ...(notice.code === undefined ? {} : { code: notice.code }),
+  }
+}
+
+/** Strip the host-side handles from one attempt. */
+function attemptView(attempt: LoginAttempt): LoginAttemptView {
+  return {
+    id: attempt.id,
+    provider: attempt.provider,
+    ...(attempt.alias === undefined ? {} : { alias: attempt.alias }),
+    status: attempt.status,
+    notices: attempt.notices.map(notice => ({ ...notice })),
+    ...(attempt.prompt === undefined ? {} : { prompt: { ...attempt.prompt, ...(attempt.prompt.options === undefined ? {} : { options: attempt.prompt.options.map(option => ({ ...option })) }) } }),
+    ...(attempt.error === undefined ? {} : { error: attempt.error }),
+    ...(attempt.accountId === undefined ? {} : { accountId: attempt.accountId }),
+    createdAt: attempt.createdAt,
+    updatedAt: attempt.updatedAt,
+  }
+}
 
 /** One strict Remote endpoint descriptor. */
 interface InvocationParameter {
@@ -354,6 +476,13 @@ export class KeysManagerService {
   private readonly selectionQueues = new Map<string, Promise<unknown>>()
   private queue: Promise<unknown> = Promise.resolve()
   private closing = false
+  /** Interactive sign-in attempts, by attempt id. */
+  private readonly loginAttempts = new Map<string, LoginAttempt>()
+  /** The provider → attempt id index for the single-attempt rule. */
+  private readonly loginsInFlight = new Map<string, string>()
+  private loginSequence = 0
+  /** Disposer for the `authorization/settled` subscription. */
+  private settledDisposer: (() => void) | undefined
   readonly typertRemote: TypertRemoteBinding
 
   constructor(ctx: HostContext, store: KeysManagerStore) {
@@ -361,6 +490,7 @@ export class KeysManagerService {
     this.store = store
     this.typertRemote = Object.freeze({ service: this, serviceKey: SERVICE, namespace: NAMESPACE })
     this.rebuildBrokerMap()
+    this.settledDisposer = this.watchAuthorizationSettled()
   }
 
   /** Log without ever echoing secret material. */
@@ -411,11 +541,18 @@ export class KeysManagerService {
    */
   pruneTransient(now: number = Date.now()): void {
     this.pruneAttempts(now)
+    this.pruneLoginAttempts(now)
   }
 
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
   async close(): Promise<void> {
     this.closing = true
+    this.settledDisposer?.()
+    this.settledDisposer = undefined
+    for (const attempt of this.loginAttempts.values()) {
+      attempt.controller.abort()
+      this.dropPrompt(attempt)
+    }
     try {
       await this.queue
     } catch {
@@ -478,6 +615,267 @@ export class KeysManagerService {
     if (flow === undefined) return undefined
     if (!flow.methods.some(method => method.id === 'oauth')) return undefined
     return { key: flow.key, method: 'oauth' }
+  }
+
+  /**
+   * Subscribe to the seam's settled broadcast (authorization/src/index.ts:57,
+   * :337-351). A settled attempt for a key this service is driving harvests
+   * the committed grant; everything else is ignored — another surface's
+   * sign-in is that surface's business, and the grant it leaves behind is
+   * reconciled through `credentials/record-updated` instead.
+   */
+  private watchAuthorizationSettled(): (() => void) | undefined {
+    const on = (this.ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => unknown) => () => void }).on
+    if (typeof on !== 'function') return undefined
+    try {
+      return on.call(this.ctx, 'authorization/settled', (key: unknown, settlement: unknown) => {
+        if (typeof key !== 'string') return
+        this.onAuthorizationSettled(key, typeof settlement === 'string' ? settlement : '')
+      })
+    } catch {
+      return undefined
+    }
+  }
+
+  /** One settled broadcast: finalize the matching attempt, harvest on success. */
+  private onAuthorizationSettled(key: string, settlement: string): void {
+    if (!key.startsWith(`${OAUTH_GRANT_RECORD_SCOPE}/`)) return
+    const provider = key.slice(OAUTH_GRANT_RECORD_SCOPE.length + 1)
+    const attemptId = this.loginsInFlight.get(provider)
+    if (attemptId === undefined) return
+    const attempt = this.loginAttempts.get(attemptId)
+    if (attempt === undefined || attempt.settledAt !== undefined) return
+    if (settlement === 'authorized') {
+      void this.harvestLogin(attempt)
+      return
+    }
+    if (settlement === 'cancelled') this.finishLoginAttempt(attempt, 'cancelled')
+    else this.failLoginAttempt(attempt, new Error(`the sign-in attempt failed (${settlement || 'unknown outcome'})`))
+  }
+
+  /**
+   * Start one interactive OAuth sign-in. Returns immediately with the
+   * attempt view; the attempt walks `pending → (prompt ⇄ pending) →
+   * ready | failed | cancelled`, and every transition is observable through
+   * {@link getAccountAttempt} / {@link listAccountAttempts}.
+   */
+  async beginAccountLogin(provider: string, alias?: string): Promise<LoginAttemptView> {
+    if (typeof provider !== 'string' || provider.length === 0) throw new TypeError('provider is required')
+    const flow = this.oauthFlowFor(provider)
+    if (flow === undefined) throw new Error(`Provider "${provider}" offers no OAuth sign-in flow`)
+    if (this.store.provider(provider) === undefined) throw new Error(`Provider "${provider}" is not managed; adopt it before signing in`)
+    if (this.loginsInFlight.has(provider)) throw new Error(`A sign-in for "${provider}" is already in progress`)
+    const cleanAlias = typeof alias === 'string' ? alias.trim().slice(0, MAX_ALIAS) : undefined
+    const now = Date.now()
+    const attempt: LoginAttempt = {
+      id: `la_${(++this.loginSequence).toString(36)}_${randomBytes(4).toString('hex')}`,
+      provider,
+      ...(cleanAlias !== undefined && cleanAlias.length > 0 ? { alias: cleanAlias } : {}),
+      status: 'pending',
+      notices: [],
+      createdAt: now,
+      updatedAt: now,
+      controller: new AbortController(),
+    }
+    this.loginAttempts.set(attempt.id, attempt)
+    this.loginsInFlight.set(provider, attempt.id)
+    const records = this.credentialRecords()
+    if (records === undefined) {
+      this.loginAttempts.delete(attempt.id)
+      this.loginsInFlight.delete(provider)
+      throw new Error('The credential store does not support records; OAuth sign-in is unavailable')
+    }
+    const interaction = {
+      notify: (notice: { message: string; url?: string; code?: string }): void => {
+        attempt.notices.push(noticeView(notice))
+        if (attempt.notices.length > 32) attempt.notices.shift()
+        attempt.updatedAt = Date.now()
+      },
+      prompt: (prompt: { kind?: string; message: string; placeholder?: string; options?: unknown; signal?: AbortSignal }): Promise<string> =>
+        new Promise<string>((resolve, reject) => {
+          if (attempt.settledAt !== undefined) {
+            reject(new Error('This sign-in attempt has already ended'))
+            return
+          }
+          if (prompt.signal?.aborted === true) {
+            reject(new Error('The sign-in prompt was withdrawn'))
+            return
+          }
+          attempt.status = 'prompt'
+          attempt.updatedAt = Date.now()
+          attempt.prompt = promptView(prompt)
+          attempt.resolvePrompt = resolve
+          attempt.rejectPrompt = reject
+        }),
+    }
+    const beginPromise = this.ctx.authorization!.begin({
+      key: flow.key,
+      method: flow.method,
+      interaction,
+      signal: attempt.controller.signal,
+    })
+    void beginPromise.then(
+      outcome => {
+        // The settled broadcast always lands first (the seam fires it in the
+        // attempt's finally, authorization/src/index.ts:316-322), so this only
+        // finalizes attempts no settlement reached.
+        this.finishLoginAttempt(attempt, outcome.status === 'authorized' ? 'ready' : 'cancelled')
+      },
+      error => {
+        this.failLoginAttempt(attempt, error)
+      },
+    )
+    return attemptView(attempt)
+  }
+
+  /** Resolve the attempt's parked prompt with the human's answer. */
+  async answerAccountPrompt(attemptId: string, value: string): Promise<void> {
+    const attempt = this.loginAttempts.get(attemptId)
+    if (attempt === undefined) throw new Error('Unknown sign-in attempt')
+    if (attempt.settledAt !== undefined) throw new Error('This sign-in attempt has already ended')
+    if (attempt.status !== 'prompt' || attempt.resolvePrompt === undefined) throw new Error('This attempt has no pending prompt')
+    if (typeof value !== 'string') throw new TypeError('An answer value is required')
+    const resolve = attempt.resolvePrompt
+    this.dropPrompt(attempt)
+    resolve(value)
+  }
+
+  /** One attempt's serializable view, or undefined when unknown. */
+  getAccountAttempt(attemptId: string): LoginAttemptView | undefined {
+    const attempt = this.loginAttempts.get(attemptId)
+    return attempt === undefined ? undefined : attemptView(attempt)
+  }
+
+  /** Every attempt, newest first, for T3 surfaces. */
+  listAccountAttempts(): LoginAttemptView[] {
+    return [...this.loginAttempts.values()].sort((a, b) => b.createdAt - a.createdAt).map(attemptView)
+  }
+
+  /** Detach the parked prompt without rejecting it: the flow is gone with the attempt. */
+  private dropPrompt(attempt: LoginAttempt): void {
+    attempt.resolvePrompt = undefined
+    attempt.rejectPrompt = undefined
+    attempt.prompt = undefined
+    if (attempt.status === 'prompt') attempt.status = 'pending'
+    attempt.updatedAt = Date.now()
+  }
+
+  /** Finalize an attempt with a terminal status exactly once. */
+  private finishLoginAttempt(attempt: LoginAttempt, status: 'ready' | 'cancelled' | 'failed', error?: unknown): void {
+    if (attempt.settledAt !== undefined) return
+    attempt.settledAt = Date.now()
+    attempt.status = status
+    if (error !== undefined) {
+      attempt.error = error instanceof Error ? error.message : String(error)
+    }
+    this.dropPrompt(attempt)
+    if (this.loginsInFlight.get(attempt.provider) === attempt.id) this.loginsInFlight.delete(attempt.provider)
+    attempt.controller.abort()
+    attempt.updatedAt = attempt.settledAt
+  }
+
+  /** Finalize an attempt as failed with the given reason. */
+  private failLoginAttempt(attempt: LoginAttempt, error: unknown): void {
+    this.finishLoginAttempt(attempt, 'failed', error)
+  }
+
+  /**
+   * Turn a committed sign-in into pool state: read the grant pi-ai wrote to
+   * `llm-pi-ai/<provider>`, persist the payload under the plugin-scope
+   * account ref, and upsert the `kind: 'oauth'` row. Any failure fails the
+   * attempt loudly — a login whose grant could not be captured must not
+   * look like success.
+   */
+  private async harvestLogin(attempt: LoginAttempt): Promise<void> {
+    try {
+      await this.run(async () => {
+        const records = this.credentialRecords()
+        if (records === undefined) throw new Error('The credential store does not support records')
+        const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
+        const record = await records.readRecord(grantKey)
+        if (record === undefined || record.kind !== 'grant') {
+          throw new Error(`No grant record was committed to ${grantKey}`)
+        }
+        if (!isOAuthGrantPayload(record.payload)) {
+          throw new Error(`The record at ${grantKey} does not hold a pi-ai OAuth credential`)
+        }
+        const payload = record.payload
+        // The refresh token is the stable per-grant secret; its digest —
+        // never the token — names the account's plugin-scope record.
+        const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
+        const grantRef = accountRef(attempt.provider, hash)
+        await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+
+        const providerRecord = this.store.provider(attempt.provider)
+        if (providerRecord === undefined) throw new Error(`Provider "${attempt.provider}" is no longer managed`)
+        const existing = providerRecord.keys.find(candidate =>
+          candidate.kind === 'oauth' && candidate.oauth !== null
+          && (candidate.oauth.grantRef === grantRef
+            || (payload.accountId !== undefined && candidate.oauth.accountId === payload.accountId)
+            || (payload.email !== undefined && candidate.oauth.email === payload.email && candidate.oauth.accountId === undefined)))
+        const now = Date.now()
+        if (existing !== undefined) {
+          existing.oauth = {
+            ...existing.oauth,
+            provider: attempt.provider,
+            grantRef,
+            ...(payload.email === undefined ? {} : { email: payload.email }),
+            ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
+            ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
+          }
+        } else {
+          if (providerRecord.keys.length >= KEY_LIMIT) throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
+          providerRecord.keys.push({
+            id: newKeyId(),
+            alias: attempt.alias ?? payload.email ?? providerRecord.displayName,
+            // Deliberately not a credential-ref-grammar name: account rows
+            // carry no broker-resolvable literal, and an unparseable ref keeps
+            // the api-key probe paths (probeKey/findVerifiedAlternate) from
+            // misreading the grant as a missing API key.
+            ref: grantRef,
+            kind: 'oauth',
+            enabled: true,
+            createdAt: now,
+            lastUsedAt: 0,
+            cooldownUntil: 0,
+            lastFailureAt: 0,
+            lastFailureCode: '',
+            failureLevel: 0,
+            consecutiveFailures: 0,
+            totalUses: 0,
+            totalFailures: 0,
+            valueMissing: false,
+            importedFrom: null,
+            oauth: {
+              provider: attempt.provider,
+              grantRef,
+              ...(payload.email === undefined ? {} : { email: payload.email }),
+              ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
+              ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
+            },
+          })
+        }
+        this.store.touch()
+        attempt.accountId = existing !== undefined ? existing.id : providerRecord.keys[providerRecord.keys.length - 1]!.id
+        this.finishLoginAttempt(attempt, 'ready')
+      })
+    } catch (error) {
+      this.failLoginAttempt(attempt, error)
+      this.warn(`oauth sign-in harvest failed for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /** Expire wedged sign-ins and drop long-settled attempt records. */
+  private pruneLoginAttempts(now: number): void {
+    for (const [id, attempt] of this.loginAttempts) {
+      if (attempt.settledAt === undefined) {
+        if (now - attempt.updatedAt <= LOGIN_ATTEMPT_TTL_MS) continue
+        attempt.controller.abort()
+        this.failLoginAttempt(attempt, new Error('The sign-in attempt timed out'))
+        continue
+      }
+      if (now - attempt.settledAt > ATTEMPT_TTL_MS) this.loginAttempts.delete(id)
+    }
   }
 
   /** Install the broker layer on one credential provider instance. */
