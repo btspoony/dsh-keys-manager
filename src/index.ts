@@ -557,6 +557,13 @@ export class KeysManagerService {
   /** The account row whose grant payload currently IS the projection, per provider. */
   private readonly activeAccounts = new Map<string, string>()
   /**
+   * Per-provider write counter for {@link activeAccounts} claims (round-3
+   * finding 3): activation and harvest claims bump it, and a hydration
+   * result whose generation no longer matches is discarded instead of
+   * overwriting a newer activation with a stale read.
+   */
+  private readonly ownershipGenerations = new Map<string, number>()
+  /**
    * Providers whose projection deletion this manager initiated, mapped to
    * the moment it was initiated. The `record-updated` echo of our own
    * demotion consumes the marker (one-shot) and stays silent while the
@@ -605,6 +612,10 @@ export class KeysManagerService {
         const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
         if (accounts.length === 0) continue
         const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${providerRecord.provider}`
+        // Generation tag (round-3 finding 3): the read below is awaited, and
+        // an activation or login landing while it is in flight must win —
+        // the hydrated write only lands while the generation still matches.
+        const generation = this.ownershipGenerations.get(providerRecord.provider) ?? 0
         let record: Awaited<ReturnType<typeof records.readRecord>>
         try {
           record = await records.readRecord(grantKey)
@@ -614,6 +625,9 @@ export class KeysManagerService {
         }
         if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) continue
         const owner = matchOwningAccount(providerRecord.provider, accounts, record.payload)
+        // A newer activation/login claimed the owner while this read was in
+        // flight: the stale read is discarded, never written over it.
+        if ((this.ownershipGenerations.get(providerRecord.provider) ?? 0) !== generation) continue
         // A concurrent removal may have dropped the row while this read was
         // in flight: never resurrect an owner entry for a row that is gone.
         if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
@@ -625,7 +639,18 @@ export class KeysManagerService {
     })
   }
 
-  /** Log without ever echoing secret material. */
+  /**
+   * Claim the projection owner for one account row, bumping the provider's
+   * ownership generation so an in-flight hydration read of an older state
+   * is discarded instead of overwriting the claim (round-3 finding 3).
+   */
+  private claimProjectionOwner(provider: string, accountId: string): void {
+    this.activeAccounts.set(provider, accountId)
+    this.ownershipGenerations.set(provider, (this.ownershipGenerations.get(provider) ?? 0) + 1)
+  }
+
+  /**
+   * Log without ever echoing secret material. */
   warn(message: string): void {
     try {
       this.ctx.logger.warn(`keys-manager: ${message}`)
@@ -1069,7 +1094,7 @@ export class KeysManagerService {
         attempt.accountId = existing !== undefined ? existing.id : providerRecord.keys[providerRecord.keys.length - 1]!.id
         // The grant pi-ai just committed IS the projection; the fresh row
         // owns it until activation or fallback says otherwise.
-        this.activeAccounts.set(attempt.provider, attempt.accountId)
+        this.claimProjectionOwner(attempt.provider, attempt.accountId)
         // No terminal here: `run` flushes the state document after this
         // callback resolves, and the ready terminal publishes below — only
         // once persistence has actually resolved (round-2 review, step 3).
@@ -1321,7 +1346,7 @@ export class KeysManagerService {
       this.intentionalProjectionRemovals.delete(provider)
       await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, () =>
         Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
-      this.activeAccounts.set(provider, row.id)
+      this.claimProjectionOwner(provider, row.id)
       row.valueMissing = false
       this.store.touch()
       // Remote methods hand back the refreshed state view (addKey/deleteKey

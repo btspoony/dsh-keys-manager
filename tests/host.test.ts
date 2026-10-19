@@ -3891,6 +3891,45 @@ test('a restarted service rehydrates projection ownership and demotes on removal
   }
 })
 
+test('a hydration read superseded by a newer activation is discarded', async () => {
+  // Round-3 finding 3: the hydration read is awaited, and an activation
+  // landing while it is in flight must win — the stale read lands last and
+  // must not overwrite B's claim with A.
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('anthropic')
+    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-a', email: 'a@example.com', refresh: 'rt-account-a' })
+    const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-account-b' })
+    // The persisted projection still carries A's grant (pre-restart state).
+    const staleRecord = grantPayload({ refresh: 'rt-account-a', access: 'at-account-a', accountId: 'acc-a', email: 'a@example.com' })
+    h.credentials.records.set(GRANT_KEY, structuredClone(staleRecord))
+    // The hydration read snapshots A at t0 and resolves late — exactly the
+    // in-flight window a real credential store's read latency opens.
+    const raw = h.credentials.raw
+    const realRead = raw.readRecord.bind(raw)
+    raw.readRecord = async (key: string) => {
+      if (key === GRANT_KEY) {
+        await new Promise(resolve => setTimeout(resolve, 60))
+        return structuredClone(staleRecord)
+      }
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    // The user activates B while the hydration read of A is still pending.
+    await restarted.activateAccount('anthropic', b.rowId)
+    // The stale read lands; after everything settles...
+    await new Promise(resolve => setTimeout(resolve, 120))
+    // ...exactly B's row is badged, and A's stale read was discarded.
+    const state = restarted.buildState()
+    const provider = state.providers.find(entry => entry.provider === 'anthropic')!
+    const projected = provider.keys.filter(key => key.projected === true)
+    assert.equal(projected.length, 1)
+    assert.equal(projected[0]!.id, b.rowId)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a restarted service does not adopt an orphan projection and still warns on its updates', async () => {
   const h = await harness()
   try {
