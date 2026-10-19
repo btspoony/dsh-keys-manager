@@ -422,6 +422,8 @@ interface PluginHarness {
   settings: any
   llm: any
   service: KeysManagerService
+  /** Typert contributions the plugin registered through `apply()`. */
+  typertRegistrations: Array<{ package: string; face: string; invocations: Array<{ method: string; parameters: Array<{ name: string }> }> }>
   /** Run the installed waterfall for one event; `terminal` is the host fallback. */
   emit(name: string, payload: unknown, terminal: () => unknown): unknown
   close(): Promise<void>
@@ -445,12 +447,13 @@ async function pluginHarness(): Promise<PluginHarness> {
   const llm = fakeLlm()
   const cleanups: Array<() => unknown> = []
   const chains = new Map<string, Array<(payload: any, next: () => any) => any>>()
+  const typertRegistrations: NonNullable<PluginHarness['typertRegistrations']> = []
   let service: KeysManagerService | undefined
   const ctx: any = {
     llm,
     credentials: credentials.raw,
     settings,
-    typert: { register: () => () => {} },
+    typert: { register: (contribution: never) => { typertRegistrations.push(contribution); return () => {} } },
     logger: { warn() {}, info() {} },
     get(name: string) {
       if (name === 'credentials') return credentials.raw
@@ -492,6 +495,7 @@ async function pluginHarness(): Promise<PluginHarness> {
     settings,
     llm,
     service,
+    typertRegistrations,
     emit(name: string, payload: unknown, terminal: () => unknown): unknown {
       const chain = [...(chains.get(name) ?? [])]
       const call = (index: number): unknown =>
@@ -3186,6 +3190,101 @@ test('state views expose oauth identity without the grant reference', async () =
     // API-key rows carry no oauth field at all.
     const apiKeyRow = view.keys.find(key => key.kind === 'api-key')!
     assert.equal(apiKeyRow.oauth, undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('the endpoint registry exposes the oauth account invocations', async () => {
+  const h = await pluginHarness()
+  try {
+    assert.equal(h.typertRegistrations.length, 1)
+    const contribution = h.typertRegistrations[0]!
+    assert.equal(contribution.package, 'dsh-keys-manager')
+    const invocations = contribution.invocations
+    // The pre-existing surface is untouched, and the T2 service methods are
+    // each reachable under exactly the parameters the client sends.
+    assert.deepEqual(invocations.map(invocation => invocation.method), [
+      'getState',
+      'adoptProvider',
+      'addKey',
+      'updateKey',
+      'deleteKey',
+      'releaseProvider',
+      'addExtraProvider',
+      'setSettings',
+      'beginAccountLogin',
+      'answerAccountPrompt',
+      'accountAttempt',
+      'listAccountAttempts',
+      'activateAccount',
+      'removeAccount',
+    ])
+    const params = (method: string): string[] =>
+      invocations.find(invocation => invocation.method === method)!.parameters.map(parameter => parameter.name)
+    assert.deepEqual(params('beginAccountLogin'), ['provider', 'alias'])
+    assert.deepEqual(params('answerAccountPrompt'), ['attemptId', 'value'])
+    assert.deepEqual(params('accountAttempt'), ['attemptId'])
+    assert.deepEqual(params('listAccountAttempts'), [])
+    assert.deepEqual(params('activateAccount'), ['provider', 'accountId'])
+    assert.deepEqual(params('removeAccount'), ['provider', 'accountId'])
+    // Every registered invocation names a real service method, so the
+    // gateway's `service[invocation.method]` dispatch cannot drift from the
+    // registry (typertRemote binds the service instance directly).
+    for (const invocation of invocations) {
+      assert.equal(typeof (h.service as unknown as Record<string, unknown>)[invocation.method], 'function', invocation.method)
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+test('account endpoints carry the begin → prompt → answer → ready walk and state-returning mutations', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    // begin → attempt view (the pollable serializable attempt state).
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    assert.equal(view.status, 'pending')
+    const interaction = h.authorization.beganRequests[0]!.interaction as { prompt: (p: unknown) => Promise<string> }
+    const flowAnswer = interaction.prompt({ kind: 'text', message: 'Paste the verification code' })
+
+    // Poll the attempt exactly as the browser dialog will: the parked prompt
+    // (message only, no secret material) is visible through the endpoint method.
+    let polled = h.service.accountAttempt(view.id)!
+    assert.equal(polled.status, 'prompt')
+    assert.deepEqual(polled.prompt, { kind: 'text', message: 'Paste the verification code' })
+    assert.equal(polled.id, view.id)
+
+    await h.service.answerAccountPrompt(view.id, '123-456')
+    assert.equal(await flowAnswer, '123-456')
+    polled = h.service.accountAttempt(view.id)!
+    assert.equal(polled.status, 'pending')
+    assert.equal(polled.prompt, undefined)
+    assert.ok(h.service.listAccountAttempts().some(entry => entry.id === view.id))
+
+    // Settle → harvest → ready with the pool member id attached.
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.accountAttempt(view.id)!.status, 'ready'))
+    const settled = h.service.accountAttempt(view.id)!
+    const rowId = h.store.provider('anthropic')!.keys.find(key => key.kind === 'oauth')!.id
+    assert.equal(settled.accountId, rowId)
+    assert.equal(settled.error, undefined)
+
+    // activate/remove return the refreshed StateView so a client mutation
+    // updates its snapshot without a second round trip (addKey/deleteKey
+    // precedent).
+    const activated = await h.service.activateAccount('anthropic', rowId)
+    const activatedRow = activated.providers.find(provider => provider.provider === 'anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(activatedRow.valueMissing, false)
+    assert.deepEqual(activatedRow.oauth, { provider: 'anthropic', email: 'dev@example.com', accountId: 'acc-9', expiresAt: 1_800_000_000_000 })
+    const removed = await h.service.removeAccount('anthropic', rowId)
+    assert.equal(removed.providers.find(provider => provider.provider === 'anthropic')!.keys.some(key => key.id === rowId), false)
+
+    // Unknown attempt ids poll to undefined (not an error): the dialog can
+    // stop polling on a miss.
+    assert.equal(h.service.accountAttempt('la_missing'), undefined)
   } finally {
     await h.close()
   }

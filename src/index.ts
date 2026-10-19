@@ -244,6 +244,16 @@ const INVOCATIONS: InvocationDescriptor[] = [
   endpoint('releaseProvider', ['provider']),
   endpoint('addExtraProvider', ['extraId', 'alias', 'value']),
   endpoint('setSettings', ['patch']),
+  // OAuth account management (T2 service methods). The login dialog polls
+  // accountAttempt for attempt-state transitions: the host forwards only a
+  // fixed credentials-event allowlist to the browser, so the plugin has no
+  // own event channel a client could subscribe to.
+  endpoint('beginAccountLogin', ['provider', 'alias']),
+  endpoint('answerAccountPrompt', ['attemptId', 'value']),
+  endpoint('accountAttempt', ['attemptId']),
+  endpoint('listAccountAttempts'),
+  endpoint('activateAccount', ['provider', 'accountId']),
+  endpoint('removeAccount', ['provider', 'accountId']),
 ]
 
 /** Read a nested value by path. */
@@ -772,6 +782,11 @@ export class KeysManagerService {
     return attempt === undefined ? undefined : attemptView(attempt)
   }
 
+  /** Remote: poll one attempt's serializable state (T3 dialog channel). */
+  accountAttempt(attemptId: string): LoginAttemptView | undefined {
+    return this.getAccountAttempt(attemptId)
+  }
+
   /** Every attempt, newest first, for T3 surfaces. */
   listAccountAttempts(): LoginAttemptView[] {
     return [...this.loginAttempts.values()].sort((a, b) => b.createdAt - a.createdAt).map(attemptView)
@@ -1007,7 +1022,7 @@ export class KeysManagerService {
    * concurrent writers cannot interleave. The account whose payload lands
    * becomes the pool's active account and is cascade-selectable again.
    */
-  activateAccount(provider: string, accountId: string): Promise<void> {
+  activateAccount(provider: string, accountId: string): Promise<StateView> {
     return this.run(async () => {
       const providerRecord = this.store.provider(provider)
       if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
@@ -1026,6 +1041,9 @@ export class KeysManagerService {
       this.activeAccounts.set(provider, row.id)
       row.valueMissing = false
       this.store.touch()
+      // Remote methods hand back the refreshed state view (addKey/deleteKey
+      // precedent), so the client updates its snapshot in one round trip.
+      return this.buildState()
     })
   }
 
@@ -1073,7 +1091,7 @@ export class KeysManagerService {
    * it was the active projection — the projection itself, so the route
    * falls back to the key pool.
    */
-  removeAccount(provider: string, accountId: string): Promise<void> {
+  removeAccount(provider: string, accountId: string): Promise<StateView> {
     return this.run(async () => {
       const providerRecord = this.store.provider(provider)
       if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
@@ -1087,6 +1105,7 @@ export class KeysManagerService {
       providerRecord.keys.splice(index, 1)
       this.store.clearBindings((_key, binding) => binding.keyId === row.id)
       this.store.touch()
+      return this.buildState()
     })
   }
 
