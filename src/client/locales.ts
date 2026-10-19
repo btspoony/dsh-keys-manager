@@ -127,6 +127,20 @@ const zh = {
       searchResults: '{n} 个匹配',
       reset: '重置',
       attention: '需要处理',
+      // OAuth account surface — same values as locale/zh.json (dual source
+      // until the host's dsh-client-locale merge semantics are confirmed).
+      addAccount: '添加账户',
+      accountIdentity: '账户',
+      accountReauth: '重新认证',
+      accountActivate: '设为当前',
+      loginTitle: '账户登录',
+      loginPending: '等待授权…',
+      loginBrowserOpen: '在浏览器中打开',
+      loginPromptTitle: '完成登录',
+      loginPromptSubmit: '提交',
+      loginFailed: '登录失败',
+      loginFlowEnded: '本次登录流程已结束，请关闭窗口后重新开始。',
+      loginReady: '登录成功。',
     }
 
 const en = {
@@ -255,6 +269,20 @@ const en = {
       searchResults: '{n} matches',
       reset: 'Reset',
       attention: 'Needs attention',
+      // OAuth account surface — same values as locale/en.json (dual source
+      // until the host's dsh-client-locale merge semantics are confirmed).
+      addAccount: 'Add account',
+      accountIdentity: 'Account',
+      accountReauth: 'Re-authenticate',
+      accountActivate: 'Set active',
+      loginTitle: 'Account sign-in',
+      loginPending: 'Waiting for authorization…',
+      loginBrowserOpen: 'Open in browser',
+      loginPromptTitle: 'Complete sign-in',
+      loginPromptSubmit: 'Submit',
+      loginFailed: 'Login failed',
+      loginFlowEnded: 'This sign-in session has ended. Close the dialog and start again.',
+      loginReady: 'Signed in.',
     }
 
 /** Dictionaries registered under the plugin's locale namespace. */

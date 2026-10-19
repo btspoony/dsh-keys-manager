@@ -192,6 +192,34 @@ describe('client registration', () => {
     for (const cleanup of harness.cleanups.reverse()) cleanup()
   })
 
+  test('the registered dictionaries carry all 12 OAuth account strings in both languages', () => {
+    // W6 pin: these strings must live in the live registration source
+    // (LOCALE_DICTS), not only in the package's locale/*.json files.
+    const oauthStrings: Record<string, { en: string; zh: string }> = {
+      addAccount: { en: 'Add account', zh: '添加账户' },
+      accountIdentity: { en: 'Account', zh: '账户' },
+      accountReauth: { en: 'Re-authenticate', zh: '重新认证' },
+      accountActivate: { en: 'Set active', zh: '设为当前' },
+      loginTitle: { en: 'Account sign-in', zh: '账户登录' },
+      loginPending: { en: 'Waiting for authorization…', zh: '等待授权…' },
+      loginBrowserOpen: { en: 'Open in browser', zh: '在浏览器中打开' },
+      loginPromptTitle: { en: 'Complete sign-in', zh: '完成登录' },
+      loginPromptSubmit: { en: 'Submit', zh: '提交' },
+      loginFailed: { en: 'Login failed', zh: '登录失败' },
+      loginFlowEnded: { en: 'This sign-in session has ended. Close the dialog and start again.', zh: '本次登录流程已结束，请关闭窗口后重新开始。' },
+      loginReady: { en: 'Signed in.', zh: '登录成功。' },
+    }
+    const harness = makeContext()
+    apply(harness.ctx)
+    const dicts = harness.dictionaries.value
+    expect(dicts).toBeDefined()
+    for (const [key, expected] of Object.entries(oauthStrings)) {
+      expect(dicts!.en[key]).toBe(expected.en)
+      expect(dicts!.zh[key]).toBe(expected.zh)
+    }
+    for (const cleanup of harness.cleanups.reverse()) cleanup()
+  })
+
 })
 
 describe('client store', () => {
