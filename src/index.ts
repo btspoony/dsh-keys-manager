@@ -457,6 +457,13 @@ interface RequestScope {
   keyValue: string | null
   /** Set only when the broker resolver actually answered with this key. */
   keyUsed: boolean
+  /**
+   * Set when a projected OAuth account owns this route (MF2): pi-ai's
+   * per-request resolution serves the stored grant — not the broker key
+   * selected above — so an oauth-coded failure attributes to the account
+   * row instead of dying in the no-evidence delegation path.
+   */
+  oauthAccountId: string | null
 }
 
 /** Original credential provider methods captured before wrapping. */
@@ -2346,6 +2353,18 @@ export class KeysManagerService {
     return this.wrapStream(options, next, providerId, sessionId, step)
   }
 
+  /**
+   * The account row whose grant payload currently IS the live projection,
+   * verified against the provider's rows (MF2/MF3 read side). A stale map
+   * entry (row removed) resolves to null.
+   */
+  private oauthOwnerFor(provider: string): string | null {
+    const accountId = this.activeAccounts.get(provider)
+    if (accountId === undefined) return null
+    const row = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
+    return row !== undefined && row.kind === 'oauth' && row.oauth !== null ? row.id : null
+  }
+
   /** Wrap one managed stream so credential resolution sees this key. */
   private wrapStream(
     _options: GenerateOptionsLike,
@@ -2377,8 +2396,12 @@ export class KeysManagerService {
                 keyId: keyId ?? null,
                 keyValue: selection.value ?? null,
                 // Only the broker resolver proves that this request actually
-                // used a managed credential.
+                // used a managed key credential.
                 keyUsed: false,
+                // Captured where the broker resolve path is set up (MF2):
+                // when a projection exists, pi-ai serves the stored grant
+                // and this scope owns the failure attribution.
+                oauthAccountId: service.oauthOwnerFor(providerId),
               }
               if (sessionId !== undefined && keyId !== undefined) {
                 const key = bindingKey(sessionId, providerId)
@@ -2406,16 +2429,28 @@ export class KeysManagerService {
               const reason = chunk.reason
               const used = store?.keyUsed === true
               if (reason.kind === 'error') {
-                if (reason.failure !== undefined && shouldFailover(reason.failure.code) && service.store.settings.autoSwitch) {
-                  service.recordStreamAttempt(providerId, sessionId, keyId, used, reason.failure)
-                }
-                if (used && reason.failure !== undefined) {
-                  service.recordFailure(providerId, sessionId, keyId, reason.failure, true)
-                } else if (sessionId !== undefined) {
-                  // The request failed on an external credential; do not
-                  // attribute it to a managed key.
-                  service.attempts.delete(bindingKey(sessionId, providerId))
-                  if (step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
+                // MF2 attribution: with an active projection, pi-ai served the
+                // stored grant, so an oauth-coded failure belongs to the
+                // account row — cool it and demote the projection exactly as
+                // markFailure's oauth branch does, instead of delegating with
+                // no recovery evidence.
+                const oauthAccountId = store?.oauthAccountId ?? null
+                const failure = reason.failure
+                if (oauthAccountId !== null && failure !== undefined && classifyOAuthFailure(failure) === 'oauth') {
+                  service.recordFailure(providerId, sessionId, oauthAccountId, failure, true)
+                  service.markFailure(providerId, oauthAccountId, failure)
+                } else {
+                  if (reason.failure !== undefined && shouldFailover(reason.failure.code) && service.store.settings.autoSwitch) {
+                    service.recordStreamAttempt(providerId, sessionId, keyId, used, reason.failure)
+                  }
+                  if (used && reason.failure !== undefined) {
+                    service.recordFailure(providerId, sessionId, keyId, reason.failure, true)
+                  } else if (sessionId !== undefined) {
+                    // The request failed on an external credential; do not
+                    // attribute it to a managed key.
+                    service.attempts.delete(bindingKey(sessionId, providerId))
+                    if (step !== undefined) service.clearRetry(providerId, sessionId, step.turn, step.step)
+                  }
                 }
                 service.pruneAttempts(Date.now())
               } else if (reason.kind === 'aborted') {

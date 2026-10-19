@@ -3109,6 +3109,55 @@ test('an oauth failure cools the account down and demotes the cascade to keys', 
   }
 })
 
+// MF2: a real request served by the projected grant must attribute its
+// oauth-coded failure to the owning account row, so the demotion branch is
+// reachable from the stream path instead of being dead code.
+
+test('an oauth-coded stream failure under an active projection cools the account and fails over to keys', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // Public stream path: the request scope captures the projection owner,
+    // then the stream finishes with the pi-ai oauth failure code.
+    await consume(streamFailure(h, 'anthropic', 'session-oauth', { code: 'oauth', message: 'OAuth refresh failed for anthropic' }))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.ok(row.cooldownUntil > Date.now(), 'the owning account row must be cooled')
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    // The next selection lands on the broker key pool, not the demoted account.
+    const selection = await h.service.selectKey('anthropic', 'session-oauth-next')
+    assert.equal(selection.key!.kind, 'api-key')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a non-oauth stream failure on the same path does not demote the projection', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    await consume(streamFailure(h, 'anthropic', 'session-plain', { code: 'RATE_LIMIT', message: 'rate limited' }))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.cooldownUntil, 0)
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth-coded stream failure without an active projection attributes to nothing', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    // Seeded but never activated: no projection, no ownership, no demotion.
+    await consume(streamFailure(h, 'anthropic', 'session-unowned', { code: 'oauth', message: 'OAuth refresh failed for anthropic' }))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.cooldownUntil, 0)
+    const warnings = (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    assert.equal(warnings.includes('demoting'), false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('record-updated rotations sync back into the owning account row', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   try {
