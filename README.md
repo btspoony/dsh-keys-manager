@@ -1,46 +1,66 @@
 # DSH Keys Manager
 
-A DeepSeek Harness plugin that turns one provider API key into a managed pool:
+[![npm downloads](https://img.shields.io/npm/dm/dsh-keys-manager)](https://www.npmjs.com/package/dsh-keys-manager)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-339933)](https://www.npmjs.com/package/dsh-keys-manager)
+[![DSH](https://img.shields.io/badge/DSH-%5E0.2.1--rc.2-0969DA)](https://www.npmjs.com/package/@deepseek-ai/dsh-llm)
 
-- several keys per provider, each with an alias and health state;
-- one key pinned to a session, with round-robin selection for new sessions;
-- bounded retry on the same key, then automatic failover to another key;
-- exponential cooldown recovery, capped at seven days;
-- a search-driven Keys Manager page on the plugin's own detail page;
-- a "managed by Keys Manager" badge inside the existing Models provider cards;
-- extra built-in providers installed as ordinary `llm-pi-ai` routes.
+**English** | [简体中文](README.zh-CN.md)
 
-The plugin extends the Models page rather than replacing it. Providers, models, and the model picker stay where they are; only the API-key source moves behind the manager.
+Docs: [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md) — 中文文档：[开发](docs/development.zh-CN.md) · [发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md)
 
-## Install
+A DeepSeek Harness plugin that turns one provider API key into a managed pool.
+It extends the Models page rather than replacing it: providers, models, and the
+model picker stay where they are; only the API-key source moves behind the
+manager.
 
-From the repository root, build the TypeScript sources first:
+## Features
+
+- Several keys per provider, each with an alias and health state.
+- One key pinned to a session, with round-robin selection for new sessions.
+- Bounded retry on the same key, then automatic failover to another key.
+- Exponential cooldown recovery, capped at seven days.
+- A search-driven Keys Manager page on the plugin's own detail page.
+- A "managed by Keys Manager" badge inside the existing Models provider cards.
+- Extra built-in providers installed as ordinary `llm-pi-ai` routes.
+
+### Extra providers
+
+`src/providers.ts` contains a curated catalog of 32 extra providers (21 from
+the original catalog plus 11 added in this release, for example SiliconFlow,
+Zhipu coding plan, and Cline Pass), derived from
+[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
+Providers whose routes DSH already ships (`meta`, `typesafe`) are not
+duplicated by the plugin.
+
+## Quick start
+
+### Install — published package
 
 ```sh
-pnpm install
-pnpm build
+dsh plugin --profile web add dsh-keys-manager
 ```
 
-Then install the linked package:
+### Install — local checkout
 
-```text
-plugin_manager install_bundle dsh-keys-manager@link:/absolute/path/to/dsh-keys-manager
+```sh
+git clone https://github.com/btspoony/dsh-keys-manager
+cd dsh-keys-manager
+pnpm i
+dsh plugin --profile web link .
 ```
 
-The `name@link:` form is the local-directory spec pnpm 12 accepts. The package
-manifest points the Host at `lib/index.js`, the Client at `lib/client.js`, and
-the bundle patch at `bundle/cordis.patch.yml`. Refresh the Web page after
-installing so the browser half is fetched.
+Refresh the Web page after installing so the browser half is fetched.
 
-## Use
+## Usage
 
-Open **Plugins → 密钥管理 → 查看** (or **Plugins → Keys Manager → View**).
-The manager renders on the plugin's detail page, between its description and
-its included rows, matching the shipped plugin configuration cards.
+Open **Plugins → Keys Manager → View** (rendered as
+`Plugins → 密钥管理 → 查看` in the Chinese locale). The manager renders on the
+plugin's detail page, between its description and its included rows, matching
+the shipped plugin configuration cards.
 
 1. Search for a provider. Existing DSH providers appear first; the plugin also
-   ships a curated extra catalog (DeepInfra, Novita, StepFun, Synthetic,
-   ZenMux, Kilo, NanoGPT, MiniMax Coding, Umans, and others).
+   ships the curated extra catalog described above.
 2. Adopt a provider. For an existing provider the manager imports the
    currently resolved credential, writes a broker reference into the provider
    profile, and leaves the original key in the credential store so release can
@@ -73,7 +93,7 @@ its included rows, matching the shipped plugin configuration cards.
   alternate key exists, the manager delegates to the composition's normal
   retry/fallback policy.
 
-## Data
+## Configuration & data
 
 Manager metadata lives at:
 
@@ -92,35 +112,23 @@ reference per request with the session's selected key. The Models page sees
 the profile as configured; writing directly to the broker reference is
 refused with a pointer to the manager.
 
-## Extra providers
+### OAuth2 extension point
 
-`src/providers.ts` contains a curated catalog derived from
-[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT). An
-extra provider is installed by writing a complete `llm-pi-ai` profile:
-
-```yaml
-providers:
-  deepinfra:
-    displayName: DeepInfra
-    api: openai-completions
-    baseURL: https://api.deepinfra.com/v1/openai
-    apiKeyEnv: KEYSMGR_DEEPINFRA_...
-    models: [...]
-```
-
-The Host asks the adapter to discover the endpoint's models first; when
-discovery is unavailable or blocked, the seed catalog is installed instead.
-Releasing an extra provider that the manager created removes the whole route
-profile, so the Models page returns to its previous state.
+The state shape already distinguishes `kind: "api-key"` from `kind: "oauth"`
+and keeps a nullable `oauth` object beside the credential reference. A future
+account flow can add records under `keys-manager/<provider>/<key>` without
+rewriting existing rows. Providers whose only authentication is OAuth are
+reported as unsupported in this version rather than being treated as API-key
+providers.
 
 ## Provider classification
 
 Every provider card carries its origin:
 
-- **DSH 内置 / DSH built-in** — a route from the shipped DSH pi-ai catalog.
-- **插件内置 / Plugin built-in** — a route from this plugin's extra catalog in
-  `src/providers.ts`.
-- **自定义 / Custom** — a hand-declared route in the active profile.
+- **DSH built-in** (`DSH 内置`) — a route from the shipped DSH pi-ai catalog.
+- **Plugin built-in** (`插件内置`) — a route from this plugin's extra catalog
+  in `src/providers.ts`.
+- **Custom** (`自定义`) — a hand-declared route in the active profile.
 
 The following DSH built-ins are explicitly outside single-key pool management:
 
@@ -136,97 +144,18 @@ support OAuth (Anthropic, GitHub Copilot, Kimi, OpenRouter, xAI, Radius) remain
 manageable through their API-key path; OAuth accounts are tracked separately
 in the roadmap issue.
 
-## OAuth2 extension point
+## Documentation
 
-The state shape already distinguishes `kind: "api-key"` from `kind: "oauth"` and
-keeps a nullable `oauth` object beside the credential reference. A future
-account flow can add records under `keys-manager/<provider>/<key>` without
-rewriting existing rows. Providers whose only authentication is OAuth are
-reported as unsupported in this version rather than being treated as API-key
-providers.
-
-## Source map
-
-| File | Role |
+| Doc | Content |
 |---|---|
-| `src/index.ts` | Host plugin: credential broker, selection, failover, settings writes, Remote namespace |
-| `src/core.ts` | Pure round-robin, cooldown, status, and validation policy |
-| `src/store.ts` | Secret-free durable state and atomic writer |
-| `src/providers.ts` | Extra built-in provider catalog |
-| `src/domain.ts` | Shared Host/Client domain shapes |
-| `src/client/index.ts` | Client registration on the plugin-detail and Models slots |
-| `src/client/ui.ts` | Manager page, key rows, forms, and Models badge |
-| `src/client/store.ts` | Client snapshot store and RPC calls |
-| `tests/core.test.ts` | Policy and store tests |
-| `tests/host.test.ts` | Host service, adoption, failover, and secret-free persistence tests |
-| `tests/client.test.ts` | Registration, locale parity, and client store tests |
+| [Development](docs/development.md) | build and dev workflow, repository layout |
+| [Release](docs/release.md) | CI checks and the npm release flow |
+| [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
 
-## Development
+Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
+files in `docs/`. Current design boundaries at a glance:
+[Known limits](docs/known-limits.md).
 
-```sh
-pnpm install
-pnpm typecheck
-pnpm build
-pnpm test
-```
+## License
 
-`pnpm build` runs the Node-side `tsc` build (`lib/`), emits the Client
-declarations, bundles the Client with esbuild, and verifies every artifact the
-package manifest resolves. `pnpm test` runs the Vitest suites.
-
-The Host half is a normal ESM Cordis function plugin. The Client half is a
-normal slot plugin; `scripts/build-client.mjs` wraps it in the
-`window.__ModuleLoader__.load` closure only at bundle time, so the source is
-importable by tests.
-
-## Release
-
-CI (`.github/workflows/ci.yml`) runs typecheck, build, tests, and a packed
-tarball assertion for `lib/index.js`, `lib/client.js`, and
-`bundle/cordis.patch.yml`.
-
-Releases are PR-driven:
-
-1. Actions → **Release prep** → Run workflow. Leave the version empty for an
-   automatic patch bump, or pass `X.Y.Z` / `X.Y.Z-prerelease`.
-2. The workflow bumps `package.json`, updates `CHANGELOG.md` from git log,
-   validates the build, and opens a `release v<version>` PR.
-3. Merge the release PR. The **Release** workflow publishes
-   `dsh-keys-manager@<version>` to npm with provenance, pushes tag
-   `v<version>`, and creates the GitHub Release.
-
-npm publishing uses OIDC trusted publishing (no `NPM_TOKEN`). Configure a
-Trusted Publisher for this repository and the `Release` workflow on npmjs.com
-before the first release. Prerelease versions publish to a prerelease dist-tag
-and never move `latest`.
-
-The Release prep workflow opens its PR with `GITHUB_TOKEN`. If the repository
-disables Actions-created PRs, enable **Settings → Actions → General → Allow
-GitHub Actions to create and approve pull requests**, or point the workflow at
-a fine-grained PAT secret instead.
-
-## Known limits
-
-- OAuth2 account pools are designed for but not implemented. Anthropic key
-  pools manage a plain `ANTHROPIC_API_KEY`; its OAuth/federation token paths
-  are not account pools.
-- Cloudflare AI Gateway and Workers AI require a Cloudflare account ID (and a
-  gateway ID for AI Gateway) in addition to the API key. They are reported as
-  unsupported key pools and should be configured natively in Models.
-- Provider-native cloud credential chains (for example an AWS profile used by
-  a Bedrock route) are not split into per-key rows; those providers are shown
-  with an explanatory reason unless they also expose an API-key variable.
-- A release restores the profile's `apiKeyEnv`, but other provider edits made
-  by the user in Models are preserved. Releasing an extra provider whose route
-  profile the plugin created removes that route, including later edits; the
-  confirmation text says so.
-- Cooldown counters are local to this Harness home; they are not shared
-  between hosts.
-- Retry identity is ambient: retry pins and request steps are recorded per
-  session and provider, not per HTTP request. When several steps of the same
-  session and provider run concurrently, a retry stream may fail to consume
-  its own pin, or a finishing step may clear another step's pin. A direct
-  stream without a `purpose` may also consume one pending retry pin while its
-  window is open. The pin window is 60 seconds, which bounds this exposure
-  but does not eliminate it; concurrent multi-step retry behavior remains
-  best-effort.
+Released under the [MIT License](LICENSE).
