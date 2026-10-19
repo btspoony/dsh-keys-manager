@@ -3062,6 +3062,76 @@ test('record-updated rotations sync back into the owning account row', async () 
   }
 })
 
+test('a rotated refresh token re-associates its row and syncs the rotated payload back (W1)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // pi-ai rotated the refresh token inside its own record: the payload's
+    // digest no longer names the row's grantRef.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-rotated-token', access: 'at-rotated-token', expires: 1_950_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    // The row is re-associated via the payload's identity metadata: the
+    // grantRef re-hashes to the rotated refresh token.
+    const newRef = accountRef('anthropic', createHash('sha256').update('rt-rotated-token').digest('hex').slice(0, 12))
+    await eventually(() => assert.equal(row.oauth!.grantRef, newRef))
+    assert.equal(row.oauth!.accountId, 'acc-9')
+    assert.equal(row.oauth!.email, 'dev@example.com')
+    assert.equal(row.oauth!.expiresAt, 1_950_000_000_000)
+    // The rotated payload itself was written back to the owning
+    // plugin-scope grant record, so a later re-activation cannot resurrect
+    // the stale harvest-time snapshot.
+    const stored = h.credentials.records.get(newRef)!
+    assert.equal(stored.kind, 'grant')
+    assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-rotated-token')
+    assert.equal((stored.payload as Record<string, unknown>).access, 'at-rotated-token')
+    // The write-back is keys-manager/-scope, which the handler's
+    // llm-pi-ai/-scope filter ignores — no handler re-entry, and no false
+    // native-management or unrecognized-payload warning.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const warnings = (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    assert.equal(warnings.includes('managed natively outside'), false)
+    assert.equal(warnings.includes('unrecognized payload'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a re-login with a changed refresh token removes the superseded grant record (W2)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const first = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(first.id)!.status, 'ready'))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.kind === 'oauth')!
+    const firstRef = row.oauth!.grantRef
+    assert.ok(h.credentials.records.has(firstRef))
+
+    // Re-login: pi-ai committed a fresh grant with a rotated refresh token,
+    // so harvest hashes a different ref for the same account (matched by
+    // accountId).
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-relogin-value', access: 'at-relogin' }))
+    const second = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(second.id)!.status, 'ready'))
+    const secondRef = row.oauth!.grantRef
+    assert.notEqual(secondRef, firstRef)
+    // The superseded grant payload is gone; the new one is in place, and
+    // the re-login kept exactly one account row.
+    assert.equal(h.credentials.records.has(firstRef), false)
+    assert.ok(h.credentials.records.has(secondRef))
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a login lands its account as the active projection', async () => {
   const h = await harnessWithManagedAnthropic()
   try {

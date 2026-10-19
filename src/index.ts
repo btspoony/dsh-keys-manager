@@ -829,6 +829,19 @@ export class KeysManagerService {
             || (payload.email !== undefined && candidate.oauth.email === payload.email && candidate.oauth.accountId === undefined)))
         const now = Date.now()
         if (existing !== undefined) {
+          // Replacing the credential removes the superseded plugin-scope
+          // record: a changed refresh token hashes to a new ref, and the
+          // old payload (old refresh token included) must not strand as a
+          // secret-bearing orphan. Cleanup is best-effort — the fresh grant
+          // is already persisted, so a locked store must not fail an
+          // otherwise successful login; the warning keeps it observable.
+          if (existing.oauth !== null && existing.oauth.grantRef !== grantRef) {
+            try {
+              await records.deleteRecord(existing.oauth.grantRef)
+            } catch (error) {
+              this.warn(`cleanup of the superseded grant record failed for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          }
           existing.oauth = {
             ...existing.oauth,
             provider: attempt.provider,
@@ -965,15 +978,31 @@ export class KeysManagerService {
       }
       const payload = record.payload
       const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
-      const owner = accounts.find(candidate => candidate.oauth!.grantRef === accountRef(provider, hash))
-        ?? accounts.find(candidate => payload.accountId !== undefined && candidate.oauth!.accountId === payload.accountId)
+      const rotatedRef = accountRef(provider, hash)
+      // Owner resolution: the refresh digest names the row first. On a miss
+      // (the provider rotated the refresh token), identity metadata
+      // re-associates — identity is the account, not one token generation.
+      const owner = accounts.find(candidate => candidate.oauth!.grantRef === rotatedRef)
+        ?? accounts.find(candidate =>
+          (payload.accountId !== undefined && candidate.oauth!.accountId === payload.accountId)
+          || (payload.email !== undefined && candidate.oauth!.email === payload.email))
       if (owner === undefined) {
         this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
         return
       }
-      // Rotation sync: refresh tokens survive a rotation, so the payload
-      // hash names the same row; refresh-derived identity fields are
-      // informational and update in place.
+      // A rotated refresh token re-points the row at the new ref.
+      if (owner.oauth!.grantRef !== rotatedRef) {
+        owner.oauth = { ...owner.oauth!, grantRef: rotatedRef }
+      }
+      // Rotation sync: the rotated payload is authoritative (the plan's
+      // single-writer contract — "sync them back to the owning plugin-scope
+      // record on record-updated"), so write it back to the row's grant
+      // record instead of trusting that refresh tokens never rotate. This
+      // write cannot re-enter this handler: it is keys-manager/-scope, and
+      // the handler above only reconciles llm-pi-ai/-scope keys.
+      await records.modifyRecord(owner.oauth!.grantRef, () =>
+        Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+      // Refresh-derived identity fields are informational and update in place.
       owner.oauth = {
         ...owner.oauth!,
         ...(payload.email === undefined ? {} : { email: payload.email }),
