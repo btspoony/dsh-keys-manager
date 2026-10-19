@@ -3310,8 +3310,40 @@ test('record-updated rotations sync back into the owning account row', async () 
   }
 })
 
-test('a rotated refresh token re-associates its row and syncs the rotated payload back (W1)', async () => {
+// Round-2 review step 5: the rotation writes the plugin-scope record
+// FIRST and commits the row's grantRef only after that write resolves. A
+// failed write keeps the old, still-present ref, so Remove still deletes
+// the live grant.
+
+test('a failed rotation write keeps the old grantRef so Remove still deletes the live grant', async () => {
   const { h, rowId, grantRef: refA } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // The plugin-scope write itself fails during the rotation echo.
+    h.credentials.raw.failModifyRecord = true
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-rotate-fail', access: 'at-rotate-fail', expires: 1_950_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await new Promise(resolve => setTimeout(resolve, 40))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    // The row still points at the old, still-present record; the failed
+    // generation's ref was never materialized.
+    assert.equal(row.oauth!.grantRef, refA)
+    assert.ok(h.credentials.records.has(refA))
+    assert.equal(h.credentials.records.has(accountRef('anthropic', createHash('sha256').update('rt-rotate-fail').digest('hex').slice(0, 12))), false)
+    // Remove still works against the old ref: the live grant goes away.
+    h.credentials.raw.failModifyRecord = false
+    await h.service.removeAccount('anthropic', rowId)
+    assert.equal(h.credentials.records.has(refA), false)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a rotated refresh token re-associates its row and syncs the rotated payload back (W1)', async () => {  const { h, rowId, grantRef: refA } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   try {
     await h.service.activateAccount('anthropic', rowId)
     // pi-ai rotated the refresh token inside its own record: the payload's

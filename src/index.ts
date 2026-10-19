@@ -1239,26 +1239,26 @@ export class KeysManagerService {
         this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
         return
       }
-      // A rotated refresh token re-points the row at the new ref; SF2 keeps
-      // the superseded generation's ref so its record can be removed below.
-      const previousRef = owner.oauth!.grantRef
-      if (previousRef !== rotatedRef) {
-        owner.oauth = { ...owner.oauth!, grantRef: rotatedRef }
-      }
       // Rotation sync: the rotated payload is authoritative (the plan's
       // single-writer contract — "sync them back to the owning plugin-scope
       // record on record-updated"), so write it back to the row's grant
-      // record instead of trusting that refresh tokens never rotate. This
-      // write cannot re-enter this handler: it is keys-manager/-scope, and
-      // the handler above only reconciles llm-pi-ai/-scope keys.
-      await records.modifyRecord(owner.oauth!.grantRef, () =>
+      // record instead of trusting that refresh tokens never rotate. The
+      // plugin-scope record is written FIRST; the row's grantRef commits
+      // only after that write resolves, so a failed write leaves the row
+      // pointing at the old, still-present record and Remove keeps working
+      // against the live grant (round-2 review, step 5). This write cannot
+      // re-enter this handler: it is keys-manager/-scope, and the handler
+      // above only reconciles llm-pi-ai/-scope keys.
+      const previousRef = owner.oauth!.grantRef
+      await records.modifyRecord(rotatedRef, () =>
         Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
-      // SF2: once the new payload persists, delete the superseded
-      // generation's plugin-scope record — harvest parity. A rotated
-      // refresh token must not strand its secret-bearing record outside
-      // manager state; cleanup is best-effort with a warning, exactly like
-      // the harvest-time cleanup.
-      if (previousRef !== owner.oauth!.grantRef) {
+      // SF2: once the new payload persists and the row points at it, delete
+      // the superseded generation's plugin-scope record — harvest parity. A
+      // rotated refresh token must not strand its secret-bearing record
+      // outside manager state; cleanup is best-effort with a warning,
+      // exactly like the harvest-time cleanup.
+      if (previousRef !== rotatedRef) {
+        owner.oauth = { ...owner.oauth!, grantRef: rotatedRef }
         try {
           await records.deleteRecord(previousRef)
         } catch (error) {
