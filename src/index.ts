@@ -89,6 +89,14 @@ const PIN_TTL_MS = 60_000
 const LOGIN_ATTEMPT_TTL_MS = 10 * 60 * 1000
 /** Same display-name cap the api-key aliases use (core.ts MAX_ALIAS_LENGTH). */
 const MAX_ALIAS = 80
+/**
+ * How long a pending projection-removal marker may absorb its deletion
+ * echo. Bounded well above any realistic echo delay (the seam's own
+ * watcher debounce dwarfs it): the old microtask sweep raced the echo
+ * handler's awaited re-read and could clear the marker too early; the
+ * race came from unbounded immediacy, not slow echoes.
+ */
+const INTENTIONAL_REMOVAL_TTL_MS = 5_000
 /** The credential-record scope pi-ai stores its per-provider grants under (llm-pi-ai/src/auth.ts:29). */
 export const OAUTH_GRANT_RECORD_SCOPE = 'llm-pi-ai'
 
@@ -479,12 +487,13 @@ export class KeysManagerService {
   /** The account row whose grant payload currently IS the projection, per provider. */
   private readonly activeAccounts = new Map<string, string>()
   /**
-   * Providers whose projection deletion this manager initiated and whose
-   * `record-updated` echo must not read as an out-of-band removal. Cleared
-   * on the next activation, or right after the deletion's synchronous event
-   * fan-out has drained (a microtask later).
+   * Providers whose projection deletion this manager initiated, mapped to
+   * the moment it was initiated. The `record-updated` echo of our own
+   * demotion consumes the marker (one-shot) and stays silent while the
+   * marker is inside its TTL window; past the window the marker is expired
+   * and a removal warns as genuinely out-of-band again.
    */
-  private readonly intentionalProjectionRemovals = new Set<string>()
+  private readonly intentionalProjectionRemovals = new Map<string, number>()
   /** Disposer for the `authorization/settled` subscription. */
   private settledDisposer: (() => void) | undefined
   /** Disposer for the `credentials/record-updated` subscription. */
@@ -951,13 +960,16 @@ export class KeysManagerService {
       if (records === undefined) return
       const record = await records.readRecord(key)
       if (record === undefined) {
-        if (this.intentionalProjectionRemovals.has(provider)) {
-          // This deletion echo is the manager's own projection removal
-          // (fallbackToKeys flagged it): consume the one-shot flag and stay
-          // silent — warning here would misreport our own demotion.
+        // This manager's own demotion marked the removal just before
+        // deleting; while the marker is inside its TTL window the echo is
+        // ours — consume the one-shot marker and stay silent. An expired
+        // marker no longer masks anything (and is dropped for hygiene).
+        const markedAt = this.intentionalProjectionRemovals.get(provider)
+        if (markedAt !== undefined && Date.now() - markedAt <= INTENTIONAL_REMOVAL_TTL_MS) {
           this.intentionalProjectionRemovals.delete(provider)
           return
         }
+        if (markedAt !== undefined) this.intentionalProjectionRemovals.delete(provider)
         if (active !== undefined) {
           // Not our deletion: someone removed the projection, so the route
           // silently serves the key pool while the account row looks
@@ -1072,14 +1084,12 @@ export class KeysManagerService {
     if (providerRecord === undefined) return
     const records = this.credentialRecords()
     if (records !== undefined) {
-      this.intentionalProjectionRemovals.add(provider)
-      try {
-        await records.deleteRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
-      } finally {
-        // The deletion's synchronous event fan-out has drained by the time
-        // this microtask runs; later removals are genuinely out-of-band.
-        queueMicrotask(() => this.intentionalProjectionRemovals.delete(provider))
-      }
+      // Mark BEFORE the delete: the deletion's echo handler reads this
+      // marker across its own awaited record re-read, whenever that
+      // continuation resumes. The TTL window — not scheduling order —
+      // decides how long the marker stays trustworthy.
+      this.intentionalProjectionRemovals.set(provider, Date.now())
+      await records.deleteRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
     }
     this.activeAccounts.delete(provider)
     for (const row of providerRecord.keys) {

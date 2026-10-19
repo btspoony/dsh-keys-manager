@@ -90,6 +90,11 @@ function fakeCredentials(initial: Record<string, string> = {}): {
     },
     async readRecord(key: string): Promise<FakeCredentialRecord | undefined> {
       assertRecordKey(key)
+      // Resolve across a microtask hop: the real credential store reads
+      // async I/O, so the echo handler's continuation always resumes after
+      // any pending microtasks. The old same-tick resolution encoded an
+      // optimistic ordering production does not guarantee.
+      await Promise.resolve()
       return records.get(key)
     },
     async modifyRecord(
@@ -3216,6 +3221,27 @@ test('a fallback deletion echoed as record-updated stays silent and keeps the ca
     h.credentials.records.delete(GRANT_KEY)
     h.credentials.emitRecordUpdated(GRANT_KEY)
     await eventually(() => assert.match(pendingWarnings(), /removed outside Keys Manager/))
+  } finally {
+    await h.close()
+  }
+})
+
+test('an expired intentional-removal marker no longer masks an out-of-band removal (W5)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    const pendingWarnings = (): string =>
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    await h.service.activateAccount('anthropic', rowId)
+    // Age the pending marker past its TTL window: whatever the echo
+    // scheduling, an entry this old can no longer absorb a removal echo —
+    // silence is bounded in time, not decided by a microtask race.
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    markers.set('anthropic', Date.now() - 6_000)
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(pendingWarnings(), /removed outside Keys Manager/))
+    // The expired marker was consumed for hygiene.
+    assert.equal(markers.has('anthropic'), false)
   } finally {
     await h.close()
   }
