@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
-import type { ClientContext, LocaleDicts, RpcResult, StateView } from '../src/client/types'
+import type { AccountAttemptView, ClientContext, LocaleDicts, RpcResult, StateView } from '../src/client/types'
 
 function makeState(): StateView {
   return {
@@ -329,6 +329,148 @@ describe('mutation ordering', () => {
     expect(secondResult.ok).toBe(false)
     expect(store.getSnapshot().state?.managedCount).toBe(2)
     expect(store.getSnapshot().error).toBe('update failed')
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+})
+
+
+describe('oauth account store', () => {
+  function makeAttempt(): AccountAttemptView {
+    return {
+      id: 'la_1_ab',
+      provider: 'anthropic',
+      alias: 'Work account',
+      status: 'prompt',
+      notices: [{ message: 'Open this page to continue signing in.', url: 'https://example.com/authorize' }],
+      prompt: { kind: 'text', message: 'Paste the verification code' },
+      createdAt: 1,
+      updatedAt: 2,
+    }
+  }
+
+  test('beginAccountLogin returns the attempt view without replacing the state snapshot', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        expect(payload).toEqual({ args: { provider: 'anthropic', alias: 'Work account' } })
+        return { ok: true, value: makeAttempt() }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const stateBefore = store.getSnapshot().state
+    const outcome = await store.beginAccountLogin('anthropic', 'Work account')
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) {
+      expect(outcome.value?.id).toBe('la_1_ab')
+      expect(outcome.value?.status).toBe('prompt')
+      expect(outcome.value?.prompt?.kind).toBe('text')
+    }
+    // The attempt view is not a StateView; the snapshot keeps the loaded state.
+    expect(store.getSnapshot().state).toBe(stateBefore)
+    expect(store.getSnapshot().busy).toBeNull()
+    expect(store.getSnapshot().error).toBeNull()
+  })
+
+  test('answerAccountPrompt acknowledges without touching the snapshot state', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      expect(endpoint).toBe('keysManager/answerAccountPrompt')
+      expect(payload).toEqual({ args: { attemptId: 'la_1_ab', value: '123-456' } })
+      return { ok: true, value: null }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const stateBefore = store.getSnapshot().state
+    const outcome = await store.answerAccountPrompt('la_1_ab', '123-456')
+    expect(outcome).toEqual({ ok: true, value: null })
+    expect(store.getSnapshot().state).toBe(stateBefore)
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  test('accountAttempt polls without queueing or mutating the snapshot', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/accountAttempt') {
+        return payload.args.attemptId === 'la_1_ab' ? { ok: true, value: makeAttempt() } : { ok: true, value: null }
+      }
+      return { ok: true, value: makeState() }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const snapshotBefore = store.getSnapshot()
+    const outcome = await store.accountAttempt('la_1_ab')
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) expect(outcome.value?.notices[0]?.message).toContain('signing in')
+    // A poll is read-only: no busy flag, no state replacement, no error.
+    const snapshotAfter = store.getSnapshot()
+    expect(snapshotAfter.busy).toBe(snapshotBefore.busy)
+    expect(snapshotAfter.state).toBe(snapshotBefore.state)
+
+    const missing = await store.accountAttempt('la_missing')
+    expect(missing).toEqual({ ok: true, value: null })
+  })
+
+  test('listAccountAttempts returns the attempt array', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      expect(endpoint).toBe('keysManager/listAccountAttempts')
+      return { ok: true, value: [makeAttempt()] }
+    }
+    const store = createStore(harness.ctx)
+    const outcome = await store.listAccountAttempts()
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) expect(outcome.value.map(entry => entry.id)).toEqual(['la_1_ab'])
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  test('activateAccount and removeAccount are queued mutations that refresh the state', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/activateAccount') {
+        expect(payload).toEqual({ args: { provider: 'anthropic', accountId: 'k_oauth1' } })
+        const state = makeState()
+        state.providers[0].keys[0].alias = 'Work account'
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/removeAccount') {
+        expect(payload).toEqual({ args: { provider: 'anthropic', accountId: 'k_oauth1' } })
+        const state = makeState()
+        state.managedCount = 0
+        return { ok: true, value: state }
+      }
+      return { ok: true, value: makeState() }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    const activated = await store.activateAccount('anthropic', 'k_oauth1')
+    expect(activated.ok).toBe(true)
+    expect(store.getSnapshot().state?.providers[0].keys[0].alias).toBe('Work account')
+    expect(store.getSnapshot().busy).toBeNull()
+
+    const removed = await store.removeAccount('anthropic', 'k_oauth1')
+    expect(removed.ok).toBe(true)
+    expect(store.getSnapshot().state?.managedCount).toBe(0)
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  test('account wrapper failures surface the error and clear the busy flag', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async () => ({ ok: false, error: { message: 'already in progress' } })
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    const begun = await store.beginAccountLogin('anthropic')
+    expect(begun).toEqual({ ok: false, error: 'already in progress' })
+    const polled = await store.accountAttempt('la_1_ab')
+    expect(polled).toEqual({ ok: false, error: 'already in progress' })
+    const answered = await store.answerAccountPrompt('la_1_ab', 'x')
+    expect(answered).toEqual({ ok: false, error: 'already in progress' })
+    const activated = await store.activateAccount('anthropic', 'k_oauth1')
+    expect(activated).toEqual({ ok: false, error: 'already in progress' })
+    expect(store.getSnapshot().error).toBe('already in progress')
     expect(store.getSnapshot().busy).toBeNull()
   })
 })
