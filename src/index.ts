@@ -958,6 +958,15 @@ export class KeysManagerService {
    * look like success.
    */
   private async harvestLogin(attempt: LoginAttempt): Promise<void> {
+    // A revoke (provider release) may have finalized this attempt before
+    // the seam's authorized settlement arrives: never resurrect rows for a
+    // settled login (round-2 review, step 4).
+    if (attempt.settledAt !== undefined) return
+    // Records this login's grant identity for the failure-path
+    // compensation below: `wroteRef` says the plugin-scope copy exists,
+    // and the projection is reverted only while it still carries this
+    // login's refresh token.
+    let harvest: { payload: OAuthGrantPayload; grantRef: string; wroteRef: boolean } | undefined
     try {
       await this.run(async () => {
         const records = this.credentialRecords()
@@ -971,19 +980,27 @@ export class KeysManagerService {
           throw new Error(`The record at ${grantKey} does not hold a pi-ai OAuth credential`)
         }
         const payload = record.payload
+        // Managed state and key capacity are checked BEFORE the
+        // plugin-scope write (round-2 review, step 4): a login whose row
+        // cannot exist must not strand the persisted grant.
+        const providerRecord = this.store.provider(attempt.provider)
+        if (providerRecord === undefined) throw new Error(`Provider "${attempt.provider}" is no longer managed`)
         // The refresh token is the stable per-grant secret; its digest —
         // never the token — names the account's plugin-scope record.
         const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
         const grantRef = accountRef(attempt.provider, hash)
-        await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
-
-        const providerRecord = this.store.provider(attempt.provider)
-        if (providerRecord === undefined) throw new Error(`Provider "${attempt.provider}" is no longer managed`)
+        harvest = { payload, grantRef, wroteRef: false }
         const existing = providerRecord.keys.find(candidate =>
           candidate.kind === 'oauth' && candidate.oauth !== null
           && (candidate.oauth.grantRef === grantRef
             || (payload.accountId !== undefined && candidate.oauth.accountId === payload.accountId)
             || (payload.email !== undefined && candidate.oauth.email === payload.email && candidate.oauth.accountId === undefined)))
+        if (existing === undefined && providerRecord.keys.length >= KEY_LIMIT) {
+          throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
+        }
+        await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+        if (harvest !== undefined) harvest.wroteRef = true
+        else harvest = { payload, grantRef, wroteRef: true }
         const now = Date.now()
         if (existing !== undefined) {
           // Replacing the credential removes the superseded plugin-scope
@@ -1008,7 +1025,6 @@ export class KeysManagerService {
             ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
           }
         } else {
-          if (providerRecord.keys.length >= KEY_LIMIT) throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
           providerRecord.keys.push({
             id: newKeyId(),
             alias: attempt.alias ?? payload.email ?? providerRecord.displayName,
@@ -1052,6 +1068,46 @@ export class KeysManagerService {
     } catch (error) {
       this.failLoginAttempt(attempt, error)
       this.warn(`oauth sign-in harvest failed for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+      // Round-2 review step 4: when no row could be created, compensate
+      // with an ownership-checked delete of both written records — the
+      // plugin-scope grant copy (when its write resolved), and the
+      // llm-pi-ai projection only while it still carries THIS login's
+      // payload.
+      if (attempt.accountId === undefined) {
+        await this.compensateFailedHarvest(attempt, harvest)
+      }
+    }
+  }
+
+  /**
+   * Roll a failed harvest back to a clean credential surface: the
+   * plugin-scope grant copy is deleted when it was written; the
+   * `llm-pi-ai` projection is deleted only while it still carries this
+   * login's refresh token, so compensation can never delete a grant
+   * another account owns.
+   */
+  private async compensateFailedHarvest(
+    attempt: LoginAttempt,
+    harvest: { payload: OAuthGrantPayload; grantRef: string; wroteRef: boolean } | undefined,
+  ): Promise<void> {
+    const records = this.credentialRecords()
+    if (records === undefined || harvest === undefined) return
+    if (harvest.wroteRef) {
+      try {
+        await records.deleteRecord(harvest.grantRef)
+      } catch (error) {
+        this.warn(`harvest compensation could not delete ${harvest.grantRef}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    try {
+      const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
+      const live = await records.readRecord(projectionKey)
+      if (live !== undefined && live.kind === 'grant'
+        && isOAuthGrantPayload(live.payload) && live.payload.refresh === harvest.payload.refresh) {
+        await records.deleteRecord(projectionKey)
+      }
+    } catch (error) {
+      this.warn(`harvest compensation could not revert the projection for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -2122,6 +2178,14 @@ export class KeysManagerService {
   private async releaseLocked(provider: string): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) return
+    // Round-2 review step 4: releasing a provider revokes its in-flight
+    // sign-in attempts. A login whose seam flow is aborted can no longer
+    // harvest rows for a provider that is no longer managed (the harvest
+    // itself also refuses settled attempts).
+    for (const attempt of this.loginAttempts.values()) {
+      if (attempt.provider !== provider || attempt.settledAt !== undefined) continue
+      this.failLoginAttempt(attempt, new Error(`Provider "${provider}" was released during sign-in`))
+    }
     const descriptor = this.describeSettings()
     if (!descriptor.readable) {
       throw new Error('Settings are currently unreadable; refusing to release a provider whose binding cannot be inspected.')

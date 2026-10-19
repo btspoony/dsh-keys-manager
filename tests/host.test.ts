@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
-import { accountRef } from '../src/core'
+import { accountRef, KEY_LIMIT } from '../src/core'
 import { apply, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
 
@@ -3015,6 +3015,71 @@ test('concurrent logins for one provider are refused until the attempt settles',
   try {
     await h.service.beginAccountLogin('anthropic')
     await assert.rejects(() => h.service.beginAccountLogin('anthropic'), /already/)
+  } finally {
+    await h.close()
+  }
+})
+
+// Round-2 review step 4: a harvest is compensated and gated. Releasing a
+// provider revokes its in-flight sign-in, and a login whose row cannot be
+// created (key capacity) never strands the grant records it touched.
+
+test('releasing a provider revokes its in-flight sign-in attempt', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    await h.service.releaseProvider('anthropic')
+    const settled = h.service.getAccountAttempt(view.id)!
+    assert.equal(settled.status, 'failed')
+    assert.match(settled.error ?? '', /released during sign-in/)
+    // Re-adopting frees the single-attempt slot again.
+    await h.service.adoptProvider('anthropic')
+    const next = await h.service.beginAccountLogin('anthropic')
+    assert.equal(next.status, 'pending')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a capacity-exceeded harvest fails loudly and leaves no orphan grant records', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    // Fill the pool to the key limit with api-key rows.
+    const record = h.store.provider('anthropic')!
+    while (record.keys.length < KEY_LIMIT) {
+      record.keys.push({
+        id: `k_fill_${record.keys.length}`,
+        alias: `filler ${record.keys.length}`,
+        ref: `FILLER_${record.keys.length}`,
+        kind: 'api-key',
+        enabled: true,
+        createdAt: Date.now(),
+        lastUsedAt: 0,
+        cooldownUntil: 0,
+        lastFailureAt: 0,
+        lastFailureCode: '',
+        failureLevel: 0,
+        consecutiveFailures: 0,
+        totalUses: 0,
+        totalFailures: 0,
+        valueMissing: false,
+        importedFrom: null,
+        oauth: null,
+      })
+    }
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    assert.match(h.service.getAccountAttempt(view.id)!.error ?? '', /at most 32 keys/)
+    // No orphan: the plugin-scope copy was never written, the projection
+    // was reverted by the ownership-checked compensation, and no row was
+    // created.
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
   } finally {
     await h.close()
   }
