@@ -1804,8 +1804,11 @@ export class KeysManagerService {
   private async deleteManagedCredentials(record: ProviderRecord): Promise<void> {
     for (const key of record.keys) {
       if (key.kind === 'oauth' && key.oauth !== null) {
-        const records = this.credentialRecords()
-        if (records !== undefined) await records.deleteRecord(key.oauth.grantRef)
+        // Same cleanup as removeAccount/deleteKey: when this row owns the
+        // activation projection, demote it first so the released route
+        // resolves through the restored apiKeyEnv instead of a grant whose
+        // manager is gone (pi-ai resolution prefers a stored credential).
+        await this.removeOAuthGrant(record.provider, key)
       } else {
         await this.unsetOriginal(key.ref)
       }
@@ -2095,6 +2098,10 @@ export class KeysManagerService {
     // cascade demotes to the key pool by deleting the projection record.
     if (key.kind === 'oauth' && classifyOAuthFailure(failure) === 'oauth') {
       this.warn(`oauth account ${key.id} on ${providerId} failed (${failure.code}); demoting to the key pool for ${Math.round(result.cooldownMs / 1000)}s`)
+      // Persist the applied cooldown on this path too: the deferred
+      // fallbackToKeys touch never runs when its deleteRecord throws, and
+      // this touch is what schedules the debounced write regardless.
+      this.store.touch()
       void this.fallbackToKeys(providerId).catch(error => {
         this.warn(`key-pool fallback failed for ${providerId}: ${error instanceof Error ? error.message : String(error)}`)
       })

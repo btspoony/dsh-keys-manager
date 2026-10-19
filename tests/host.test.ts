@@ -71,6 +71,7 @@ function fakeCredentials(initial: Record<string, string> = {}): {
     failUnsetRefs: new Set<string>(),
     failRefs: new Set<string>(),
     failModifyRecord: false,
+    failDeleteRecord: false,
     async resolve(ref: string) {
       if (raw.failResolve || raw.failRefs.has(ref)) throw new Error('credential store unavailable')
       const value = refs.get(ref)
@@ -106,6 +107,7 @@ function fakeCredentials(initial: Record<string, string> = {}): {
     },
     async deleteRecord(key: string): Promise<void> {
       assertRecordKey(key)
+      if (raw.failDeleteRecord) throw new Error('credential store locked')
       records.delete(key)
       // Real consumers observe a removal through the seam's post-commit
       // `credentials/record-updated` fan-out too, so deletions echo here as
@@ -3159,6 +3161,52 @@ test('removeAccount drops the row, its plugin-scope payload, and falls back when
     assert.equal(h.credentials.records.has(grantRef), false)
     assert.equal(h.credentials.records.has(GRANT_KEY), false)
     await assert.rejects(() => h.service.removeAccount('anthropic', rowId), /not found/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('releasing a provider with an active oauth account demotes the projection and removes the grant (W3)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    assert.ok(h.credentials.records.has(GRANT_KEY))
+    // Release drops every managed credential: the activation projection
+    // first (so the route resolves through the restored apiKeyEnv, never a
+    // managerless grant), then each row's plugin-scope grant payload.
+    await h.service.releaseProvider('anthropic')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(h.credentials.records.has(grantRef), false)
+    assert.equal(h.store.provider('anthropic'), undefined)
+    // The manager's own demotion echo must not read back as an out-of-band
+    // removal warning.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal((h.service as unknown as { warnings: string[] }).warnings.join('\n').includes('removed outside Keys Manager'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth demotion persists the cooldown even when the projection delete fails (W7)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    h.credentials.raw.failDeleteRecord = true
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'oauth', message: 'OAuth refresh failed for anthropic' })
+    // The oauth branch applied the cooldown AND marked the store dirty
+    // before returning: the deferred fallbackToKeys touch cannot be relied
+    // on (its deleteRecord is the thing that just failed), so the demotion
+    // branch touches on its own.
+    assert.ok(row.cooldownUntil > Date.now())
+    assert.equal((h.store as unknown as { dirty: boolean }).dirty, true)
+    await assert.rejects(() => h.service.fallbackToKeys('anthropic'), /credential store locked/)
+    // The cooldown is durable from the markFailure touch alone.
+    await h.store.flush()
+    const saved = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as { providers: Record<string, { keys: Array<{ id: string; cooldownUntil: number }> }> }
+    const savedRow = saved.providers['anthropic']!.keys.find(key => key.id === rowId)!
+    assert.ok(savedRow.cooldownUntil > Date.now() - 60_000)
   } finally {
     await h.close()
   }
