@@ -7,8 +7,6 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Docs: [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md) — Documentation in Chinese: [开发](docs/development.zh-CN.md) · [发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md)
-
 A DeepSeek Harness plugin that turns one provider API key into a managed pool.
 It extends the Models page rather than replacing it: providers, models, and the
 model picker stay where they are; only the API-key source moves behind the
@@ -52,6 +50,14 @@ cd dsh-keys-manager
 pnpm i
 dsh plugin --profile web link .
 ```
+
+Only the published-package path avoids a local build: `dsh plugin --profile web add dsh-keys-manager` installs the npm
+tarball as-is — package lifecycle scripts (`prepare` / `prepack`) do not run
+for registry installs, and the tarball already ships the built `lib/` and
+the client bundle. The local `dsh plugin --profile web link .` path is
+different — installing a local directory runs `prepare` during `pnpm i`,
+which builds `lib/` and the client bundle, so the clone flow above needs no
+manual build step.
 
 Refresh the Web page after installing so the browser half is fetched.
 
@@ -156,7 +162,9 @@ in the roadmap issue.
 | [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
 
 Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
-files in `docs/`. Current design boundaries at a glance:
+files in `docs/` — [开发](docs/development.zh-CN.md) ·
+[发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md).
+Current design boundaries at a glance:
 [Known limits](docs/known-limits.md).
 
 ## License
