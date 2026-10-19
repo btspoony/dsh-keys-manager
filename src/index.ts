@@ -35,6 +35,9 @@ import {
   validateKeyPatch,
 } from './core.js'
 import type {
+  AccountAttemptNotice,
+  AccountAttemptPrompt,
+  AccountAttemptView,
   ExtraProvider,
   KeyRecord,
   KeyView,
@@ -109,44 +112,14 @@ function isOAuthGrantPayload(value: unknown): value is OAuthGrantPayload {
     && typeof source.access === 'string'
 }
 
-/** Serializable notice captured on a login attempt. */
-interface LoginNoticeView {
-  message: string
-  url?: string
-  code?: string
-}
-
-/** Serializable prompt parked on a login attempt. */
-interface LoginPromptView {
-  kind: 'text' | 'secret' | 'select'
-  message: string
-  placeholder?: string
-  options?: ReadonlyArray<{ id: string; label: string; description?: string }>
-}
-
-/** Serializable login-attempt state for T3 surfaces. */
-export interface LoginAttemptView {
-  id: string
-  provider: string
-  alias?: string
-  status: 'pending' | 'prompt' | 'ready' | 'failed' | 'cancelled'
-  notices: LoginNoticeView[]
-  prompt?: LoginPromptView
-  error?: string
-  /** Pool member id of the account row a successful login produced. */
-  accountId?: string
-  createdAt: number
-  updatedAt: number
-}
-
 /** Internal attempt record; the controller and prompt resolvers stay host-side. */
 interface LoginAttempt {
   id: string
   provider: string
   alias?: string
-  status: LoginAttemptView['status']
-  notices: LoginNoticeView[]
-  prompt?: LoginPromptView
+  status: AccountAttemptView['status']
+  notices: AccountAttemptNotice[]
+  prompt?: AccountAttemptPrompt
   error?: string
   accountId?: string
   createdAt: number
@@ -158,7 +131,7 @@ interface LoginAttempt {
 }
 
 /** Copy a seam prompt into its serializable view (the AbortSignal stays out). */
-function promptView(prompt: { kind?: string; message: string; placeholder?: string; options?: unknown }): LoginPromptView {
+function promptView(prompt: { kind?: string; message: string; placeholder?: string; options?: unknown }): AccountAttemptPrompt {
   const options = Array.isArray(prompt.options)
     ? prompt.options
       .filter((entry): entry is { id: string; label: string; description?: string } =>
@@ -176,7 +149,7 @@ function promptView(prompt: { kind?: string; message: string; placeholder?: stri
 }
 
 /** Copy a seam notice into its serializable view. */
-function noticeView(notice: { message: string; url?: string; code?: string }): LoginNoticeView {
+function noticeView(notice: { message: string; url?: string; code?: string }): AccountAttemptNotice {
   return {
     message: notice.message,
     ...(notice.url === undefined ? {} : { url: notice.url }),
@@ -185,7 +158,7 @@ function noticeView(notice: { message: string; url?: string; code?: string }): L
 }
 
 /** Strip the host-side handles from one attempt. */
-function attemptView(attempt: LoginAttempt): LoginAttemptView {
+function attemptView(attempt: LoginAttempt): AccountAttemptView {
   return {
     id: attempt.id,
     provider: attempt.provider,
@@ -695,7 +668,7 @@ export class KeysManagerService {
    * ready | failed | cancelled`, and every transition is observable through
    * {@link getAccountAttempt} / {@link listAccountAttempts}.
    */
-  async beginAccountLogin(provider: string, alias?: string): Promise<LoginAttemptView> {
+  async beginAccountLogin(provider: string, alias?: string): Promise<AccountAttemptView> {
     if (typeof provider !== 'string' || provider.length === 0) throw new TypeError('provider is required')
     const flow = this.oauthFlowFor(provider)
     if (flow === undefined) throw new Error(`Provider "${provider}" offers no OAuth sign-in flow`)
@@ -777,18 +750,18 @@ export class KeysManagerService {
   }
 
   /** One attempt's serializable view, or undefined when unknown. */
-  getAccountAttempt(attemptId: string): LoginAttemptView | undefined {
+  getAccountAttempt(attemptId: string): AccountAttemptView | undefined {
     const attempt = this.loginAttempts.get(attemptId)
     return attempt === undefined ? undefined : attemptView(attempt)
   }
 
   /** Remote: poll one attempt's serializable state (T3 dialog channel). */
-  accountAttempt(attemptId: string): LoginAttemptView | undefined {
+  accountAttempt(attemptId: string): AccountAttemptView | undefined {
     return this.getAccountAttempt(attemptId)
   }
 
   /** Every attempt, newest first, for T3 surfaces. */
-  listAccountAttempts(): LoginAttemptView[] {
+  listAccountAttempts(): AccountAttemptView[] {
     return [...this.loginAttempts.values()].sort((a, b) => b.createdAt - a.createdAt).map(attemptView)
   }
 

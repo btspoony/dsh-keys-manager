@@ -1,8 +1,19 @@
 /** Browser-half domain and service contracts for the Keys Manager. */
 import type * as React from 'react'
-import type { KeyStatus, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView } from '../domain'
+import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView } from '../domain'
 
-export type { KeyStatus, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView }
+export type {
+  AccountAttemptNotice,
+  AccountAttemptPrompt,
+  AccountAttemptView,
+  KeyStatus,
+  KeyView,
+  ManagerSettings,
+  OAuthAccountView,
+  ProviderStatus,
+  ProviderView,
+  StateView,
+}
 
 /** Locale dictionaries registered under the plugin namespace. */
 export interface LocaleDicts {
@@ -22,40 +33,6 @@ export type RpcResult =
 export type ActionOutcome =
   | { ok: true; value: StateView }
   | { ok: false; error: string }
-
-/** Serializable notice captured on a sign-in attempt (mirror of the host's LoginNoticeView). */
-export interface AccountAttemptNotice {
-  message: string
-  url?: string
-  code?: string
-}
-
-/** Serializable prompt parked on a sign-in attempt (mirror of LoginPromptView). */
-export interface AccountAttemptPrompt {
-  kind: 'text' | 'secret' | 'select'
-  message: string
-  placeholder?: string
-  options?: ReadonlyArray<{ id: string; label: string; description?: string }>
-}
-
-/**
- * Serializable state of one interactive OAuth sign-in attempt (mirror of the
- * host's LoginAttemptView). Secrets never appear: prompts and notices carry
- * messages, URLs, and codes only.
- */
-export interface AccountAttemptView {
-  id: string
-  provider: string
-  alias?: string
-  status: 'pending' | 'prompt' | 'ready' | 'failed' | 'cancelled'
-  notices: AccountAttemptNotice[]
-  prompt?: AccountAttemptPrompt
-  error?: string
-  /** Pool member id of the account row a successful login produced. */
-  accountId?: string
-  createdAt: number
-  updatedAt: number
-}
 
 /** Result of an attempt-scoped RPC; `null` means the attempt id is unknown. */
 export type AccountAttemptResult =

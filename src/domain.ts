@@ -202,3 +202,37 @@ export interface ExtraProvider {
   env: string[]
   models: ModelRecord[]
 }
+
+/** Serializable notice captured on an interactive sign-in attempt. */
+export interface AccountAttemptNotice {
+  message: string
+  url?: string
+  code?: string
+}
+
+/** Serializable prompt parked on an interactive sign-in attempt. */
+export interface AccountAttemptPrompt {
+  kind: 'text' | 'secret' | 'select'
+  message: string
+  placeholder?: string
+  options?: ReadonlyArray<{ id: string; label: string; description?: string }>
+}
+
+/**
+ * Serializable state of one interactive OAuth sign-in attempt, shared by the
+ * Host service and the Web Client. Secrets never appear: prompts and notices
+ * carry messages, URLs, and codes only.
+ */
+export interface AccountAttemptView {
+  id: string
+  provider: string
+  alias?: string
+  status: 'pending' | 'prompt' | 'ready' | 'failed' | 'cancelled'
+  notices: AccountAttemptNotice[]
+  prompt?: AccountAttemptPrompt
+  error?: string
+  /** Pool member id of the account row a successful login produced. */
+  accountId?: string
+  createdAt: number
+  updatedAt: number
+}
