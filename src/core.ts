@@ -277,14 +277,18 @@ export function accountRef(provider: string, hash: string): string {
 }
 
 /**
- * Rank one provider's candidates for the next request.
+ * Rank one provider's candidates: OAuth accounts ahead of API keys, each
+ * group keeping the provider's cursor-anchored ring order. Pure: the cursor
+ * is not advanced.
  *
- * Selectable OAuth accounts rank ahead of API keys, and each group keeps the
- * provider's cursor-anchored ring order: the loop starts at
- * `normalizeCursor(provider.cursor, keys.length)` and wraps, exactly like the
- * round-robin pickers. Cooled-down, paused, and value-missing candidates are
- * skipped as `isSelectable` decides. Pure: the cursor is not advanced — the
- * caller consumes the ranking through the usual pickers.
+ * RESERVED for future per-account ordering — no production call site today.
+ * Increment-1 arbitration is NOT this ranking: the live selection path is
+ * projection presence + probe fail-skip over a kind-agnostic ring. The
+ * round-robin pickers walk every candidate in array order regardless of
+ * kind, and an OAuth row leaves that ring only when the account probe fails
+ * on its non-credential-grammar ref (probeKey → failed, not missing).
+ * Wiring this account-first ranking into the selection path is roadmap
+ * work, deliberately out of increment-1 scope.
  */
 export function cascadeOrder(provider: ProviderRecord, now: number): KeyRecord[] {
   const keys = Array.isArray(provider.keys) ? provider.keys : []
