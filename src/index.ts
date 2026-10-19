@@ -850,7 +850,19 @@ export class KeysManagerService {
     if (flow === undefined) throw new Error(`Provider "${provider}" offers no OAuth sign-in flow`)
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed; adopt it before signing in`)
-    if (this.loginsInFlight.has(provider)) throw new Error(`A sign-in for "${provider}" is already in progress`)
+    if (this.loginsInFlight.has(provider)) {
+      // F3 (I-000082): a pending attempt IS the flow — reopening the dialog
+      // resumes it (same id, same notices, same parked prompt) instead of
+      // minting a competing second flow the seam's single-flight slot would
+      // have to refuse. Terminal attempts never reach here: finishing an
+      // attempt clears its provider slot, so the next begin starts fresh.
+      const attemptId = this.loginsInFlight.get(provider)
+      const inFlight = attemptId === undefined ? undefined : this.loginAttempts.get(attemptId)
+      if (inFlight !== undefined && inFlight.settledAt === undefined) return attemptView(inFlight)
+      // Stale slot (should not happen — finishing always clears it): drop it
+      // and start a fresh flow rather than wedging the provider.
+      this.loginsInFlight.delete(provider)
+    }
     // Validate the re-authentication target up front (round-3 finding 6):
     // the harvest binds the new grant to this row, so it must already name
     // a live OAuth account of this provider.

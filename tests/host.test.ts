@@ -2838,6 +2838,47 @@ test('beginAccountLogin drives the seam with the pinned flow key and bridges the
   }
 })
 
+// F3 (I-000082): reopening the sign-in dialog must resume the provider's
+// in-flight attempt instead of minting a competing second flow; terminal
+// attempts are never resumed.
+
+test('a second begin for a pending attempt resumes the same flow (I-000082)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const first = await h.service.beginAccountLogin('anthropic')
+    // Reopening the dialog: same provider, same in-flight attempt.
+    const second = await h.service.beginAccountLogin('anthropic')
+    assert.equal(second.id, first.id)
+    // The resume started no competing seam flow and no second attempt.
+    assert.equal(h.authorization.beganRequests.length, 1)
+    assert.equal(h.service.listAccountAttempts().length, 1)
+    // Both handles observe the one flow's terminal.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(first.id)!.status, 'ready'))
+    assert.equal(h.service.getAccountAttempt(second.id)!.status, 'ready')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a terminal attempt is not resumed — a new begin starts a fresh flow (I-000082)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const first = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'cancelled')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(first.id)!.status, 'cancelled'))
+    const second = await h.service.beginAccountLogin('anthropic')
+    assert.notEqual(second.id, first.id)
+    assert.equal(second.status, 'pending')
+    assert.equal(h.service.listAccountAttempts().filter(entry => entry.status === 'pending').length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a settled login harvests the stored grant into an oauth account row', async () => {
   const h = await harnessWithManagedAnthropic()
   try {
@@ -3010,11 +3051,22 @@ test('a rejected state flush fails the settled login instead of publishing ready
   }
 })
 
-test('concurrent logins for one provider are refused until the attempt settles', async () => {
+test('concurrent logins for one provider resume the in-flight attempt instead of competing (I-000082)', async () => {
   const h = await harnessWithManagedAnthropic()
   try {
-    await h.service.beginAccountLogin('anthropic')
-    await assert.rejects(() => h.service.beginAccountLogin('anthropic'), /already/)
+    const first = await h.service.beginAccountLogin('anthropic')
+    // The single-flight slot is not refused anymore: a repeat begin resumes
+    // the pending attempt (same id, no second seam flow). I-000082.
+    const resumed = await h.service.beginAccountLogin('anthropic')
+    assert.equal(resumed.id, first.id)
+    assert.equal(h.authorization.beganRequests.length, 1)
+    // Once the attempt settles the slot frees and a fresh begin starts a
+    // new flow.
+    h.emitEvent('authorization/settled', GRANT_KEY, 'cancelled')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(first.id)!.status, 'cancelled'))
+    const next = await h.service.beginAccountLogin('anthropic')
+    assert.notEqual(next.id, first.id)
+    assert.equal(h.authorization.beganRequests.length, 2)
   } finally {
     await h.close()
   }
