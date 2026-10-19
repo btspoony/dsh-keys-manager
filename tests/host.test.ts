@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { ProviderView, StateView } from '../src/domain'
-import { KeysManagerService } from '../src/index'
+import { apply, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
 
 const ORIGINAL = Symbol.for('cordis.original')
@@ -269,6 +269,100 @@ function streamFailure(
 async function consume(iterable: AsyncIterable<unknown>): Promise<void> {
   for await (const _chunk of iterable) {
     // consume
+  }
+}
+
+interface PluginHarness {
+  dir: string
+  credentials: { raw: any; refs: Map<string, string> }
+  settings: any
+  llm: any
+  service: KeysManagerService
+  /** Run the installed waterfall for one event; `terminal` is the host fallback. */
+  emit(name: string, payload: unknown, terminal: () => unknown): unknown
+  close(): Promise<void>
+}
+
+/**
+ * Install the real plugin through `apply()`, so waterfall regressions exercise
+ * the same listeners the host installs instead of private service helpers.
+ * State lives under a temp `DSH_HOME`; `close()` disposes effects in reverse
+ * order and restores the environment.
+ */
+async function pluginHarness(): Promise<PluginHarness> {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-plugin-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = dir
+  const credentials = fakeCredentials({
+    ZAI_CODING_CN_API_KEY: 'sk-existing-zai',
+    DEEPSEEK_API_KEY: 'sk-existing-deepseek',
+  })
+  const settings = fakeSettings()
+  const llm = fakeLlm()
+  const cleanups: Array<() => unknown> = []
+  const chains = new Map<string, Array<(payload: any, next: () => any) => any>>()
+  let service: KeysManagerService | undefined
+  const ctx: any = {
+    llm,
+    credentials: credentials.raw,
+    settings,
+    typert: { register: () => () => {} },
+    logger: { warn() {}, info() {} },
+    get(name: string) {
+      if (name === 'credentials') return credentials.raw
+      if (name === 'settings') return settings
+      if (name === 'llm') return llm
+      return undefined
+    },
+    effect(fn: () => unknown) {
+      const cleanup = fn()
+      if (typeof cleanup === 'function') cleanups.push(cleanup as () => unknown)
+      return cleanup
+    },
+    inject(_deps: string[], fn: (child: unknown) => unknown) {
+      const disposer = fn(ctx)
+      if (typeof disposer === 'function') cleanups.push(disposer as () => unknown)
+    },
+    on(name: string, listener: (payload: any, next: () => any) => any, options?: boolean | { prepend?: boolean }) {
+      const chain = chains.get(name) ?? []
+      const prepend = options === true || (typeof options === 'object' && options !== null && options.prepend === true)
+      if (prepend) chain.unshift(listener)
+      else chain.push(listener)
+      chains.set(name, chain)
+      return () => {
+        const list = chains.get(name)
+        const index = list?.indexOf(listener) ?? -1
+        if (index >= 0) list!.splice(index, 1)
+      }
+    },
+    provide(name: string, value: unknown) {
+      if (name === 'keysManager') service = value as KeysManagerService
+      return () => {}
+    },
+  }
+  apply(ctx as HostContext)
+  if (service === undefined) throw new Error('plugin did not provide the keysManager service')
+  return {
+    dir,
+    credentials,
+    settings,
+    llm,
+    service,
+    emit(name: string, payload: unknown, terminal: () => unknown): unknown {
+      const chain = [...(chains.get(name) ?? [])]
+      const call = (index: number): unknown =>
+        index >= chain.length ? terminal() : chain[index](payload, () => call(index + 1))
+      return call(0)
+    },
+    async close() {
+      for (const cleanup of cleanups.reverse()) {
+        const result = cleanup()
+        if (result instanceof Promise) await result
+      }
+      if (previousHome === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = previousHome
+      await rm(dir, { recursive: true, force: true })
+    },
   }
 }
 
@@ -1961,7 +2055,7 @@ test('a non-sticky three-key failover retry uses the verified alternate', async 
   }
 })
 
-test('a new step clears a retry pin abandoned by cancellation', async () => {
+test('a new step preserves another in-flight step retry pin', async () => {
   const h = await harness()
   try {
     await h.service.adoptProvider('zai-coding-cn')
@@ -1985,9 +2079,11 @@ test('a new step clears a retry pin abandoned by cancellation', async () => {
       agent: { session: { id: 'session-abandon' } },
     } as unknown as RequestErrorPayload
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    assert.equal((h.service as any).retryBindings.size, 1)
     h.service.noteRequestStep({ agent: { session: { id: 'session-abandon' } }, turn: 2, step: 1 }, 'zai-coding-cn')
-    assert.equal((h.service as any).retryBindings.size, 0)
+    // The pin recorded for turn 1 must still be consumable by its own step
+    // after a newer step has been noted.
+    const pinned = await h.service.selectKey('zai-coding-cn', 'session-abandon', { turn: 1, step: 1 })
+    assert.equal(pinned.key!.id, first.id)
   } finally {
     await h.close()
   }
@@ -1997,11 +2093,237 @@ test('a new step clears a retry pin abandoned by cancellation', async () => {
 test('request steps are keyed per provider', async () => {
   const h = await harness()
   try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.adoptProvider('anthropic')
     h.service.noteRequestStep({ agent: { session: { id: 'session-provider' } }, turn: 1, step: 1 }, 'zai-coding-cn')
     h.service.noteRequestStep({ agent: { session: { id: 'session-provider' } }, turn: 2, step: 1 }, 'anthropic')
     assert.equal((h.service as any).requestSteps.get('session-provider\u0000zai-coding-cn').turn, 1)
     assert.equal((h.service as any).requestSteps.get('session-provider\u0000anthropic').turn, 2)
   } finally {
     await h.close()
+  }
+})
+
+
+test('a purpose-scoped stream leaves the agent step pin untouched', async () => {
+  const h = await pluginHarness()
+  try {
+    const service = h.service
+    await service.adoptProvider('zai-coding-cn')
+    await service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = service.store.provider('zai-coding-cn')!
+    provider.cursor = 0
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    const seen: Array<string | undefined> = []
+    const request = (): unknown =>
+      h.emit('agent/request', { agent: { session: { id: 'session-bypass' } }, turn: 1, step: 1 }, () => ({ provider: 'zai-coding-cn' }))
+    const stream = (chunks: unknown[], purpose?: string): Promise<void> => consume(h.emit('llm/stream', {
+      provider: 'zai-coding-cn',
+      model: 'model',
+      sessionId: 'session-bypass',
+      ...(purpose === undefined ? {} : { purpose }),
+      messages: [],
+    }, async function* () {
+      seen.push((await h.credentials.raw.resolve(provider.brokerRef))?.value)
+      yield* chunks
+    }) as AsyncIterable<unknown>)
+
+    // A failing step pins the first key for its retry.
+    await request()
+    await stream([{ type: 'finish', reason: { kind: 'error', failure } }])
+    assert.deepEqual(await h.emit('agent/request-error', {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-bypass' } },
+    }, async () => undefined), { kind: 'retry' })
+
+    // A compaction bypass on the same session and provider must neither
+    // consume nor clear the pending pin.
+    await stream([{ type: 'finish', reason: { kind: 'stop' } }], 'compaction')
+
+    // The retry stream still consumes the untouched pin.
+    await request()
+    provider.cursor = 1 // without the pin, round-robin would now pick the second key
+    await stream([{ type: 'finish', reason: { kind: 'stop' } }])
+    assert.deepEqual(seen, ['sk-existing-zai', 'sk-second', 'sk-existing-zai'])
+  } finally {
+    await h.close()
+  }
+})
+
+test('unmanaged provider requests do not create step records', async () => {
+  const h = await pluginHarness()
+  try {
+    const service = h.service
+    await service.adoptProvider('zai-coding-cn')
+    await service.setSettings({ stickySession: false })
+    const managed = service.store.provider('zai-coding-cn')!
+    // A step is noted for an unmanaged provider route, but the plugin keeps
+    // no record: the stream passes through unwrapped and the broker supplies
+    // no credential for it.
+    await h.emit('agent/request', { agent: { session: { id: 'session-unmanaged' } }, turn: 1, step: 1 }, () => ({ provider: 'openai-codex' }))
+    let resolved: { value?: string } | undefined
+    const passthrough = h.emit('llm/stream', {
+      provider: 'openai-codex',
+      model: 'model',
+      sessionId: 'session-unmanaged',
+      messages: [],
+    }, async function* () {
+      resolved = await h.credentials.raw.resolve('OPENAI_CODEX_API_KEY')
+      yield { type: 'text' }
+    }) as AsyncIterable<unknown>
+    await consume(passthrough)
+    assert.equal(resolved, undefined)
+    // Its request errors are delegated untouched: no retry is requested and
+    // no pin is recorded.
+    const next = vi.fn(async () => undefined)
+    const action = await h.emit('agent/request-error', {
+      provider: 'openai-codex',
+      turn: 1,
+      step: 1,
+      failure: { code: 'RATE_LIMIT', message: 'busy' },
+      signal: { aborted: false },
+      agent: { session: { id: 'session-unmanaged' } },
+    }, next)
+    assert.equal(action, undefined)
+    assert.equal(next.mock.calls.length, 1)
+    // The same session's managed provider still resolves through the broker.
+    await h.emit('agent/request', { agent: { session: { id: 'session-unmanaged' } }, turn: 1, step: 1 }, () => ({ provider: 'zai-coding-cn' }))
+    let seen: { value?: string } | undefined
+    const managedStream = h.emit('llm/stream', {
+      provider: 'zai-coding-cn',
+      model: 'model',
+      sessionId: 'session-unmanaged',
+      messages: [],
+    }, async function* () {
+      seen = await h.credentials.raw.resolve(managed.brokerRef)
+      yield { type: 'text' }
+    }) as AsyncIterable<unknown>
+    await consume(managedStream)
+    assert.equal(seen!.value, 'sk-existing-zai')
+  } finally {
+    await h.close()
+  }
+})
+
+test('transient pruning drops expired request steps without UI traffic', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await h.service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    provider.cursor = 1
+    h.service.noteRequestStep({ agent: { session: { id: 'session-expire' } }, turn: 1, step: 1 }, 'zai-coding-cn')
+    ;(h.service as any).pinRetry('zai-coding-cn', 'session-expire', 1, 1, first.id)
+
+    // The 60-second pin window is shorter than the 1-hour request-step
+    // window: after 90 seconds the pin is gone while the step record stays.
+    h.service.pruneTransient(Date.now() + 90 * 1000)
+    const unpinned = await h.service.selectKey('zai-coding-cn', 'session-expire', { turn: 1, step: 1 })
+    assert.equal(unpinned.key!.id, second.id)
+
+    // After 2 hours the step record is gone as well: a waterfall stream no
+    // longer carries step context, so a fresh pin survives for an explicit
+    // step-scoped selection instead of being consumed by the next stream.
+    h.service.pruneTransient(Date.now() + 2 * 60 * 60 * 1000)
+    ;(h.service as any).pinRetry('zai-coding-cn', 'session-expire', 2, 1, first.id)
+    provider.cursor = 1
+    let seen: { value?: string } | undefined
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-expire', messages: [] },
+      async function* () {
+        seen = await h.credentials.raw.resolve(provider.brokerRef)
+        yield { type: 'text' }
+      } as any,
+    )
+    await consume(iterable)
+    assert.equal(seen!.value, 'sk-second')
+    const explicit = await h.service.selectKey('zai-coding-cn', 'session-expire', { turn: 2, step: 1 })
+    assert.equal(explicit.key!.id, first.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a retry waterfall consumes exactly its own pin and lands the switched key', async () => {
+  const h = await pluginHarness()
+  try {
+    const service = h.service
+    await service.adoptProvider('zai-coding-cn')
+    await service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = service.store.provider('zai-coding-cn')!
+    provider.cursor = 1 // plain round-robin starts at the second key
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    const seen: Array<string | undefined> = []
+    const request = (): unknown =>
+      h.emit('agent/request', { agent: { session: { id: 'session-fallback' } }, turn: 1, step: 1 }, () => ({ provider: 'zai-coding-cn' }))
+    const stream = (chunks: unknown[]): Promise<void> => consume(h.emit('llm/stream', {
+      provider: 'zai-coding-cn',
+      model: 'model',
+      sessionId: 'session-fallback',
+      messages: [],
+    }, async function* () {
+      seen.push((await h.credentials.raw.resolve(provider.brokerRef))?.value)
+      yield* chunks
+    }) as AsyncIterable<unknown>)
+    const reportFailure = (): unknown => h.emit('agent/request-error', {
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-fallback' } },
+    }, async () => undefined)
+
+    // First attempt: round-robin picks the second key, which fails once.
+    await request()
+    await stream([{ type: 'finish', reason: { kind: 'error', failure } }])
+    assert.deepEqual(await reportFailure(), { kind: 'retry' })
+    // The retry stream must land on the pinned key, not drift with the cursor.
+    await request()
+    await stream([{ type: 'finish', reason: { kind: 'error', failure } }])
+    assert.deepEqual(await reportFailure(), { kind: 'retry' })
+    // Retry budget spent: the listener switches, pins the first key, and the
+    // retry stream consumes exactly that pin before finishing cleanly.
+    await request()
+    await stream([{ type: 'finish', reason: { kind: 'stop' } }])
+    assert.deepEqual(seen, ['sk-second', 'sk-second', 'sk-existing-zai'])
+  } finally {
+    await h.close()
+  }
+})
+
+test('a retry pin expires after 60 seconds', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    const h = await harness()
+    try {
+      await h.service.adoptProvider('zai-coding-cn')
+      await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+      await h.service.setSettings({ stickySession: false, retryCount: 1 })
+      const provider = h.store.provider('zai-coding-cn')!
+      const [first, second] = provider.keys
+      provider.cursor = 1
+      ;(h.service as any).pinRetry('zai-coding-cn', 'session-pin-ttl', 1, 1, first.id)
+      const within = await h.service.selectKey('zai-coding-cn', 'session-pin-ttl', { turn: 1, step: 1 })
+      assert.equal(within.key!.id, first.id)
+      // Re-pin, then age past the 60-second window: the pin is ignored and
+      // the plain round-robin answer comes back instead.
+      ;(h.service as any).pinRetry('zai-coding-cn', 'session-pin-ttl', 2, 1, first.id)
+      vi.setSystemTime(Date.now() + 60_001)
+      const expired = await h.service.selectKey('zai-coding-cn', 'session-pin-ttl', { turn: 2, step: 1 })
+      assert.equal(expired.key!.id, second.id)
+    } finally {
+      await h.close()
+    }
+  } finally {
+    vi.useRealTimers()
   }
 })

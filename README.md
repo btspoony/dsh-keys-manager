@@ -222,3 +222,11 @@ a fine-grained PAT secret instead.
   confirmation text says so.
 - Cooldown counters are local to this Harness home; they are not shared
   between hosts.
+- Retry identity is ambient: retry pins and request steps are recorded per
+  session and provider, not per HTTP request. When several steps of the same
+  session and provider run concurrently, a retry stream may fail to consume
+  its own pin, or a finishing step may clear another step's pin. A direct
+  stream without a `purpose` may also consume one pending retry pin while its
+  window is open. The pin window is 60 seconds, which bounds this exposure
+  but does not eliminate it; concurrent multi-step retry behavior remains
+  best-effort.
