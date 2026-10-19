@@ -3461,6 +3461,112 @@ test('a native replacement landing inside the harvest compensation window keeps 
   }
 })
 
+/**
+ * F2 (step-1 removal window): land a native grant AFTER the decide's locked
+ * compare resolves and BEFORE the delete — the exact gap the fix narrows.
+ * On pre-fix code the delete runs unconditionally after the decide and
+ * destroys the native grant; on fixed code the pre-delete re-read sees the
+ * native payload and the delete is skipped.
+ */
+function landNativeAfterFirstModify(
+  h: Harness,
+  key: string,
+  refresh: string,
+): { landed: () => boolean } {
+  let landed = false
+  let modifies = 0
+  const land = (): void => {
+    if (landed) return
+    landed = true
+    h.credentials.records.set(key, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh, access: 'at-native-value', expires: 1_800_000_000_000 },
+    })
+  }
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  raw.modifyRecord = async (k: string, mutate: (current: any) => Promise<any>) => {
+    const result = await realModify(k, mutate)
+    if (k === key) {
+      modifies += 1
+      if (modifies === 1) land()
+    }
+    return result
+  }
+  return { landed: () => landed }
+}
+
+test('a native grant landing between decide and delete survives the demotion (step-1)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const native = landNativeAfterFirstModify(h, GRANT_KEY, 'rt-native-value')
+    await h.service.fallbackToKeys('anthropic')
+    // The decide matched this row's own payload, then the native sign-in's
+    // grant landed before the delete: the pre-delete re-read must skip the
+    // delete so the native record survives.
+    assert.ok(native.landed())
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    assert.equal((h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh, 'rt-native-value')
+  } finally {
+    await h.close()
+  }
+})
+
+test('without interleaving the demotion still deletes the projection (step-1 control)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.fallbackToKeys('anthropic')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a native grant landing between the compensation decide and delete survives (step-1)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    // Fill the pool so the harvest fails after reading the projection.
+    const record = h.store.provider('anthropic')!
+    while (record.keys.length < KEY_LIMIT) {
+      record.keys.push({
+        id: `k_fill_${record.keys.length}`,
+        alias: `filler ${record.keys.length}`,
+        ref: `FILLER_${record.keys.length}`,
+        kind: 'api-key',
+        enabled: true,
+        createdAt: Date.now(),
+        lastUsedAt: 0,
+        cooldownUntil: 0,
+        lastFailureAt: 0,
+        lastFailureCode: '',
+        failureLevel: 0,
+        consecutiveFailures: 0,
+        totalUses: 0,
+        totalFailures: 0,
+        valueMissing: false,
+        importedFrom: null,
+        oauth: null,
+      })
+    }
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const native = landNativeAfterFirstModify(h, GRANT_KEY, 'rt-native-value')
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    // The compensation's decide matched this login's refresh, then the
+    // native grant landed before the delete: the re-read skipped it and the
+    // native record survived.
+    assert.ok(native.landed())
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    assert.equal((h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh, 'rt-native-value')
+  } finally {
+    await h.close()
+  }
+})
+
 test('an oauth failure cools the account down and demotes the cascade to keys', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {

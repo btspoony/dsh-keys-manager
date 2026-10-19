@@ -1178,12 +1178,17 @@ export class KeysManagerService {
       // match (no delete-inside-modify primitive exists on the seam; see
       // decideAndDeleteProjection for the exact primitive).
       let owns = false
+      let decidedAgainst: string | undefined
       await records.modifyRecord(projectionKey, async current => {
         owns = current !== undefined && current.kind === 'grant'
           && isOAuthGrantPayload(current.payload) && current.payload.refresh === harvest.payload.refresh
+        // F2 pre-delete re-read snapshot, identical to the demotion path.
+        if (owns && current !== undefined) decidedAgainst = JSON.stringify(current.payload)
         return undefined
       })
-      if (owns) await records.deleteRecord(projectionKey)
+      if (owns && await this.projectionStillMatches(records, projectionKey, decidedAgainst)) {
+        await records.deleteRecord(projectionKey)
+      }
     } catch (error) {
       this.warn(`harvest compensation could not revert the projection for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -1436,12 +1441,13 @@ export class KeysManagerService {
    * return a replacement or `undefined` (leave untouched), and calling
    * `deleteRecord` inside the mutate would deadlock the provider's own
    * serialized operation queue (credentials-local `enqueue`). The closest
-   * equivalent — the exact primitive this method uses — is a decide-only
-   * modify (returns `undefined`, no write) followed immediately by
-   * `deleteRecord`; the decide therefore never acts on a value a native
-   * writer replaced before the lock, which is the window the previous
-   * separate read + delete left open. Only the sub-microtask gap between the
-   * modify returning and the delete's own queue entry remains, and a native
+   * equivalent — the exact primitives this method uses — are a decide-only
+   * modify (returns `undefined`, no write) and a second pre-delete re-read
+   * against the decided-against snapshot ({@link projectionStillMatches},
+   * F2 step-1 hardening): a native writer landing between the decide and
+   * the delete is therefore visible before the delete runs, and its grant
+   * survives. The residual window is the sub-microtask gap between the
+   * re-read releasing the lock and the delete's own queue entry; a native
    * writer landing there is the next writer's grant, which the ownership
    * oracle re-identifies on its `record-updated` echo.
    *
@@ -1458,23 +1464,61 @@ export class KeysManagerService {
     const accounts = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     let owns = false
+    let decidedAgainst: string | undefined
     await records.modifyRecord(projectionKey, async current => {
       owns = current !== undefined && current.kind === 'grant'
         && isOAuthGrantPayload(current.payload)
         && matchOwningAccount(provider, accounts, current.payload)?.id === row.id
+      // The decided-against payload snapshot (in-memory JSON, never logged
+      // or persisted): the pre-delete re-read below skips the removal when
+      // the live record no longer holds exactly this content.
+      if (owns && current !== undefined) decidedAgainst = JSON.stringify(current.payload)
       // Decide only: the removal goes through deleteRecord below, outside
       // the mutate (see the primitive note above).
       return undefined
     })
-    if (owns) {
-      // Mark BEFORE the delete: the deletion's echo handler reads this
-      // marker across its own awaited record re-read, whenever that
-      // continuation resumes. The TTL window — not scheduling order —
-      // decides how long the marker stays trustworthy.
-      this.intentionalProjectionRemovals.set(provider, Date.now())
-      await records.deleteRecord(projectionKey)
-    }
-    return owns
+    if (!owns) return false
+    // F2 (step-1 removal window): re-read the live record under the seam's
+    // per-key lock immediately before the delete and skip when a native
+    // grant landed between the decide and the delete. Residual window,
+    // documented honestly: the seam exposes no delete-inside-modify
+    // primitive (a mutate may only return a replacement or undefined, and
+    // deleteRecord inside the mutate would deadlock the provider's
+    // serialized operation queue), so a native writer landing between THIS
+    // re-read releasing the lock and the delete's own queue entry can still
+    // lose its grant. That writer is the next writer's grant, and the
+    // ownership oracle re-identifies it on the record-updated echo.
+    if (!await this.projectionStillMatches(records, projectionKey, decidedAgainst)) return false
+    // Mark BEFORE the delete: the deletion's echo handler reads this
+    // marker across its own awaited record re-read, whenever that
+    // continuation resumes. The TTL window — not scheduling order —
+    // decides how long the marker stays trustworthy.
+    this.intentionalProjectionRemovals.set(provider, Date.now())
+    await records.deleteRecord(projectionKey)
+    return true
+  }
+
+  /**
+   * F2 pre-delete re-read, shared by the demotion and harvest-compensation
+   * decide-then-delete pairs: `true` while the live projection still holds
+   * exactly the decided-against payload. Runs inside `modifyRecord`'s
+   * per-key lock (the same primitive as the decide), so a native writer
+   * that already replaced the record is visible here and the delete is
+   * skipped instead of destroying the foreign grant.
+   */
+  private async projectionStillMatches(
+    records: CredentialRecordsLike,
+    projectionKey: string,
+    decidedAgainst: string | undefined,
+  ): Promise<boolean> {
+    if (decidedAgainst === undefined) return false
+    let liveMatches = false
+    await records.modifyRecord(projectionKey, async current => {
+      liveMatches = current !== undefined && current.kind === 'grant'
+        && JSON.stringify(current.payload) === decidedAgainst
+      return undefined
+    })
+    return liveMatches
   }
 
   /**
