@@ -1025,6 +1025,40 @@ describe('account ui', () => {
     expect(await buildCopy(false)).toContain('deleteAccountBodyNoKeys')
   })
 
+  test('the account re-authentication entry carries the target row id', async () => {
+    // Round-3 finding 6, client half: Re-authenticate passes the row id so
+    // the host can bind the fresh grant to that row.
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    let loginArgs: unknown
+    const harness = makeContext({ ok: true, value: state })
+    const originalCall = harness.ctx.connection.rpc.call.bind(harness.ctx.connection.rpc)
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        loginArgs = payload
+        return { ok: true, value: makePendingAttemptView() }
+      }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePendingAttemptView() }
+      return originalCall(channel, endpoint, payload)
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const dots = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(dots[0]!.props!.onClick as () => void)()
+    view.render()
+    const reauth = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.text.includes('accountReauth'))
+    expect(reauth).toHaveLength(1)
+    ;(reauth[0]!.props!.onClick as () => void)()
+    await view.flush()
+    expect(loginArgs).toEqual({ args: { provider: 'zai-coding-cn', alias: 'Work account', targetAccountId: 'k_oauth9' } })
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
   test('login dialog walks prompt → answer → ready and closes after a state refresh', async () => {
     const state = makeState()
     state.providers[0] = makeOauthProvider()

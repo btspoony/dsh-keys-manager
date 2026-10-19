@@ -3320,6 +3320,34 @@ function interleaveNativeSignIn(
   return { landed: () => landed }
 }
 
+test('a re-authentication with an explicit target row re-binds a metadata-poor rotation in place', async () => {
+  // Round-3 finding 6: a rotated token carrying no identity metadata
+  // matches nothing; the validated target row receives the grant instead of
+  // the harvest minting a duplicate account.
+  const { h, rowId, grantRef: originalRef } = await harnessWithSeededAccount({ refresh: 'rt-original-token' })
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-rotated-token', access: 'at-rotated', accountId: undefined, email: undefined }))
+    const view = await h.service.beginAccountLogin('anthropic', undefined, rowId)
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    // The SAME row was updated — no duplicate.
+    assert.equal(h.service.getAccountAttempt(view.id)!.accountId, rowId)
+    const rows = h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]!.id, rowId)
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-rotated-token').digest('hex').slice(0, 12))
+    assert.equal(rows[0]!.oauth!.grantRef, rotatedRef)
+    assert.ok(h.credentials.records.has(rotatedRef))
+    // The superseded generation's plugin-scope record is gone.
+    assert.equal(h.credentials.records.has(originalRef), false)
+    // The target row is unknown / not an account: refused up front.
+    await assert.rejects(() => h.service.beginAccountLogin('anthropic', undefined, 'k_missing'), /not found/)
+  } finally {
+    await h.close()
+  }
+})
+
 test('re-authenticating a demoted account clears the missing flag', async () => {
   // Round-3 finding 5: a demotion marks the row value-missing; a successful
   // re-authentication must recover it — no missing pill, included in the

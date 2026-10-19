@@ -64,8 +64,12 @@ export interface ClientStore {
   subscribe(listener: () => void): () => void
   load(options?: { keepError?: boolean }): Promise<void>
   call(method: string, args: Record<string, unknown>): Promise<ActionOutcome>
-  /** Start an interactive OAuth sign-in; resolves with the attempt view. */
-  beginAccountLogin(provider: string, alias?: string): Promise<AccountAttemptResult>
+  /**
+   * Start an interactive OAuth sign-in; resolves with the attempt view.
+   * `targetAccountId` (round-3 finding 6) names the row a re-authentication
+   * replaces, so a metadata-poor rotation re-binds in place.
+   */
+  beginAccountLogin(provider: string, alias?: string, targetAccountId?: string): Promise<AccountAttemptResult>
   /** Resolve the attempt's parked prompt with the human's answer. */
   answerAccountPrompt(attemptId: string, value: string): Promise<AckResult>
   /** Poll one attempt's state; read-only, never sets the busy flag. */

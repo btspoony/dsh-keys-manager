@@ -131,6 +131,13 @@ interface LoginAttempt {
   id: string
   provider: string
   alias?: string
+  /**
+   * The pool row a re-authentication replaces (round-3 finding 6): the
+   * harvest binds the committed grant to this validated row even when the
+   * new payload matches nothing (rotated token, no identity metadata).
+   * Host-side routing information; never surfaced on the attempt view.
+   */
+  targetAccountId?: string
   status: AccountAttemptView['status']
   notices: AccountAttemptNotice[]
   prompt?: AccountAttemptPrompt
@@ -235,7 +242,10 @@ const INVOCATIONS: InvocationDescriptor[] = [
   // accountAttempt for attempt-state transitions: the host forwards only a
   // fixed credentials-event allowlist to the browser, so the plugin has no
   // own event channel a client could subscribe to.
-  endpoint('beginAccountLogin', ['provider', 'alias']),
+  // targetAccountId (round-3 finding 6): the row a re-authentication
+  // replaces, so a metadata-poor rotation re-binds in place instead of
+  // duplicating the account.
+  endpoint('beginAccountLogin', ['provider', 'alias', 'targetAccountId']),
   endpoint('answerAccountPrompt', ['attemptId', 'value']),
   endpoint('accountAttempt', ['attemptId']),
   endpoint('listAccountAttempts'),
@@ -834,18 +844,30 @@ export class KeysManagerService {
    * ready | failed | cancelled`, and every transition is observable through
    * {@link getAccountAttempt} / {@link listAccountAttempts}.
    */
-  async beginAccountLogin(provider: string, alias?: string): Promise<AccountAttemptView> {
+  async beginAccountLogin(provider: string, alias?: string, targetAccountId?: string): Promise<AccountAttemptView> {
     if (typeof provider !== 'string' || provider.length === 0) throw new TypeError('provider is required')
     const flow = this.oauthFlowFor(provider)
     if (flow === undefined) throw new Error(`Provider "${provider}" offers no OAuth sign-in flow`)
-    if (this.store.provider(provider) === undefined) throw new Error(`Provider "${provider}" is not managed; adopt it before signing in`)
+    const providerRecord = this.store.provider(provider)
+    if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed; adopt it before signing in`)
     if (this.loginsInFlight.has(provider)) throw new Error(`A sign-in for "${provider}" is already in progress`)
+    // Validate the re-authentication target up front (round-3 finding 6):
+    // the harvest binds the new grant to this row, so it must already name
+    // a live OAuth account of this provider.
+    let cleanTarget: string | undefined
+    if (typeof targetAccountId === 'string' && targetAccountId.length > 0) {
+      const target = providerRecord.keys.find(candidate => candidate.id === targetAccountId)
+      if (target === undefined) throw new Error(`Account "${targetAccountId}" not found on ${provider}`)
+      if (target.kind !== 'oauth' || target.oauth === null) throw new Error(`Key "${targetAccountId}" is not an OAuth account`)
+      cleanTarget = targetAccountId
+    }
     const cleanAlias = typeof alias === 'string' ? alias.trim().slice(0, MAX_ALIAS) : undefined
     const now = Date.now()
     const attempt: LoginAttempt = {
       id: `la_${(++this.loginSequence).toString(36)}_${randomBytes(4).toString('hex')}`,
       provider,
       ...(cleanAlias !== undefined && cleanAlias.length > 0 ? { alias: cleanAlias } : {}),
+      ...(cleanTarget !== undefined ? { targetAccountId: cleanTarget } : {}),
       status: 'pending',
       notices: [],
       createdAt: now,
@@ -1030,6 +1052,14 @@ export class KeysManagerService {
           && (candidate.oauth.grantRef === grantRef
             || (payload.accountId !== undefined && candidate.oauth.accountId === payload.accountId)
             || (payload.email !== undefined && candidate.oauth.email === payload.email && candidate.oauth.accountId === undefined)))
+          // Re-authentication target binding (round-3 finding 6): when the
+          // payload matches nothing — a rotated token with no identity
+          // metadata — the validated target row from beginAccountLogin
+          // receives the grant instead of minting a duplicate row.
+          ?? (attempt.targetAccountId !== undefined
+            ? providerRecord.keys.find(candidate =>
+                candidate.id === attempt.targetAccountId && candidate.kind === 'oauth' && candidate.oauth !== null)
+            : undefined)
         if (existing === undefined && providerRecord.keys.length >= KEY_LIMIT) {
           throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
         }

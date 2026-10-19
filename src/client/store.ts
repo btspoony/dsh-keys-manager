@@ -129,8 +129,8 @@ export function createStore(ctx: ClientContext): ClientStore {
     call(method: string, args: Record<string, unknown>): Promise<ActionOutcome> {
       return send(method, args, stateOutcome)
     },
-    beginAccountLogin(provider: string, alias?: string): Promise<AccountAttemptResult> {
-      return send('beginAccountLogin', { provider, alias }, attemptOutcome)
+    beginAccountLogin(provider: string, alias?: string, targetAccountId?: string): Promise<AccountAttemptResult> {
+      return send('beginAccountLogin', { provider, alias, targetAccountId }, attemptOutcome)
     },
     answerAccountPrompt(attemptId: string, value: string): Promise<AckResult> {
       return send('answerAccountPrompt', { attemptId, value }, () => ({ ok: true, value: null }))

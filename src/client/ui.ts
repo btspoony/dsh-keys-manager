@@ -698,12 +698,17 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
     setConfirmRelease(false)
   }
 
-  /** Start one interactive OAuth sign-in and open the login dialog for it. */
-  async function openLogin(alias?: string): Promise<void> {
+  /**
+   * Start one interactive OAuth sign-in and open the login dialog for it.
+   * `targetAccountId` (round-3 finding 6) names the row a re-authentication
+   * replaces: the host binds the committed grant to that row, so a rotated
+   * token with no identity metadata cannot duplicate the account.
+   */
+  async function openLogin(targetAccountId?: string, alias?: string): Promise<void> {
     if (startingLogin) return
     setStartingLogin(true)
     setError(null)
-    const result = await runtime.store.beginAccountLogin(provider.provider, alias)
+    const result = await runtime.store.beginAccountLogin(provider.provider, alias, targetAccountId)
     setStartingLogin(false)
     if (!result.ok) {
       setError(result.error)
@@ -829,7 +834,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         provider.keys.length === 0
           ? h('div', { className: 'km-empty-keys' }, t('noKeys'))
           : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
-              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.alias) })
+              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) })
               : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
       ),
       h('div', { className: 'km-provider-foot' },
