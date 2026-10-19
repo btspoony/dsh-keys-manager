@@ -120,7 +120,8 @@ export interface GenerateOptionsLike {
   provider: string
   model: string
   sessionId?: string
-  purpose?: string
+  /** Host-side bypass purposes; any value opts the stream out of retry pins. */
+  purpose?: 'compaction' | 'session-title'
   messages: readonly unknown[]
 }
 

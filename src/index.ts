@@ -73,6 +73,8 @@ const BROKER_PREFIX = 'KEYSMGR_'
 const ORIGINAL = Symbol.for('cordis.original')
 const MAX_SWITCHES = 6
 const ATTEMPT_TTL_MS = 60 * 60 * 1000
+/** A retry pin only lives for this long; an expired pin is treated as absent. */
+const PIN_TTL_MS = 60_000
 
 /** One strict Remote endpoint descriptor. */
 interface InvocationParameter {
@@ -402,7 +404,10 @@ export class KeysManagerService {
     return next
   }
 
-  /** Periodically drop expired attempts, pins, and request-step records. */
+  /**
+   * Periodically drop expired transient state: retry pins after `PIN_TTL_MS`,
+   * the remaining attempt/step records after `ATTEMPT_TTL_MS`.
+   */
   pruneTransient(now: number = Date.now()): void {
     this.pruneAttempts(now)
   }
@@ -1312,7 +1317,7 @@ export class KeysManagerService {
       const pinKey = `${bindingKey(sessionId, providerId)}\u0000${step.turn}\u0000${step.step}`
       const pinned = this.retryBindings.get(pinKey)
       this.retryBindings.delete(pinKey)
-      if (pinned !== undefined && now - pinned.at <= ATTEMPT_TTL_MS) {
+      if (pinned !== undefined && now - pinned.at <= PIN_TTL_MS) {
         const candidate = provider.keys.find(entry => entry.id === pinned.keyId)
         if (isSelectable(candidate, now)) {
           const probe = await this.probeKey(candidate.ref)
@@ -1467,7 +1472,7 @@ export class KeysManagerService {
       else this.streamAttempts.set(key, kept)
     }
     for (const [key, pin] of this.retryBindings) {
-      if (now - pin.at > ATTEMPT_TTL_MS) this.retryBindings.delete(key)
+      if (now - pin.at > PIN_TTL_MS) this.retryBindings.delete(key)
     }
     for (const [key, step] of this.requestSteps) {
       if (now - step.at > ATTEMPT_TTL_MS) this.requestSteps.delete(key)
@@ -1478,6 +1483,10 @@ export class KeysManagerService {
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
+    // `options.provider` is the route the agent/request waterfall finally
+    // resolved; noteRequestStep keys its record by the same
+    // `${sessionId}\u0000${providerId}` pair, so the two must stay in sync or
+    // the retry pin below will not be found.
     const current = sessionId === undefined || options.purpose !== undefined
       ? undefined
       : this.requestSteps.get(`${sessionId}\u0000${providerId}`)
