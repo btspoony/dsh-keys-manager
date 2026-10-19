@@ -59,12 +59,52 @@ export interface CredentialDescription {
   writable: boolean
 }
 
+/** One login method a flow offers (shape of `AuthorizationMethod`). */
+export interface AuthorizationMethodEntry {
+  id: string
+  label: string
+}
+
+/** One registered authorization flow (shape of `AuthorizationEntry`). */
+export interface AuthorizationFlowEntry {
+  /** The credential record this flow writes, e.g. `llm-pi-ai/anthropic`. */
+  key: string
+  label: string
+  methods: readonly AuthorizationMethodEntry[]
+  inFlight: boolean
+}
+
+/** The authorization service methods Keys Manager uses. */
+export interface AuthorizationLike {
+  list(): readonly AuthorizationFlowEntry[]
+  describe(key: string): AuthorizationFlowEntry | undefined
+}
+
 /** The credential provider methods the broker wraps. */
 export interface CredentialsLike {
   resolve(ref: string): Promise<CredentialHit | undefined>
   describe(ref: string): Promise<CredentialDescription>
   set(ref: string, value: string): Promise<void>
   unset(ref: string): Promise<void>
+}
+
+/** One stored credential record (shape of `CredentialRecord`). */
+export interface CredentialRecordLike {
+  kind: 'api-key' | 'grant'
+  key?: string
+  env?: Record<string, string>
+  /** Grant payloads are opaque JSON owned by their writer (pi-ai). */
+  payload?: unknown
+}
+
+/** The credential record methods Keys Manager uses for OAuth grants. */
+export interface CredentialRecordsLike {
+  readRecord(key: string): Promise<CredentialRecordLike | undefined>
+  modifyRecord(
+    key: string,
+    mutate: (current: CredentialRecordLike | undefined) => Promise<CredentialRecordLike | undefined>,
+  ): Promise<CredentialRecordLike | undefined>
+  deleteRecord(key: string): Promise<void>
 }
 
 /** One path-addressed settings edit. */
@@ -94,9 +134,10 @@ export interface TypertLike {
 /** Host context surface this plugin requires. */
 export type HostContext = Context & {
   llm: LlmRuntimeLike
-  credentials: CredentialsLike
+  credentials: CredentialsLike & Partial<CredentialRecordsLike>
   settings?: SettingsLike
   typert: TypertLike
+  authorization?: AuthorizationLike
 }
 
 /** Serializable provider failure facts relevant to key health. */

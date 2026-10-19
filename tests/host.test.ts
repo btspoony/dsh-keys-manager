@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
+import { accountRef } from '../src/core'
 import { apply, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
 
@@ -30,13 +31,45 @@ function applyOps(root: any, ops: any): any {
   return next
 }
 
-function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs: Map<string, string> } {
+/**
+ * The credential-store key grammar the real seam enforces on both segments
+ * (packages/credentials/credentials/src/index.ts:22 `KEY_SEGMENT_PATTERN`).
+ * The fake mirrors it so a test cannot write a record the real store would
+ * reject, and vice versa.
+ */
+const KEY_SEGMENT_PATTERN = /^[a-z][a-z0-9-]*$/
+
+/** One stored credential record, mirroring the real seam's record union. */
+export interface FakeCredentialRecord {
+  kind: 'api-key' | 'grant'
+  key?: string
+  env?: Record<string, string>
+  payload?: unknown
+}
+
+function assertRecordKey(key: string): void {
+  const segments = key.split('/')
+  if (segments.length !== 2 || !segments.every(segment => KEY_SEGMENT_PATTERN.test(segment))) {
+    throw new TypeError(`credential key "${key}" must be two ${String(KEY_SEGMENT_PATTERN)} segments`)
+  }
+}
+
+function fakeCredentials(initial: Record<string, string> = {}): {
+  raw: any
+  refs: Map<string, string>
+  records: Map<string, FakeCredentialRecord>
+  emitRecordUpdated: (key: string) => void
+  recordUpdatedListeners: Array<(key: string) => void>
+} {
   const refs = new Map(Object.entries(initial))
+  const records = new Map<string, FakeCredentialRecord>()
+  const recordUpdatedListeners: Array<(key: string) => void> = []
   const raw = {
     failResolve: false,
     failUnset: false,
     failUnsetRefs: new Set<string>(),
     failRefs: new Set<string>(),
+    failModifyRecord: false,
     async resolve(ref: string) {
       if (raw.failResolve || raw.failRefs.has(ref)) throw new Error('credential store unavailable')
       const value = refs.get(ref)
@@ -53,9 +86,42 @@ function fakeCredentials(initial: Record<string, string> = {}): { raw: any; refs
       if (raw.failUnset || raw.failUnsetRefs.has(ref)) throw new Error('credential store locked')
       refs.delete(ref)
     },
+    async readRecord(key: string): Promise<FakeCredentialRecord | undefined> {
+      assertRecordKey(key)
+      return records.get(key)
+    },
+    async modifyRecord(
+      key: string,
+      mutate: (current: FakeCredentialRecord | undefined) => Promise<FakeCredentialRecord | undefined>,
+    ): Promise<FakeCredentialRecord | undefined> {
+      assertRecordKey(key)
+      if (raw.failModifyRecord) throw new Error('credential store locked')
+      const current = records.get(key)
+      const next = await mutate(current === undefined ? undefined : structuredClone(current))
+      if (next === undefined) return current
+      records.set(key, structuredClone(next))
+      raw.emitRecordUpdated(key)
+      return structuredClone(next)
+    },
+    async deleteRecord(key: string): Promise<void> {
+      assertRecordKey(key)
+      records.delete(key)
+    },
+    // Mirrors the seam's post-commit `credentials/record-updated` fan-out;
+    // tests fire it by hand for out-of-band (pi-ai side) writes.
+    onRecordUpdated(listener: (key: string) => void): () => void {
+      recordUpdatedListeners.push(listener)
+      return () => {
+        const index = recordUpdatedListeners.indexOf(listener)
+        if (index >= 0) recordUpdatedListeners.splice(index, 1)
+      }
+    },
+    emitRecordUpdated(key: string): void {
+      for (const listener of [...recordUpdatedListeners]) listener(key)
+    },
   }
   Object.defineProperty(raw, ORIGINAL, { value: raw })
-  return { raw, refs }
+  return { raw, refs, records, emitRecordUpdated: key => raw.emitRecordUpdated(key), recordUpdatedListeners }
 }
 
 function fakeSettings(): any {
@@ -192,11 +258,48 @@ function fakeLlm(): any {
 interface Harness {
   dir: string
   store: KeysManagerStore
-  credentials: any
+  credentials: ReturnType<typeof fakeCredentials>
   settings: any
   llm: any
+  authorization: any
   service: KeysManagerService
+  emitEvent: (name: string, ...args: unknown[]) => void
   close: () => Promise<void>
+}
+
+/**
+ * The flows `llm-pi-ai/login.ts:131-171` registers: one flow per installed
+ * catalog provider, keyed `recordKeyFor(providerId)` = `llm-pi-ai/<id>`
+ * (auth.ts:29,36-38), methods sorted oauth-first (login.ts:40-47). The oauth
+ * members and this method order are the pin the login driver depends on.
+ */
+const OAUTH_PROVIDERS = ['anthropic', 'github-copilot', 'kimi-coding', 'openai-codex', 'openrouter', 'radius', 'xai'] as const
+
+function piAiFlows(): Array<{ key: string; label: string; methods: Array<{ id: string; label: string }> }> {
+  const flows: Array<{ key: string; label: string; methods: Array<{ id: string; label: string }> }> = []
+  for (const id of OAUTH_PROVIDERS) {
+    const methods = [{ id: 'oauth', label: `Sign in ${id}` }]
+    // anthropic ships both login methods; openai-codex is oauth-only, as its
+    // provider data declares no interactive api-key login.
+    if (id === 'anthropic') methods.push({ id: 'api-key', label: 'Anthropic API key' })
+    flows.push({ key: `llm-pi-ai/${id}`, label: id, methods })
+  }
+  return flows
+}
+
+function fakeAuthorization(flows: Array<{ key: string; label: string; methods: Array<{ id: string; label: string }> }> = piAiFlows()): any {
+  return {
+    flows,
+    failBegin: undefined as Error | undefined,
+    beganRequests: [] as Array<Record<string, unknown>>,
+    list() {
+      return this.flows.map((flow: any) => ({ ...flow, methods: [...flow.methods], inFlight: false }))
+    },
+    describe(key: string) {
+      const flow = this.flows.find((candidate: any) => candidate.key === key)
+      return flow === undefined ? undefined : { ...flow, methods: [...flow.methods], inFlight: false }
+    },
+  }
 }
 
 async function harness(): Promise<Harness> {
@@ -210,14 +313,28 @@ async function harness(): Promise<Harness> {
   })
   const settings = fakeSettings()
   const llm = fakeLlm()
+  const authorization = fakeAuthorization()
+  const eventListeners = new Map<string, Array<(...args: unknown[]) => unknown>>()
   const ctx = {
     llm,
+    authorization,
     logger: { warn() {}, info() {} },
     get(name: string) {
       if (name === 'credentials') return credentials.raw
       if (name === 'settings') return settings
       if (name === 'llm') return llm
+      if (name === 'authorization') return authorization
       return undefined
+    },
+    on(name: string, listener: (...args: unknown[]) => unknown) {
+      const chain = eventListeners.get(name) ?? []
+      chain.push(listener)
+      eventListeners.set(name, chain)
+      return () => {
+        const list = eventListeners.get(name)
+        const index = list?.indexOf(listener) ?? -1
+        if (index >= 0) list!.splice(index, 1)
+      }
     },
   }
   const service = new KeysManagerService(ctx as unknown as HostContext, store)
@@ -229,7 +346,11 @@ async function harness(): Promise<Harness> {
     credentials,
     settings,
     llm,
+    authorization,
     service,
+    emitEvent(name: string, ...args: unknown[]) {
+      for (const listener of [...(eventListeners.get(name) ?? [])]) listener(...args)
+    },
     async close() {
       service.detachCredentials(credentials.raw)
       await store.close()
@@ -2463,5 +2584,72 @@ test('old state documents without account rows load unchanged', async () => {
     await store.close()
   } finally {
     await rm(dir, { recursive: true, force: true })
+  }
+})
+
+
+/**
+ * Flow-key pin. The authorization flow `llm-pi-ai/login.ts:149-171` registers
+ * for a provider is keyed by `recordKeyFor(providerId)`, which is
+ * `credentialKey(RECORD_SCOPE, providerId)` with `RECORD_SCOPE = 'llm-pi-ai'`
+ * (`packages/llm/llm-pi-ai/src/auth.ts:29,36-38`) — i.e. the exact string
+ * `llm-pi-ai/<providerId>`. Methods are sorted oauth-first
+ * (login.ts:40-47: `{ id: 'oauth', ... }` is pushed before the api-key
+ * method). These pins are what let the manager address
+ * `ctx.authorization.begin({ key: 'llm-pi-ai/<provider>', method: 'oauth' })`
+ * without probing the seam at runtime.
+ */
+test('the service resolves the oauth flow for every pi-ai oauth provider', async () => {
+  const h = await harness()
+  try {
+    for (const provider of OAUTH_PROVIDERS) {
+      assert.deepEqual(h.service.oauthFlowFor(provider), { key: `llm-pi-ai/${provider}`, method: 'oauth' })
+    }
+    // Method order is oauth-first on dual-auth flows (login.ts:40-47).
+    const anthropic = h.authorization.describe('llm-pi-ai/anthropic')
+    assert.deepEqual(anthropic.methods.map((method: { id: string }) => method.id), ['oauth', 'api-key'])
+    // A provider with no oauth method (not in the flow table, or oauth: false
+    // upstream) yields nothing: the manager must not begin a flow it cannot name.
+    assert.equal(h.service.oauthFlowFor('zai-coding-cn'), undefined)
+    assert.equal(h.service.oauthFlowFor('amazon-bedrock'), undefined)
+    assert.equal(h.service.oauthFlowFor('no-such-provider'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * modifyRecord scope-acceptance pin (T1 review "Cannot verify (b)"): the
+ * fake seam mirrors the real store's key grammar
+ * (packages/credentials/credentials/src/index.ts:22 KEY_SEGMENT_PATTERN,
+ * :69-76 credentialKey validation) and accepts records in BOTH scopes the
+ * manager addresses — its own plugin scope for account grants and the
+ * llm-pi-ai scope for the activation projection. The real credential
+ * provider imposes no ownership check on modifyRecord: it is an abstract
+ * read-modify-write over any two-segment key (index.ts:236-256); scope
+ * ownership ("the scope names the owning plugin", authorization
+ * types.ts:126-127) is a convention between writers, which is exactly the
+ * D1 arbitration contract this manager implements with shape checks.
+ */
+test('the credential seam accepts record keys in both scopes the manager writes', async () => {
+  const h = await harness()
+  try {
+    const { records } = h.credentials
+    // The accountRef output shape is accepted in the plugin scope.
+    const own = accountRef('anthropic', '3fa2c1')
+    await h.credentials.raw.modifyRecord(own, async () => ({ kind: 'grant', payload: { type: 'oauth' } }))
+    assert.equal(records.get(own)?.kind, 'grant')
+    // The activation projection scope is accepted on the same grammar.
+    await h.credentials.raw.modifyRecord('llm-pi-ai/anthropic', async () => ({ kind: 'grant', payload: { type: 'oauth' } }))
+    assert.equal(records.get('llm-pi-ai/anthropic')?.kind, 'grant')
+    // A digit-leading id is refused by the mirrored grammar — which is why
+    // accountRef guards digit-leading stems (commit 980b7a6).
+    await assert.rejects(
+      () => h.credentials.raw.modifyRecord('keys-manager/1foo', async () => ({ kind: 'grant', payload: {} })),
+      /must be two/,
+    )
+    await assert.rejects(() => h.credentials.raw.readRecord('no-slash'), /must be two/)
+  } finally {
+    await h.close()
   }
 })

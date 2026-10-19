@@ -44,6 +44,7 @@ import type {
 import type {
   AttemptState,
   CredentialHit,
+  CredentialRecordsLike,
   CredentialsLike,
   DirectoryEntry,
   DiscoveredModel,
@@ -446,6 +447,37 @@ export class KeysManagerService {
     const current = (this.ctx.get as (name: string) => unknown)('credentials') as (CredentialsLike & Record<PropertyKey, unknown>) | undefined
     if (current === undefined) return undefined
     return (current[ORIGINAL] as CredentialsLike | undefined) ?? current
+  }
+
+  /**
+   * The credential store's record half, reached through the raw provider:
+   * the broker wrappers only ever replace the reference methods, so the
+   * record methods of the mounted credential provider are always intact on
+   * the raw instance. `llm-pi-ai` writes its grants through exactly these
+   * methods, so the manager's activation projection must use them too.
+   */
+  private credentialRecords(): CredentialRecordsLike | undefined {
+    const raw = this.credentialsRaw() as (CredentialsLike & Partial<CredentialRecordsLike>) | undefined
+    if (raw === undefined) return undefined
+    if (typeof raw.readRecord !== 'function' || typeof raw.modifyRecord !== 'function') return undefined
+    return raw as CredentialRecordsLike
+  }
+
+  /**
+   * Resolve the OAuth authorization flow one provider offers.
+   *
+   * The flow key format is pinned by `llm-pi-ai/login.ts:149-171` +
+   * `auth.ts:29,36-38`: `recordKeyFor(providerId)` = `llm-pi-ai/<providerId>`,
+   * with the oauth method offered first (`login.ts:40-47`). A provider with
+   * no such flow (not OAuth-capable, or not installed) resolves to
+   * undefined, which callers must treat as "sign-in unavailable".
+   */
+  oauthFlowFor(provider: string): { key: string; method: string } | undefined {
+    const flows = this.ctx.authorization?.list() ?? []
+    const flow = flows.find(entry => entry.key === `llm-pi-ai/${provider}`)
+    if (flow === undefined) return undefined
+    if (!flow.methods.some(method => method.id === 'oauth')) return undefined
+    return { key: flow.key, method: 'oauth' }
   }
 
   /** Install the broker layer on one credential provider instance. */
