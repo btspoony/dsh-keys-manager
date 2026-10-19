@@ -3105,6 +3105,52 @@ test('a rotated refresh token re-associates its row and syncs the rotated payloa
   }
 })
 
+test('rotation-sync email fallback skips accountId-bearing rows (harvestLogin parity)', async () => {
+  const { h, rowId: idA, grantRef: refA } = await harnessWithSeededAccount({ accountId: 'acc-a', email: 'shared@example.com', refresh: 'rt-a', access: 'at-a' })
+  try {
+    const { rowId: idB, grantRef: refB } = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'shared@example.com', refresh: 'rt-b', access: 'at-b' })
+    const warnings = (): string =>
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    // A rotation echo whose payload accountId matches neither row must not
+    // be swallowed by the shared email: both rows are accountId-bearing, so
+    // the email-only fallback stays guarded exactly as harvestLogin's.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-echo-third', access: 'at-echo-third', expires: 1_950_000_000_000, accountId: 'acc-neither', email: 'shared@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(warnings(), /managed natively outside/))
+    const rowA = h.store.provider('anthropic')!.keys.find(key => key.id === idA)!
+    const rowB = h.store.provider('anthropic')!.keys.find(key => key.id === idB)!
+    // No owner attribution: neither row was re-pointed or synced.
+    assert.equal(rowA.oauth!.grantRef, refA)
+    assert.equal(rowA.oauth!.expiresAt, undefined)
+    assert.equal(rowB.oauth!.grantRef, refB)
+    assert.equal(rowB.oauth!.expiresAt, undefined)
+
+    // A payload with no accountId still resolves through the email fallback
+    // onto the one row that never carried an accountId.
+    const seededC = seedOAuthAccount(h, 'anthropic', { email: 'shared@example.com', refresh: 'rt-c', access: 'at-c' })
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-c-rotated', access: 'at-c-rotated', expires: 1_960_000_000_000, email: 'shared@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    const rowC = h.store.provider('anthropic')!.keys.find(key => key.id === seededC.rowId)!
+    const refC = accountRef('anthropic', createHash('sha256').update('rt-c-rotated').digest('hex').slice(0, 12))
+    await eventually(() => assert.equal(rowC.oauth!.grantRef, refC))
+    assert.equal(rowC.oauth!.expiresAt, 1_960_000_000_000)
+    // The payload was written back to the owning row's grant record, and the
+    // accountId-bearing rows stayed untouched.
+    const stored = h.credentials.records.get(refC)!
+    assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-c-rotated')
+    assert.equal(rowA.oauth!.grantRef, refA)
+    assert.equal(rowB.oauth!.grantRef, refB)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a re-login with a changed refresh token removes the superseded grant record (W2)', async () => {
   const h = await harnessWithManagedAnthropic()
   try {

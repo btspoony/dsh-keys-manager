@@ -1059,10 +1059,14 @@ export class KeysManagerService {
       // Owner resolution: the refresh digest names the row first. On a miss
       // (the provider rotated the refresh token), identity metadata
       // re-associates — identity is the account, not one token generation.
+      // The email-only fallback carries the same `accountId === undefined`
+      // guard harvestLogin applies: a row already bound to an accountId is
+      // never re-attributed on email alone, so same-email dual rows cannot
+      // swallow a rotation echo that matches neither accountId.
       const owner = accounts.find(candidate => candidate.oauth!.grantRef === rotatedRef)
         ?? accounts.find(candidate =>
           (payload.accountId !== undefined && candidate.oauth!.accountId === payload.accountId)
-          || (payload.email !== undefined && candidate.oauth!.email === payload.email))
+          || (payload.email !== undefined && candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined))
       if (owner === undefined) {
         this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
         return
