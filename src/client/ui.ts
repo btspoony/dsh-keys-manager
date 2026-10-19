@@ -773,7 +773,17 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
       warning !== undefined || broken ? h(Notice, { tone: 'warn', title: t('warning') }, broken ? t('bindingBroken') : warning) : null,
       !managed ? h('div', { className: 'km-adopt' },
         h('div', { className: 'km-adopt-copy' },
-          h('div', { className: 'km-adopt-title' }, provider.supported ? t(isExtra ? 'adoptExtraHint' : 'adoptHint') : t('unsupported')),
+          // I-000063: an OAuth-only route is account-adoptable, so its
+          // adopt panel headline must invite sign-in instead of claiming
+          // the provider is unsupported. The unsupported headline remains
+          // only for providers that are neither key- nor account-capable.
+          h('div', { className: 'km-adopt-title' },
+            provider.supported
+              ? t(isExtra ? 'adoptExtraHint' : 'adoptHint')
+              : accountAdoptable
+                ? t('adoptAccountTitle')
+                : t('unsupported'),
+          ),
           !provider.supported && provider.reason !== undefined ? h('div', { className: 'km-muted' }, provider.reason) : null,
           provider.apiKeyEnv !== null ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('secret')}:`), h('span', { className: 'km-mono' }, provider.apiKeyEnv)) : null,
           provider.baseURL !== null ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('baseUrl')}:`), h('span', { className: 'km-mono km-truncate' }, provider.baseURL)) : null,

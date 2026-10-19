@@ -119,6 +119,7 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     nav: '密钥管理',
     accountIdentity: '账户',
     accountProjected: '服务中',
+    adoptAccountTitle: '使用 OAuth 账户登录后即可使用该 Provider。',
     uses: '使用 {n} 次',
     failures: '失败 {n} 次',
   }
@@ -870,6 +871,11 @@ describe('account ui', () => {
     expect(adopt).toBeDefined()
     expect(adopt!.props!.disabled).toBe(false)
     expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    // I-000063: the adopt panel headline resolves the account title, not
+    // the unsupported reason — assert the dictionary value, never the key.
+    const adoptTitle = findByClass(view.nodes, 'km-adopt-title')[0]
+    expect(adoptTitle).toBeDefined()
+    expect(adoptTitle!.text).toBe('使用 OAuth 账户登录后即可使用该 Provider。')
     view.unmount()
 
     // On the managed OAuth-only route, Add key is disabled (server refuses

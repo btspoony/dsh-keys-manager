@@ -4,6 +4,7 @@
     "description": "为同一个 Provider 配置多个 API Key，支持单会话固定、Round Robin、重试切换、冷却恢复，并提供可搜索的扩展 Provider。"
   },
   "addAccount": "添加账户",
+  "adoptAccountTitle": "使用 OAuth 账户登录后即可使用该 Provider。",
   "accountIdentity": "账户",
   "accountProjected": "服务中",
   "accountReauth": "重新认证",

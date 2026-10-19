@@ -4,6 +4,7 @@
     "description": "Multiple API keys per provider with sticky sessions, round-robin selection, retry failover, cooldown recovery, and searchable extra providers."
   },
   "addAccount": "Add account",
+  "adoptAccountTitle": "Sign in with an OAuth account to use this provider.",
   "accountIdentity": "Account",
   "accountProjected": "Serving provider",
   "accountReauth": "Re-authenticate",
