@@ -1,8 +1,11 @@
-import { describe, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test } from 'vitest'
+import React from 'react'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
-import type { AccountAttemptView, ClientContext, LocaleDicts, RpcResult, StateView } from '../src/client/types'
+import { RuntimeContext } from '../src/client/runtime'
+import { KeysManagerBody } from '../src/client/ui'
+import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, RpcResult, Runtime, StateView } from '../src/client/types'
 
 function makeState(): StateView {
   return {
@@ -472,5 +475,315 @@ describe('oauth account store', () => {
     expect(activated).toEqual({ ok: false, error: 'already in progress' })
     expect(store.getSnapshot().error).toBe('already in progress')
     expect(store.getSnapshot().busy).toBeNull()
+  })
+})
+
+
+/**
+ * Minimal React test renderer for the no-DOM vitest environment.
+ *
+ * The client bundle deliberately ships without react-dom and the repo adds no
+ * test-only renderer, so rendering tests drive the real hooks dispatcher:
+ * components run for real and produce plain element trees, while per-position
+ * hook chains keep component state across re-renders. Effects run only inside
+ * `flush()` and no DOM is ever touched.
+ */
+type FlatNode = { type: unknown; props: Record<string, unknown> | null; text: string; path: string }
+
+const reactInternals = (React as unknown as {
+  __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: { ReactCurrentDispatcher: { current: unknown } }
+}).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED
+
+function depsEqual(a: unknown[] | undefined, b: unknown[] | undefined): boolean {
+  if (a === undefined || b === undefined || a.length !== b.length) return false
+  return a.every((item, index) => Object.is(item, b[index]))
+}
+
+function setRuntimeContext(runtime: Runtime | null): void {
+  ;(RuntimeContext as unknown as { _currentValue?: unknown })._currentValue = runtime
+}
+
+function mountView(component: (props: Record<string, unknown>) => React.ReactElement | null, props: Record<string, unknown> = {}) {
+  const pool = new Map<string, { records: Array<{ kind: string; value: any }>; cursor: number }>()
+  const effectQueue: Array<{ record: { kind: string; value: any }; run: () => void | (() => void) }> = []
+  let nodes: FlatNode[] = []
+  let currentChain: { records: Array<{ kind: string; value: any }>; cursor: number } | null = null
+  let rendering = false
+  let dirty = false
+
+  const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
+
+  function renderAll(): void {
+    if (rendering) {
+      dirty = true
+      return
+    }
+    rendering = true
+    dirty = false
+    try {
+      nodes = []
+      renderElement(React.createElement(component, props), 'root')
+    } finally {
+      rendering = false
+    }
+    if (dirty) renderAll()
+  }
+
+  function renderElement(node: unknown, path: string): string {
+    if (node === null || node === undefined || typeof node === 'boolean') return ''
+    if (typeof node === 'string' || typeof node === 'number') {
+      nodes.push({ type: null, props: null, text: String(node), path })
+      return String(node)
+    }
+    if (Array.isArray(node)) {
+      return node.map((child, index) => renderElement(child, `${path}/${index}`)).join('')
+    }
+    const element = node as { type: unknown; props: Record<string, unknown> | null; key?: unknown }
+    if (typeof element.type === 'function') {
+      const name = (element.type as { name?: string }).name ?? 'anon'
+      const chainKey = `${path}#${name}`
+      let chain = pool.get(chainKey)
+      if (chain === undefined) {
+        chain = { records: [], cursor: 0 }
+        pool.set(chainKey, chain)
+      }
+      const previousChain = currentChain
+      const previousDispatcher = reactInternals.ReactCurrentDispatcher.current
+      currentChain = chain
+      reactInternals.ReactCurrentDispatcher.current = dispatcher
+      let output: unknown
+      try {
+        chain.cursor = 0
+        output = (element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {})
+      } finally {
+        reactInternals.ReactCurrentDispatcher.current = previousDispatcher
+        currentChain = previousChain
+      }
+      return renderElement(output, chainKey)
+    }
+    const text = renderElement((element.props?.children ?? null) as unknown, `${path}>`)
+    nodes.push({ type: element.type, props: element.props, text, path })
+    return text
+  }
+
+  function nextRecord(kind: string, create: () => unknown): { kind: string; value: any } {
+    const chain = currentChain
+    if (chain === null) throw new Error('hook called outside of a rendered component')
+    if (chain.cursor >= chain.records.length) chain.records.push({ kind, value: create() })
+    const record = chain.records[chain.cursor]!
+    if (record.kind !== kind) throw new Error(`hook order changed: expected ${record.kind}, got ${kind}`)
+    chain.cursor += 1
+    return record
+  }
+
+  const scheduleRender = (): void => renderAll()
+
+  const dispatcher = {
+    useState(initial: unknown): [unknown, (action: unknown) => void] {
+      const holder = nextRecord('state', () => {
+        const cell = {
+          value: typeof initial === 'function' ? (initial as () => unknown)() : initial,
+          set(action: unknown): void {
+            const next = typeof action === 'function' ? (action as (current: unknown) => unknown)(cell.value) : action
+            if (!Object.is(next, cell.value)) {
+              cell.value = next
+              scheduleRender()
+            }
+          },
+        }
+        return cell
+      }).value as { value: unknown; set: (action: unknown) => void }
+      return [holder.value, holder.set]
+    },
+    useRef(initial: unknown): { current: unknown } {
+      return nextRecord('ref', () => ({ current: initial })).value
+    },
+    useMemo(factory: () => unknown, deps: unknown[]): unknown {
+      const cell = nextRecord('memo', () => ({ cached: undefined as unknown, deps: undefined as unknown[] | undefined })).value as { cached: unknown; deps: unknown[] | undefined }
+      if (cell.deps === undefined || !depsEqual(cell.deps, deps)) {
+        cell.cached = factory()
+        cell.deps = deps
+      }
+      return cell.cached
+    },
+    useCallback(fn: unknown, deps: unknown[]): unknown {
+      return dispatcher.useMemo(() => fn, deps)
+    },
+    useEffect(run: () => void | (() => void), deps: unknown[]): void {
+      const record = nextRecord('effect', () => ({ deps: undefined as unknown[] | undefined, queued: false, cleanup: undefined as (() => void) | undefined }))
+      const cell = record.value as { deps: unknown[] | undefined; queued: boolean; cleanup?: () => void }
+      if (cell.deps === undefined || !depsEqual(cell.deps, deps)) {
+        cell.deps = deps
+        if (!cell.queued) {
+          cell.queued = true
+          effectQueue.push({ record, run })
+        }
+      }
+    },
+    useSyncExternalStore(subscribe: (listener: () => void) => () => void, getSnapshot: () => unknown): unknown {
+      const cell = nextRecord('store', () => ({ value: undefined as unknown, unsubscribe: undefined as (() => void) | undefined })).value as { value: unknown; unsubscribe?: () => void }
+      cell.value = getSnapshot()
+      if (cell.unsubscribe === undefined) cell.unsubscribe = subscribe(scheduleRender)
+      return cell.value
+    },
+    useContext(ctx: { _currentValue?: unknown }): unknown {
+      return ctx._currentValue
+    },
+    useId(): string { return 'km-test-id' },
+    useDebugValue(): void {},
+    useImperativeHandle(): void {},
+    useLayoutEffect(run: () => void | (() => void), deps: unknown[]): void { dispatcher.useEffect(run, deps) },
+    useInsertionEffect(run: () => void | (() => void), deps: unknown[]): void { dispatcher.useEffect(run, deps) },
+    useTransition(): [boolean, (callback: () => void) => void] { return [false, (callback: () => void) => callback()] },
+    useDeferredValue(value: unknown): unknown { return value },
+  }
+
+  renderAll()
+
+  return {
+    get nodes(): FlatNode[] { return nodes },
+    render(): FlatNode[] {
+      renderAll()
+      return nodes
+    },
+    async flush(): Promise<void> {
+      let guard = 0
+      while (effectQueue.length > 0 && guard < 25) {
+        const batch = effectQueue.splice(0)
+        for (const entry of batch) {
+          const cell = entry.record.value as { queued: boolean; cleanup?: () => void }
+          cell.cleanup?.()
+          const cleanup = entry.run()
+          cell.cleanup = typeof cleanup === 'function' ? cleanup : undefined
+          cell.queued = false
+        }
+        await tick()
+      }
+      await tick()
+    },
+    unmount(): void {
+      for (const chain of pool.values()) {
+        for (const record of [...chain.records].reverse()) {
+          const cell = record.value as { cleanup?: () => void; unsubscribe?: () => void }
+          if (record.kind === 'effect') cell.cleanup?.()
+          if (record.kind === 'store') cell.unsubscribe?.()
+        }
+      }
+      pool.clear()
+    },
+  }
+}
+
+function hostNodes(nodes: FlatNode[]): FlatNode[] {
+  return nodes.filter(node => typeof node.type === 'string')
+}
+
+function findByClass(nodes: FlatNode[], className: string): FlatNode[] {
+  return hostNodes(nodes).filter(node => String((node.props?.className as string | undefined) ?? '').split(/\s+/).includes(className))
+}
+
+function findButtons(nodes: FlatNode[], needle: string): FlatNode[] {
+  return hostNodes(nodes).filter(node => node.type === 'button' && node.text.includes(needle))
+}
+
+function descendants(nodes: FlatNode[], ancestor: FlatNode): FlatNode[] {
+  return nodes.filter(node => node.path.startsWith(ancestor.path))
+}
+
+function makeOauthKey(): KeyView {
+  const base = makeState().providers[0]!.keys[0]!
+  return {
+    ...base,
+    id: 'k_oauth9',
+    alias: 'Work account',
+    importedFrom: null,
+    kind: 'oauth',
+    totalUses: 3,
+    totalFailures: 1,
+    oauth: { provider: 'zai-coding-cn', email: 'work@anthropic.example', accountId: 'acc_9', expiresAt: Date.now() + 3_600_000 },
+  }
+}
+
+function makeOauthProvider(): ProviderView {
+  const base = makeState().providers[0]!
+  return {
+    ...base,
+    nativeAuth: { env: ['ZAI_CODING_CN_API_KEY'], oauth: true },
+    keys: [makeOauthKey(), makeState().providers[0]!.keys[0]!],
+  }
+}
+
+describe('account ui', () => {
+  beforeAll(() => {
+    // The node test environment has no DOM; modal effects only need the
+    // document surface to exist so their focus/inert bookkeeping can no-op.
+    ;(globalThis as unknown as { document?: unknown }).document = {
+      getElementById: () => null,
+      createElement: () => ({ remove() {} }),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      activeElement: null,
+      body: {},
+      head: { appendChild: () => {} },
+    }
+  })
+
+  test('oauth-capable managed providers show Add account beside Add key; others keep Add key only', async () => {
+    const state = makeState()
+    state.providers[0]!.nativeAuth = { env: ['ZAI_CODING_CN_API_KEY'], oauth: true }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+
+    expect(findButtons(view.nodes, 'addKey')).toHaveLength(1)
+    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    view.unmount()
+
+    // A provider without native OAuth keeps the single Add key entry.
+    const plainHarness = makeContext()
+    const plainStore = createStore(plainHarness.ctx)
+    setRuntimeContext({ ctx: plainHarness.ctx, store: plainStore })
+    const plainView = mountView(KeysManagerBody)
+    await plainView.flush()
+    const plainHead = findByClass(plainView.nodes, 'km-provider-head')[0]
+    expect(plainHead).toBeDefined()
+    ;(plainHead!.props!.onClick as () => void)()
+    plainView.render()
+    expect(findButtons(plainView.nodes, 'addKey')).toHaveLength(1)
+    expect(findButtons(plainView.nodes, 'addAccount')).toHaveLength(0)
+    plainView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('oauth rows render as distinct account rows with identity, glyph, and counters', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+
+    expect(findByClass(view.nodes, 'km-account-row')).toHaveLength(1)
+    expect(findByClass(view.nodes, 'km-key-row')).toHaveLength(1)
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const inside = descendants(view.nodes, row)
+    expect(inside.some(node => node.text === 'work@anthropic.example')).toBe(true)
+    expect(findByClass(view.nodes, 'km-account-glyph')).toHaveLength(1)
+    expect(inside.some(node => node.text === 'accountIdentity')).toBe(true)
+    expect(inside.some(node => node.text === 'uses · failures')).toBe(true)
+    expect(findByClass(view.nodes, 'km-status').length).toBeGreaterThanOrEqual(1)
+    view.unmount()
+    setRuntimeContext(null)
   })
 })

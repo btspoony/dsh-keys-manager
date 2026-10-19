@@ -12,7 +12,7 @@ type T = (key: string, params?: Record<string, string | number>) => string
 type Tone = 'success' | 'warn' | 'idle' | 'error'
 type IconName =
   | 'search' | 'plus' | 'dots' | 'chevron' | 'eye' | 'eyeOff' | 'key' | 'check'
-  | 'pause' | 'play' | 'trash' | 'close' | 'refresh' | 'warning' | 'shield'
+  | 'pause' | 'play' | 'trash' | 'close' | 'refresh' | 'warning' | 'shield' | 'user'
 
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ')
@@ -58,6 +58,24 @@ function durationText(milliseconds: number, t: T): string {
 function providerInitial(provider: ProviderView | undefined): string {
   const source = String(provider?.displayName || provider?.provider || '?').trim()
   return source.length === 0 ? '?' : source.slice(0, 1).toUpperCase()
+}
+
+/** True when the provider ships a native OAuth sign-in flow. */
+function oauthCapable(provider: ProviderView): boolean {
+  return provider.nativeAuth?.oauth === true
+}
+
+/**
+ * Identity line of an OAuth account row: the email, else the provider-side
+ * account id, else the provider's display name.
+ */
+function accountIdentityOf(key: KeyView, provider: ProviderView): string {
+  const oauth = key.oauth
+  if (oauth !== null && oauth !== undefined) {
+    if (oauth.email !== undefined && oauth.email.length > 0) return oauth.email
+    if (oauth.accountId !== undefined && oauth.accountId.length > 0) return oauth.accountId
+  }
+  return provider.displayName || provider.provider
 }
 
 function statusKey(status: KeyStatus | ProviderStatus): string {
@@ -114,6 +132,7 @@ function Icon({ name, size = 16, className }: IconProps): React.ReactElement {
   if (name === 'refresh') return h('svg', common, h('path', { d: 'M20 11a8 8 0 10-2.3 6M20 5v6h-6' }))
   if (name === 'warning') return h('svg', common, h('path', { d: 'M12 3l9.5 17h-19L12 3zM12 9v5M12 17.2v.1' }))
   if (name === 'shield') return h('svg', common, h('path', { d: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM9 12l2 2 4-4' }))
+  if (name === 'user') return h('svg', common, h('circle', { cx: 12, cy: 8, r: 3.6 }), h('path', { d: 'M5 20a7 7 0 0114 0' }))
   return h('svg', common)
 }
 
@@ -493,6 +512,53 @@ function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
   )
 }
 
+interface AccountRowProps {
+  provider: ProviderView
+  keyRecord: KeyView
+  now: number
+}
+
+/**
+ * One `kind: 'oauth'` pool member. Visually a sibling of {@link KeyRow}
+ * (same grid, same status/last-used columns) but distinct through the
+ * account glyph, the brand accent bar, and the identity line: accounts are
+ * addressed by their provider-disclosed identity instead of a human alias.
+ */
+function AccountRow({ provider, keyRecord, now }: AccountRowProps): React.ReactElement {
+  const t = useT()
+  const locale = useLocaleId()
+  const key = keyRecord
+  const identity = accountIdentityOf(key, provider)
+  const cold = key.status === 'cooling' && key.cooldownUntil > now
+  const meta = [
+    key.totalUses > 0 ? t('uses', { n: key.totalUses }) : null,
+    key.totalFailures > 0 ? t('failures', { n: key.totalFailures }) : null,
+  ].filter((value): value is string => value !== null).join(' · ')
+
+  return h('div', { className: 'km-account-row' },
+    h('div', { className: 'km-key-identity' },
+      h('div', { className: 'km-key-alias-line' },
+        h('span', { className: 'km-account-glyph', 'aria-hidden': true }, h(Icon, { name: 'user', size: 13 })),
+        h('span', { className: 'km-key-alias' }, identity),
+        h('span', { className: 'km-tag km-tag-accent' }, t('accountIdentity')),
+      ),
+      h('div', { className: 'km-key-sub' },
+        h('span', { className: 'km-mono km-muted' }, `•••• ${key.id.slice(-4)}`),
+      ),
+    ),
+    h('div', { className: 'km-key-status' },
+      h(StatusPill, { status: key.status, t }),
+      cold ? h('div', { className: 'km-key-time km-warn' }, t('coolingUntil', { time: formatClock(key.cooldownUntil, locale, t) })) : null,
+      cold ? h('div', { className: 'km-key-time' }, t('remaining', { time: durationText(key.cooldownUntil - now, t) })) : null,
+    ),
+    h('div', { className: 'km-key-last' },
+      h('div', { className: 'km-key-time' }, `${t('lastUsed')}: ${relativeTime(key.lastUsedAt, now, t)}`),
+      meta.length > 0 ? h('div', { className: 'km-key-time km-muted' }, meta) : null,
+    ),
+    h('div', { className: 'km-key-actions' }),
+  )
+}
+
 interface ProviderCardProps {
   provider: ProviderView
   expanded: boolean
@@ -601,6 +667,10 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
               h(Icon, { name: 'plus', size: 14 }),
               h('span', null, t('addKey')),
             ),
+            oauthCapable(provider) ? h(Button, { variant: 'secondary', size: 'small', disabled: releasing },
+              h(Icon, { name: 'user', size: 14 }),
+              h('span', null, t('addAccount')),
+            ) : null,
             h(Button, { variant: 'ghost', size: 'small', onClick: () => setConfirmRelease(true), disabled: releasing },
               releasing ? t('releasing') : t('release'),
             ),
@@ -609,7 +679,9 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
         provider.keys.length === 0
           ? h('div', { className: 'km-empty-keys' }, t('noKeys'))
-          : h('div', { className: 'km-keys' }, provider.keys.map(key => h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
+          : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
+              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now })
+              : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
       ),
       h('div', { className: 'km-provider-foot' },
         h('span', { className: 'km-muted' }, provider.extra ? `${t('api')}: ${provider.api ?? '—'} · ${t('models')}: ${provider.models.length}` : null),
