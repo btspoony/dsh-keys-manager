@@ -38,8 +38,10 @@ Current design boundaries of the Keys Manager plugin:
   OpenAI Codex, OpenRouter, Radius, and xAI. Extending coverage through an
   oh-my-pi extension is tracked in
   [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15).
-- Grant refresh failure is fail-loud: the account cools down and the pool
-  falls back to the provider's key pool. Re-authentication is manual —
+- Grant refresh failure is fail-loud: the account cools down. A
+  key-capable route falls back to the provider's key pool; an OAuth-only
+  route has no API-key pool and stops serving requests until an account is
+  signed in again. Re-authentication is manual —
   re-login from the account menu.
 - Only one active grant per provider is kept.
 - Increment 1 keeps the selection model key-centric: the provider's API

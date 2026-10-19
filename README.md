@@ -103,9 +103,10 @@ requests directly, and one active grant per provider is kept. Per-account
 ranking (rotating or load-balancing between accounts) is future work. An
 account row's counters reflect that account's own successes and failures,
 not a per-account traffic split. When the projected grant fails (expired
-or refresh rejected), the account cools down and the route falls back to
-the provider's key pool; recovery is a manual re-login from the account
-menu.
+or refresh rejected), the account cools down. On a key-capable route the
+pool falls back to the provider's key pool; an OAuth-only route has no
+API-key pool and stops serving requests until an account is signed in
+again. Recovery is a manual re-login from the account menu.
 
 Adding an account stores only the provider-issued grant in the Harness
 credential store, behind the account's `grantRef`; the manager state keeps

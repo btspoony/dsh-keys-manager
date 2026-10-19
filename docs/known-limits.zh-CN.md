@@ -15,6 +15,6 @@ Keys Manager 插件当前的设计边界：
 ## OAuth 账户（增量 1）
 
 - 账户登录仅限 `llm-pi-ai` host 实现了 OAuth 流的七家提供商：Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI。通过 oh-my-pi 扩展覆盖更多提供商在 [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15) 跟踪。
-- 授权刷新失败按 fail-loud 处理：账户进入冷却，池回退到该提供商的 key 池。重新认证是手动的——从账户菜单重新登录。
+- 授权刷新失败按 fail-loud 处理：账户进入冷却。支持 key 池的路由会回落到该提供商的 key 池；仅有 OAuth 的路由没有 API-key 池，将停止服务，直到重新登录账户。重新认证是手动的——从账户菜单重新登录。
 - 每个提供商同时只保留一个活跃授权。
 - 增量 1 的选择模型以 key 为中心：该提供商的 API key 构成粘滞/轮询/切换/冷却的选择环，同时只由一条被投影的 OAuth 授权服务该提供商。按账户排名（在账户间轮换）属于后续工作，不在本增量内。
