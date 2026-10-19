@@ -3652,6 +3652,65 @@ test('a rotated refresh token re-associates its row and syncs the rotated payloa
   }
 })
 
+// F1 (I-000081): an echo-served rotation whose payload matches a pool row
+// must REGISTER that row as the projection owner. After a restart the pool
+// row is hydrated but no in-process login or activation ran, so nothing
+// else claims the owner; without the claim, request attribution
+// (oauthOwnerFor), cooling, and demotion all point nowhere while the
+// projection serves every request.
+
+test('an echo rotation with no in-process owner registers the matched row as the projection owner (I-000081)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    // Post-restart shape: the row exists but nothing projected it in this
+    // process (no activation, no login). pi-ai then rewrites its own record
+    // with a rotated token and the reconciler sees the echo.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-echo-rotated', access: 'at-echo-rotated', expires: 1_950_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-echo-rotated').digest('hex').slice(0, 12))
+    await eventually(() => assert.equal(row.oauth!.grantRef, rotatedRef))
+    // Public failure path: the projection now serves requests, so an
+    // oauth-coded stream failure must attribute to THIS row — cool it,
+    // demote the projection, and fail over to the key pool. That path is
+    // reachable only through the registered owner.
+    await consume(streamFailure(h, 'anthropic', 'session-echo-owner', { code: 'oauth', message: 'OAuth refresh failed for anthropic' }))
+    assert.ok(row.cooldownUntil > Date.now(), 'the echo-registered owner must be cooled')
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    const selection = await h.service.selectKey('anthropic', 'session-echo-owner-next')
+    assert.equal(selection.key!.kind, 'api-key')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a foreign echo payload is never adopted as the projection owner (I-000081 guard)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // A payload matching no pool row: the round-2 warn-and-clear path must
+    // survive F1 — ownership is never adopted for a foreign grant.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-foreign-echo', access: 'at-foreign-echo', expires: 1_950_000_000_000, accountId: 'acc-foreign', email: 'foreign@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    await eventually(() => assert.match(warnings(), /managed natively outside/))
+    // Attribution resolved to nothing: an oauth-coded stream failure after
+    // the foreign echo must not cool or demote the previously active row.
+    await consume(streamFailure(h, 'anthropic', 'session-foreign-echo', { code: 'oauth', message: 'OAuth refresh failed for anthropic' }))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.cooldownUntil, 0)
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+  } finally {
+    await h.close()
+  }
+})
+
 test('rotation-sync email fallback skips accountId-bearing rows (harvestLogin parity)', async () => {
   const { h, rowId: idA, grantRef: refA } = await harnessWithSeededAccount({ accountId: 'acc-a', email: 'shared@example.com', refresh: 'rt-a', access: 'at-a' })
   try {
@@ -3984,13 +4043,20 @@ test('a hydration read superseded by a newer activation is discarded', async () 
     const staleRecord = grantPayload({ refresh: 'rt-account-a', access: 'at-account-a', accountId: 'acc-a', email: 'a@example.com' })
     h.credentials.records.set(GRANT_KEY, structuredClone(staleRecord))
     // The hydration read snapshots A at t0 and resolves late — exactly the
-    // in-flight window a real credential store's read latency opens.
+    // in-flight window a real credential store's read latency opens. Only
+    // THAT first read is stale: a real store's readRecord never returns a
+    // value older than an already-resolved write, so later reads (the
+    // rotation reconciler's echo re-read) observe the live record.
     const raw = h.credentials.raw
     const realRead = raw.readRecord.bind(raw)
+    let grantReads = 0
     raw.readRecord = async (key: string) => {
       if (key === GRANT_KEY) {
-        await new Promise(resolve => setTimeout(resolve, 60))
-        return structuredClone(staleRecord)
+        grantReads += 1
+        if (grantReads === 1) {
+          await new Promise(resolve => setTimeout(resolve, 60))
+          return structuredClone(staleRecord)
+        }
       }
       return realRead(key)
     }

@@ -1265,6 +1265,10 @@ export class KeysManagerService {
     void (async () => {
       const records = this.credentialRecords()
       if (records === undefined) return
+      // F1 (I-000081): the owner claim below must not overwrite a claim an
+      // activation or login lands while this awaited re-read is in flight —
+      // the same generation guard load-time hydration applies.
+      const generation = this.ownershipGenerations.get(provider) ?? 0
       const record = await records.readRecord(key)
       if (record === undefined) {
         // This manager's own demotion marked the removal just before
@@ -1316,6 +1320,20 @@ export class KeysManagerService {
         this.activeAccounts.delete(provider)
         this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
         return
+      }
+      // F1 (I-000081): the matched grant IS the live projection, so this row
+      // owns it from now on — even when no in-process login or activation
+      // ran (the post-restart echo-rotation case: a hydrated row, no owner
+      // entry). Claiming here is what makes request attribution
+      // (oauthOwnerFor), cooling, and demotion act on the serving account.
+      // The guard above keeps unrecognized and foreign payloads on the
+      // warn-and-clear path; ownership is never adopted for them. A newer
+      // activation/login that claimed while the read was in flight wins:
+      // the stale echo claim is discarded exactly like a stale hydration
+      // read (the rotation write-back below still lands — row data sync is
+      // independent of who owns the projection).
+      if ((this.ownershipGenerations.get(provider) ?? 0) === generation) {
+        this.claimProjectionOwner(provider, owner.id)
       }
       // Rotation sync: the rotated payload is authoritative (the plan's
       // single-writer contract — "sync them back to the owning plugin-scope
