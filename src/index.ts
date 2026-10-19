@@ -402,6 +402,11 @@ export class KeysManagerService {
     return next
   }
 
+  /** Periodically drop expired attempts, pins, and request-step records. */
+  pruneTransient(now: number = Date.now()): void {
+    this.pruneAttempts(now)
+  }
+
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
   async close(): Promise<void> {
     this.closing = true
@@ -1281,13 +1286,9 @@ export class KeysManagerService {
   noteRequestStep(payload: AgentRequestPayload, providerId: string): void {
     const raw = payload.agent?.session?.id
     if (raw === undefined || providerId.length === 0) return
+    // Unmanaged providers never consult this map; do not let them accumulate.
+    if (this.store.provider(providerId) === undefined) return
     const sessionId = String(raw)
-    const prefix = `${sessionId}\u0000${providerId}\u0000`
-    for (const key of this.retryBindings.keys()) {
-      if (!key.startsWith(prefix)) continue
-      const parts = key.split('\u0000')
-      if (Number(parts[2]) !== payload.turn || Number(parts[3]) !== payload.step) this.retryBindings.delete(key)
-    }
     this.requestSteps.set(`${sessionId}\u0000${providerId}`, { turn: payload.turn, step: payload.step, at: Date.now() })
   }
 
@@ -1477,7 +1478,9 @@ export class KeysManagerService {
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
-    const current = sessionId === undefined ? undefined : this.requestSteps.get(`${sessionId}\u0000${providerId}`)
+    const current = sessionId === undefined || options.purpose !== undefined
+      ? undefined
+      : this.requestSteps.get(`${sessionId}\u0000${providerId}`)
     const step = current !== undefined && Date.now() - current.at <= ATTEMPT_TTL_MS
       ? { turn: current.turn, step: current.step }
       : undefined
@@ -1856,6 +1859,11 @@ export function apply(ctx: HostContext): void {
     options?: boolean | { prepend?: boolean },
   ) => () => void
   on('llm/stream', (options: unknown, next: () => AsyncIterable<StreamChunkLike>) => service.streamListener(options as GenerateOptionsLike, next))
+  const pruneTimer = setInterval(() => service.pruneTransient(), 60_000)
+  pruneTimer.unref?.()
+  ctx.effect(() => () => {
+    clearInterval(pruneTimer)
+  }, 'keys-manager: prune transient state')
   on('agent/request', async (payload: unknown, next: () => Promise<unknown>) => {
     const config = await next()
     const provider = config !== null && typeof config === 'object' && typeof (config as { provider?: unknown }).provider === 'string'
@@ -1863,7 +1871,7 @@ export function apply(ctx: HostContext): void {
       : ''
     service.noteRequestStep(payload as AgentRequestPayload, provider)
     return config
-  })
+  }, { prepend: true })
   on('agent/request-error', (payload: unknown, next: () => Promise<RequestErrorAction>) => service.requestErrorListener(payload as RequestErrorPayload, next), { prepend: true })
 
   ;(ctx.provide as unknown as (name: string, value: unknown) => () => void)(SERVICE, service)

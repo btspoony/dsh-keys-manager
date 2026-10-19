@@ -86,8 +86,12 @@ git log by the release-prep workflow.
   consumed), index rebuilds preserve unrelated pins, and each key in a step
   keeps its own retry counter.
 - Recovery identity comes from the agent/request turn/step, keyed by session
-  and provider, so the actual retry stream consumes only its own pin; a new
-  step clears abandoned pins, success/cancel clear them too, and failover
-  carries a candidate's already-spent per-key budget.
+  and provider, so the actual retry stream consumes only its own pin; success
+  and cancellation clear it, a new in-flight step does not delete another
+  step's pin, purpose-scoped bypass streams ignore it, and failover carries a
+  candidate's already-spent per-key budget.
+- The request observer is registered outside routing modifiers (`prepend`), so
+  it records the provider the request finally uses; unmanaged providers do
+  not create step records, and a timer prunes transient state independently.
 - State probing uses stat and distinguishes ENOENT from permission failures;
   a denied parent directory starts read-only and cannot overwrite valid state.

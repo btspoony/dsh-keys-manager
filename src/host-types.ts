@@ -120,6 +120,7 @@ export interface GenerateOptionsLike {
   provider: string
   model: string
   sessionId?: string
+  purpose?: string
   messages: readonly unknown[]
 }
 

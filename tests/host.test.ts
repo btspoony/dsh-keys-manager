@@ -1961,7 +1961,7 @@ test('a non-sticky three-key failover retry uses the verified alternate', async 
   }
 })
 
-test('a new step clears a retry pin abandoned by cancellation', async () => {
+test('a new step preserves another in-flight step retry pin', async () => {
   const h = await harness()
   try {
     await h.service.adoptProvider('zai-coding-cn')
@@ -1987,7 +1987,7 @@ test('a new step clears a retry pin abandoned by cancellation', async () => {
     assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
     assert.equal((h.service as any).retryBindings.size, 1)
     h.service.noteRequestStep({ agent: { session: { id: 'session-abandon' } }, turn: 2, step: 1 }, 'zai-coding-cn')
-    assert.equal((h.service as any).retryBindings.size, 0)
+    assert.equal((h.service as any).retryBindings.size, 1)
   } finally {
     await h.close()
   }
@@ -1997,10 +1997,58 @@ test('a new step clears a retry pin abandoned by cancellation', async () => {
 test('request steps are keyed per provider', async () => {
   const h = await harness()
   try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.adoptProvider('anthropic')
     h.service.noteRequestStep({ agent: { session: { id: 'session-provider' } }, turn: 1, step: 1 }, 'zai-coding-cn')
     h.service.noteRequestStep({ agent: { session: { id: 'session-provider' } }, turn: 2, step: 1 }, 'anthropic')
     assert.equal((h.service as any).requestSteps.get('session-provider\u0000zai-coding-cn').turn, 1)
     assert.equal((h.service as any).requestSteps.get('session-provider\u0000anthropic').turn, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('purpose-scoped streams do not consume an agent step pin', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const key = provider.keys[0]
+    ;(h.service as any).pinRetry('zai-coding-cn', 'session-bypass', 1, 1, key.id)
+    h.service.noteRequestStep({ agent: { session: { id: 'session-bypass' } }, turn: 1, step: 1 }, 'zai-coding-cn')
+    const iterable = h.service.streamListener(
+      { provider: 'zai-coding-cn', model: 'model', sessionId: 'session-bypass', purpose: 'compaction', messages: [] },
+      async function* () {
+        await h.credentials.raw.resolve(provider.brokerRef)
+        yield { type: 'text' }
+      } as any,
+    )
+    await consume(iterable)
+    assert.equal((h.service as any).retryBindings.size, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('unmanaged provider requests do not create step records', async () => {
+  const h = await harness()
+  try {
+    h.service.noteRequestStep({ agent: { session: { id: 'session-unmanaged' } }, turn: 1, step: 1 }, 'openai-codex')
+    assert.equal((h.service as any).requestSteps.size, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('transient pruning drops expired request steps without UI traffic', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.service.noteRequestStep({ agent: { session: { id: 'session-expire' } }, turn: 1, step: 1 }, 'zai-coding-cn')
+    assert.equal((h.service as any).requestSteps.size, 1)
+    h.service.pruneTransient(Date.now() + 2 * 60 * 60 * 1000)
+    assert.equal((h.service as any).requestSteps.size, 0)
   } finally {
     await h.close()
   }
