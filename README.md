@@ -7,7 +7,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-Docs: [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md) — 中文文档：[开发](docs/development.zh-CN.md) · [发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md)
+Docs: [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md) — Documentation in Chinese: [开发](docs/development.zh-CN.md) · [发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md)
 
 A DeepSeek Harness plugin that turns one provider API key into a managed pool.
 It extends the Models page rather than replacing it: providers, models, and the
@@ -26,9 +26,9 @@ manager.
 
 ### Extra providers
 
-`src/providers.ts` contains a curated catalog of 32 extra providers (21 from
-the original catalog plus 11 added in this release, for example SiliconFlow,
-Zhipu coding plan, and Cline Pass), derived from
+`src/providers.ts` contains a curated catalog of 33 extra providers (21 from
+the original catalog plus 12 added in this release, for example SiliconFlow,
+Zhipu coding plan, Cline Pass, and Ollama Cloud), derived from
 [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
 Providers whose routes DSH already ships (`meta`, `typesafe`) are not
 duplicated by the plugin.

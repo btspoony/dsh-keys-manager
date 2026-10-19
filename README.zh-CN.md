@@ -23,7 +23,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ### 额外提供商
 
-`src/providers.ts` 收录 32 个精选提供商（原有 21 个加本次发布新增 11 个，例如 SiliconFlow、智谱编码套餐、Cline Pass），目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。DSH 已自带路由的提供商（`meta`、`typesafe`）不重复提供。
+`src/providers.ts` 收录 33 个精选提供商（原有 21 个加本次发布新增 12 个，例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud），目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。DSH 已自带路由的提供商（`meta`、`typesafe`）不重复提供。
 
 ## 快速开始
 

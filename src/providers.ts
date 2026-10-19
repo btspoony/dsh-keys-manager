@@ -1194,6 +1194,26 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = Object.freeze([
     ]
   },
   {
+    "id": "ollama-cloud",
+    "name": "Ollama Cloud",
+    "api": "openai-completions",
+    "baseURL": "https://ollama.com/v1",
+    "env": [
+      "OLLAMA_CLOUD_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "beam",
+        "name": "Beam",
+        "contextWindow": 1048576,
+        "maxTokens": 8192,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
     "id": "yolo-auto",
     "name": "Yolo Auto",
     "api": "openai-completions",
