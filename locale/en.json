@@ -2,5 +2,17 @@
   "meta": {
     "title": "Keys Manager",
     "description": "Multiple API keys per provider with sticky sessions, round-robin selection, retry failover, cooldown recovery, and searchable extra providers."
-  }
+  },
+  "addAccount": "Add account",
+  "accountIdentity": "Account",
+  "accountReauth": "Re-authenticate",
+  "accountActivate": "Set active",
+  "loginTitle": "Account sign-in",
+  "loginPending": "Waiting for authorization…",
+  "loginBrowserOpen": "Open in browser",
+  "loginPromptTitle": "Complete sign-in",
+  "loginPromptSubmit": "Submit",
+  "loginFailed": "Login failed",
+  "loginFlowEnded": "This sign-in session has ended. Close the dialog and start again.",
+  "loginReady": "Signed in."
 }

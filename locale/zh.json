@@ -2,5 +2,17 @@
   "meta": {
     "title": "密钥管理",
     "description": "为同一个 Provider 配置多个 API Key，支持单会话固定、Round Robin、重试切换、冷却恢复，并提供可搜索的扩展 Provider。"
-  }
+  },
+  "addAccount": "添加账户",
+  "accountIdentity": "账户",
+  "accountReauth": "重新认证",
+  "accountActivate": "设为当前",
+  "loginTitle": "账户登录",
+  "loginPending": "等待授权…",
+  "loginBrowserOpen": "在浏览器中打开",
+  "loginPromptTitle": "完成登录",
+  "loginPromptSubmit": "提交",
+  "loginFailed": "登录失败",
+  "loginFlowEnded": "本次登录流程已结束，请关闭窗口后重新开始。",
+  "loginReady": "登录成功。"
 }

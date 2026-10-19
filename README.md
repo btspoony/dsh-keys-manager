@@ -21,6 +21,8 @@ manager.
 - A search-driven Keys Manager page on the plugin's own detail page.
 - A "managed by Keys Manager" badge inside the existing Models provider cards.
 - Extra built-in providers installed as ordinary `llm-pi-ai` routes.
+- OAuth account sign-in for seven pi-ai-backed providers, pooled alongside
+  API keys.
 
 ### Extra providers
 
@@ -81,6 +83,28 @@ the shipped plugin configuration cards.
    row shows status, last use, and the recovery time while cooling.
 5. Tune retry count (1–3), base cooldown, and recovery grace in the settings
    card.
+
+### OAuth accounts
+
+Providers that ship a native OAuth sign-in offer two ways to join the pool:
+**Add key** stores a static API key, while **Add account** runs the
+provider's OAuth sign-in flow and stores the resulting grant as an account
+row in the same pool.
+
+Supported providers — the seven whose OAuth flows `llm-pi-ai` implements:
+Anthropic, GitHub Copilot, Kimi Coding, OpenAI Codex, OpenRouter, Radius,
+and xAI.
+
+An account row behaves like a key: sticky session binding, round-robin
+selection, retry failover, and cooldown apply unchanged. When the grant
+fails (expired or refresh rejected), the account cools down and the cascade
+falls back to the provider's key pool; recovery is a manual re-login from
+the account menu. One active grant per provider is kept.
+
+Adding an account stores only the provider-issued grant in the Harness
+credential store, behind the account's `grantRef`; the manager state keeps
+the reference plus non-sensitive metadata (email, account id, expiry) — the
+same secret-free layout as API keys.
 
 ### Selection and failure policy
 
@@ -146,12 +170,12 @@ The following DSH built-ins are explicitly outside single-key pool management:
 | `amazon-bedrock` | AWS credential chain (profile, IAM keys, ECS/IRSA/EC2), not one API key |
 | `cloudflare-ai-gateway` | API key plus a Cloudflare account ID and gateway ID |
 | `cloudflare-workers-ai` | API key plus a Cloudflare account ID |
-| `openai-codex` | ChatGPT OAuth sign-in only; no API-key credential |
+| `openai-codex` | ChatGPT OAuth sign-in only; no API-key credential — usable as an [OAuth account](#oauth-accounts) instead of a key |
 
-All other DSH catalog routes expose an API-key credential. Providers that also
-support OAuth (Anthropic, GitHub Copilot, Kimi, OpenRouter, xAI, Radius) remain
-manageable through their API-key path; OAuth accounts are tracked separately
-in the roadmap issue.
+All other DSH catalog routes expose an API-key credential. Providers that
+also support OAuth (Anthropic, GitHub Copilot, Kimi Coding, OpenAI Codex,
+OpenRouter, Radius, xAI) remain manageable through their API-key path, and
+their OAuth sign-in is available as [OAuth accounts](#oauth-accounts).
 
 ## Documentation
 

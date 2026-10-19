@@ -6,9 +6,10 @@ Current design boundaries of the Keys Manager plugin:
 
 - CoreWeave provider support is deferred to a later release; it is tracked in
   [issue #11](https://github.com/btspoony/dsh-keys-manager/issues/11).
-- OAuth2 account pools are designed for but not implemented. Anthropic key
-  pools manage a plain `ANTHROPIC_API_KEY`; its OAuth/federation token paths
-  are not account pools.
+- OAuth2 account pools ship as increment 1 for seven pi-ai-backed providers;
+  see the OAuth accounts limits below. Anthropic key pools still manage a
+  plain `ANTHROPIC_API_KEY` — its OAuth/federation token paths are separate
+  account rows, not key-pool members.
 - Cloudflare AI Gateway and Workers AI require a Cloudflare account ID (and a
   gateway ID for AI Gateway) in addition to the API key. They are reported as
   unsupported key pools and should be configured natively in Models.
@@ -29,3 +30,15 @@ Current design boundaries of the Keys Manager plugin:
   window is open. The pin window is 60 seconds, which bounds this exposure
   but does not eliminate it; concurrent multi-step retry behavior remains
   best-effort.
+
+## OAuth accounts (increment 1)
+
+- Account sign-in is limited to the seven providers whose OAuth flows the
+  `llm-pi-ai` host implements: Anthropic, GitHub Copilot, Kimi Coding,
+  OpenAI Codex, OpenRouter, Radius, and xAI. Extending coverage through an
+  oh-my-pi extension is tracked in
+  [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15).
+- Grant refresh failure is fail-loud: the account cools down and the pool
+  falls back to the provider's key pool. Re-authentication is manual —
+  re-login from the account menu.
+- Only one active grant per provider is kept.
