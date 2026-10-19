@@ -3320,6 +3320,35 @@ function interleaveNativeSignIn(
   return { landed: () => landed }
 }
 
+test('re-authenticating a demoted account clears the missing flag', async () => {
+  // Round-3 finding 5: a demotion marks the row value-missing; a successful
+  // re-authentication must recover it — no missing pill, included in the
+  // healthy counts.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.fallbackToKeys('anthropic')
+    assert.equal(h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!.valueMissing, true)
+    // Re-authentication commits the same account's grant again.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    // The same row was re-bound, not duplicated.
+    assert.equal(h.service.getAccountAttempt(view.id)!.accountId, rowId)
+    const state = h.service.buildState()
+    const provider = state.providers.find(entry => entry.provider === 'anthropic')!
+    const row = provider.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, false)
+    assert.equal(row.status, 'active')
+    assert.equal(provider.healthyKeyCount, provider.keys.filter(key => key.status === 'active').length)
+    assert.ok(provider.healthyKeyCount >= 1)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a successful demotion stops naming the row it stopped serving', async () => {
   // Round-3 finding 4: after the manager's own demotion, no row may still
   // be named the live projection — oauthOwnerFor must resolve to null so

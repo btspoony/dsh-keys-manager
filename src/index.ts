@@ -1059,6 +1059,11 @@ export class KeysManagerService {
             ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
             ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
           }
+          // A successful re-authentication recovers the account (round-3
+          // finding 5): the missing flag a demotion set must go, or the now
+          // live projection keeps rendering as missing and stays out of the
+          // healthy counts. Same reset activateAccount applies.
+          existing.valueMissing = false
         } else {
           providerRecord.keys.push({
             id: newKeyId(),
