@@ -1022,6 +1022,217 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = Object.freeze([
         ]
       }
     ]
+  },
+  {
+    "id": "abliteration",
+    "name": "Abliteration",
+    "api": "openai-responses",
+    "baseURL": "https://api.abliteration.ai/v1",
+    "env": [
+      "ABLITERATION_API_KEY",
+      "ABLIT_KEY"
+    ],
+    "models": [
+      {
+        "id": "abliterated-model",
+        "name": "Abliterated Model",
+        "contextWindow": 262144,
+        "maxTokens": 262134,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "abliterated-model-large",
+        "name": "Abliterated Model Large",
+        "contextWindow": 1000000,
+        "maxTokens": 999990,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "abliterated-model-large-v2",
+        "name": "Abliterated Model Large V2",
+        "contextWindow": 1000000,
+        "maxTokens": 999990,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "cline-pass",
+    "name": "ClinePass",
+    "api": "openai-completions",
+    "baseURL": "https://api.cline.bot/api/v1",
+    "env": [
+      "CLINE_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "cline-free/mimo-v2.6-flash",
+        "name": "MiMo-V2.6-Flash (free)",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1048576,
+        "maxTokens": 384000,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "commandcode",
+    "name": "Command Code",
+    "api": "openai-completions",
+    "baseURL": "https://api.commandcode.ai/provider/v1",
+    "env": [
+      "COMMAND_CODE_API_KEY",
+      "COMMANDCODE_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "Qwen/Qwen3.8-Max",
+        "name": "Qwen 3.8 Max",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K2.7-Code",
+        "name": "Kimi K2.7 Code",
+        "contextWindow": 256000,
+        "maxTokens": 65536,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "z-ai/glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "deepseek/deepseek-v4-flash-fast",
+        "name": "DeepSeek V4 Flash Fast",
+        "contextWindow": 1000000,
+        "maxTokens": 65536,
+        "input": [
+          "text"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "firepass",
+    "name": "Fire Pass",
+    "api": "openai-completions",
+    "baseURL": "https://api.fireworks.ai/inference/v1",
+    "env": [
+      "FIREPASS_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "glm-5.2-fast",
+        "name": "GLM 5.2 Fast (Fire Pass)",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "kimi-k3-fast",
+        "name": "Kimi K3 Fast (Fire Pass)",
+        "contextWindow": 1048576,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "yolo-auto",
+    "name": "Yolo Auto",
+    "api": "openai-completions",
+    "baseURL": "https://yolo-auto.com/v1",
+    "env": [
+      "YOLO_AUTO_API_KEY"
+    ],
+    "models": [
+      {
+        "id": "deepseek-flash-v4",
+        "name": "DeepSeek Flash V4",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "qwen3.8-flash",
+        "name": "Qwen3.8 Flash",
+        "contextWindow": 262144,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "yolo",
+        "name": "Yolo",
+        "contextWindow": 262144,
+        "maxTokens": 131072,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
   }
 ])
 
