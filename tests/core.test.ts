@@ -8,7 +8,6 @@ import {
   DEFAULT_SETTINGS,
   accountRef,
   applyFailureCooldown,
-  cascadeOrder,
   classifyOAuthFailure,
   isOAuthCapable,
   isSelectable,
@@ -482,53 +481,6 @@ test('an unsupported state version stays read-only and untouched', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
-})
-
-
-test('cascade order ranks an active account ahead of key candidates', () => {
-  const acct = account('acct')
-  const a = key('a')
-  const b = key('b')
-  const p = provider([a, b, acct])
-  assert.deepEqual(cascadeOrder(p, now), [acct, a, b])
-  assert.equal(p.cursor, 0) // arbitration must not consume the round-robin cursor
-})
-
-test('cooled-down and paused accounts are skipped so the key pool serves', () => {
-  const cooling = account('acct-cooling', { cooldownUntil: now + MIN })
-  const paused = account('acct-paused', { enabled: false })
-  const a = key('a')
-  const p = provider([cooling, paused, a])
-  assert.deepEqual(cascadeOrder(p, now), [a])
-})
-
-test('cascade order keeps existing round-robin order for keys from the cursor', () => {
-  const acct = account('acct')
-  const a = key('a')
-  const b = key('b')
-  const c = key('c')
-  const p = provider([a, b, c, acct])
-  p.cursor = 2
-  assert.deepEqual(cascadeOrder(p, now), [acct, c, a, b])
-})
-
-test('cascade order returns nothing when every candidate is unavailable', () => {
-  const p = provider([account('acct', { cooldownUntil: now + MIN }), key('a', { enabled: false })])
-  assert.deepEqual(cascadeOrder(p, now), [])
-})
-
-test('cascade order ranks multiple accounts in cursor-anchored ring order', () => {
-  const acct1 = account('acct-1')
-  const acct2 = account('acct-2')
-  const a = key('a')
-  const p = provider([a, acct1, acct2])
-  // Accounts keep the same cursor-anchored ring order as keys, ranked ahead
-  // of them: offset 1 starts the ring at acct-1, offset 2 at acct-2.
-  p.cursor = 1
-  assert.deepEqual(cascadeOrder(p, now), [acct1, acct2, a])
-  p.cursor = 2
-  assert.deepEqual(cascadeOrder(p, now), [acct2, acct1, a])
-  assert.equal(p.cursor, 2)
 })
 
 test('classifyOAuthFailure maps the oauth code to failover-eligible cooldown', () => {

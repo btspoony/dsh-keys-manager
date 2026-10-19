@@ -14,5 +14,7 @@
   "loginPromptSubmit": "Submit",
   "loginFailed": "Login failed",
   "loginFlowEnded": "This sign-in session has ended. Close the dialog and start again.",
-  "loginReady": "Signed in."
+  "loginReady": "Signed in.",
+  "deleteAccountTitle": "Delete account “{alias}”?",
+  "deleteAccountBody": "This removes the account’s stored OAuth grant from the credential store. If it is the active account, the provider route stops serving it and falls back to its API-key pool; the provider stays managed."
 }

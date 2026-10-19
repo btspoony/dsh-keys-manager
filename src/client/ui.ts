@@ -629,14 +629,16 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
     ),
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
     confirm ? h(Modal, {
-      title: t('deleteTitle', { alias: identity }),
+      // SF4: account-specific copy — the grant removal consequence, not a
+      // key-deletion/provider-release promise.
+      title: t('deleteAccountTitle', { alias: identity }),
       onClose: () => setConfirm(false),
       busy,
       footer: [
         h(Button, { key: 'cancel', onClick: () => setConfirm(false), disabled: busy }, t('cancel')),
         h(Button, { key: 'delete', variant: 'danger', onClick: remove, disabled: busy }, busy ? t('deleting') : t('deleteConfirm')),
       ],
-    }, h('p', { className: 'km-modal-copy' }, t('deleteBody'))) : null,
+    }, h('p', { className: 'km-modal-copy' }, t('deleteAccountBody'))) : null,
   )
 }
 

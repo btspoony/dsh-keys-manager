@@ -141,6 +141,8 @@ const zh = {
       loginFailed: '登录失败',
       loginFlowEnded: '本次登录流程已结束，请关闭窗口后重新开始。',
       loginReady: '登录成功。',
+      deleteAccountTitle: '删除账户“{alias}”？',
+      deleteAccountBody: '这会从凭证库中删除该账户保存的 OAuth 授权。如果它是当前账户，该 Provider 路由将停用它并回落到 API-key 池；Provider 仍保持接管状态。',
     }
 
 const en = {
@@ -283,6 +285,8 @@ const en = {
       loginFailed: 'Login failed',
       loginFlowEnded: 'This sign-in session has ended. Close the dialog and start again.',
       loginReady: 'Signed in.',
+      deleteAccountTitle: 'Delete account “{alias}”?',
+      deleteAccountBody: 'This removes the account’s stored OAuth grant from the credential store. If it is the active account, the provider route stops serving it and falls back to its API-key pool; the provider stays managed.',
     }
 
 /** Dictionaries registered under the plugin's locale namespace. */

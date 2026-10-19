@@ -1249,7 +1249,8 @@ export class KeysManagerService {
    * on cooldown expiry would replay the failing grant every request; the
    * user (who can see whether the account recovered upstream) is the
    * arbiter. `fallbackToKeys` marks every account row value-missing so the
-   * pure `cascadeOrder` keeps ranking only real candidates.
+   * live arbitration — projection presence plus probe fail-skip over a
+   * kind-agnostic cursor ring — keeps serving only real candidates.
    */
   fallbackToKeys(provider: string): Promise<void> {
     return this.run(() => this.fallbackToKeysUnqueued(provider))

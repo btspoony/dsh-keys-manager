@@ -14,5 +14,7 @@
   "loginPromptSubmit": "提交",
   "loginFailed": "登录失败",
   "loginFlowEnded": "本次登录流程已结束，请关闭窗口后重新开始。",
-  "loginReady": "登录成功。"
+  "loginReady": "登录成功。",
+  "deleteAccountTitle": "删除账户“{alias}”？",
+  "deleteAccountBody": "这会从凭证库中删除该账户保存的 OAuth 授权。如果它是当前账户，该 Provider 路由将停用它并回落到 API-key 池；Provider 仍保持接管状态。"
 }

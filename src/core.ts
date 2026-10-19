@@ -277,33 +277,13 @@ export function accountRef(provider: string, hash: string): string {
 }
 
 /**
- * Rank one provider's candidates: OAuth accounts ahead of API keys, each
- * group keeping the provider's cursor-anchored ring order. Pure: the cursor
- * is not advanced.
- *
- * RESERVED for future per-account ordering — no production call site today.
- * Increment-1 arbitration is NOT this ranking: the live selection path is
- * projection presence + probe fail-skip over a kind-agnostic ring. The
- * round-robin pickers walk every candidate in array order regardless of
- * kind, and an OAuth row leaves that ring only when the account probe fails
- * on its non-credential-grammar ref (probeKey → failed, not missing).
- * Wiring this account-first ranking into the selection path is roadmap
- * work, deliberately out of increment-1 scope.
+ * SF3 note on arbitration (former `cascadeOrder` removed): there is no
+ * kind-ranked cascade. The live selection model is projection presence
+ * (the projected grant serves via pi-ai's stored-credential preference)
+ * plus probe fail-skip over a kind-agnostic cursor-anchored ring — an
+ * OAuth row leaves that ring only when its account probe fails on its
+ * non-credential-grammar ref. Any per-account ranking is roadmap work.
  */
-export function cascadeOrder(provider: ProviderRecord, now: number): KeyRecord[] {
-  const keys = Array.isArray(provider.keys) ? provider.keys : []
-  if (keys.length === 0) return []
-  const accounts: KeyRecord[] = []
-  const apiKeys: KeyRecord[] = []
-  const start = normalizeCursor(provider.cursor, keys.length)
-  for (let offset = 0; offset < keys.length; offset += 1) {
-    const key = keys[(start + offset) % keys.length]
-    if (!isSelectable(key, now)) continue
-    if (key.kind === 'oauth') accounts.push(key)
-    else apiKeys.push(key)
-  }
-  return [...accounts, ...apiKeys]
-}
 
 /** Session/provider binding key. */
 export function bindingKey(sessionId: string, provider: string): string {
