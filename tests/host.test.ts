@@ -3042,6 +3042,34 @@ test('releasing a provider revokes its in-flight sign-in attempt', async () => {
   }
 })
 
+test('a release that wins the race still lets the revoked login clean its projection', async () => {
+  // Round-3 finding 2: start login → release the provider → authorization
+  // settles. The release queues first and removes the provider; the harvest
+  // queued behind it passes its settled guard (the settlement arrived before
+  // the release ran), then finds no managed provider and fails — and must
+  // still revert the pi-ai projection this login committed.
+  const h = await harnessWithManagedAnthropic()
+  try {
+    // pi-ai has already committed this login's grant to the projection key.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // Queue the release, then let the authorized settlement arrive while
+    // that release mutation is still parked in the queue.
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await release
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    assert.match(h.service.getAccountAttempt(view.id)!.error ?? '', /released during sign-in/)
+    // The harvest running after the release must still clean the
+    // projection this login's grant landed in.
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+  } finally {
+    await h.close()
+  }
+})
+
 test('a capacity-exceeded harvest fails loudly and leaves no orphan grant records', async () => {
   const h = await harnessWithManagedAnthropic()
   try {

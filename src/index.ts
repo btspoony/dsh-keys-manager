@@ -984,16 +984,22 @@ export class KeysManagerService {
           throw new Error(`The record at ${grantKey} does not hold a pi-ai OAuth credential`)
         }
         const payload = record.payload
+        // The refresh token is the stable per-grant secret; its digest —
+        // never the token — names the account's plugin-scope record.
+        const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
+        const grantRef = accountRef(attempt.provider, hash)
+        // Capture the compensation facts BEFORE the managed-state check
+        // (round-3 finding 2): release may win the race — it settles this
+        // attempt and removes the provider while the harvest mutation is
+        // queued behind it — and when the check below throws, the
+        // compensation must still hold this login's payload so the pi-ai
+        // projection it already committed can be reverted.
+        harvest = { payload, grantRef, wroteRef: false }
         // Managed state and key capacity are checked BEFORE the
         // plugin-scope write (round-2 review, step 4): a login whose row
         // cannot exist must not strand the persisted grant.
         const providerRecord = this.store.provider(attempt.provider)
         if (providerRecord === undefined) throw new Error(`Provider "${attempt.provider}" is no longer managed`)
-        // The refresh token is the stable per-grant secret; its digest —
-        // never the token — names the account's plugin-scope record.
-        const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
-        const grantRef = accountRef(attempt.provider, hash)
-        harvest = { payload, grantRef, wroteRef: false }
         const existing = providerRecord.keys.find(candidate =>
           candidate.kind === 'oauth' && candidate.oauth !== null
           && (candidate.oauth.grantRef === grantRef
