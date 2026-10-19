@@ -1444,7 +1444,12 @@ export class KeysManagerService {
     const ownsProjection = active !== undefined && await this.decideAndDeleteProjection(provider, active)
     if (ownsProjection) {
       // Full cascade demotion: no pool row serves the route anymore, so
-      // every account row is demoted until re-activation.
+      // every account row is demoted until re-activation. The owner entry
+      // must go too (round-3 finding 4): oauthOwnerFor otherwise keeps
+      // naming this row, so the client renders "Serving provider" next to
+      // the missing pill and leaves "Set active" disabled — the documented
+      // re-activation path unreachable until a restart or a new sign-in.
+      this.activeAccounts.delete(provider)
       for (const row of providerRecord.keys) {
         if (row.kind === 'oauth') row.valueMissing = true
       }

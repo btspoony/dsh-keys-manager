@@ -969,6 +969,33 @@ describe('account ui', () => {
     setRuntimeContext(null)
   })
 
+  test('after a demotion the badge and Set active return to the not-serving state', async () => {
+    // Round-3 finding 4, client view: what the host publishes after its own
+    // demotion (no row projected) drops the serving badge and re-enables
+    // Set active — the documented re-activation path is reachable again.
+    const demoted = makeState()
+    const row = makeOauthKey()
+    demoted.providers[0] = { ...makeOauthProvider(), keys: [row] }
+    const harness = makeContext({ ok: true, value: demoted })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const rows = findByClass(view.nodes, 'km-account-row')
+    expect(rows).toHaveLength(1)
+    expect(rows.filter(row => descendants(view.nodes, row).some(node => node.text === '服务中'))).toHaveLength(0)
+    const dots = descendants(view.nodes, rows[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(dots[0]!.props!.onClick as () => void)()
+    view.render()
+    const activate = descendants(view.nodes, rows[0]!).filter(node => node.type === 'button' && node.text.includes('accountActivate'))
+    expect(activate).toHaveLength(1)
+    expect(activate[0]!.props!.disabled).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
   test('the delete-account copy states the key-pool fallback only for key-capable routes', async () => {
     // Step 8: an OAuth-only route states the real consequence (no serving
     // until re-login); a key-capable route keeps the fallback clause.

@@ -3320,6 +3320,29 @@ function interleaveNativeSignIn(
   return { landed: () => landed }
 }
 
+test('a successful demotion stops naming the row it stopped serving', async () => {
+  // Round-3 finding 4: after the manager's own demotion, no row may still
+  // be named the live projection — oauthOwnerFor must resolve to null so
+  // the badge and the "Set active" gate fall back to the not-serving state.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    let state = h.service.buildState()
+    const serving = state.providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(serving.keys.filter(key => key.projected === true).length, 1)
+    await h.service.fallbackToKeys('anthropic')
+    state = h.service.buildState()
+    const demoted = state.providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(demoted.keys.some(key => key.projected === true), false)
+    // The demoted row renders as missing, not as serving.
+    const row = demoted.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, true)
+    assert.equal(row.status, 'missing')
+  } finally {
+    await h.close()
+  }
+})
+
 test('a native sign-in landing between the ownership check and the delete keeps its record', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {
