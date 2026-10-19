@@ -398,7 +398,10 @@ function supportOf(entry: DirectoryEntry, profile: ProfileShape | undefined, man
   const auth = entry.nativeAuth
   if (auth !== undefined) {
     if (auth.env.some(isKeyishEnv)) return { supported: true }
-    if (auth.oauth) return { supported: false, reason: 'OAuth sign-in is not managed yet' }
+    // Post-increment-1 truth: these routes are managed through OAuth
+    // account sign-in (Add account), not an API key — the key pool itself
+    // does not apply to them.
+    if (auth.oauth) return { supported: false, reason: 'This provider signs in with an OAuth account; no API key is used' }
     if (auth.env.length > 0) return { supported: false, reason: 'This provider uses native cloud credentials, not one API key' }
     return { supported: false, reason: 'This provider declares no API-key authentication' }
   }
