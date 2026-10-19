@@ -30,8 +30,10 @@ manager.
 the original catalog plus 12 added in this release, for example SiliconFlow,
 Zhipu coding plan, Cline Pass, and Ollama Cloud), derived from
 [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
-Providers whose routes DSH already ships (`meta`, `typesafe`) are not
-duplicated by the plugin.
+An extra id is added only when the shipped DSH catalog does not already
+declare that route id (for example, `meta` and `typesafe` are not
+duplicated); same-endpoint providers with distinct credential identities
+are kept by design.
 
 ## Quick start
 

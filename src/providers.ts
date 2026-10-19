@@ -1,10 +1,20 @@
 /**
  * Extra built-in provider catalog for the Keys Manager.
  *
- * Every entry is an OpenAI-compatible / Anthropic-compatible endpoint that
- * the shipped DSH pi-ai directory does not already declare. The seed model
- * rows are a fallback for environments where endpoint discovery is blocked;
- * when discovery succeeds the Host installs the discovered catalog instead.
+ * Every entry is an OpenAI-compatible / Anthropic-compatible endpoint.
+ * Dedup caliber: an extra id is added only when the shipped DSH catalog
+ * does not already declare that route id; same-endpoint entries with
+ * distinct credential identities are allowed by design (precedents:
+ * plugin `alibaba-token-plan` vs DSH `qwen-token-plan(-individual)`, and
+ * plugin `zhipu-coding-plan` vs DSH `zai-coding-cn`, which share base
+ * URLs).
+ *
+ * The seed model rows are a fallback for environments where endpoint
+ * discovery is blocked; when discovery succeeds the Host installs the
+ * discovered catalog instead.
+ *
+ * Layout convention: the catalog grows in addition batches, alphabetical
+ * within each batch.
  *
  * Metadata was curated from oh-my-pi's provider catalog
  * (packages/catalog/src/models.json and compat/rules/providers/*.kdl,
@@ -13,8 +23,22 @@
  */
 import type { ExtraProvider } from './domain.js'
 
+/**
+ * Recursively freeze a value and every array or object nested inside it,
+ * so each entry, its `env`/`models` arrays, and each model row (with its
+ * `input` array) are immutable once the module loads.
+ */
+function deepFreeze<T>(value: T): T {
+  if (Array.isArray(value)) {
+    for (const item of value) deepFreeze(item)
+  } else if (typeof value === 'object' && value !== null) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child)
+  }
+  return Object.freeze(value) as T
+}
+
 /** Curated seed catalog, checked against the shared domain type. */
-export const EXTRA_PROVIDERS: readonly ExtraProvider[] = Object.freeze([
+export const EXTRA_PROVIDERS: readonly ExtraProvider[] = deepFreeze([
   {
     "id": "deepinfra",
     "name": "DeepInfra",
@@ -931,8 +955,7 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = Object.freeze([
         "contextWindow": 1048576,
         "maxTokens": 262000,
         "input": [
-          "text",
-          "image"
+          "text"
         ]
       }
     ]
