@@ -610,7 +610,11 @@ export class KeysManagerService {
         }
         if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) continue
         const owner = matchOwningAccount(providerRecord.provider, accounts, record.payload)
-        if (owner !== undefined) this.activeAccounts.set(providerRecord.provider, owner.id)
+        // A concurrent removal may have dropped the row while this read was
+        // in flight: never resurrect an owner entry for a row that is gone.
+        if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
+          this.activeAccounts.set(providerRecord.provider, owner.id)
+        }
       }
     })().catch(error => {
       this.warn(`projection ownership hydration failed: ${error instanceof Error ? error.message : String(error)}`)
