@@ -72,6 +72,8 @@ function fakeCredentials(initial: Record<string, string> = {}): {
     failRefs: new Set<string>(),
     failModifyRecord: false,
     failDeleteRecord: false,
+    /** Simulated readRecord latency, for harvest-timing tests (SF1). */
+    readRecordDelayMs: 0,
     async resolve(ref: string) {
       if (raw.failResolve || raw.failRefs.has(ref)) throw new Error('credential store unavailable')
       const value = refs.get(ref)
@@ -95,6 +97,7 @@ function fakeCredentials(initial: Record<string, string> = {}): {
       // any pending microtasks. The old same-tick resolution encoded an
       // optimistic ordering production does not guarantee.
       await Promise.resolve()
+      if (raw.readRecordDelayMs > 0) await new Promise(resolve => setTimeout(resolve, raw.readRecordDelayMs))
       return records.get(key)
     },
     async modifyRecord(
@@ -2945,6 +2948,47 @@ test('a failed or cancelled login marks the attempt with a reason', async () => 
   }
 })
 
+// SF1: the success terminal state is published only at the END of the
+// harvest; begin resolving is non-terminal, so a slow or failing harvest
+// can never surface "Signed in." without an account row.
+
+test('a slow harvest keeps the login attempt pending until the grant is captured', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.credentials.raw.readRecordDelayMs = 60
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    // begin resolved long ago; the attempt stays pending while the harvest
+    // is still reading the grant record.
+    await new Promise(resolve => setTimeout(resolve, 15))
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    h.credentials.raw.readRecordDelayMs = 0
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failing harvest flips the settled login to failed instead of ready', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    // A committed record that is not a pi-ai oauth credential: the harvest
+    // must fail the attempt loudly instead of leaving "ready" with no row.
+    h.credentials.records.set(GRANT_KEY, { kind: 'grant', payload: { type: 'unknown-shape' } })
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    assert.match(h.service.getAccountAttempt(view.id)!.error ?? '', /pi-ai OAuth credential/)
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
 test('concurrent logins for one provider are refused until the attempt settles', async () => {
   const h = await harnessWithManagedAnthropic()
   try {
@@ -3181,7 +3225,7 @@ test('record-updated rotations sync back into the owning account row', async () 
 })
 
 test('a rotated refresh token re-associates its row and syncs the rotated payload back (W1)', async () => {
-  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const { h, rowId, grantRef: refA } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   try {
     await h.service.activateAccount('anthropic', rowId)
     // pi-ai rotated the refresh token inside its own record: the payload's
@@ -3193,9 +3237,14 @@ test('a rotated refresh token re-associates its row and syncs the rotated payloa
     h.credentials.emitRecordUpdated(GRANT_KEY)
     const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
     // The row is re-associated via the payload's identity metadata: the
-    // grantRef re-hashes to the rotated refresh token.
+    // grantRef re-hashes to the rotated refresh token. SF2: the superseded
+    // generation's plugin-scope record is deleted once the new payload
+    // persists, so the old refresh token cannot strand as an orphan.
     const newRef = accountRef('anthropic', createHash('sha256').update('rt-rotated-token').digest('hex').slice(0, 12))
-    await eventually(() => assert.equal(row.oauth!.grantRef, newRef))
+    await eventually(() => {
+      assert.equal(row.oauth!.grantRef, newRef)
+      assert.equal(h.credentials.records.has(refA), false)
+    })
     assert.equal(row.oauth!.accountId, 'acc-9')
     assert.equal(row.oauth!.email, 'dev@example.com')
     assert.equal(row.oauth!.expiresAt, 1_950_000_000_000)

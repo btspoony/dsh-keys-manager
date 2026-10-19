@@ -864,9 +864,13 @@ export class KeysManagerService {
     void beginPromise.then(
       outcome => {
         // The settled broadcast always lands first (the seam fires it in the
-        // attempt's finally, authorization/src/index.ts:316-322), so this only
-        // finalizes attempts no settlement reached.
-        this.finishLoginAttempt(attempt, outcome.status === 'authorized' ? 'ready' : 'cancelled')
+        // attempt's finally, authorization/src/index.ts:316-322). An
+        // authorized outcome therefore means harvestLogin owns the terminal
+        // transition (SF1): publishing ready the moment begin resolves would
+        // close the dialog with "Signed in." while the grant capture is
+        // still in flight — or failing. A cancelled outcome still finalizes
+        // attempts that no settlement reached.
+        if (outcome.status !== 'authorized') this.finishLoginAttempt(attempt, 'cancelled')
       },
       error => {
         this.failLoginAttempt(attempt, error)
@@ -1161,8 +1165,10 @@ export class KeysManagerService {
         this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
         return
       }
-      // A rotated refresh token re-points the row at the new ref.
-      if (owner.oauth!.grantRef !== rotatedRef) {
+      // A rotated refresh token re-points the row at the new ref; SF2 keeps
+      // the superseded generation's ref so its record can be removed below.
+      const previousRef = owner.oauth!.grantRef
+      if (previousRef !== rotatedRef) {
         owner.oauth = { ...owner.oauth!, grantRef: rotatedRef }
       }
       // Rotation sync: the rotated payload is authoritative (the plan's
@@ -1173,6 +1179,18 @@ export class KeysManagerService {
       // the handler above only reconciles llm-pi-ai/-scope keys.
       await records.modifyRecord(owner.oauth!.grantRef, () =>
         Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+      // SF2: once the new payload persists, delete the superseded
+      // generation's plugin-scope record — harvest parity. A rotated
+      // refresh token must not strand its secret-bearing record outside
+      // manager state; cleanup is best-effort with a warning, exactly like
+      // the harvest-time cleanup.
+      if (previousRef !== owner.oauth!.grantRef) {
+        try {
+          await records.deleteRecord(previousRef)
+        } catch (error) {
+          this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
       // Refresh-derived identity fields are informational and update in place.
       owner.oauth = {
         ...owner.oauth!,
