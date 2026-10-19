@@ -107,6 +107,11 @@ function fakeCredentials(initial: Record<string, string> = {}): {
     async deleteRecord(key: string): Promise<void> {
       assertRecordKey(key)
       records.delete(key)
+      // Real consumers observe a removal through the seam's post-commit
+      // `credentials/record-updated` fan-out too, so deletions echo here as
+      // well — exactly the shape the manager's own-projection guard must
+      // stay silent on.
+      raw.emitRecordUpdated(key)
     },
     // Mirrors the seam's post-commit `credentials/record-updated` fan-out;
     // tests fire it by hand for out-of-band (pi-ai side) writes.
@@ -2637,36 +2642,44 @@ test('the service resolves the oauth flow for every pi-ai oauth provider', async
 })
 
 /**
- * modifyRecord scope-acceptance pin (T1 review "Cannot verify (b)"): the
- * fake seam mirrors the real store's key grammar
- * (packages/credentials/credentials/src/index.ts:22 KEY_SEGMENT_PATTERN,
- * :69-76 credentialKey validation) and accepts records in BOTH scopes the
- * manager addresses — its own plugin scope for account grants and the
- * llm-pi-ai scope for the activation projection. The real credential
- * provider imposes no ownership check on modifyRecord: it is an abstract
+ * modifyRecord scope-acceptance pin (T1 review "Cannot verify (b)"),
+ * asserted through the product write path rather than the fake's internals:
+ * the manager writes both scopes it addresses — the llm-pi-ai activation
+ * projection (activateAccount) and its own plugin-scope grant records
+ * (harvestLogin) — through the seam's `modifyRecord`, and a subsequent
+ * `readRecord` returns what was written. The real credential provider
+ * imposes no ownership check on modifyRecord: it is an abstract
  * read-modify-write over any two-segment key (index.ts:236-256); scope
  * ownership ("the scope names the owning plugin", authorization
  * types.ts:126-127) is a convention between writers, which is exactly the
- * D1 arbitration contract this manager implements with shape checks.
+ * D1 arbitration contract this manager implements with shape checks. The
+ * fake's mirrored key grammar also refuses digit-leading ids, which is why
+ * accountRef guards digit-leading stems (commit 980b7a6); that refusal is
+ * the fake's own behaviour and is no longer asserted here.
  */
-test('the credential seam accepts record keys in both scopes the manager writes', async () => {
-  const h = await harness()
+test('the service writes record keys in both scopes and reads the projection back', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   try {
-    const { records } = h.credentials
-    // The accountRef output shape is accepted in the plugin scope.
-    const own = accountRef('anthropic', '3fa2c1')
-    await h.credentials.raw.modifyRecord(own, async () => ({ kind: 'grant', payload: { type: 'oauth' } }))
-    assert.equal(records.get(own)?.kind, 'grant')
-    // The activation projection scope is accepted on the same grammar.
-    await h.credentials.raw.modifyRecord('llm-pi-ai/anthropic', async () => ({ kind: 'grant', payload: { type: 'oauth' } }))
-    assert.equal(records.get('llm-pi-ai/anthropic')?.kind, 'grant')
-    // A digit-leading id is refused by the mirrored grammar — which is why
-    // accountRef guards digit-leading stems (commit 980b7a6).
-    await assert.rejects(
-      () => h.credentials.raw.modifyRecord('keys-manager/1foo', async () => ({ kind: 'grant', payload: {} })),
-      /must be two/,
-    )
-    await assert.rejects(() => h.credentials.raw.readRecord('no-slash'), /must be two/)
+    // Product write path 1: activation projects the account grant into the
+    // llm-pi-ai scope through modifyRecord.
+    await h.service.activateAccount('anthropic', rowId)
+    const projected = await h.credentials.raw.readRecord('llm-pi-ai/anthropic')
+    assert.equal(projected?.kind, 'grant')
+    assert.equal((projected!.payload as Record<string, unknown>).refresh, 'rt-seed-value')
+    assert.equal((projected!.payload as Record<string, unknown>).accountId, 'acc-9')
+    // Product write path 2: a fresh login persists its grant in the
+    // manager's own plugin scope, readable back afterwards.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    const newAccountId = h.service.getAccountAttempt(view.id)!.accountId!
+    const newRow = h.store.provider('anthropic')!.keys.find(key => key.id === newAccountId)!
+    const stored = await h.credentials.raw.readRecord(newRow.oauth!.grantRef)
+    assert.notEqual(newRow.oauth!.grantRef, grantRef)
+    assert.equal(stored?.kind, 'grant')
+    assert.equal((stored!.payload as Record<string, unknown>).refresh, 'rt-secret-value')
   } finally {
     await h.close()
   }
@@ -3089,6 +3102,44 @@ test('an out-of-band account change surfaces a native-management warning', async
     await h.service.activateAccount('anthropic', rowId)
     await h.service.fallbackToKeys('anthropic')
     assert.equal(h.service.buildState().warnings.join('\n').includes('native'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * I-1 pin: the fake seam now echoes deletions through
+ * `credentials/record-updated` like the real store does. The manager's own
+ * fallbackToKeys deletion arrives as that event and must not read back as an
+ * out-of-band removal; the guard is one-shot, so a later genuinely
+ * out-of-band removal still warns.
+ */
+test('a fallback deletion echoed as record-updated stays silent and keeps the cascade demoted', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    const pendingWarnings = (): string =>
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    await h.service.activateAccount('anthropic', rowId)
+    // fallbackToKeys deletes the projection; the seam echoes the deletion.
+    // The echoed reconciliation round must not produce the out-of-band
+    // warning and must not flip the account row's missing marker.
+    await h.service.fallbackToKeys('anthropic')
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(pendingWarnings().includes('removed outside Keys Manager'), false)
+    // Cascade skip behavior holds: the account row stays demoted, so
+    // selection resolves through the API-key pool, not the deleted
+    // projection's account.
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, true)
+    const selection = await h.service.selectKey('anthropic', 'session-fallback-echo')
+    assert.equal(selection.key!.kind, 'api-key')
+    // The guard is one-shot: after re-activation, a genuinely out-of-band
+    // removal still surfaces the warning.
+    await h.service.activateAccount('anthropic', rowId)
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(pendingWarnings(), /removed outside Keys Manager/))
   } finally {
     await h.close()
   }

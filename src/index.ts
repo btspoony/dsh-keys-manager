@@ -950,11 +950,17 @@ export class KeysManagerService {
       if (records === undefined) return
       const record = await records.readRecord(key)
       if (record === undefined) {
-        this.intentionalProjectionRemovals.delete(provider)
+        if (this.intentionalProjectionRemovals.has(provider)) {
+          // This deletion echo is the manager's own projection removal
+          // (fallbackToKeys flagged it): consume the one-shot flag and stay
+          // silent — warning here would misreport our own demotion.
+          this.intentionalProjectionRemovals.delete(provider)
+          return
+        }
         if (active !== undefined) {
-          // Not our deletion (fallbackToKeys flags its own): someone removed
-          // the projection, so the route silently serves the key pool while
-          // the account row looks healthy. Mark and warn.
+          // Not our deletion: someone removed the projection, so the route
+          // silently serves the key pool while the account row looks
+          // healthy. Mark and warn.
           active.valueMissing = true
           this.store.touch()
           this.pushWarning(`The ${provider} OAuth grant was removed outside Keys Manager; the route now resolves through its API-key pool.`)
@@ -994,11 +1000,12 @@ export class KeysManagerService {
 
   /**
    * Make one account's grant payload the route's stored credential
-   * (D1 activation projection). The write goes through the seam's
-   * `modifyRecord` — read-decide-replace under the provider's lock
-   * (credentials/src/index.ts:236-250) — so a concurrent pi-ai refresh
-   * cannot be lost; the account whose payload lands becomes the pool's
-   * active account and is cascade-selectable again.
+   * (D1 activation projection). The decide snapshot is read from the
+   * account's own `grantRef` before the write, outside the seam's lock;
+   * the seam's per-provider lock then serializes the read-decide-replace
+   * steps of `modifyRecord` (credentials/src/index.ts:236-250) so that
+   * concurrent writers cannot interleave. The account whose payload lands
+   * becomes the pool's active account and is cascade-selectable again.
    */
   activateAccount(provider: string, accountId: string): Promise<void> {
     return this.run(async () => {
