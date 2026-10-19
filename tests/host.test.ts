@@ -3467,6 +3467,70 @@ test('removeAccount drops the row, its plugin-scope payload, and falls back when
   }
 })
 
+// Round-2 review step 1: credential ownership must be PROVEN at delete
+// time. A natively replaced projection (another account signed in outside
+// the manager) belongs to that account — removing the stale row must not
+// delete the native grant, and an oauth-coded failure must not cool the
+// stale row or demote the native projection.
+
+test('removing a stale account leaves a natively replaced projection untouched', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    assert.ok(h.credentials.records.has(GRANT_KEY))
+    // Native sign-in as account B: pi-ai rewrote the projection with B's
+    // grant; the echo surfaces the native-management warning.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-native-b', access: 'at-native-b', expires: 1_950_000_000_000, accountId: 'acc-native-b', email: 'b@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n'),
+      /managed natively outside/,
+    ))
+    // Removing stale account A keeps B's projection and only drops A's own
+    // plugin-scope record: ownership is verified against the LIVE record.
+    await h.service.removeAccount('anthropic', rowId)
+    assert.equal(h.store.provider('anthropic')!.keys.some(key => key.id === rowId), false)
+    assert.equal(h.credentials.records.has(grantRef), false)
+    assert.ok(h.credentials.records.has(GRANT_KEY), 'the natively replaced projection must survive')
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).accountId, 'acc-native-b')
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth-coded failure after a native replacement attributes to nothing', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // Native replacement lands first: the reconciliation echo drops the
+    // stale owner entry, so the route is no longer owned by this row.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-native-c', access: 'at-native-c', expires: 1_950_000_000_000, accountId: 'acc-native-c' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n'),
+      /managed natively outside/,
+    ))
+    // A projection-served request then fails with the oauth code: the
+    // request scope no longer names a manager-owned account, so the stale
+    // row is neither cooled nor demoted, and the native grant survives.
+    await consume(streamFailure(h, 'anthropic', 'session-stale', { code: 'oauth', message: 'OAuth refresh failed for anthropic' }))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.cooldownUntil, 0)
+    assert.ok(h.credentials.records.has(GRANT_KEY), 'the native projection must survive the stale row failure')
+    const warnings = (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    assert.equal(warnings.includes('demoting'), false)
+  } finally {
+    await h.close()
+  }
+})
+
 // MF3: projection ownership must survive restarts. A fresh service
 // re-derives the active projection from the persisted record payload; an
 // orphan projection (no matching row) is never adopted and keeps warning.

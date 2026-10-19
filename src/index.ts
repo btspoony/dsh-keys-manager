@@ -1139,18 +1139,26 @@ export class KeysManagerService {
         if (active !== undefined) {
           // Not our deletion: someone removed the projection, so the route
           // silently serves the key pool while the account row looks
-          // healthy. Mark and warn.
+          // healthy. Mark, warn, and drop the stale owner entry (round-2
+          // review, step 1): nothing owns the projection anymore.
           active.valueMissing = true
+          this.activeAccounts.delete(provider)
           this.store.touch()
           this.pushWarning(`The ${provider} OAuth grant was removed outside Keys Manager; the route now resolves through its API-key pool.`)
         }
         return
       }
       if (record.kind === 'api-key') {
+        // Native api-key management took the route over: the manager no
+        // longer owns any projection here.
+        this.activeAccounts.delete(provider)
         this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
         return
       }
       if (!isOAuthGrantPayload(record.payload)) {
+        // An unrecognized payload is not ours to interpret: drop the stale
+        // owner entry so failure attribution and demotion never fire on it.
+        this.activeAccounts.delete(provider)
         this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
         return
       }
@@ -1162,6 +1170,9 @@ export class KeysManagerService {
       // applies, so a restarted process and the live reconciler agree.
       const owner = matchOwningAccount(provider, accounts, payload)
       if (owner === undefined) {
+        // A foreign account's grant serves the route: no pool row owns the
+        // projection, so the previous owner entry must not survive it.
+        this.activeAccounts.delete(provider)
         this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
         return
       }
@@ -1256,12 +1267,44 @@ export class KeysManagerService {
     return this.run(() => this.fallbackToKeysUnqueued(provider))
   }
 
-  /** The fallback body; callers own the mutation queue. */
-  private async fallbackToKeysUnqueued(provider: string): Promise<void> {
+  /**
+   * Whether the live `llm-pi-ai/<provider>` projection currently belongs to
+   * `row`: the record is re-read INSIDE the calling mutation and matched
+   * through the shared ownership oracle ({@link matchOwningAccount}). This
+   * is the only delete authority: a natively replaced grant — another
+   * account signed in, a native api-key record, an unrecognized payload —
+   * never matches and must survive the demotion of a stale row, and the
+   * async hydration window must not decide ownership (round-2 review,
+   * steps 1–2).
+   */
+  private async projectionBelongsTo(provider: string, row: KeyRecord): Promise<boolean> {
+    if (row.kind !== 'oauth' || row.oauth === null) return false
+    const records = this.credentialRecords()
+    if (records === undefined) return false
+    const live = await records.readRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
+    if (live === undefined || live.kind !== 'grant' || !isOAuthGrantPayload(live.payload)) return false
+    const accounts = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
+    return matchOwningAccount(provider, accounts, live.payload)?.id === row.id
+  }
+
+  /**
+   * The fallback body; callers own the mutation queue. `owner` narrows the
+   * ownership check to one explicit row (removeAccount/deleteKey pass the
+   * removed row); without it the provider's active account decides.
+   */
+  private async fallbackToKeysUnqueued(provider: string, owner?: KeyRecord): Promise<void> {
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return
     const records = this.credentialRecords()
-    if (records !== undefined) {
+    const activeId = this.activeAccounts.get(provider)
+    const active = owner ?? (activeId === undefined
+      ? undefined
+      : providerRecord.keys.find(candidate =>
+          candidate.id === activeId && candidate.kind === 'oauth' && candidate.oauth !== null))
+    // Ownership-verified delete: demote the projection only while it still
+    // belongs to this row. Read and delete both happen inside this mutation.
+    const ownsProjection = active !== undefined && await this.projectionBelongsTo(provider, active)
+    if (ownsProjection && records !== undefined) {
       // Mark BEFORE the delete: the deletion's echo handler reads this
       // marker across its own awaited record re-read, whenever that
       // continuation resumes. The TTL window — not scheduling order —
@@ -1269,23 +1312,34 @@ export class KeysManagerService {
       this.intentionalProjectionRemovals.set(provider, Date.now())
       await records.deleteRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
     }
-    this.activeAccounts.delete(provider)
-    for (const row of providerRecord.keys) {
-      if (row.kind === 'oauth') row.valueMissing = true
+    if (ownsProjection) {
+      // Full cascade demotion: no pool row serves the route anymore, so
+      // every account row is demoted until re-activation.
+      for (const row of providerRecord.keys) {
+        if (row.kind === 'oauth') row.valueMissing = true
+      }
+    } else if (active !== undefined && activeId === active.id) {
+      // The projection is not ours anymore (native replacement): keep the
+      // stale owner entry from routing attribution or demotion at this row.
+      this.activeAccounts.delete(provider)
     }
     this.store.touch()
   }
 
   /**
-   * Drop one OAuth account's plugin-scope grant payload and — when the row
-   * was the active projection — demote the cascade to the key pool first,
-   * so the route falls through to the API-key pool instead of serving a
-   * grant whose owning row is gone. Non-oauth rows are a no-op; every
-   * OAuth-removal call site goes through this helper.
+   * Drop one OAuth account's plugin-scope grant payload and — only while
+   * this row still owns the live projection — demote the cascade to the key
+   * pool first, so the route falls through to the API-key pool instead of
+   * serving a grant whose owning row is gone. The demotion re-reads
+   * `llm-pi-ai/<provider>` inside this mutation and runs it through the
+   * ownership oracle ({@link matchOwningAccount}); a natively replaced
+   * projection (another account signed in, a native api-key record) is left
+   * untouched. Non-oauth rows are a no-op; every OAuth-removal call site
+   * goes through this helper.
    */
   private async removeOAuthGrant(provider: string, row: KeyRecord): Promise<void> {
     if (row.kind !== 'oauth' || row.oauth === null) return
-    if (this.activeAccounts.get(provider) === row.id) await this.fallbackToKeysUnqueued(provider)
+    await this.fallbackToKeysUnqueued(provider, row)
     const records = this.credentialRecords()
     if (records !== undefined) await records.deleteRecord(row.oauth.grantRef)
   }
