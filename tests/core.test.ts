@@ -10,7 +10,6 @@ import {
   applyFailureCooldown,
   classifyOAuthFailure,
   isOAuthCapable,
-  isSelectable,
   markKeySuccess,
   normalizeSettings,
   patchSettings,
@@ -49,20 +48,6 @@ function key(id: string, patch: Partial<KeyRecord> = {}): KeyRecord {
     oauth: null,
     ...patch,
   }
-}
-
-function account(id: string, patch: Partial<KeyRecord> = {}): KeyRecord {
-  return key(id, {
-    kind: 'oauth',
-    oauth: {
-      provider: 'anthropic',
-      email: 'dev@example.com',
-      accountId: 'acc-1',
-      expiresAt: now + 60 * MIN,
-      grantRef: 'keys-manager/anthropic-3fa2c1',
-    },
-    ...patch,
-  })
 }
 
 function provider(keys: KeyRecord[]): ProviderRecord {
@@ -504,11 +489,8 @@ test('classifyOAuthFailure preserves ordinary key-failure semantics', () => {
   assert.equal(shouldFailover('CONTEXT_WINDOW_EXCEEDED'), false)
 })
 
-// N4: the former OAUTH_FAILURE_CODE constant pin is gone. The pi-ai
-// contract is now covered by behaviour on the host path: an oauth-coded
-// stream failure cools the owning account and demotes the projection
-// (tests/host.test.ts, "an oauth-coded stream failure under an active
-// projection …"), which fails if upstream ever renames the code.
+// N4: the former OAUTH_FAILURE_CODE constant pin is gone; the classifier
+// tests above pin the oauth-code mapping directly.
 
 test('account refs stay in the plugin scope with lowercase-hyphen ids', () => {
   assert.equal(accountRef('anthropic', '3fa2c1'), 'keys-manager/anthropic-3fa2c1')
