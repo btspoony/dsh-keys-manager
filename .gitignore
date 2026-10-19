@@ -153,3 +153,6 @@ vite.config.ts.timestamp-*
 
 # macOS
 .DS_Store
+
+# Local mstar feature worktrees
+/.worktrees/
