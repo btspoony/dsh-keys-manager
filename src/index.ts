@@ -1105,11 +1105,19 @@ export class KeysManagerService {
     }
     try {
       const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
-      const live = await records.readRecord(projectionKey)
-      if (live !== undefined && live.kind === 'grant'
-        && isOAuthGrantPayload(live.payload) && live.payload.refresh === harvest.payload.refresh) {
-        await records.deleteRecord(projectionKey)
-      }
+      // Same atomic decide-and-delete as the demotion path (round-3
+      // finding 1): the refresh compare runs inside `modifyRecord`'s per-key
+      // lock, so a native writer that replaced the projection before the
+      // lock is never matched, and the delete runs only on a locked-in
+      // match (no delete-inside-modify primitive exists on the seam; see
+      // decideAndDeleteProjection for the exact primitive).
+      let owns = false
+      await records.modifyRecord(projectionKey, async current => {
+        owns = current !== undefined && current.kind === 'grant'
+          && isOAuthGrantPayload(current.payload) && current.payload.refresh === harvest.payload.refresh
+        return undefined
+      })
+      if (owns) await records.deleteRecord(projectionKey)
     } catch (error) {
       this.warn(`harvest compensation could not revert the projection for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -1335,23 +1343,54 @@ export class KeysManagerService {
   }
 
   /**
-   * Whether the live `llm-pi-ai/<provider>` projection currently belongs to
-   * `row`: the record is re-read INSIDE the calling mutation and matched
-   * through the shared ownership oracle ({@link matchOwningAccount}). This
-   * is the only delete authority: a natively replaced grant — another
+   * Atomic decide-and-delete of the `llm-pi-ai/<provider>` projection for one
+   * row (round-3 finding 1): the payload compare runs INSIDE the credential
+   * seam's per-key lock — `modifyRecord` hands `mutate` the record as it
+   * stands while the write is exclusive, so a native sign-in that already
+   * replaced the projection is visible here and the delete is skipped. The
+   * seam exposes no delete-inside-modify primitive: a `mutate` may only
+   * return a replacement or `undefined` (leave untouched), and calling
+   * `deleteRecord` inside the mutate would deadlock the provider's own
+   * serialized operation queue (credentials-local `enqueue`). The closest
+   * equivalent — the exact primitive this method uses — is a decide-only
+   * modify (returns `undefined`, no write) followed immediately by
+   * `deleteRecord`; the decide therefore never acts on a value a native
+   * writer replaced before the lock, which is the window the previous
+   * separate read + delete left open. Only the sub-microtask gap between the
+   * modify returning and the delete's own queue entry remains, and a native
+   * writer landing there is the next writer's grant, which the ownership
+   * oracle re-identifies on its `record-updated` echo.
+   *
+   * This is the only delete authority: a natively replaced grant — another
    * account signed in, a native api-key record, an unrecognized payload —
    * never matches and must survive the demotion of a stale row, and the
    * async hydration window must not decide ownership (round-2 review,
    * steps 1–2).
    */
-  private async projectionBelongsTo(provider: string, row: KeyRecord): Promise<boolean> {
+  private async decideAndDeleteProjection(provider: string, row: KeyRecord): Promise<boolean> {
     if (row.kind !== 'oauth' || row.oauth === null) return false
     const records = this.credentialRecords()
     if (records === undefined) return false
-    const live = await records.readRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
-    if (live === undefined || live.kind !== 'grant' || !isOAuthGrantPayload(live.payload)) return false
     const accounts = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
-    return matchOwningAccount(provider, accounts, live.payload)?.id === row.id
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    let owns = false
+    await records.modifyRecord(projectionKey, async current => {
+      owns = current !== undefined && current.kind === 'grant'
+        && isOAuthGrantPayload(current.payload)
+        && matchOwningAccount(provider, accounts, current.payload)?.id === row.id
+      // Decide only: the removal goes through deleteRecord below, outside
+      // the mutate (see the primitive note above).
+      return undefined
+    })
+    if (owns) {
+      // Mark BEFORE the delete: the deletion's echo handler reads this
+      // marker across its own awaited record re-read, whenever that
+      // continuation resumes. The TTL window — not scheduling order —
+      // decides how long the marker stays trustworthy.
+      this.intentionalProjectionRemovals.set(provider, Date.now())
+      await records.deleteRecord(projectionKey)
+    }
+    return owns
   }
 
   /**
@@ -1362,23 +1401,16 @@ export class KeysManagerService {
   private async fallbackToKeysUnqueued(provider: string, owner?: KeyRecord): Promise<void> {
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return
-    const records = this.credentialRecords()
     const activeId = this.activeAccounts.get(provider)
     const active = owner ?? (activeId === undefined
       ? undefined
       : providerRecord.keys.find(candidate =>
           candidate.id === activeId && candidate.kind === 'oauth' && candidate.oauth !== null))
     // Ownership-verified delete: demote the projection only while it still
-    // belongs to this row. Read and delete both happen inside this mutation.
-    const ownsProjection = active !== undefined && await this.projectionBelongsTo(provider, active)
-    if (ownsProjection && records !== undefined) {
-      // Mark BEFORE the delete: the deletion's echo handler reads this
-      // marker across its own awaited record re-read, whenever that
-      // continuation resumes. The TTL window — not scheduling order —
-      // decides how long the marker stays trustworthy.
-      this.intentionalProjectionRemovals.set(provider, Date.now())
-      await records.deleteRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
-    }
+    // belongs to this row. The compare runs inside the seam's per-key lock
+    // and the delete follows it (decideAndDeleteProjection, round-3
+    // finding 1) — both inside this mutation.
+    const ownsProjection = active !== undefined && await this.decideAndDeleteProjection(provider, active)
     if (ownsProjection) {
       // Full cascade demotion: no pool row serves the route anymore, so
       // every account row is demoted until re-activation.
