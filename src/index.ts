@@ -87,6 +87,12 @@ const PIN_TTL_MS = 60_000
  * otherwise hold the provider's single authorization slot forever.
  */
 const LOGIN_ATTEMPT_TTL_MS = 10 * 60 * 1000
+/**
+ * Same shape of bound the api-key attempt cache uses (pruneAttempts): the
+ * settled-login cache is capped, evicting the oldest settled entries, so a
+ * rapid begin/fail loop cannot accumulate unbounded views within the TTL.
+ */
+const MAX_LOGIN_ATTEMPTS = 128
 /** Same display-name cap the api-key aliases use (core.ts MAX_ALIAS_LENGTH). */
 const MAX_ALIAS = 80
 /**
@@ -494,6 +500,8 @@ export class KeysManagerService {
    * and a removal warns as genuinely out-of-band again.
    */
   private readonly intentionalProjectionRemovals = new Map<string, number>()
+  /** Channels whose lost-subscription warning already fired (warn once). */
+  private readonly subscriptionLostWarnings = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
   private settledDisposer: (() => void) | undefined
   /** Disposer for the `credentials/record-updated` subscription. */
@@ -569,7 +577,7 @@ export class KeysManagerService {
     this.recordUpdatedDisposer = undefined
     for (const attempt of this.loginAttempts.values()) {
       attempt.controller.abort()
-      this.dropPrompt(attempt)
+      this.dropPrompt(attempt, new Error('Keys Manager is shutting down'))
     }
     try {
       await this.queue
@@ -636,6 +644,18 @@ export class KeysManagerService {
   }
 
   /**
+   * Warn once per channel: a lost subscription silently disables a whole
+   * feature (harvest never runs; rotations never sync), so the degradation
+   * must be observable instead of indistinguishable from success.
+   */
+  private warnSubscriptionLost(channel: string, error?: unknown): void {
+    if (this.subscriptionLostWarnings.has(channel)) return
+    this.subscriptionLostWarnings.add(channel)
+    const detail = error === undefined ? '' : ` (${error instanceof Error ? error.message : String(error)})`
+    this.warn(`the ${channel} subscription is unavailable${detail}; OAuth sign-in sync is degraded`)
+  }
+
+  /**
    * Subscribe to the seam's settled broadcast (authorization/src/index.ts:57,
    * :337-351). A settled attempt for a key this service is driving harvests
    * the committed grant; everything else is ignored — another surface's
@@ -644,13 +664,17 @@ export class KeysManagerService {
    */
   private watchAuthorizationSettled(): (() => void) | undefined {
     const on = (this.ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => unknown) => () => void }).on
-    if (typeof on !== 'function') return undefined
+    if (typeof on !== 'function') {
+      this.warnSubscriptionLost('authorization/settled')
+      return undefined
+    }
     try {
       return on.call(this.ctx, 'authorization/settled', (key: unknown, settlement: unknown) => {
         if (typeof key !== 'string') return
         this.onAuthorizationSettled(key, typeof settlement === 'string' ? settlement : '')
       })
-    } catch {
+    } catch (error) {
+      this.warnSubscriptionLost('authorization/settled', error)
       return undefined
     }
   }
@@ -696,6 +720,7 @@ export class KeysManagerService {
       controller: new AbortController(),
     }
     this.loginAttempts.set(attempt.id, attempt)
+    this.capLoginAttempts()
     this.loginsInFlight.set(provider, attempt.id)
     const records = this.credentialRecords()
     if (records === undefined) {
@@ -724,6 +749,10 @@ export class KeysManagerService {
           attempt.prompt = promptView(prompt)
           attempt.resolvePrompt = resolve
           attempt.rejectPrompt = reject
+          // Cancellation propagates to the awaited prompt: a seam-side
+          // withdrawal of this signal releases a flow parked here instead
+          // of leaving it pending forever.
+          prompt.signal?.addEventListener('abort', () => reject(new Error('The sign-in prompt was withdrawn')), { once: true })
         }),
     }
     const beginPromise = this.ctx.authorization!.begin({
@@ -774,13 +803,20 @@ export class KeysManagerService {
     return [...this.loginAttempts.values()].sort((a, b) => b.createdAt - a.createdAt).map(attemptView)
   }
 
-  /** Detach the parked prompt without rejecting it: the flow is gone with the attempt. */
-  private dropPrompt(attempt: LoginAttempt): void {
+  /**
+   * Detach the parked prompt. With a reason the flow's awaited promise is
+   * rejected too — a parked prompt dropped un-rejected would leave the
+   * seam's flow (and the provider's single-flight slot) wedged until its
+   * own timeout, so every attempt-ending path passes one.
+   */
+  private dropPrompt(attempt: LoginAttempt, reason?: Error): void {
+    const reject = attempt.rejectPrompt
     attempt.resolvePrompt = undefined
     attempt.rejectPrompt = undefined
     attempt.prompt = undefined
     if (attempt.status === 'prompt') attempt.status = 'pending'
     attempt.updatedAt = Date.now()
+    if (reject !== undefined && reason !== undefined) reject(reason)
   }
 
   /** Finalize an attempt with a terminal status exactly once. */
@@ -791,7 +827,11 @@ export class KeysManagerService {
     if (error !== undefined) {
       attempt.error = error instanceof Error ? error.message : String(error)
     }
-    this.dropPrompt(attempt)
+    this.dropPrompt(attempt, new Error(
+      status === 'failed'
+        ? attempt.error ?? 'The sign-in attempt failed'
+        : 'The sign-in attempt was cancelled',
+    ))
     if (this.loginsInFlight.get(attempt.provider) === attempt.id) this.loginsInFlight.delete(attempt.provider)
     attempt.controller.abort()
     attempt.updatedAt = attempt.settledAt
@@ -917,6 +957,24 @@ export class KeysManagerService {
     }
   }
 
+  /** Keep the attempt cache bounded: evict the oldest settled entries first. */
+  private capLoginAttempts(): void {
+    while (this.loginAttempts.size > MAX_LOGIN_ATTEMPTS) {
+      let oldestId: string | undefined
+      let oldestSettledAt = Number.POSITIVE_INFINITY
+      for (const [id, attempt] of this.loginAttempts) {
+        // In-flight attempts are never eviction candidates.
+        if (attempt.settledAt === undefined) continue
+        if (attempt.settledAt < oldestSettledAt) {
+          oldestSettledAt = attempt.settledAt
+          oldestId = id
+        }
+      }
+      if (oldestId === undefined) break
+      this.loginAttempts.delete(oldestId)
+    }
+  }
+
   /**
    * Subscribe to the credential seam's post-commit record broadcast
    * (credentials/src/index.ts:271-277; the event carries the key only, so
@@ -924,12 +982,16 @@ export class KeysManagerService {
    */
   private watchGrantRecordUpdated(): (() => void) | undefined {
     const on = (this.ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => unknown) => () => void }).on
-    if (typeof on !== 'function') return undefined
+    if (typeof on !== 'function') {
+      this.warnSubscriptionLost('credentials/record-updated')
+      return undefined
+    }
     try {
       return on.call(this.ctx, 'credentials/record-updated', (key: unknown) => {
         if (typeof key === 'string') this.onGrantRecordUpdated(key)
       })
-    } catch {
+    } catch (error) {
+      this.warnSubscriptionLost('credentials/record-updated', error)
       return undefined
     }
   }

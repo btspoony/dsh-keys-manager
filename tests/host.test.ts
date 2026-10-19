@@ -3433,3 +3433,74 @@ test('account endpoints carry the begin → prompt → answer → ready walk and
     await h.close()
   }
 })
+
+test('a seam-side prompt-signal abort rejects the parked flow promise (S1)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const view = await h.service.beginAccountLogin('anthropic')
+    const interaction = h.authorization.beganRequests[0]!.interaction as { prompt: (p: unknown) => Promise<string> }
+    const controller = new AbortController()
+    const flowAnswer = interaction.prompt({ kind: 'text', message: 'Paste the verification code', signal: controller.signal })
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'prompt')
+    // The seam withdraws the prompt: the awaited promise rejects instead of
+    // pending forever.
+    controller.abort()
+    await assert.rejects(() => flowAnswer, /withdrawn/)
+    // The attempt still ends through its own begin outcome; the flow error
+    // above already released the human-facing await.
+    await h.authorization.pending!.reject(new Error('seam aborted'))
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+  } finally {
+    await h.close()
+  }
+})
+
+test('a TTL-expired attempt rejects its parked prompt and releases the single-flight slot (S1)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const view = await h.service.beginAccountLogin('anthropic')
+    const interaction = h.authorization.beganRequests[0]!.interaction as { prompt: (p: unknown) => Promise<string> }
+    const flowAnswer = interaction.prompt({ kind: 'text', message: 'Paste the verification code' })
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'prompt')
+    // The TTL sweep aborts the wedged attempt: the parked prompt rejects
+    // (dropPrompt passes a reason) and the single-flight slot is released.
+    h.service.pruneTransient(Date.now() + 11 * 60_000)
+    await assert.rejects(() => flowAnswer, /timed out/)
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // A new sign-in for the same provider can begin immediately.
+    const next = await h.service.beginAccountLogin('anthropic')
+    assert.notEqual(next.id, view.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('the attempt cache evicts oldest settled entries past the 128 cap (S3)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const attempts = (h.service as unknown as { loginAttempts: Map<string, Record<string, unknown>> }).loginAttempts
+    for (let index = 0; index < 130; index += 1) {
+      attempts.set(`la_${index}`, {
+        id: `la_${index}`,
+        provider: 'anthropic',
+        status: 'failed',
+        notices: [],
+        createdAt: index,
+        updatedAt: index,
+        settledAt: index,
+        controller: new AbortController(),
+      })
+    }
+    // A fresh begin trims the cache back to the cap by dropping the oldest
+    // settled entries; in-flight attempts are never candidates.
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(attempts.size, 128)
+    assert.equal(attempts.has('la_0'), false)
+    assert.equal(attempts.has('la_1'), false)
+    assert.equal(attempts.has('la_2'), false)
+    assert.equal(attempts.has('la_3'), true)
+    assert.ok(attempts.has(view.id))
+  } finally {
+    await h.close()
+  }
+})
