@@ -804,6 +804,22 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
 
 const LOGIN_POLL_MS = 1000
 
+/**
+ * Only http(s) notice URLs render as links: the notice channel is
+ * seam-provided, but a malformed or hostile scheme must fall back to plain
+ * text instead of becoming a clickable href. Returns null when the URL is
+ * absent or not allowlisted.
+ */
+function safeNoticeUrl(url: string | undefined): string | null {
+  if (url === undefined || url.length === 0) return null
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? url : null
+  } catch {
+    return null
+  }
+}
+
 interface LoginDialogProps {
   provider: ProviderView
   attemptId: string
@@ -885,7 +901,7 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
   }
 
   const lastNotice = attempt !== null && attempt.notices.length > 0 ? attempt.notices[attempt.notices.length - 1]! : null
-  const urlNotice = attempt !== null ? [...attempt.notices].reverse().find(notice => notice.url !== undefined) ?? null : null
+  const safeUrl = attempt !== null ? attempt.notices.map(notice => safeNoticeUrl(notice.url)).reverse().find(url => url !== null) ?? null : null
   const prompt = attempt?.prompt
   const answerable = prompt !== undefined && !answering && answer.trim().length > 0
 
@@ -896,8 +912,8 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
     body = h('div', { className: 'km-login-flow' },
       h('div', { className: 'km-login-pending' }, h(Icon, { name: 'refresh', size: 15, className: 'km-spin' }), h('span', null, t('loginPending'))),
       lastNotice !== null ? h('div', { className: 'km-login-notices' }, lastNotice.message) : null,
-      urlNotice !== null ? h('div', { className: 'km-login-notices' },
-        h('a', { className: 'km-login-link', href: urlNotice.url, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
+      safeUrl !== null ? h('div', { className: 'km-login-notices' },
+        h('a', { className: 'km-login-link', href: safeUrl, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
       ) : null,
     )
   } else if (attempt.status === 'ready') {
@@ -907,8 +923,8 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
   } else {
     body = h('div', { className: 'km-login-flow' },
       lastNotice !== null ? h('div', { className: 'km-login-notices' }, lastNotice.message) : null,
-      urlNotice !== null ? h('div', { className: 'km-login-notices' },
-        h('a', { className: 'km-login-link', href: urlNotice.url, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
+      safeUrl !== null ? h('div', { className: 'km-login-notices' },
+        h('a', { className: 'km-login-link', href: safeUrl, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
       ) : null,
       prompt !== undefined ? h('form', { className: 'km-login-prompt', onSubmit: submitAnswer },
         h('div', { className: 'km-login-prompt-title' }, t('loginPromptTitle')),

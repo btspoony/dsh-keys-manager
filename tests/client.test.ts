@@ -901,6 +901,34 @@ describe('account ui', () => {
     setRuntimeContext(null)
   })
 
+  test('notice URLs only render as links for http/https schemes (S2)', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const unsafeAttempt = { ...makeAttemptView(), notices: [{ message: 'Open this page to continue signing in.', url: 'javascript:alert(1)' }] }
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: unsafeAttempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: unsafeAttempt }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    // A non-http(s) notice URL stays plain text: no anchor, no href.
+    expect(hostNodes(view.nodes).filter(node => node.type === 'a')).toHaveLength(0)
+    expect(view.nodes.some(node => node.text.includes('Open this page to continue signing in.'))).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
   test('a vanished login flow ends the dialog with the neutral flow-ended state', async () => {
     const state = makeState()
     state.providers[0] = makeOauthProvider()
