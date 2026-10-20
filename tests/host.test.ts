@@ -4826,6 +4826,35 @@ function holdDeleteRecord(h: Harness, key: string): {
   return { started, finished, release }
 }
 
+/**
+ * R5-SF1 test hook: park one read of `key` and resolve it with the snapshot
+ * the read observed when it STARTED, so a removal can complete inside the
+ * read's in-flight window and the reader still sees the pre-removal record —
+ * exactly what a real store read that began earlier returns.
+ */
+function holdStaleGrantRead(h: Harness, key: string, occurrence: number): {
+  parked: Promise<void>
+  release: () => void
+} {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let markParked!: () => void
+  const parked = new Promise<void>(resolve => { markParked = resolve })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  let seen = 0
+  raw.readRecord = async (k: string) => {
+    const snapshot = await realRead(k)
+    if (k !== key) return snapshot
+    seen += 1
+    if (seen !== occurrence) return snapshot
+    markParked()
+    await gate
+    return snapshot
+  }
+  return { parked, release }
+}
+
 test('a rotation write racing removeAccount leaves no orphan record (C6-1)', async () => {
   const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   try {
@@ -5090,6 +5119,47 @@ test('the superseded cleanup keeps a grant the settled harvest adopted (R5-MF1)'
     // Removal reaches the record the row names — nothing was stranded.
     await h.service.removeAccount('anthropic', rowId)
     assert.equal(h.credentials.records.has(adoptedRef), false)
+  } finally {
+    await h.close()
+  }
+})
+
+// Round-5 review (R5-SF1): the removal-aware revalidation ran right after the
+// plugin-scope write, but the commit lands after a SECOND awaited credential
+// read (the generation staleness probe). A removal that completes during that
+// read is invisible to the earlier check, and the stale probe can still
+// return the pre-removal record — so the reconciliation used to commit
+// `grantRef` onto a detached row and strand the record it wrote. The check
+// runs again immediately before the commit and compensates the write.
+
+test('a removal landing inside the final staleness read leaves no orphan rotation record (R5-SF1)', async () => {
+  const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-late-removal').digest('hex').slice(0, 12))
+    // The second read is the staleness probe; it resolves with the snapshot it
+    // started from, so the removal below cannot invalidate it.
+    const heldRead = holdStaleGrantRead(h, GRANT_KEY, 2)
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-late-removal',
+      access: 'at-late-removal',
+      accountId: 'acc-9',
+      email: 'dev@example.com',
+    }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await heldRead.parked
+    // The removal completes while that probe is still in flight.
+    await h.service.removeAccount('anthropic', rowId)
+    assert.equal(h.store.provider('anthropic')!.keys.some(key => key.id === rowId), false)
+    heldRead.release()
+    // The stale probe cannot prove the row is gone, so the check before the
+    // commit must: no grantRef commit onto the detached row, and the record
+    // this reconciliation wrote is compensated.
+    await eventually(() => assert.equal(h.credentials.records.has(rotatedRef), false))
+    assert.equal(row.oauth!.grantRef, seededRef)
+    assert.equal(h.store.provider('anthropic')!.keys.some(key => key.id === rowId), false)
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
   } finally {
     await h.close()
   }

@@ -1862,6 +1862,19 @@ export class KeysManagerService {
       }
       return
     }
+    // R5-SF1: the staleness probe above is itself awaited, so the post-write
+    // revalidation is already stale by the time the commit runs. A removal
+    // that completes inside that probe is only visible through the
+    // removal-aware check, so it runs again immediately before the commit:
+    // committing would write grantRef onto a detached row and leave the record
+    // just written orphaned. Compensation mirrors the post-write branch.
+    if (!this.accountRowStillCurrent(provider, owner)) {
+      if (this.activeAccounts.get(provider) === owner.id) this.activeAccounts.delete(provider)
+      if (rotatedRef !== previousRef) {
+        await this.discardRotationRecord(records, provider, rotatedRef, 'cancelled rotation record cleanup failed for')
+      }
+      return
+    }
     // SF2: once the new payload persists and the row points at it, delete
     // the superseded generation's plugin-scope record — harvest parity. A
     // rotated refresh token must not strand its secret-bearing record
