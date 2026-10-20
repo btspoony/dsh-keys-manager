@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest'
 
 import { CURSOR_ROUTE, OmpCursorAdapter, UNKNOWN_MODEL, UNKNOWN_PROVIDER } from '../src/adapter.js'
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
-import { STREAM_CLOSED, TOOLS_UNSUPPORTED } from '../src/projection.js'
+import { STREAM_CLOSED, TOOLS_UNSUPPORTED, projectRequest } from '../src/projection.js'
 import { scriptedTransport } from './replay.js'
 
 const SONNET = CURSOR_MODELS.find(row => row.id === 'claude-4.5-sonnet')
@@ -106,7 +106,6 @@ describe('OmpCursorAdapter text streaming', () => {
       signal: controller.signal,
       sessionId: 'session-1',
       wireModelId: 'claude-4.5-sonnet-thinking',
-      externalToolExecutor: true,
       headers: attributionHeaders(),
     })
   })
@@ -145,7 +144,7 @@ describe('OmpCursorAdapter catalog', () => {
     expect(models.every(model => model.provider === 'cursor' && model.name.length > 0)).toBe(true)
   })
 
-  it('resolves context, output cap and reasoning efforts from the table', async () => {
+  it('resolves context and reasoning efforts from the table', async () => {
     const { adapter } = adapterFor('cursor-text.jsonl')
 
     await expect(adapter.resolveModel(CURSOR_ROUTE, 'claude-4.5-sonnet')).resolves.toEqual({
@@ -154,7 +153,6 @@ describe('OmpCursorAdapter catalog', () => {
       name: 'Claude Sonnet 4.5',
       inputModalities: ['text', 'image'],
       context: { contextWindow: SONNET.contextWindow },
-      defaultMaxTokens: SONNET.maxTokens,
       reasoning: {
         efforts: [
           { id: 'minimal', name: 'Minimal' },
@@ -166,6 +164,16 @@ describe('OmpCursorAdapter catalog', () => {
     })
   })
 
+  it('advertises no output cap, because nothing materializes one', async () => {
+    // The seam turns `defaultMaxTokens` into a caller-visible `maxTokens` on
+    // every request, and the projection refuses that field (the Cursor
+    // transport has no per-request cap), so the adapter must not advertise it.
+    const { adapter } = adapterFor('cursor-text.jsonl')
+
+    const info = await adapter.resolveModel(CURSOR_ROUTE, 'claude-4.5-sonnet')
+    expect(info).not.toHaveProperty('defaultMaxTokens')
+  })
+
   it('omits reasoning for a model without thinking', async () => {
     const plain = CURSOR_MODELS.find(row => row.thinking === undefined)
     if (plain === undefined) throw new Error('the generated catalog lost a non-reasoning row')
@@ -173,7 +181,35 @@ describe('OmpCursorAdapter catalog', () => {
 
     const info = await adapter.resolveModel(CURSOR_ROUTE, plain.id)
     expect(info.reasoning).toBeUndefined()
-    expect(info.defaultMaxTokens).toBe(plain.maxTokens)
+  })
+
+  it('advertises only reasoning efforts the projection resolves, on every row', async () => {
+    // The catalogue's public contract: whatever `resolveModel` offers must reach
+    // the transport. 19 rows advertise efforts with no routing entry; those send
+    // the row's own id (omp's own fallback) instead of throwing.
+    const { adapter } = adapterFor('cursor-text.jsonl')
+    let checked = 0
+
+    for (const row of CURSOR_MODELS) {
+      const info = await adapter.resolveModel(CURSOR_ROUTE, row.id)
+      for (const effort of info.reasoning?.efforts ?? []) {
+        const projected = projectRequest(row, request({ model: row.id, reasoningEffort: effort.id }), 'token')
+        expect(projected.options.wireModelId, `${row.id}/${effort.id}`).toBe(
+          row.thinking?.effortRouting?.[effort.id],
+        )
+        checked += 1
+      }
+    }
+
+    // Guard the loop against going vacuous: the unrouted fallback is still
+    // exercised by rows that advertise efforts without routing them.
+    expect(
+      CURSOR_MODELS.some(
+        row =>
+          row.thinking !== undefined && row.thinking.efforts.length > 0 && row.thinking.effortRouting === undefined,
+      ),
+    ).toBe(true)
+    expect(checked).toBeGreaterThan(0)
   })
 
   it('refuses unlisted models and foreign routes', async () => {

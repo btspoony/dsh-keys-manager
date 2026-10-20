@@ -14,6 +14,15 @@
  * `requiresCursorToolSchemaProjection`, `cost`). `cost` is not shown by DSH, but
  * the transport prices the turn from it and fails without it.
  *
+ * Reasoning efforts are copied verbatim, including rows that advertise efforts
+ * with no `effortRouting` (19 of the pinned catalog's 123 rows). omp resolves an
+ * unrouted effort to the row's own wire id (`requestModelId ?? id`) in
+ * `@oh-my-pi/pi-catalog/src/model-thinking.ts`, so those efforts are selectable
+ * without a routing entry and this generator narrows no effort list. The
+ * projection mirrors that fallback, and `tests/adapter-text.test.ts` asserts
+ * every advertised effort resolves, so an omp bump that starts refusing one
+ * fails there instead of surfacing as a runtime `UNSUPPORTED_REASONING_EFFORT`.
+ *
  * @module @dsh-keys-manager/llm-omp/generate-catalog
  */
 import { createHash } from 'node:crypto'
@@ -111,6 +120,10 @@ const file = `/**
  * The drift gate in \`tests/build.test.ts\` pins the same package version and
  * source hash, so an omp bump fails there before this table can describe the
  * wrong models.
+ *
+ * Rows that advertise efforts without routing them are carried unchanged: an
+ * effort with no \`effortRouting\` entry sends the row's own wire id, which is
+ * omp's own resolution for it. No row's effort list is filtered.
  *
  * @module @dsh-keys-manager/llm-omp/catalog/cursor
  */

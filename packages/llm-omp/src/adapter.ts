@@ -130,7 +130,12 @@ function modelInfo(provider: string, row: CursorModelRow): LlmResolvedModelInfo 
     name: row.name,
     inputModalities: [...row.input],
     context: { contextWindow: row.contextWindow },
-    defaultMaxTokens: row.maxTokens,
+    // No `defaultMaxTokens`. The seam materializes that number into `maxTokens`
+    // on every request that omits one, and the Cursor transport has no
+    // per-request output-cap field: the projection refuses a caller-set
+    // `maxTokens` instead of dropping it, so advertising a default would only
+    // produce refusals. Cursor enforces the catalog cap server-side, from the
+    // `maxTokens` the model object already carries.
     ...(efforts.length > 0
       ? {
           reasoning: {

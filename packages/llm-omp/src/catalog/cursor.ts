@@ -8,6 +8,10 @@
  * source hash, so an omp bump fails there before this table can describe the
  * wrong models.
  *
+ * Rows that advertise efforts without routing them are carried unchanged: an
+ * effort with no `effortRouting` entry sends the row's own wire id, which is
+ * omp's own resolution for it. No row's effort list is filtered.
+ *
  * @module @dsh-keys-manager/llm-omp/catalog/cursor
  */
 import type { CursorModelRow } from '../omp.js'

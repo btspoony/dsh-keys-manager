@@ -4,9 +4,10 @@
  * Two pure functions do all the translation:
  *
  * - {@link projectRequest} turns one assembled `GenerateOptions` into the
- *   transport's three arguments (model, context, options): the leading system
- *   prompt moves to Cursor's rule slot, history keeps text and reasoning, and
- *   the selected reasoning effort becomes the routed wire model id.
+ *   transport's three arguments (model, context, options): the one-shot
+ *   `system` argument and a leading run of system messages move to Cursor's
+ *   rule slot, history keeps text and reasoning, and the selected reasoning
+ *   effort becomes the routed wire model id.
  * - {@link projectEvents} turns the transport's `AssistantMessageEvent` stream
  *   into `StreamChunk`s. Block indexes stay omp's `contentIndex`, as the
  *   reference pi-ai adapter does, and failures arrive as a terminal `finish`
@@ -14,11 +15,17 @@
  *
  * Scope: this plan's Task 1 carries text, reasoning, usage and finish. Tool
  * calls (Task 2) and images are refused with a typed `LlmError` instead of
- * being dropped, so an unsupported turn fails loudly and names the limit.
+ * being dropped, so an unsupported turn fails loudly and names the limit. The
+ * same rule covers the request surface: a reasoning effort no route can carry,
+ * a request option Cursor's agent protocol has no field for (`maxTokens`,
+ * `temperature`, `stop`, `purpose`), and a system message that is not part of
+ * the leading prompt are all refused by name rather than silently dropped or
+ * reordered.
  *
  * @module @dsh-keys-manager/llm-omp/projection
  */
 import {
+  CONTEXT_WINDOW_EXCEEDED_CODE,
   EMPTY_RESPONSE_CODE,
   LlmError,
   attributionHeaders,
@@ -55,6 +62,12 @@ export const UNKNOWN_EVENT = 'UNKNOWN_EVENT'
 export const UNKNOWN_FINISH = 'UNKNOWN_FINISH'
 /** Machine code for a transport stream that ended without a terminal event. */
 export const STREAM_CLOSED = 'STREAM_CLOSED'
+/** Machine code for a reasoning effort the selected model does not advertise. */
+export const UNSUPPORTED_REASONING_EFFORT = 'UNSUPPORTED_REASONING_EFFORT'
+/** Machine code for a `GenerateOptions` field the Cursor wire protocol cannot express. */
+export const UNSUPPORTED_REQUEST_OPTION = 'UNSUPPORTED_REQUEST_OPTION'
+/** Machine code for a turn the caller's own signal cancelled. */
+const ABORTED_CODE = 'ABORTED'
 
 /** A terminal stream chunk; the only chunk that ends one turn. */
 type FinishChunk = Extract<StreamChunk, { type: 'finish' }>
@@ -86,21 +99,34 @@ export interface ProjectedRequest {
  * @param accessToken - Cursor bearer token resolved for this call.
  * @returns the transport arguments, ready to hand to `streamCursor`.
  * @throws LlmError with {@link TOOLS_UNSUPPORTED} when the request carries tools.
- * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this task cannot send.
- * @throws LlmError with `UNSUPPORTED_REASONING_EFFORT` when the effort has no wire model.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this task cannot send, and
+ *   for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} when the effort is not advertised by
+ *   the model.
+ * @throws LlmError with {@link UNSUPPORTED_REQUEST_OPTION} for a request field the transport
+ *   cannot carry.
  */
 export function projectRequest(row: CursorModelRow, options: GenerateOptions, accessToken: string): ProjectedRequest {
   if (options.tools !== undefined && options.tools.length > 0) throw toolsUnsupported('request tools')
   if (options.toolHistory !== undefined) throw toolsUnsupported('tool history')
+  refuseUnsupportedOptions(options)
 
   const wireModelId = resolveWireModelId(row, options.reasoningEffort)
   const systemPrompt: string[] = []
   if (options.system !== undefined && options.system.length > 0) systemPrompt.push(options.system)
   const messages: OmpHistoryMessage[] = []
+  // The transport carries system text only as a prefix (`systemPrompt`), so a
+  // system message is accepted while the conversation has not started yet;
+  // anything later would have to be moved ahead of user turns to be sent.
+  let leading = true
   for (const message of options.messages) {
     if (message.role === 'system') {
+      if (!leading) throw misplacedSystem()
       systemPrompt.push(...systemText(message.content))
-    } else if (message.role === 'user' || message.role === 'developer') {
+      continue
+    }
+    leading = false
+    if (message.role === 'user' || message.role === 'developer') {
       messages.push({ role: message.role, content: plainContent(message.content, message.role), timestamp: 0 })
     } else if (message.role === 'assistant') {
       messages.push(historyAssistant(message))
@@ -120,29 +146,89 @@ export function projectRequest(row: CursorModelRow, options: GenerateOptions, ac
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
       ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
       ...(wireModelId !== undefined ? { wireModelId } : {}),
-      externalToolExecutor: true,
+      // Deliberately no `externalToolExecutor`: this task refuses every request
+      // that carries tools and every tool-call frame, so the turn has no
+      // executor to offer. Claiming one would make the transport hand a
+      // Cursor-initiated MCP call back as a tool-call handoff that
+      // `projectEvents` then fails with `TOOLS_UNSUPPORTED`; leaving it off
+      // lets the transport answer the call itself as unknown. Task 2 sets it
+      // once it projects tools.
       headers: attributionHeaders(),
     },
   }
 }
 
 /**
+ * Refuse every request field the Cursor wire protocol has no way to express.
+ *
+ * The seam's `GenerateOptions` is provider-neutral, so a route can be handed
+ * knobs its transport never reads. Dropping them would let a caller's output
+ * cap, stop strings, sampling temperature or auxiliary-call purpose disappear
+ * without a trace, so each present field fails the call by name instead.
+ */
+function refuseUnsupportedOptions(options: GenerateOptions): void {
+  if (options.maxTokens !== undefined) {
+    refuseUnsupportedOption(
+      'maxTokens',
+      'the transport sends no per-request output cap; Cursor enforces the catalog cap server-side',
+    )
+  }
+  if (options.temperature !== undefined) {
+    refuseUnsupportedOption('temperature', 'Cursor selects sampling parameters server-side')
+  }
+  if (options.stop !== undefined && options.stop.length > 0) {
+    refuseUnsupportedOption('stop', 'the transport has no stop-sequence field')
+  }
+  if (options.purpose !== undefined) {
+    refuseUnsupportedOption('purpose', 'the transport has no auxiliary-call metadata field')
+  }
+}
+
+function refuseUnsupportedOption(name: string, detail: string): never {
+  throw new LlmError(`llm-omp: cursor requests cannot carry "${name}": ${detail}`, UNSUPPORTED_REQUEST_OPTION)
+}
+
+/**
  * Resolve the wire model id for one selected reasoning effort.
- * @param row - catalog row whose `thinking.effortRouting` maps efforts to wire ids.
+ *
+ * Mirrors the transport's own resolution (`@oh-my-pi/pi-catalog`
+ * `src/model-thinking.ts`, `resolveWireModelId`): a routed effort selects its
+ * mapped wire id, while an advertised effort with no routing entry sends the
+ * row's own id (`requestModelId ?? id`), which the transport already falls back
+ * to when it is handed no `wireModelId`. Returning `undefined` for that case is
+ * therefore the same request the reference implementation sends — and it keeps
+ * every effort {@link CursorModelRow.thinking} advertises selectable.
+ * @param row - catalog row whose `thinking` describes the advertised efforts.
  * @param effort - selected omp effort id, or `undefined` for the provider default.
  * @returns the routed wire id, or `undefined` to send the row's own id.
- * @throws LlmError with `UNSUPPORTED_REASONING_EFFORT` when the effort is not routed.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} when the model does
+ *   not advertise the selected effort at all.
  */
 function resolveWireModelId(row: CursorModelRow, effort: string | undefined): string | undefined {
   if (effort === undefined) return undefined
-  const wireModelId = row.thinking?.effortRouting?.[effort]
-  if (wireModelId === undefined) {
-    throw new LlmError(
-      `llm-omp: cursor model "${row.id}" does not support reasoning effort "${effort}"`,
-      'UNSUPPORTED_REASONING_EFFORT',
-    )
-  }
-  return wireModelId
+  const routed = row.thinking?.effortRouting?.[effort]
+  if (routed !== undefined) return routed
+  if (row.thinking?.efforts.includes(effort) === true) return undefined
+  throw new LlmError(
+    `llm-omp: cursor model "${row.id}" does not advertise reasoning effort "${effort}"`,
+    UNSUPPORTED_REASONING_EFFORT,
+  )
+}
+
+/**
+ * Refuse a system message that appears after a non-system message.
+ *
+ * The transport accepts system text only as a `systemPrompt` prefix, so sending
+ * a mid-history system message would mean moving it ahead of every user turn —
+ * a silent reorder of the conversation the seam has no way to express. DSH does
+ * not declare `systemPromptUpdate` for this adapter, so this arrives only from a
+ * future producer; fail loudly rather than rewriting the history.
+ */
+function misplacedSystem(): LlmError {
+  return new LlmError(
+    'llm-omp: a system message after a non-system message cannot be projected; the cursor transport carries system text only ahead of the conversation',
+    CONTENT_UNSUPPORTED,
+  )
 }
 
 /** Collect a system-role message's text blocks; anything else is unsupported input. */
@@ -295,10 +381,10 @@ function errorFinish(
 ): FinishChunk {
   const text = message.errorMessage ?? 'cursor stream error'
   if (signal?.aborted === true || reason === 'aborted') {
-    return finishOf('aborted', failureOf(text, 'ABORTED', message.errorStatus))
+    return finishOf('aborted', failureOf(text, ABORTED_CODE, message.errorStatus))
   }
   if (isContextWindowExceededError(text) || /\bCONVERSATION_TOO_LONG\b/.test(text)) {
-    return finishOf('error', failureOf(text, 'CONTEXT_WINDOW_EXCEEDED', message.errorStatus))
+    return finishOf('error', failureOf(text, CONTEXT_WINDOW_EXCEEDED_CODE, message.errorStatus))
   }
   return finishOf('error', failureOf(text, classifyFailure(text, message.errorStatus), message.errorStatus))
 }

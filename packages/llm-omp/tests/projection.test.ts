@@ -24,6 +24,9 @@ import {
   STREAM_CLOSED,
   TOOLS_UNSUPPORTED,
   UNKNOWN_EVENT,
+  UNKNOWN_FINISH,
+  UNSUPPORTED_REASONING_EFFORT,
+  UNSUPPORTED_REQUEST_OPTION,
   projectEvents,
   projectRequest,
 } from '../src/projection.js'
@@ -32,6 +35,17 @@ const SONNET = CURSOR_MODELS.find(row => row.id === 'claude-4.5-sonnet')
 if (SONNET === undefined) throw new Error('the generated catalog lost claude-4.5-sonnet')
 const PLAIN = CURSOR_MODELS.find(row => row.thinking === undefined)
 if (PLAIN === undefined) throw new Error('the generated catalog lost a non-reasoning row')
+/** An advertised-effort row with no routing entries; omp resolves it to its own id. */
+const UNROUTED = CURSOR_MODELS.find(row => row.id === 'gpt-5.2')
+if (UNROUTED === undefined) throw new Error('the generated catalog lost gpt-5.2')
+if (UNROUTED.thinking?.effortRouting !== undefined) {
+  throw new Error('gpt-5.2 gained effort routing; pick another unrouted row for the fallback case')
+}
+
+const IMAGE = {
+  type: 'image' as const,
+  attachment: { attachmentId: 'img-1', mediaType: 'image/png', width: 1, height: 1, bytes: 1 },
+}
 
 function usage(overrides: Partial<OmpUsage> = {}): OmpUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, ...overrides }
@@ -125,13 +139,49 @@ describe('projectRequest', () => {
     expect(unrouted.options.wireModelId).toBeUndefined()
   })
 
-  it('refuses an effort the model does not route', () => {
+  it('sends the row\'s own wire id for an advertised effort with no routing entry', () => {
+    // omp's own resolution falls back to `requestModelId ?? id` for an effort
+    // without a route, so the projection omits `wireModelId` and the transport
+    // sends gpt-5.2 itself. This is the fallback the 19 unrouted catalog rows
+    // depend on: without it, every effort they advertise throws.
+    const projected = projectRequest(UNROUTED, request([], { reasoningEffort: 'high' as never }), 'token')
+
+    expect(projected.options.wireModelId).toBeUndefined()
+    expect(projected.model.id).toBe('gpt-5.2')
+  })
+
+  it('refuses an effort the model does not advertise', () => {
+    expect(() => projectRequest(SONNET, request([], { reasoningEffort: 'xhigh' as never }), 'token')).toThrowError(
+      expect.objectContaining({ code: UNSUPPORTED_REASONING_EFFORT }),
+    )
     expect(() => projectRequest(PLAIN, request([], { reasoningEffort: 'high' as never }), 'token')).toThrowError(
-      /does not support reasoning effort "high"/,
+      expect.objectContaining({ code: UNSUPPORTED_REASONING_EFFORT }),
     )
   })
 
-  it('carries the token, signal, session, headers and handoff mode', () => {
+  it('sends no wire model override when no effort is selected', () => {
+    // No effort selected stays the transport's own default on every row.
+    expect(projectRequest(PLAIN, request([]), 'token').options.wireModelId).toBeUndefined()
+  })
+
+  it('refuses a request option the transport cannot carry instead of dropping it', () => {
+    expect(() => projectRequest(SONNET, request([], { maxTokens: 1024 }), 't')).toThrowError(
+      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
+    )
+    expect(() => projectRequest(SONNET, request([], { temperature: 0.2 }), 't')).toThrowError(
+      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
+    )
+    expect(() => projectRequest(SONNET, request([], { stop: ['\n\nUser:'] }), 't')).toThrowError(
+      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
+    )
+    expect(() => projectRequest(SONNET, request([], { purpose: 'compaction' }), 't')).toThrowError(
+      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
+    )
+    // An empty stop list asks for nothing, so it is not a dropped intent.
+    expect(() => projectRequest(SONNET, request([], { stop: [] }), 't')).not.toThrow()
+  })
+
+  it('carries the token, signal, session and headers', () => {
     const controller = new AbortController()
     const projected = projectRequest(
       SONNET,
@@ -139,11 +189,12 @@ describe('projectRequest', () => {
       'the-token',
     )
 
+    // No `externalToolExecutor`: this task refuses every tool frame, so the turn
+    // advertises no executor to the transport (Task 2 turns it on with tools).
     expect(projected.options).toEqual({
       apiKey: 'the-token',
       signal: controller.signal,
       sessionId: 'session-1',
-      externalToolExecutor: true,
       headers: attributionHeaders(),
     })
   })
@@ -168,12 +219,45 @@ describe('projectRequest', () => {
   })
 
   it('refuses image content instead of dropping it', () => {
-    const image = {
-      type: 'image' as const,
-      attachment: { attachmentId: 'img-1', mediaType: 'image/png', width: 1, height: 1, bytes: 1 },
-    }
     expect(() =>
-      projectRequest(SONNET, request([createUserMessage({ content: [image], source: { kind: 'user' } })]), 't'),
+      projectRequest(SONNET, request([createUserMessage({ content: [IMAGE], source: { kind: 'user' } })]), 't'),
+    ).toThrowError(expect.objectContaining({ code: CONTENT_UNSUPPORTED }))
+  })
+
+  it('refuses non-text content in assistant history', () => {
+    expect(() =>
+      projectRequest(
+        SONNET,
+        request([
+          createAssistantMessage({
+            content: [IMAGE],
+            source: { provider: 'cursor', model: 'claude-4.5-sonnet' },
+          }),
+        ]),
+        't',
+      ),
+    ).toThrowError(expect.objectContaining({ code: CONTENT_UNSUPPORTED }))
+  })
+
+  it('refuses non-text content in a system message', () => {
+    const systemWithImage = { ...createSystemMessage('prompt'), content: [IMAGE] }
+    expect(() => projectRequest(SONNET, request([systemWithImage]), 't')).toThrowError(
+      expect.objectContaining({ code: CONTENT_UNSUPPORTED }),
+    )
+  })
+
+  it('refuses a system message that follows a non-system message', () => {
+    // The transport carries system text only as a prompt prefix, so a later
+    // system message can only be sent by reordering the conversation.
+    expect(() =>
+      projectRequest(
+        SONNET,
+        request([
+          createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } }),
+          createSystemMessage('late instructions'),
+        ]),
+        't',
+      ),
     ).toThrowError(expect.objectContaining({ code: CONTENT_UNSUPPORTED }))
   })
 })
@@ -239,6 +323,24 @@ describe('projectEvents', () => {
 
     expect((await collect(terminal('length'))).at(-1)).toEqual({ type: 'finish', reason: { kind: 'max-tokens' } })
     expect((await collect(terminal('toolUse'))).at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
+  })
+
+  it('refuses an unrecognized stop reason instead of guessing a finish', async () => {
+    const chunks: OmpAssistantMessageEvent[] = [
+      {
+        type: 'done',
+        reason: 'mystery' as never,
+        message: {
+          role: 'assistant',
+          model: 'claude-4.5-sonnet',
+          stopReason: 'mystery',
+          content: [{ type: 'text' }],
+          usage: usage(),
+        },
+      },
+    ]
+
+    await expect(collect(chunks)).rejects.toMatchObject({ code: UNKNOWN_FINISH })
   })
 
   it('classifies an empty successful turn as EMPTY_RESPONSE', async () => {
