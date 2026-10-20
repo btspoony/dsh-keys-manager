@@ -144,6 +144,10 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // row can never fall back to rendering its key name.
     keyStatusActive: '正常',
     keyStatusCooling: '冷却中',
+    // R9 nit: the cooling row's window lines are asserted through their
+    // resolved copy, so the stub carries the same template the zh dictionary
+    // registers (`{time} 恢复`).
+    coolingUntil: '{time} 恢复',
     keyStatusPaused: '已暂停',
     keyStatusMissing: '凭证缺失',
     keyStatusEmpty: '暂无密钥',
@@ -1252,10 +1256,11 @@ describe('account ui', () => {
   test('a cooling account row resolves the cooling status copy', async () => {
     // I-000105: the cooling arm is rendered and asserted by its resolved
     // copy, so the dictionary entry is exercised rather than dead fixture.
+    const cooldownUntil = Date.now() + 60_000
     const state = makeState()
     state.providers[0] = {
       ...makeOauthProvider(),
-      keys: [{ ...makeOauthKey(), status: 'cooling', cooldownUntil: Date.now() + 60_000 }],
+      keys: [{ ...makeOauthKey(), status: 'cooling', cooldownUntil }],
     }
     const harness = makeContext({ ok: true, value: state })
     const store = createStore(harness.ctx)
@@ -1269,6 +1274,20 @@ describe('account ui', () => {
     const pills = findByClass(descendants(view.nodes, row), 'km-status')
     expect(pills).toHaveLength(1)
     expect(pills[0]!.text).toBe('冷却中')
+    // R9 nit: the cooling WINDOW itself must be observable, not just the
+    // pill. AccountRow renders the resolved "recovers at" copy on a
+    // `km-key-time km-warn` node only while `cold` is true, so a regression
+    // that hardcodes cold=false drops the node (and the resolved timestamp).
+    const coldLines = findByClass(descendants(view.nodes, row), 'km-warn')
+    expect(coldLines).toHaveLength(1)
+    expect(String(coldLines[0]!.props!.className).split(/\s+/)).toContain('km-key-time')
+    const clock = new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(cooldownUntil))
+    expect(coldLines[0]!.text).toBe(`${clock} 恢复`)
     view.unmount()
     setRuntimeContext(null)
   })
