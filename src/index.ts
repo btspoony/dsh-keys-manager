@@ -581,6 +581,14 @@ export class KeysManagerService {
    * and a removal warns as genuinely out-of-band again.
    */
   private readonly intentionalProjectionRemovals = new Map<string, number>()
+  /**
+   * In-flight projection demotions by provider (round-5 finding C1): the
+   * oauth failure path cools the account and demotes asynchronously, and the
+   * failover retry must not re-enter the stream while the projection still
+   * resolves — pi-ai prefers the stored grant, so the key pool would never be
+   * reached. The request-error listener awaits this entry before deciding.
+   */
+  private readonly projectionDemotions = new Map<string, Promise<void>>()
   /** Channels whose lost-subscription warning already fired (warn once). */
   private readonly subscriptionLostWarnings = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
@@ -2741,13 +2749,43 @@ export class KeysManagerService {
       // fallbackToKeys touch never runs when its deleteRecord throws, and
       // this touch is what schedules the debounced write regardless.
       this.store.touch()
-      void this.fallbackToKeys(providerId).catch(error => {
+      // Round-5 finding C1: publish the demotion so the request-error handler
+      // can wait for the projection to actually be gone before its retry
+      // re-enters the stream (otherwise pi-ai serves the stored grant again).
+      const demotion = this.fallbackToKeys(providerId).catch(error => {
         this.warn(`key-pool fallback failed for ${providerId}: ${error instanceof Error ? error.message : String(error)}`)
+      })
+      this.projectionDemotions.set(providerId, demotion)
+      void demotion.then(() => {
+        if (this.projectionDemotions.get(providerId) === demotion) this.projectionDemotions.delete(providerId)
       })
       return
     }
     this.warn(`key ${key.id} on ${providerId} cooled for ${Math.round(result.cooldownMs / 1000)}s`)
     this.store.touch()
+  }
+
+  /**
+   * Wait for any in-flight projection demotion on `providerId` (round-5
+   * finding C1). Resolves immediately when nothing is pending, and always
+   * resolves — the recorded promise already absorbed its own error.
+   */
+  private settleProjectionDemotion(providerId: string): Promise<void> {
+    const pending = this.projectionDemotions.get(providerId)
+    return pending === undefined ? Promise.resolve() : pending
+  }
+
+  /**
+   * Whether the key pool can serve a request right now (round-5 finding C1):
+   * a selectable non-account row other than `excludeKeyId`. Account rows are
+   * excluded because their reference is not broker-resolvable — only a
+   * projected grant serves them.
+   */
+  private hasFailoverCandidate(providerId: string, excludeKeyId: string): boolean {
+    const provider = this.store.provider(providerId)
+    if (provider === undefined) return false
+    const now = Date.now()
+    return provider.keys.some(key => key.id !== excludeKeyId && key.kind !== 'oauth' && isSelectable(key, now))
   }
 
   /** Prune stale attempt records. */
@@ -2925,6 +2963,16 @@ export class KeysManagerService {
                 if (oauthAccountId !== null && failure !== undefined && classifyOAuthFailure(failure) === 'oauth') {
                   service.recordFailure(providerId, sessionId, oauthAccountId, failure, true)
                   service.markFailure(providerId, oauthAccountId, failure)
+                  // Round-5 finding C1: the demotion alone only helps a LATER
+                  // request. Recording request-scoped evidence in the same
+                  // linked form the key paths produce lets the manager's retry
+                  // policy fail over inside THIS request. It is recorded only
+                  // when the pool holds a candidate: with none, neither the
+                  // demoted account nor a key can serve the retry, and a retry
+                  // would be a phantom loop — delegation stays the answer.
+                  if (service.hasFailoverCandidate(providerId, oauthAccountId)) {
+                    service.recordStreamAttempt(providerId, sessionId, oauthAccountId, true, failure)
+                  }
                 } else {
                   if (reason.failure !== undefined && shouldFailover(reason.failure.code) && service.store.settings.autoSwitch) {
                     service.recordStreamAttempt(providerId, sessionId, keyId, used, reason.failure)
@@ -3105,6 +3153,12 @@ export class KeysManagerService {
       return next()
     }
     if (sessionId === undefined) return next()
+    // Round-5 finding C1: an OAuth-grant failure cools the account and starts
+    // an asynchronous projection demotion. The retry must not re-enter the
+    // stream while that demotion is pending — pi-ai would serve the stored
+    // grant again and the key-pool failover would never happen. Awaiting here
+    // is what makes the retry attempt land on the pool within this request.
+    await this.settleProjectionDemotion(providerId)
     const now = Date.now()
     const attemptKey = bindingKey(sessionId, providerId)
     const switchKey = `${attemptKey}\u0000${payload.turn}\u0000${payload.step}`

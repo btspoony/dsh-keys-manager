@@ -3951,6 +3951,93 @@ test('a broker-key request still advances the key pool (C4)', async () => {
   }
 })
 
+test('an oauth-coded stream failure fails over to a key within the same request (C1)', async () => {
+  // Round-5 finding C1: demoting the projection only helped a LATER request.
+  // The failure must carry request-scoped evidence in the same linked form
+  // the key paths produce, and the retry decision must wait for the demotion
+  // to settle so the retry attempt actually resolves through the key pool.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const failure = { code: 'oauth', message: 'OAuth refresh failed for anthropic' }
+    // The public stream path attributes the failure, cools the account, and
+    // starts the demotion; the agent loop then forwards this exact failure
+    // object to agent/request-error.
+    await consume(streamFailure(h, 'anthropic', 'session-c1', failure))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.ok(row.cooldownUntil > Date.now(), 'the owning account row must be cooled')
+
+    let nextCalled = false
+    const action = await h.service.requestErrorListener({
+      provider: 'anthropic',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-c1' } },
+    } as unknown as RequestErrorPayload, async () => {
+      nextCalled = true
+      return undefined
+    })
+    // A retry is requested inside this same request/step.
+    assert.deepEqual(action, { kind: 'retry' })
+    assert.equal(nextCalled, false)
+    // The retry decision waited for the demotion: the projection is gone, so
+    // the retried attempt resolves through the key pool instead of the grant.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+
+    // The second attempt of the same step lands on a pool key.
+    h.service.noteRequestStep({ agent: { session: { id: 'session-c1' } }, turn: 1, step: 1 }, 'anthropic')
+    const retry = h.service.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-c1', messages: [] },
+      async function* () {
+        await h.credentials.raw.resolve(h.store.provider('anthropic')!.brokerRef)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    )
+    await consume(retry)
+    const bound = h.store.binding('session-c1', 'anthropic')!
+    assert.equal(h.store.provider('anthropic')!.keys.find(key => key.id === bound.keyId)!.kind, 'api-key')
+    // The account stays demoted: recovery is manual.
+    assert.equal(row.valueMissing, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth-coded stream failure with no usable pool key still delegates (C1)', async () => {
+  // The C1 evidence is recorded only when the pool can serve the retry: with
+  // no candidate, neither the demoted account nor a key can succeed, so the
+  // retry would be a phantom loop and delegation stays the answer.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const provider = h.store.provider('anthropic')!
+    for (const key of provider.keys) {
+      if (key.kind !== 'oauth') key.enabled = false
+    }
+    h.store.touch()
+    const failure = { code: 'oauth', message: 'OAuth refresh failed for anthropic' }
+    await consume(streamFailure(h, 'anthropic', 'session-c1-empty', failure))
+    let nextCalled = false
+    const action = await h.service.requestErrorListener({
+      provider: 'anthropic',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-c1-empty' } },
+    } as unknown as RequestErrorPayload, async () => {
+      nextCalled = true
+      return undefined
+    })
+    assert.equal(action, undefined)
+    assert.equal(nextCalled, true)
+  } finally {
+    await h.close()
+  }
+})
+
 test('an oauth-coded stream failure without an active projection attributes to nothing', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {
