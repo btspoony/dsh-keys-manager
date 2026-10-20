@@ -46,7 +46,8 @@ In the DeepSeek Harness Desktop or Web app, open **Plugins**, click
 switched on.
 
 This installs the same published npm tarball as the CLI path below, so it
-needs no local build and no command line.
+needs no local build and no command line. Refresh the DeepSeek Harness page
+afterwards so the browser half is fetched.
 
 ### Install — published package
 
@@ -63,7 +64,7 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-Only the published-package path avoids a local build: `dsh plugin --profile web add dsh-keys-manager` installs the npm
+Of the two CLI paths above, only the published-package one avoids a local build: `dsh plugin --profile web add dsh-keys-manager` installs the npm
 tarball as-is — package lifecycle scripts (`prepare` / `prepack`) do not run
 for registry installs, and the tarball already ships the built `lib/` and
 the client bundle. The local `dsh plugin --profile web link .` path is
