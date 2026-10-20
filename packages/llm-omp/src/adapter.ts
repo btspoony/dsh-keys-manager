@@ -32,7 +32,7 @@ import type { CursorModelRow, OmpCursorOptions, OmpCursorTransport } from './omp
 export const CURSOR_ROUTE = 'cursor'
 
 /** Credential scope Task 3 wires this resolver to. */
-const CREDENTIAL_REF = 'llm-omp/cursor'
+const CREDENTIAL_REF = 'llm-omp-transports/cursor'
 
 /** Machine code for a model id the generated catalog does not contain. */
 export const UNKNOWN_MODEL = 'UNKNOWN_MODEL'
@@ -69,7 +69,7 @@ export interface OmpCursorAdapterConfig {
    * Resolve the Cursor bearer token for one request.
    *
    * @remarks
-   * Asynchronous because Task 3 reads and refreshes the `llm-omp/cursor`
+   * Asynchronous because Task 3 reads and refreshes the `llm-omp-transports/cursor`
    * credential through the credentials seam. Tests inject a fake.
    */
   access: () => Promise<string>

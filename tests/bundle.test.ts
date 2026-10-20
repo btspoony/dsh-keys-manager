@@ -36,13 +36,13 @@ describe('bundle composition', () => {
   it('mounts the keys-manager plugin and the llm-omp transports component', () => {
     expect(insertRows(join(repoRoot, 'bundle/cordis.patch.yml'))).toEqual([
       { id: 'dsh-keys-manager', name: 'dsh-keys-manager' },
-      { id: 'llm-omp', name: 'dsh-llm-omp-transports' },
+      { id: 'llm-omp-transports', name: 'dsh-llm-omp-transports' },
     ])
   })
 
   it('keeps the transports package mountable on its own', () => {
     expect(insertRows(join(repoRoot, 'packages/llm-omp/bundle/cordis.patch.yml'))).toEqual([
-      { id: 'llm-omp', name: 'dsh-llm-omp-transports' },
+      { id: 'llm-omp-transports', name: 'dsh-llm-omp-transports' },
     ])
   })
 

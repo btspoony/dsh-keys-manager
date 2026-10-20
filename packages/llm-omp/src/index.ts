@@ -1,5 +1,5 @@
 /**
- * llm-omp Host half — the transport plugin for providers whose wire protocols
+ * llm-omp-transports Host half — the transport plugin for providers whose wire protocols
  * cannot be expressed through DSH's provider *configuration* surfaces.
  *
  * The plugin registers its own routes on the `llm` seam, so nothing here
@@ -26,7 +26,7 @@ export interface Config {}
 /** Runtime schema for {@link Config}. */
 export const Config = z.object({})
 
-export const name = 'llm-omp'
+export const name = 'llm-omp-transports'
 
 /**
  * Sibling services this plugin reads. It registers adapter routes on `llm`;
