@@ -9659,6 +9659,120 @@ test('a superseded cleanup cannot rewrite the newer window\'s projection or owne
   }
 })
 
+// PR #26 review round 6, must-fix: the rotation write-back is an await inside
+// the cleanup. A cleanup parked in it can outlive its deadline while a newer
+// window borrows ANOTHER account; when it resumes, its compare-by-payload
+// still matches its own rotation, so the unfenced owner reconcile claims the
+// tested row back over the newer window's borrow.
+
+test('a superseded rotation write-back cannot claim the owner for its own row', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  const rotatedRefresh = 'rt-second-rotated'
+  const rotatedRef = accountRef('anthropic', createHash('sha256').update(rotatedRefresh).digest('hex').slice(0, 12))
+  let releaseAttemptOne: (() => void) | undefined
+  let releaseTestOne: (() => void) | undefined
+  let releaseTestTwo: (() => void) | undefined
+  let testOne: Promise<KeyTestResult> | undefined
+  let testTwo: Promise<KeyTestResult> | undefined
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  const logged: string[] = []
+  h.ctx.logger.warn = (message: string) => { logged.push(String(message)) }
+  let stallRotationWriteBack = false
+  try {
+    let attemptOneParked!: () => void
+    const attemptOneReached = new Promise<void>(resolve => { attemptOneParked = resolve })
+    const attemptOneGate = new Promise<void>(resolve => { releaseAttemptOne = resolve })
+    h.credentials.raw.modifyRecord = async (key: string, mutate: any): Promise<FakeCredentialRecord | undefined> => {
+      if (stallRotationWriteBack && key === rotatedRef) {
+        // Park the FIRST cleanup's rotation write-back only: the superseded
+        // attempt must still be running when the newer window owns the route.
+        stallRotationWriteBack = false
+        attemptOneParked()
+        await attemptOneGate
+      }
+      return realModify(key, mutate)
+    }
+    const testOneGate = new Promise<void>(resolve => { releaseTestOne = resolve })
+    const testTwoGate = new Promise<void>(resolve => { releaseTestTwo = resolve })
+    let testOneEntered!: () => void
+    let testTwoEntered!: () => void
+    const enteredOne = new Promise<void>(resolve => { testOneEntered = resolve })
+    const enteredTwo = new Promise<void>(resolve => { testTwoEntered = resolve })
+    let testCalls = 0
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testCalls += 1
+        if (testCalls === 1) {
+          testOneEntered()
+          // The serving account's own generation rotates during its window,
+          // so its restore takes the rotation write-back branch.
+          h.credentials.records.set(GRANT_KEY, grantPayload({
+            refresh: rotatedRefresh,
+            access: 'at-rotated',
+            accountId: 'acc-second',
+            email: 'second@example.com',
+          }))
+          await testOneGate
+        } else {
+          testTwoEntered()
+          await testTwoGate
+        }
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 500
+    const projectedRows = (): string[] => h.service.getState().providers
+      .find(entry => entry.provider === 'anthropic')!.keys
+      .filter(key => key.projected === true)
+      .map(key => key.id)
+
+    testOne = h.service.testKey('anthropic', second.rowId)
+    await enteredOne
+    // The watchdog abandons the window; its cleanup sees the rotation of the
+    // tested row and parks in the rotation write-back.
+    stallRotationWriteBack = true
+    await attemptOneReached
+    // The wedged request still holds the provider's grant chain; let it settle
+    // so the next test can enter (the parked cleanup is not on that chain).
+    releaseTestOne?.()
+    await testOne
+    // A later test attempt cleans the abandoned window up and hands the
+    // provider to a second window on the OTHER account, held open deliberately
+    // (lift the isolation deadline so that window is not abandoned too).
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 2_000
+    testTwo = h.service.testKey('anthropic', first.rowId)
+    await enteredTwo
+    assert.equal(liveProjectionRefresh(h), 'rt-first', 'the newer window borrowed the other account')
+    assert.deepEqual(projectedRows(), [first.rowId], 'the newer window owns the route')
+
+    // The superseded attempt resumes: its write-back completes, but it may not
+    // reconcile or claim the owner away from the newer window. Its takeover
+    // report is the signal that it has finished writing.
+    releaseAttemptOne?.()
+    await eventually(() => assert.ok(logged.some(message => /took over/.test(message)),
+      'the superseded cleanup did not report the takeover'))
+    assert.deepEqual(projectedRows(), [first.rowId],
+      'a superseded rotation write-back claimed the owner for its own row')
+
+    releaseTestTwo?.()
+    const outcome = await testTwo
+    assert.equal(outcome.ok, true)
+    // The second window restored what it found: the rotated generation.
+    assert.equal(liveProjectionRefresh(h), rotatedRefresh)
+    assert.deepEqual(projectedRows(), [second.rowId])
+  } finally {
+    stallRotationWriteBack = false
+    releaseAttemptOne?.()
+    releaseTestOne?.()
+    releaseTestTwo?.()
+    h.credentials.raw.modifyRecord = realModify
+    await testOne?.catch(() => undefined)
+    await testTwo?.catch(() => undefined)
+    await h.close()
+  }
+})
+
 // PR #26 review round 3: the startup repair waited on the process-wide
 // hydration promise, so one OAuth read that never settles starved the repair
 // of every provider — including a pure key-pool route that can never own a

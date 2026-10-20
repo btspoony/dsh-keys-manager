@@ -3484,7 +3484,10 @@ export class KeysManagerService {
         } catch (error) {
           // The live projection is the only copy of the rotated payload:
           // overwriting it with the pre-test payload would strand the account
-          // on a consumed refresh token, so it stays and owns the route.
+          // on a consumed refresh token, so it stays and owns the route —
+          // unless this attempt is superseded, and the route is no longer its
+          // to claim (PR review round 6).
+          if (superseded()) return takeover
           this.claimProjectionOwner(provider, row.id)
           const message = `The rotated grant for ${provider} could not be written back after the test: ${error instanceof Error ? error.message : String(error)}`
           this.pushWarning(message)
@@ -3498,6 +3501,11 @@ export class KeysManagerService {
         return undefined
       }
     }
+    // PR review round 6: the rotation write-back is an await. A cleanup that
+    // outlived its deadline can resume after a newer window borrowed another
+    // account, so the owner map it would reconcile belongs to that window's
+    // world now: finish the write, skip the owner write, report the takeover.
+    if (superseded()) return takeover
     // QC B2: the pre-test projection already belonged to the tested row, so
     // the live payload (the borrowed grant, or a rotation just written back
     // above) IS that row's current grant. Writing `previous` back would revert
@@ -3537,6 +3545,10 @@ export class KeysManagerService {
           const liveAfterGrant = liveAfter !== undefined && liveAfter.kind === 'grant' && isOAuthGrantPayload(liveAfter.payload)
             ? liveAfter.payload
             : undefined
+          // PR review round 6: this reconcile follows an awaited re-read; a
+          // superseded attempt may not repoint the owner from a world a newer
+          // window now owns.
+          if (superseded()) return takeover
           this.reconcileProjectionOwner(provider, liveAfterGrant)
           // Already gone: the route has no projection, which is the state the
           // test found. Anything else is a grant this test may not remove —
