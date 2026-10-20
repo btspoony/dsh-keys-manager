@@ -1019,8 +1019,12 @@ describe('account ui', () => {
     view.render()
     const empty = findByClass(view.nodes, 'km-empty-keys')[0]
     expect(empty).toBeDefined()
-    expect(empty!.text).toBe('暂不支持密钥池')
-    expect(empty!.text).not.toBe('还没有密钥。添加一个后即可使用该 Provider。')
+    // R5-N1: the flow-less verdict is visible text, not only the disabled Add
+    // key's hover title — the empty body states the unsupported headline AND
+    // the host's real reason, exactly like the unmanaged adopt panel does.
+    expect(empty!.text).toContain('暂不支持密钥池')
+    expect(empty!.text).toContain(reason)
+    expect(empty!.text).not.toContain('还没有密钥。添加一个后即可使用该 Provider。')
     expect(findButtons(view.nodes, 'addKey')[0]!.props!.disabled).toBe(true)
     expect(findButtons(view.nodes, 'addAccount')).toHaveLength(0)
     view.unmount()
@@ -1087,9 +1091,13 @@ describe('account ui', () => {
     const empty = findByClass(view.nodes, 'km-empty-keys')[0]
     expect(empty).toBeDefined()
     // The sign-in invitation, resolved from the dictionary — never the
-    // key-capable "Add one" copy, and never the raw key name.
-    expect(empty!.text).toBe('还没有账户。添加一个账户后即可使用该 Provider。')
-    expect(empty!.text).not.toBe('还没有密钥。添加一个后即可使用该 Provider。')
+    // key-capable "Add one" copy, and never the raw key name. R5-N1 appends
+    // the host's reason beneath every key-unsupported empty body (the same
+    // rule the unmanaged adopt panel applies), so the copy is matched rather
+    // than pinned to the whole block.
+    expect(empty!.text).toContain('还没有账户。添加一个账户后即可使用该 Provider。')
+    expect(empty!.text).not.toContain('还没有密钥。添加一个后即可使用该 Provider。')
+    expect(empty!.text).toContain('Uses ChatGPT OAuth sign-in only; no API-key credential')
     expect(empty!.text).not.toContain('noKeys')
     // The viable action is present beside the copy; Add key stays gated.
     expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)

@@ -861,9 +861,17 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
           // capability (C6-2: nativeAuth.oauth without an enumerable flow)
           // offers no action at all, so it states the unsupported verdict
           // rather than inviting a key the toolbar refuses.
-          ? h('div', { className: 'km-empty-keys' }, provider.supported
-              ? t('noKeys')
-              : oauthCapable(provider) ? t('noKeysAccount') : t('unsupported'))
+          // Round-5 nit N1: the reason is part of that verdict as visible
+          // text, matching the unmanaged adopt panel, instead of being
+          // reachable only through the disabled Add key's hover title.
+          ? h('div', { className: 'km-empty-keys' },
+              h('div', null, provider.supported
+                ? t('noKeys')
+                : oauthCapable(provider) ? t('noKeysAccount') : t('unsupported')),
+              !provider.supported && provider.reason !== undefined
+                ? h('div', { className: 'km-muted' }, provider.reason)
+                : null,
+            )
           : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
               ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) })
               : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
