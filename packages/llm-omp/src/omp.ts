@@ -44,7 +44,7 @@ export interface CursorModelRow {
   readonly contextWindow: number
   /** Per-response output cap the catalog advertises. */
   readonly maxTokens: number
-  readonly input: readonly ('text' | 'image')[]
+  readonly input: ('text' | 'image')[]
   readonly cost: CursorModelCost
   /** `max_mode` marker; only meaningful per routed wire id on collapsed rows. */
   readonly cursorMaxMode?: boolean

@@ -4,8 +4,8 @@
  *
  * The plugin registers its own routes on the `llm` seam, so nothing here
  * depends on an upstream DSH change. This module holds the plugin identity
- * only: the `cursor` route, its authorization flow and its credential reads
- * land with the tasks that own them.
+ * only: the `cursor` adapter, its authorization flow and its credential reads
+ * are registered by Task 3 of the plan that owns this increment.
  *
  * @module @dsh-keys-manager/llm-omp
  */
@@ -35,7 +35,7 @@ export const name = 'llm-omp'
 export const inject = ['llm']
 
 export function apply(_ctx: Context, _config: Config = {}): void {
-  // Routes are registered per transport task; the skeleton intentionally
-  // mounts as a no-op fiber so the bundle patch and the seam wiring can be
-  // verified before any wire code exists.
+  // Intentionally inert in this increment: the adapter, the projection and the
+  // catalog are in place, and Task 3 registers the adapter and its
+  // authorization flow here.
 }

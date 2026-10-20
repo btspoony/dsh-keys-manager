@@ -4,9 +4,9 @@
  * The route speaks Cursor's own agent protocol (`agent.v1.AgentService/Run`
  * over HTTP/2) through the omp build artifact in `lib/omp/cursor.mjs`. The
  * transport is injected rather than imported so this module stays free of the
- * 14 MB build artifact and tests can replay recorded event scripts. Production
- * wiring (the plugin's `apply`) passes the artifact's `streamCursor`; the
- * credential seam provides {@link OmpCursorAdapterConfig.access}.
+ * 14 MB build artifact and tests can replay recorded event scripts. Task 3
+ * wires the bundled `streamCursor` at registration; the credential seam
+ * provides {@link OmpCursorAdapterConfig.access}.
  *
  * The catalog is the generated `src/catalog/cursor.ts`, so `listModels` and
  * `resolveModel` answer without a network call and carry the transport flags the
@@ -26,7 +26,7 @@ import type {
 
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { projectEvents, projectRequest } from './projection.js'
-import type { CursorModelRow, OmpCursorTransport } from './omp.js'
+import type { CursorModelRow, OmpCursorOptions, OmpCursorTransport } from './omp.js'
 
 /** The provider route this adapter owns. */
 export const CURSOR_ROUTE = 'cursor'
@@ -121,9 +121,14 @@ export class OmpCursorAdapter extends LlmAdapter {
 
   private async *call(options: GenerateOptions): AsyncGenerator<StreamChunk> {
     const row = rowFor(options.model)
+    // Validate and project before touching the credential: a refused request
+    // must not pay a credential read (nor, once the resolver refreshes, a CAS
+    // write). Only a request that can be served resolves `access` and carries
+    // its token into the transport options.
+    const request = projectRequest(row, options)
     const accessKey = assertUsableApiKey(await this.config.access(), 'llm-omp', CREDENTIAL_REF)
-    const request = projectRequest(row, options, accessKey)
-    yield* projectEvents(this.config.transport(request.model, request.context, request.options), options.signal)
+    const transportOptions: OmpCursorOptions = { ...request.options, apiKey: accessKey }
+    yield* projectEvents(this.config.transport(request.model, request.context, transportOptions), options.signal)
   }
 }
 

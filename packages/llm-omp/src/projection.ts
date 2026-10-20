@@ -99,7 +99,11 @@ const EMPTY_USAGE: OmpUsage = Object.freeze({
 export interface ProjectedRequest {
   readonly model: OmpCursorModel
   readonly context: OmpCursorContext
-  readonly options: OmpCursorOptions
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpCursorOptions, 'apiKey'> & { readonly apiKey?: string }
 }
 
 /**
@@ -111,7 +115,8 @@ export interface ProjectedRequest {
  *
  * @param row - catalog row for the requested model.
  * @param options - the assembled DSH request.
- * @param accessToken - Cursor bearer token resolved for this call.
+ * @param accessToken - bearer token already resolved for this call; omit it to
+ *   project before the credential is read.
  * @returns the transport arguments, ready to hand to `streamCursor`.
  * @throws LlmError with {@link TOOLS_UNSUPPORTED} when the request carries tools.
  * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this task cannot send, and
@@ -119,7 +124,11 @@ export interface ProjectedRequest {
  * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} when the effort is not advertised by
  *   the model.
  */
-export function projectRequest(row: CursorModelRow, options: GenerateOptions, accessToken: string): ProjectedRequest {
+export function projectRequest(
+  row: CursorModelRow,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedRequest {
   if (options.tools !== undefined && options.tools.length > 0) throw toolsUnsupported('request tools')
   if (options.toolHistory !== undefined) throw toolsUnsupported('tool history')
 
@@ -154,7 +163,7 @@ export function projectRequest(row: CursorModelRow, options: GenerateOptions, ac
       messages,
     },
     options: {
-      apiKey: accessToken,
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
       ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
       ...(wireModelId !== undefined ? { wireModelId } : {}),
@@ -256,15 +265,12 @@ function historyAssistant(message: DshAssistantMessage): OmpAssistantMessage {
 }
 
 function toolsUnsupported(what: string): LlmError {
-  return new LlmError(
-    `llm-omp: ${what} are not supported yet; plan omp-transport-cursor hands tool calls to DSH in Task 2`,
-    TOOLS_UNSUPPORTED,
-  )
+  return new LlmError(`llm-omp: ${what} are not supported on the cursor route yet`, TOOLS_UNSUPPORTED)
 }
 
 function unsupportedContent(kind: string, role: string): LlmError {
   return new LlmError(
-    `llm-omp: ${role} message content block "${kind}" is not supported; plan omp-transport-cursor carries text and reasoning only in Task 1`,
+    `llm-omp: the cursor route carries text and reasoning only; ${role} message content block "${kind}" is not supported`,
     CONTENT_UNSUPPORTED,
   )
 }

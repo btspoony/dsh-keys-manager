@@ -127,6 +127,24 @@ describe('OmpCursorAdapter text streaming', () => {
     await expect(collect(adapter.stream(request()))).rejects.toMatchObject({ code: 'INVALID_CREDENTIAL' })
     expect(calls).toHaveLength(0)
   })
+
+  it('does not read the credential for a request the projection refuses', async () => {
+    const { transport, calls } = scriptedTransport('cursor-text.jsonl')
+    let reads = 0
+    const adapter = new OmpCursorAdapter({
+      access: async () => {
+        reads += 1
+        return 'test-token'
+      },
+      transport,
+    })
+
+    await expect(
+      collect(adapter.stream(request({ tools: [{ name: 'read', description: 'read', parameters: {} }] }))),
+    ).rejects.toMatchObject({ code: TOOLS_UNSUPPORTED })
+    expect(reads).toBe(0)
+    expect(calls).toHaveLength(0)
+  })
 })
 
 describe('OmpCursorAdapter catalog', () => {
