@@ -3973,6 +3973,45 @@ test('re-authenticating a demoted account clears the missing flag', async () => 
   }
 })
 
+// Round-7 review (R7-SF3): "retiring" (removal in progress) and "demoted"
+// (no longer serving, still managed) are different states. The ownership
+// check before the claim rejected `valueMissing` rows outright, so a demoted
+// row whose projection reappeared — a native sign-in, a pi-ai write — was
+// never re-adopted, and the successful path never cleared the flag either.
+
+test('a demoted row is re-adopted when its projection reappears (R7-SF3)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.fallbackToKeys('anthropic')
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, true)
+    assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.some(key => key.projected === true), false)
+    // Let the demotion's own echo settle before the projection returns.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // A native sign-in / pi-ai write re-projects this exact account's grant.
+    h.credentials.records.set(GRANT_KEY, structuredClone(h.credentials.records.get(grantRef)!))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    // The proven owner is re-adopted: claim restored, missing flag cleared.
+    await eventually(() => assert.equal(row.valueMissing, false))
+    const state = h.service.buildState()
+    const provider = state.providers.find(entry => entry.provider === 'anthropic')!
+    const revived = provider.keys.find(key => key.id === rowId)!
+    assert.equal(revived.projected, true)
+    assert.equal(revived.status, 'active')
+    assert.ok(provider.healthyKeyCount >= 1)
+    assert.equal(provider.keys.filter(key => key.projected === true).length, 1)
+    // The cleared flag is persisted, not only held in memory.
+    await h.store.flush()
+    const saved = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as {
+      providers: Record<string, { keys: Array<{ id: string; valueMissing: boolean }> }>
+    }
+    assert.equal(saved.providers['anthropic']!.keys.find(key => key.id === rowId)!.valueMissing, false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('re-authenticating a cooling account clears the stale cooldown (C3)', async () => {
   // Round-5 finding C3: the re-auth recovery cleared valueMissing but left the
   // old cooldown timer, so the freshly projected grant still reported cooling

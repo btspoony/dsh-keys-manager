@@ -1872,7 +1872,10 @@ export class KeysManagerService {
     // this reconciliation is still resolving its owner. Writing the rotated
     // generation for an account removed in that window would recreate a
     // secret-bearing record nothing owns, so the write is skipped entirely.
-    if (!this.accountRowStillCurrent(provider, owner)) return
+    // R7-SF3: this proof is adoption-oriented, so a merely demoted row
+    // (`valueMissing`) still qualifies — a projection that reappears for it
+    // is re-adopted below. Only a removal in progress is refused.
+    if (!this.accountRowIsManaged(provider, owner)) return
     // F1 (I-000081): the matched grant IS the live projection, so this row
     // owns it from now on — even when no in-process login or activation
     // ran (the post-restart echo-rotation case: a hydrated row, no owner
@@ -1888,6 +1891,17 @@ export class KeysManagerService {
     if ((this.ownershipGenerations.get(provider) ?? 0) === generation) {
       this.claimProjectionOwner(provider, owner.id)
       claimedGeneration = this.ownershipGenerations.get(provider)
+      // R7-SF3: the live projection proves this row's identity again, so a
+      // demoted row is re-adopted — restore its owner claim (above) and end
+      // the demoted state. `valueMissing` means "not serving but still
+      // managed", not "removal in progress": a native sign-in or pi-ai
+      // write that re-projects the grant recovers the account without a
+      // manual re-activation. The flag is persisted with the rest of the
+      // state document.
+      if (owner.valueMissing === true) {
+        owner.valueMissing = false
+        this.store.touch()
+      }
     }
     // Rotation sync: the rotated payload is authoritative (the plan's
     // single-writer contract — "sync them back to the owning plugin-scope
@@ -1984,16 +1998,32 @@ export class KeysManagerService {
    * grant is deleted the provider record and row X both still look live while
    * the release awaits later rows. Syncing a rotation into that window would
    * commit `grantRef = rotatedRef` on a row nothing will serve, and the
-   * release's final provider deletion leaves that record orphaned. Two
-   * removal-aware checks close it: {@link retiringAccounts} is set before the
-   * removal's first awaited delete, and `valueMissing` marks every row whose
-   * credential is already gone (release) or whose route was demoted. Either
-   * means the row is no longer serving, so the write is skipped (or, after
-   * the write, compensated).
+   * release's final provider deletion leaves that record orphaned. The
+   * removal-aware check is {@link retiringAccounts}, set before the removal's
+   * first awaited delete.
+   *
+   * R7-SF3: `valueMissing` is NOT a removal signal — it only says the row is
+   * currently not serving. A demoted row is still managed, and a projection
+   * that reappears for it must be re-adopted (the caller proves the
+   * projection belongs to this row before claiming it). This guard therefore
+   * keeps the credential-write semantics strict: writing to a demoted row is
+   * pointless until the adoption path has cleared the flag.
    */
   private accountRowStillCurrent(provider: string, owner: KeyRecord): boolean {
-    if (this.retiringAccounts.has(owner)) return false
     if (owner.valueMissing === true) return false
+    return this.accountRowIsManaged(provider, owner)
+  }
+
+  /**
+   * R7-SF3 adoption proof: the row is live and still managed, whether or not
+   * it is currently serving. "Retiring" (removal in progress) refuses
+   * everything; "demoted" (`valueMissing`) refuses nothing here — the caller
+   * has already proven that the live projection belongs to this exact row
+   * ({@link matchOwningAccount}) and that no newer projection superseded the
+   * observation (generation guard).
+   */
+  private accountRowIsManaged(provider: string, owner: KeyRecord): boolean {
+    if (this.retiringAccounts.has(owner)) return false
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return false
     if (owner.kind !== 'oauth' || owner.oauth === null) return false
