@@ -21,7 +21,7 @@
  *   it.
  * - A namespace or star import reaches every export; it is recorded as `*`.
  *
- * @module @dsh-keys-manager/llm-omp/omp-reach
+ * @module dsh-llm-omp-transports/omp-reach
  */
 import { readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'

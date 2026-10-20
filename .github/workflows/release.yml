@@ -156,6 +156,27 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Publish dsh-llm-omp-transports to npm
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The transport package versions independently of dsh-keys-manager:
+          # publish its own package.json version and skip when that exact
+          # version is already on npm, so a release re-run (or a root release
+          # that does not bump the transport) stays idempotent.
+          PKG_DIR="packages/llm-omp"
+          PKG_VERSION="$(node -p "require('./${PKG_DIR}/package.json').version")"
+          if npm view "dsh-llm-omp-transports@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "dsh-llm-omp-transports@${PKG_VERSION} is already published; skipping."
+            exit 0
+          fi
+          # npm publish runs the package's own prepack (pnpm run build), which
+          # needs the workspace devDependencies installed by the step above.
+          # shortcut: formal versions only publish on the default latest tag; a
+          # transport prerelease needs the root step's dist-tag rule.
+          npm publish "$PKG_DIR" --provenance --access public
+
       - name: Publish to npm
         if: steps.npm-version.outputs.exists != 'true'
         env:
@@ -176,6 +197,13 @@ jobs:
           # --provenance is explicitly requested: it makes sigstore signing
           # deterministic under OIDC trusted publishing (matches the sibling
           # dsh-llm-fallbacks release workflow).
+          #
+          # Pack with pnpm first: the published manifest declares
+          # `dsh-llm-omp-transports` as `workspace:^`, and npm has no pnpm
+          # workspace context, so `npm publish` on the directory would ship the
+          # raw protocol spec. `pnpm pack` rewrites it to a semver range.
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+          TARBALL="$RUNNER_TEMP/dsh-keys-manager-${VERSION}.tgz"
           if [[ "${VERSION}" == *-* ]]; then
             PRETAG="${VERSION#*-}"
             PRETAG="${PRETAG%%.*}"
@@ -185,9 +213,9 @@ jobs:
               echo "::error::Invalid prerelease dist-tag '${PRETAG}' for ${VERSION}."
               exit 1
             fi
-            npm publish --provenance --access public --tag "$PRETAG"
+            npm publish "$TARBALL" --provenance --access public --tag "$PRETAG"
           else
-            npm publish --provenance --access public
+            npm publish "$TARBALL" --provenance --access public
           fi
 
       - name: Configure git identity

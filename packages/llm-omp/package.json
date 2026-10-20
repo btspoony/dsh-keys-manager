@@ -1,7 +1,6 @@
 {
-  "name": "@dsh-keys-manager/llm-omp",
-  "version": "0.0.0",
-  "private": false,
+  "name": "dsh-llm-omp-transports",
+  "version": "0.1.0",
   "type": "module",
   "description": "DSH transport plugin: serves providers whose wire protocols only oh-my-pi's own transport code can speak (Cursor first), by registering its own routes on the dsh-llm seam.",
   "keywords": [
@@ -28,6 +27,9 @@
     "bundle",
     "!lib/omp/metafile.json"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "bundle": {
       "patch": "./bundle/cordis.patch.yml"

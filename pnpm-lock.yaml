@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      dsh-llm-omp-transports:
+        specifier: workspace:^
+        version: link:packages/llm-omp
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.5

@@ -22,7 +22,7 @@
  * Determinism: no timestamps, no source maps, sorted manifest keys, so a rebuild
  * of an unchanged pin produces a byte-identical artifact and manifest.
  *
- * @module @dsh-keys-manager/llm-omp/build-omp
+ * @module dsh-llm-omp-transports/build-omp
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'

@@ -21,7 +21,7 @@
  *   like Bun (the u64 bit pattern as a double), so a digest serializes with
  *   `JSON.stringify` and compares numerically at every call site.
  *
- * @module @dsh-keys-manager/llm-omp/omp-shim/bun-global
+ * @module dsh-llm-omp-transports/omp-shim/bun-global
  */
 import { createHash, type BinaryLike, type BinaryToTextEncoding, type Hash } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'

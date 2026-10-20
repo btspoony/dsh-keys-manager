@@ -26,7 +26,7 @@
  * advertised effort resolves, so an omp bump that starts refusing one fails
  * there instead of surfacing as a runtime `UNSUPPORTED_REASONING_EFFORT`.
  *
- * @module @dsh-keys-manager/llm-omp/generate-catalog
+ * @module dsh-llm-omp-transports/generate-catalog
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -129,7 +129,7 @@ const file = `/**
  * row's own, \`requestModelId ?? id\`): selecting one is a wire-level no-op,
  * exactly as in omp. No row's effort list is filtered.
  *
- * @module @dsh-keys-manager/llm-omp/catalog/cursor
+ * @module dsh-llm-omp-transports/catalog/cursor
  */
 import type { CursorModelRow } from '../omp.js'
 

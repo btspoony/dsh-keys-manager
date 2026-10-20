@@ -12,7 +12,7 @@
  * `resolveModel` answer without a network call and carry the transport flags the
  * projection needs (effort routing, max mode, glyph tokenization).
  *
- * @module @dsh-keys-manager/llm-omp/adapter
+ * @module dsh-llm-omp-transports/adapter
  */
 import { LlmAdapter, LlmError, ReasoningEffortId, assertUsableApiKey } from '@deepseek-ai/dsh-llm'
 import type {

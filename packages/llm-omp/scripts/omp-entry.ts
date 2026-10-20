@@ -10,7 +10,7 @@
  * `src/omp.ts` to omp's real signatures, so drift fails `pnpm typecheck`
  * instead of surfacing when Task 3 wires the transport.
  *
- * @module @dsh-keys-manager/llm-omp/omp-entry
+ * @module dsh-llm-omp-transports/omp-entry
  */
 import { streamCursor } from '@oh-my-pi/pi-ai/providers/cursor'
 import type { CursorOptions } from '@oh-my-pi/pi-ai/providers/cursor'

@@ -34,7 +34,7 @@
  * Task 2 projects tool history, so compaction is Task-2-gated rather than a
  * knob issue.
  *
- * @module @dsh-keys-manager/llm-omp/projection
+ * @module dsh-llm-omp-transports/projection
  */
 import {
   CONTEXT_WINDOW_EXCEEDED_CODE,

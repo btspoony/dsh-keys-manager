@@ -16,7 +16,7 @@
  *   hashes, so a bump that changes these shapes fails before the plugin reads
  *   them.
  *
- * @module @dsh-keys-manager/llm-omp/omp
+ * @module dsh-llm-omp-transports/omp
  */
 
 /** Per-million-token prices omp prices a Cursor turn with. */

@@ -7,7 +7,7 @@
  * only: the `cursor` adapter, its authorization flow and its credential reads
  * are registered by Task 3 of the plan that owns this increment.
  *
- * @module @dsh-keys-manager/llm-omp
+ * @module dsh-llm-omp-transports
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
