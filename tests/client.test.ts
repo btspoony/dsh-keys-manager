@@ -937,6 +937,69 @@ describe('account ui', () => {
     setRuntimeContext(null)
   })
 
+  test('a legacy snapshot without accountSupported keeps Adopt and the empty state consistent (R5-N3)', async () => {
+    // R5-N3: the adopt gate read `accountSupported === true` while the
+    // empty-state gate read oauthCapable(), which treats a missing host
+    // verdict as supported. On a snapshot that predates the field the two
+    // gates disagreed: the adopt panel claimed the provider was unsupported
+    // and disabled Adopt while Add account was offered beside it. Both gates
+    // now derive from oauthCapable().
+    const reason = 'Uses ChatGPT OAuth sign-in only; no API-key credential'
+    const legacy = makeState()
+    legacy.providers[0] = {
+      ...makeState().providers[0]!,
+      provider: 'openai-codex',
+      displayName: 'OpenAI Codex',
+      managed: false,
+      configured: false,
+      active: false,
+      supported: false,
+      // Deliberately absent: the pre-C6-2 host snapshot shape.
+      reason,
+      nativeAuth: { env: [], oauth: true },
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'unmanaged',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: legacy })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    expect(findButtons(view.nodes, 'adopt')[0]!.props!.disabled).toBe(false)
+    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    expect(findByClass(view.nodes, 'km-adopt-title')[0]!.text).toBe('使用 OAuth 账户登录后即可使用该 Provider。')
+    view.unmount()
+
+    // The empty-state gate agrees on the same snapshot: a managed legacy
+    // route with no keys invites a sign-in instead of claiming an
+    // unsupported verdict it does not mean.
+    const managed = makeState()
+    managed.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      reason,
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'empty',
+      keys: [],
+    }
+    const managedHarness = makeContext({ ok: true, value: managed })
+    const managedStore = createStore(managedHarness.ctx)
+    setRuntimeContext({ ctx: managedHarness.ctx, store: managedStore })
+    const managedView = mountView(KeysManagerBody)
+    await managedView.flush()
+    ;(findByClass(managedView.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    managedView.render()
+    expect(findByClass(managedView.nodes, 'km-empty-keys')[0]!.text).toContain('还没有账户。添加一个账户后即可使用该 Provider。')
+    expect(findByClass(managedView.nodes, 'km-empty-keys')[0]!.text).not.toContain('暂不支持密钥池')
+    managedView.unmount()
+    setRuntimeContext(null)
+  })
+
   test('a nativeAuth.oauth route without a registered flow hides Add account (C6-2)', async () => {
     // C6-2: the catalog flag says the provider supports OAuth upstream, but
     // the host verdict says no flow can begin here. The sign-in entry must be

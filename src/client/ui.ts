@@ -761,8 +761,11 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
 
   // MF1: adoption is reachable through either capability — key-pool support
   // or OAuth account sign-in. An OAuth-only route stays adoptable while the
-  // key entry (Add key) stays gated by key support alone.
-  const accountAdoptable = provider.accountSupported === true
+  // key entry (Add key) stays gated by key support alone. Round-5 nit N3:
+  // this gate derives from the same `oauthCapable()` rule as the empty-state
+  // gate, so a legacy snapshot without `accountSupported` does not show an
+  // enabled sign-in entry beside a disabled Adopt and an "unsupported" panel.
+  const accountAdoptable = oauthCapable(provider)
   const adoptable = provider.supported || accountAdoptable
 
   return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', managed && 'km-provider-managed') },
