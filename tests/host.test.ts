@@ -4455,6 +4455,24 @@ function holdRotationWrite(h: Harness, key: string): {
 // by the W1 test above.
 
 /**
+ * C6-1/M3 deterministic control: resolve with the first record the seam
+ * deletes after installation. The reconciliation's post-write continuation
+ * always deletes exactly one grant record — the rotated generation (the
+ * compensation branch) or the superseded generation (the commit branch) — so
+ * the race tests can await the branch taken by name instead of a timer hop.
+ */
+function nextDeleteRecord(h: Harness): Promise<string> {
+  return new Promise(resolve => {
+    const raw = h.credentials.raw
+    const realDelete = raw.deleteRecord.bind(raw)
+    raw.deleteRecord = async (k: string) => {
+      await realDelete(k)
+      resolve(k)
+    }
+  })
+}
+
+/**
  * C6-1/I1 test hook: park the seam delete of one record until released, so a
  * multi-row release can be frozen between row X's grant delete and the
  * provider-record delete that ends the release.
@@ -4497,12 +4515,14 @@ test('a rotation write racing removeAccount leaves no orphan record (C6-1)', asy
     // its stored grant are already gone when the write finally lands.
     await h.service.removeAccount('anthropic', rowId)
     assert.equal(h.credentials.records.has(rotatedRef), false)
+    // Await the reconciliation's continuation by name (M3): it always deletes
+    // exactly one grant record — the rotated generation when it compensates,
+    // the superseded one when it commits — so the branch taken is asserted
+    // directly instead of waiting one timer hop.
+    const continuationDelete = nextDeleteRecord(h)
     held.release()
     await held.finished
-    // Let the reconciliation's continuation run: on fixed code it detects
-    // the detached row and compensates; on unfixed code the write simply
-    // lands and the record survives.
-    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(await continuationDelete, rotatedRef)
     assert.equal(h.credentials.records.has(rotatedRef), false)
     // The removed account leaves no record behind — neither the rotated
     // generation nor its superseded seed, and not the projection.
@@ -4531,9 +4551,12 @@ test('a rotation write racing releaseProvider leaves no orphan record (C6-1)', a
     await h.service.releaseProvider('anthropic')
     assert.equal(h.store.provider('anthropic'), undefined)
     assert.equal(h.credentials.records.has(rotatedRef), false)
+    // Same named continuation as the removeAccount case (M3): the branch is
+    // awaited through the record it deletes, not a timer hop.
+    const continuationDelete = nextDeleteRecord(h)
     held.release()
     await held.finished
-    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(await continuationDelete, rotatedRef)
     assert.equal(h.credentials.records.has(rotatedRef), false)
     assert.equal(h.credentials.records.has(seededRef), false)
     assert.equal(h.credentials.records.has(GRANT_KEY), false)
