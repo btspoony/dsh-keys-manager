@@ -148,6 +148,14 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // distinguishing phrases, so the stub resolves the real values.
     deleteAccountBody: '这会从凭证库中删除该账户保存的 OAuth 授权。如果它是当前账户，该 Provider 路由将停用它并回落到 API-key 池；Provider 仍保持接管状态。',
     deleteAccountBodyNoKeys: '这会从凭证库中删除该账户保存的 OAuth 授权。该路由没有 API-key 池，删除后将停止服务，直到重新登录账户。',
+    // R6 nit: the last stub-echo locators now resolve real copy as well, so
+    // every action these tests click is found by the text the UI renders —
+    // never by the key-name echo of a translation the stub does not carry.
+    addKey: '添加密钥',
+    addAccount: '添加账户',
+    adopt: '接管 Provider',
+    loginPromptSubmit: '提交',
+    delete: '删除',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
@@ -849,8 +857,8 @@ describe('account ui', () => {
     ;(head!.props!.onClick as () => void)()
     view.render()
 
-    expect(findButtons(view.nodes, 'addKey')).toHaveLength(1)
-    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    expect(findButtons(view.nodes, '添加密钥')).toHaveLength(1)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
     view.unmount()
 
     // A provider without native OAuth keeps the single Add key entry.
@@ -863,8 +871,8 @@ describe('account ui', () => {
     expect(plainHead).toBeDefined()
     ;(plainHead!.props!.onClick as () => void)()
     plainView.render()
-    expect(findButtons(plainView.nodes, 'addKey')).toHaveLength(1)
-    expect(findButtons(plainView.nodes, 'addAccount')).toHaveLength(0)
+    expect(findButtons(plainView.nodes, '添加密钥')).toHaveLength(1)
+    expect(findButtons(plainView.nodes, '添加账户')).toHaveLength(0)
     plainView.unmount()
     setRuntimeContext(null)
   })
@@ -900,10 +908,10 @@ describe('account ui', () => {
     ;(head!.props!.onClick as () => void)()
     view.render()
 
-    const adopt = findButtons(view.nodes, 'adopt')[0]
+    const adopt = findButtons(view.nodes, '接管 Provider')[0]
     expect(adopt).toBeDefined()
     expect(adopt!.props!.disabled).toBe(false)
-    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
     // I-000063: the adopt panel headline resolves the account title, not
     // the unsupported reason — assert the dictionary value, never the key.
     const adoptTitle = findByClass(view.nodes, 'km-adopt-title')[0]
@@ -929,10 +937,10 @@ describe('account ui', () => {
     expect(managedHead).toBeDefined()
     ;(managedHead!.props!.onClick as () => void)()
     managedView.render()
-    const addKey = findButtons(managedView.nodes, 'addKey')[0]
+    const addKey = findButtons(managedView.nodes, '添加密钥')[0]
     expect(addKey).toBeDefined()
     expect(addKey!.props!.disabled).toBe(true)
-    expect(findButtons(managedView.nodes, 'addAccount')).toHaveLength(1)
+    expect(findButtons(managedView.nodes, '添加账户')).toHaveLength(1)
     managedView.unmount()
     setRuntimeContext(null)
   })
@@ -969,8 +977,8 @@ describe('account ui', () => {
     await view.flush()
     ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
     view.render()
-    expect(findButtons(view.nodes, 'adopt')[0]!.props!.disabled).toBe(false)
-    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    expect(findButtons(view.nodes, '接管 Provider')[0]!.props!.disabled).toBe(false)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
     expect(findByClass(view.nodes, 'km-adopt-title')[0]!.text).toBe('使用 OAuth 账户登录后即可使用该 Provider。')
     view.unmount()
 
@@ -1031,11 +1039,11 @@ describe('account ui', () => {
     expect(head).toBeDefined()
     ;(head!.props!.onClick as () => void)()
     view.render()
-    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(0)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(0)
     // Neither capability exists, so Adopt is disabled and the unsupported
     // headline carries the host's truthful reason instead of a sign-in
     // invitation only the flow-less route cannot honour.
-    expect(findButtons(view.nodes, 'adopt')[0]!.props!.disabled).toBe(true)
+    expect(findButtons(view.nodes, '接管 Provider')[0]!.props!.disabled).toBe(true)
     expect(findByClass(view.nodes, 'km-adopt-title')[0]!.text).toBe('暂不支持密钥池')
     expect(view.nodes.map(node => node.text)).toContain(reason)
     view.unmount()
@@ -1058,8 +1066,8 @@ describe('account ui', () => {
     expect(managedHead).toBeDefined()
     ;(managedHead!.props!.onClick as () => void)()
     managedView.render()
-    expect(findButtons(managedView.nodes, 'addAccount')).toHaveLength(0)
-    expect(findButtons(managedView.nodes, 'addKey')[0]!.props!.disabled).toBe(true)
+    expect(findButtons(managedView.nodes, '添加账户')).toHaveLength(0)
+    expect(findButtons(managedView.nodes, '添加密钥')[0]!.props!.disabled).toBe(true)
     managedView.unmount()
     setRuntimeContext(null)
   })
@@ -1096,8 +1104,8 @@ describe('account ui', () => {
     expect(empty!.text).toContain('暂不支持密钥池')
     expect(empty!.text).toContain(reason)
     expect(empty!.text).not.toContain('还没有密钥。添加一个后即可使用该 Provider。')
-    expect(findButtons(view.nodes, 'addKey')[0]!.props!.disabled).toBe(true)
-    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(0)
+    expect(findButtons(view.nodes, '添加密钥')[0]!.props!.disabled).toBe(true)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(0)
     view.unmount()
     setRuntimeContext(null)
   })
@@ -1171,8 +1179,8 @@ describe('account ui', () => {
     expect(empty!.text).toContain('Uses ChatGPT OAuth sign-in only; no API-key credential')
     expect(empty!.text).not.toContain('noKeys')
     // The viable action is present beside the copy; Add key stays gated.
-    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
-    expect(findButtons(view.nodes, 'addKey')[0]!.props!.disabled).toBe(true)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
+    expect(findButtons(view.nodes, '添加密钥')[0]!.props!.disabled).toBe(true)
     view.unmount()
     setRuntimeContext(null)
   })
@@ -1288,7 +1296,12 @@ describe('account ui', () => {
       const dots = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
       ;(dots[0]!.props!.onClick as () => void)()
       view.render()
-      const del = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.text === 'delete')
+      // R6 nit: locate the destructive account menu item by the structural
+      // hooks the row already renders (role="menuitem" + km-menu-danger)
+      // instead of the stub's key-name echo for t('delete').
+      const del = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!)
+        .filter(node => node.type === 'button' && node.props?.['role'] === 'menuitem' && findByClass([node], 'km-menu-danger').length > 0)
+      expect(del).toHaveLength(1)
       ;(del[0]!.props!.onClick as () => void)()
       view.render()
       const copy = findByClass(view.nodes, 'km-modal-copy')[0]!
@@ -1370,7 +1383,7 @@ describe('account ui', () => {
     ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
     view.render()
 
-    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
     expect(addAccount).toBeDefined()
     ;(addAccount!.props!.onClick as () => void)()
     await view.flush()
@@ -1380,7 +1393,7 @@ describe('account ui', () => {
     const link = hostNodes(view.nodes).find(node => node.type === 'a')
     expect(link?.props?.href).toBe('https://example.com/authorize')
     expect(link?.text).toContain('在浏览器中打开')
-    expect(findButtons(view.nodes, 'loginPromptSubmit')).toHaveLength(1)
+    expect(findButtons(view.nodes, '提交')).toHaveLength(1)
     expect(view.nodes.some(node => node.text === 'Paste the verification code')).toBe(true)
 
     const form = findByClass(view.nodes, 'km-login-prompt')[0]
@@ -1428,7 +1441,7 @@ describe('account ui', () => {
     await view.flush()
     ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
     view.render()
-    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
     expect(addAccount).toBeDefined()
     ;(addAccount!.props!.onClick as () => void)()
     await view.flush()
@@ -1439,7 +1452,7 @@ describe('account ui', () => {
     expect(select).toBeDefined()
     // Seeded from the first option, matching a rendered option exactly.
     expect(select!.props!.value).toBe('personal')
-    const submit = findButtons(view.nodes, 'loginPromptSubmit')[0]
+    const submit = findButtons(view.nodes, '提交')[0]
     expect(submit).toBeDefined()
     expect(submit!.props!.disabled).toBe(false)
     view.unmount()
@@ -1468,12 +1481,12 @@ describe('account ui', () => {
     await view.flush()
     ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
     view.render()
-    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
     expect(addAccount).toBeDefined()
     ;(addAccount!.props!.onClick as () => void)()
     await view.flush()
 
-    const submit = findButtons(view.nodes, 'loginPromptSubmit')[0]
+    const submit = findButtons(view.nodes, '提交')[0]
     expect(submit).toBeDefined()
     expect(submit!.props!.disabled).toBe(false)
     const form = findByClass(view.nodes, 'km-login-prompt')[0]
@@ -1503,7 +1516,7 @@ describe('account ui', () => {
     await view.flush()
     ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
     view.render()
-    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
     ;(addAccount!.props!.onClick as () => void)()
     await view.flush()
 
@@ -1535,7 +1548,7 @@ describe('account ui', () => {
     ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
     view.render()
 
-    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
     expect(addAccount).toBeDefined()
     ;(addAccount!.props!.onClick as () => void)()
     await view.flush()
@@ -1576,7 +1589,7 @@ describe('account ui', () => {
       await view.flush()
       ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
       view.render()
-      ;(findButtons(view.nodes, 'addAccount')[0]!.props!.onClick as () => void)()
+      ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
       await view.flush()
       // Initial poll + two interval ticks = three consecutive failures.
       await vi.advanceTimersByTimeAsync(1000)
@@ -1634,7 +1647,7 @@ describe('account ui', () => {
       await view.flush()
       ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
       view.render()
-      ;(findButtons(view.nodes, 'addAccount')[0]!.props!.onClick as () => void)()
+      ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
       await view.flush()
       expect(accountAttemptCalls).toBe(1)
 
