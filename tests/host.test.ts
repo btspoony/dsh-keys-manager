@@ -653,7 +653,11 @@ test('an OAuth-only provider is adoptable for accounts with zero keys', async ()
     assert.equal(codex.supported, false)
     assert.match(String(codex.reason), /OAuth/)
     assert.equal(codex.accountSupported, true)
-    assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, codex.brokerRef)
+    // The route's credential is the OAuth grant: a broker reference here would
+    // make pi-ai resolve an api-key that never exists (MISSING_CREDENTIAL).
+    const profile = h.settings.valueOf('llm-pi-ai').providers['openai-codex']
+    assert.equal(profile?.apiKeyEnv, undefined)
+    assert.equal(profile !== undefined && 'apiKeyEnv' in profile, false)
   } finally {
     await h.close()
   }
@@ -687,6 +691,126 @@ test('Add key stays refused on an adopted OAuth-only provider', async () => {
       /OAuth|API key|API-key/,
     )
     assert.equal(h.store.provider('openai-codex')!.keys.length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * Drive one real sign-in through the seam: pi-ai commits the provider grant
+ * (`llm-pi-ai/<provider>`), the manager harvests it into an account row and
+ * claims the projection. Returns the harvested row id.
+ */
+async function signInThroughFlow(h: Harness, provider: string): Promise<string> {
+  const grantKey = `llm-pi-ai/${provider}`
+  h.credentials.records.set(grantKey, grantPayload())
+  const view = await h.service.beginAccountLogin(provider)
+  h.emitEvent('authorization/settled', grantKey, 'authorized')
+  h.authorization.pending!.resolve({ status: 'authorized' })
+  await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+  return h.service.getAccountAttempt(view.id)!.accountId!
+}
+
+// The reported failure: adoption bound the pi-ai profile to the broker
+// (`apiKeyEnv = KEYSMGR_OPENAI_CODEX_A220D4`) on a route whose credential is
+// an OAuth grant. pi-ai resolves a named credential synchronously and throws
+// MISSING_CREDENTIAL when the seam cannot answer it, instead of falling
+// through to its own stored grant.
+
+test('an OAuth-only route resolves through its grant, never MISSING_CREDENTIAL', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('openai-codex')
+    const rowId = await signInThroughFlow(h, 'openai-codex')
+    const provider = h.store.provider('openai-codex')!
+    assert.ok(provider.keys.some(key => key.id === rowId && key.kind === 'oauth'))
+    const codex = h.service.getState().providers.find(entry => entry.provider === 'openai-codex')!
+    assert.equal(codex.bindingHealthy, true)
+    // pi-ai's own rule, applied to the live profile: a named credential must
+    // resolve, and naming none is what lets the stored grant serve.
+    const ref = h.settings.valueOf('llm-pi-ai').providers['openai-codex']?.apiKeyEnv
+    assert.equal(ref, undefined)
+    if (ref !== undefined) assert.ok(await h.credentials.raw.resolve(ref))
+  } finally {
+    await h.close()
+  }
+})
+
+// The pre-fix build wrote the broker reference unconditionally at adoption, so
+// an existing installation still carries that state. Startup repairs it
+// through the same binding authority instead of leaving the route broken.
+
+test('startup self-heal removes a legacy broker reference from a credential-less OAuth route', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('openai-codex')
+    // The reference is deterministic (brokerRefFor), so this document is
+    // exactly what a pre-fix build left behind.
+    const legacy = h.store.provider('openai-codex')!.brokerRef
+    h.settings.valueOf('llm-pi-ai').providers['openai-codex'] = { apiKeyEnv: legacy }
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, legacy)
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, undefined))
+    const codex = restarted.getState().providers.find(entry => entry.provider === 'openai-codex')!
+    assert.equal(codex.bindingHealthy, true)
+    assert.equal(String(codex.warning ?? '').includes('Re-adopt'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a mixed route un-binds on projection and re-binds on demotion', async () => {
+  const h = await harness()
+  try {
+    const adopted = await h.service.adoptProvider('anthropic')
+    const brokerRef = h.store.provider('anthropic')!.brokerRef
+    assert.equal(adopted.providers.find(entry => entry.provider === 'anthropic')!.bindingHealthy, true)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, brokerRef)
+    await signInThroughFlow(h, 'anthropic')
+    // The grant is the serving credential now: a broker reference would make
+    // pi-ai read the key pool instead of the projection.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, undefined)
+    assert.equal(h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.bindingHealthy, true)
+    await h.service.fallbackToKeys('anthropic')
+    // Demotion hands the route back to the surviving key pool.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, brokerRef)
+    assert.equal(h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.bindingHealthy, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a key-capable route binds only once its pool holds a key', async () => {
+  const h = await harness()
+  try {
+    // No importable credential exists for this route, so adoption starts with
+    // an empty pool: a broker reference there would name a credential nothing
+    // can resolve until a key is added.
+    const adopted = await h.service.adoptProvider('openrouter')
+    const openrouter = adopted.providers.find(entry => entry.provider === 'openrouter')!
+    assert.equal(openrouter.keyCount, 0)
+    assert.equal(openrouter.bindingHealthy, true)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.openrouter?.apiKeyEnv, undefined)
+    await h.service.addKey('openrouter', 'mine', 'sk-or-secret')
+    const record = h.store.provider('openrouter')!
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.openrouter.apiKeyEnv, record.brokerRef)
+    assert.equal(h.service.getState().providers.find(entry => entry.provider === 'openrouter')!.bindingHealthy, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a hand-edited apiKeyEnv is never rewritten by the binding sync', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const profile = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    // The user took the profile back in Models.
+    profile.apiKeyEnv = 'MY_OWN_REF'
+    await (h.service as any).syncBrokerBinding('zai-coding-cn', { write: false })
+    assert.equal(profile.apiKeyEnv, 'MY_OWN_REF')
+    const zai = h.service.getState().providers.find(entry => entry.provider === 'zai-coding-cn')!
+    assert.equal(zai.bindingHealthy, false)
   } finally {
     await h.close()
   }
