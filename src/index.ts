@@ -1897,6 +1897,15 @@ export class KeysManagerService {
    * Resolves `ok: false` only when the compare/delete writes themselves
    * rejected; an ownership mismatch is the guard doing its job (the live
    * record belongs to someone else) and counts as a clean skip.
+   *
+   * Every manager-initiated projection deletion registers the one-shot
+   * {@link intentionalProjectionRemovals} marker before the delete, exactly
+   * as {@link decideAndDeleteProjection} does (I-000125). Unmarked, the
+   * removal's own `credentials/record-updated` echo reconciles as an
+   * external deletion: the route's previously active managed account is
+   * flagged `valueMissing`, its owner claim is dropped and a misleading
+   * "removed outside Keys Manager" warning is pushed — even though that
+   * row and its plugin-scope grant are untouched.
    */
   private async revertHarvestProjection(
     attempt: LoginAttempt,
@@ -1925,7 +1934,27 @@ export class KeysManagerService {
         return undefined
       })
       if (owns && await this.projectionStillMatches(records, projectionKey, decidedAgainst)) {
-        await records.deleteRecord(projectionKey)
+        // Mark BEFORE the delete, same one-shot bookkeeping the demotion
+        // path uses: the deletion's echo handler reads this marker across
+        // its own awaited record re-read, so the removal stays silent for
+        // this manager's own demotion instead of demoting the active
+        // account.
+        const markedAt = Date.now()
+        this.intentionalProjectionRemovals.set(attempt.provider, markedAt)
+        try {
+          await records.deleteRecord(projectionKey)
+        } catch (error) {
+          // A delete that threw removed nothing, so no own-removal echo is
+          // coming. Revoke this call's marker before the failure leaves this
+          // method — left in place it would consume a genuine out-of-band
+          // removal as the manager's own for the whole TTL, hiding the
+          // warning, the missing mark, and the stale owner cleanup. The
+          // identity check keeps a newer marker untouched.
+          if (this.intentionalProjectionRemovals.get(attempt.provider) === markedAt) {
+            this.intentionalProjectionRemovals.delete(attempt.provider)
+          }
+          throw error
+        }
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }

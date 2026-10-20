@@ -3776,6 +3776,65 @@ test('a harvest queued behind a failed release demotes the settled projection (r
   }
 })
 
+// I-000125 (Codex P2 on PR #23): the abort-path compensation deletes the
+// projection, and that deletion must register the same one-shot
+// intentional-removal marker the demotion path sets. When the provider
+// already serves an ACTIVATED managed account, the unmarked echo reconciles
+// as an external deletion — the active row is flagged `valueMissing`, its
+// owner claim is dropped and a misleading "removed outside Keys Manager"
+// warning is pushed, although that row and its plugin-scope grant are
+// untouched by the abort.
+
+test('a settled abort marks its projection demotion as the manager\'s own removal (I-000125)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  try {
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    const isProjected = (): boolean => h.service.buildState().providers
+      .find(entry => entry.provider === 'anthropic')!.keys
+      .some(key => key.id === rowId && key.projected === true)
+    await h.service.activateAccount('anthropic', rowId)
+    // Let the activation echo's reconciliation round finish before the
+    // attempt's grant replaces the projection, so nothing below is
+    // attributable to that round.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(isProjected(), true)
+    assert.equal(warnings().includes('removed outside Keys Manager'), false)
+    // The seam commits THIS attempt's grant as the provider projection at
+    // the settlement broadcast; it belongs to a different account.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // The release queues first and then fails its preflight, so the provider
+    // survives and the harvest queued behind it still runs.
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    // The next queued mutation resolves only after the harvest callback ran.
+    await h.service.setSettings({})
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // The projection this attempt committed is demoted...
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    // ...and the deletion's echo must not read back as an external removal:
+    // the already-managed account keeps its row, its plugin-scope grant and
+    // its owner claim, and no misleading warning is emitted.
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, false, 'the active account is not demoted')
+    assert.equal(row.oauth!.grantRef, grantRef)
+    assert.equal(h.credentials.records.has(grantRef), true)
+    assert.equal(isProjected(), true, 'the active account keeps its owner claim')
+    assert.equal(warnings().includes('removed outside Keys Manager'), false)
+  } finally {
+    await h.close()
+  }
+})
+
 // I-000122 provenance safety: the settled abort may only demote the projection
 // while it still carries the payload captured for THIS attempt. A newer or
 // native grant that replaced it before the queued harvest ran belongs to
