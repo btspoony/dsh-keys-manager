@@ -3,6 +3,10 @@
 All notable changes to dsh-keys-manager are documented here. Generated from
 git log by the release-prep workflow.
 
+## [0.2.1] - 2026-10-20
+
+- 83c11e1 Merge pull request #20 from btspoony/fix/authorization-inject
+
 ## [0.2.0] - 2026-10-20
 
 - 74defd3 Merge pull request #17 from btspoony/feat/issue-2-phase2-oauth-pool
