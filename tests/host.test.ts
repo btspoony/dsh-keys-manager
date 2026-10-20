@@ -4811,6 +4811,87 @@ test('a rotation write landing mid-release leaves no orphan record (C6-1/I1)', a
   }
 })
 
+// Round-9 finding P1: reconciliation is fire-and-forget, so two refresh
+// echoes for one account arriving before the first write-back settles used to
+// run concurrently. Each captured the same old `grantRef`, the writes
+// completed out of order, and the older callback committed its generation
+// after the newer one — moving the row onto a stale ref and leaving the newer
+// record unreachable by normal removal. The bodies are now chained per
+// provider and a commit whose observed generation was superseded is rejected
+// (the write it made is cleaned up).
+
+test('out-of-order rotation echoes keep the newest generation and leave no unreachable record (P1)', async () => {
+  const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const olderRef = accountRef('anthropic', createHash('sha256').update('rt-gen-old').digest('hex').slice(0, 12))
+    const newerRef = accountRef('anthropic', createHash('sha256').update('rt-gen-new').digest('hex').slice(0, 12))
+    // Park the OLD generation's write-back so the interleaving is exact: the
+    // newer echo's body would run and commit first on the unfixed tree.
+    const heldOlder = holdRotationWrite(h, olderRef)
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-gen-old', access: 'at-gen-old', accountId: 'acc-9', email: 'dev@example.com' }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await heldOlder.started
+    // pi-ai refreshes again before the first sync-back settles.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-gen-new', access: 'at-gen-new', accountId: 'acc-9', email: 'dev@example.com' }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    // Give the newer echo every chance to overtake the parked body without
+    // releasing it — on the unfixed tree it commits here, out of order.
+    await new Promise(resolve => setTimeout(resolve, 25))
+    heldOlder.release()
+    await heldOlder.finished
+    // The held write's continuation (row commit) lands a few microtasks after
+    // the seam write resolves; give it a turn so the assertion below sees the
+    // settled row, not the mid-flight one.
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    await eventually(() => assert.equal(row.oauth!.grantRef, newerRef))
+    // The projection plus the newest generation are the only grant records:
+    // the older generation was cleaned up instead of stranded.
+    assert.deepEqual(
+      [...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')),
+      [newerRef],
+    )
+    assert.equal(h.credentials.records.has(olderRef), false)
+    assert.equal(h.credentials.records.has(seededRef), false)
+    const newest = h.credentials.records.get(newerRef)!
+    assert.equal((newest.payload as Record<string, unknown>).refresh, 'rt-gen-new')
+    // Removal reaches the record the row names, so nothing is left behind.
+    await h.service.removeAccount('anthropic', rowId)
+    assert.equal(h.credentials.records.has(newerRef), false)
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('sequential rotation echoes still sync each generation in order (P1)', async () => {
+  const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const refOne = accountRef('anthropic', createHash('sha256').update('rt-seq-one').digest('hex').slice(0, 12))
+    const refTwo = accountRef('anthropic', createHash('sha256').update('rt-seq-two').digest('hex').slice(0, 12))
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-seq-one', access: 'at-seq-one', accountId: 'acc-9', email: 'dev@example.com' }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.equal(row.oauth!.grantRef, refOne))
+    assert.equal(h.credentials.records.has(seededRef), false)
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-seq-two', access: 'at-seq-two', accountId: 'acc-9', email: 'dev@example.com' }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.equal(row.oauth!.grantRef, refTwo))
+    assert.equal(h.credentials.records.has(refOne), false)
+    assert.deepEqual(
+      [...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')),
+      [refTwo],
+    )
+    const stored = h.credentials.records.get(refTwo)!
+    assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-seq-two')
+  } finally {
+    await h.close()
+  }
+})
+
 // Round-7 re-review minor: removeOAuthGrant marks the row before its first
 // awaited delete so a rotation write landing mid-removal is rejected. When
 // that delete THROWS, though, the removal never completes — removeAccount /

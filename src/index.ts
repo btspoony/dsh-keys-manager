@@ -675,6 +675,14 @@ export class KeysManagerService {
    */
   private readonly ownershipGenerations = new Map<string, number>()
   /**
+   * Per-provider chain of pending grant reconciliations (round-9 finding
+   * P1): two refresh echoes for the same route can arrive before the first
+   * write-back settles, and the bodies run read → write → commit. Arrival
+   * order is preserved so the older observation can never commit after the
+   * newer one and leave the row on a stale generation.
+   */
+  private readonly grantReconciliations = new Map<string, Promise<void>>()
+  /**
    * Providers whose projection deletion this manager initiated, mapped to
    * the moment it was initiated. The `record-updated` echo of our own
    * demotion consumes the marker (one-shot) and stays silent while the
@@ -836,6 +844,10 @@ export class KeysManagerService {
     } catch {
       // The mutation queue already reports failures to its caller.
     }
+    // Round-9 P1: the per-provider reconciliation chains are independent of
+    // the mutation queue, so drain them before the store closes — a queued
+    // echo must not write a grant record into a manager that is shutting down.
+    await Promise.allSettled([...this.grantReconciliations.values()])
     await this.store.close()
   }
 
@@ -1678,14 +1690,34 @@ export class KeysManagerService {
    * pool row. So {@link reconcileGrantRecord} revalidates the row immediately
    * before AND after the awaited write and compensates by deleting the record
    * it just wrote. An orphan record must never outlive a removed account.
+   *
+   * Round-9 finding P1: two echoes for the same provider can
+   * arrive before the first reconciliation commits. Their write-backs then
+   * race and an out-of-order completion could move the row back onto an
+   * older generation, stranding the newer record outside manager state. The
+   * bodies are therefore chained per provider: one observation's
+   * read → write → commit window is never interleaved with another's, and
+   * {@link reconcileGrantRecord} additionally re-checks that its generation
+   * is still current before committing.
    */
   private onGrantRecordUpdated(key: string): void {
     if (!key.startsWith(`${OAUTH_GRANT_RECORD_SCOPE}/`)) return
     const provider = key.slice(OAUTH_GRANT_RECORD_SCOPE.length + 1)
     if (this.store.provider(provider) === undefined) return
     // Fire-and-forget: the seam event is synchronous and carries no
-    // completion channel, so failures are logged like any async work.
-    void this.reconcileGrantRecord(provider, key).catch(error => {
+    // completion channel, so failures are logged like any async work. The
+    // body is appended to the provider's chain, preserving arrival order
+    // (round-9 P1); the chain itself never rejects, so a failed
+    // reconciliation does not stop the next echo.
+    const previous = this.grantReconciliations.get(provider) ?? Promise.resolve()
+    const reconcile = (): Promise<void> => this.reconcileGrantRecord(provider, key)
+    const next = previous.then(reconcile, reconcile)
+    const tail = next.then(() => undefined, () => undefined)
+    this.grantReconciliations.set(provider, tail)
+    void tail.then(() => {
+      if (this.grantReconciliations.get(provider) === tail) this.grantReconciliations.delete(provider)
+    })
+    void next.catch(error => {
       this.warn(`grant reconciliation failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
@@ -1777,10 +1809,12 @@ export class KeysManagerService {
     // warn-and-clear path; ownership is never adopted for them. A newer
     // activation/login that claimed while the read was in flight wins:
     // the stale echo claim is discarded exactly like a stale hydration
-    // read (the rotation write-back below still lands — row data sync is
-    // independent of who owns the projection).
+    // read (the rotation sync below still runs, but a commit that a newer
+    // claim has superseded is rejected — round-9 P1).
+    let claimedGeneration: number | undefined
     if ((this.ownershipGenerations.get(provider) ?? 0) === generation) {
       this.claimProjectionOwner(provider, owner.id)
+      claimedGeneration = this.ownershipGenerations.get(provider)
     }
     // Rotation sync: the rotated payload is authoritative (the plan's
     // single-writer contract — "sync them back to the owning plugin-scope
@@ -1806,6 +1840,24 @@ export class KeysManagerService {
         await records.deleteRecord(rotatedRef)
       } catch (error) {
         this.warn(`cancelled rotation record cleanup failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      return
+    }
+    // Round-9 P1 commit guard: the awaited write gave a newer echo, an
+    // activation, or a login time to supersede the generation this body
+    // observed. Committing then would point the row back at an older
+    // generation and leave the newer generation's record outside manager
+    // state, so the superseded write-back is removed instead. Only a
+    // distinct record is deleted: in the same-ref case the write landed on
+    // the row's own current record and must stay.
+    const stillCurrent = await this.rotationStillCurrent(records, provider, key, rotatedRef, claimedGeneration)
+    if (!stillCurrent) {
+      if (rotatedRef !== previousRef) {
+        try {
+          await records.deleteRecord(rotatedRef)
+        } catch (error) {
+          this.warn(`cleanup of the superseded rotation record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
       return
     }
@@ -1859,6 +1911,39 @@ export class KeysManagerService {
     if (providerRecord === undefined) return false
     if (owner.kind !== 'oauth' || owner.oauth === null) return false
     return providerRecord.keys.some(candidate => candidate === owner)
+  }
+
+  /**
+   * Round-9 P1 revalidation: the generation a reconciliation observed is
+   * still the one the route holds, and the ownership claim this body made (if
+   * any) is still the newest. Two independent writes can supersede it while
+   * the plugin-scope write-back is in flight: pi-ai refreshing again (the
+   * projection's refresh digest — the ref's identity — moves on) and an
+   * activation or login claiming the projection (the ownership generation
+   * moves). Committing the older ref in either case would move the row
+   * backwards and strand the newer record outside manager state.
+   *
+   * A failed re-read cannot prove staleness, so it must not block the sync:
+   * the commit then proceeds exactly as it did before this guard existed.
+   */
+  private async rotationStillCurrent(
+    records: CredentialRecordsLike,
+    provider: string,
+    key: string,
+    rotatedRef: string,
+    claimedGeneration: number | undefined,
+  ): Promise<boolean> {
+    if (claimedGeneration !== undefined
+      && (this.ownershipGenerations.get(provider) ?? 0) !== claimedGeneration) return false
+    try {
+      const current = await records.readRecord(key)
+      if (current === undefined || current.kind !== 'grant' || !isOAuthGrantPayload(current.payload)) return false
+      const hash = createHash('sha256').update(current.payload.refresh).digest('hex').slice(0, 12)
+      return accountRef(provider, hash) === rotatedRef
+    } catch (error) {
+      this.warn(`rotation staleness check could not re-read ${key}: ${error instanceof Error ? error.message : String(error)}`)
+      return true
+    }
   }
 
   /**
