@@ -41,6 +41,10 @@ repository root docs.
 - Tool execution happens in DSH, not in the transport. An unhandled MCP call
   ends the turn with a handoff; the result is replayed on the next request.
   The adapter never runs a tool.
+- **Only MCP calls are handed off.** Cursor-native exec frames (`read`, `shell`,
+  `write`, `delete`, `grep`, `ls`, `diagnostics`, streamed edits) have no
+  handler: the transport answers them with "Tool not available" and they are
+  **not** executed by DSH (live reachability unverified).
 - Tool declarations travel as MCP definitions. `toolHistory` is accepted but
   cannot be replayed — the active declaration set is what the request
   projects.
