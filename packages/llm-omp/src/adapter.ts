@@ -135,7 +135,11 @@ export class OmpCursorAdapter extends LlmAdapter {
     // write). Only a request that can be served resolves `access` and carries
     // its token into the transport options.
     const request = projectRequest(row, options)
-    const accessKey = assertUsableApiKey(await this.config.access(options.signal), 'llm-omp', CURSOR_CREDENTIAL_KEY)
+    const accessKey = assertUsableApiKey(
+      await this.config.access(options.signal),
+      'llm-omp-transports',
+      CURSOR_CREDENTIAL_KEY,
+    )
     if (aborted()) {
       yield abortedFinish()
       return

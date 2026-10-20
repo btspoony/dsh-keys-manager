@@ -210,6 +210,17 @@ describe('OmpCursorAdapter text streaming', () => {
     expect(calls).toHaveLength(0)
   })
 
+  it('labels a blank-credential refusal with the component id and the record key', async () => {
+    const { transport } = scriptedTransport('cursor-text.jsonl')
+    const adapter = new OmpCursorAdapter({ access: async () => '   ', transport })
+
+    // The label is the operator's only clue which component owns the grant.
+    await expect(collect(adapter.stream(request()))).rejects.toMatchObject({
+      code: 'INVALID_CREDENTIAL',
+      message: expect.stringMatching(/^llm-omp-transports: .* llm-omp-transports\/cursor is blank/),
+    })
+  })
+
   it('does not read the credential for a request the projection refuses', async () => {
     const { transport, calls } = scriptedTransport('cursor-text.jsonl')
     let reads = 0
