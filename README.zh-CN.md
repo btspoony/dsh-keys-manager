@@ -26,6 +26,53 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中：该值在添加时读取一次，并作为静态 `OpenAI-Project` 请求头写进路由档案。缺少该变量会拒绝添加。要更改项目值，请先在 Keys Manager 中**释放（停止接管）该提供商**，再以新的 `COREWEAVE_PROJECT` 值重启 DSH，然后再次添加该提供商。释放时会移除本插件写入、且仍与当前环境变量值相等的 `OpenAI-Project` 值；无法归属的值会保留，并在界面警告中报告；手写的 header 若恰好等于环境变量值，也会按同一规则被移除。插件创建的档案会在下次添加时被移除并重建，接管的档案则保留并重新接管；两种情况都只补齐档案尚未声明的 header，从不覆盖已存储的值。
 
+完整列表见下方折叠区块。
+
+<details>
+<summary>全部 35 个额外提供商</summary>
+
+| 提供商 | Route id | API key 环境变量 |
+|---|---|---|
+| DeepInfra | `deepinfra` | `DEEPINFRA_API_KEY` |
+| Novita | `novita` | `NOVITA_API_KEY` |
+| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| SambaNova | `sambanova` | `SAMBANOVA_API_KEY` |
+| Qianfan | `qianfan` | `QIANFAN_API_KEY` |
+| GMI Cloud | `gmi-cloud` | `GMI_API_KEY` |
+| Synthetic | `synthetic` | `SYNTHETIC_API_KEY` |
+| ZenMux | `zenmux` | `ZENMUX_API_KEY` |
+| Kilo Gateway | `kilo` | `KILO_API_KEY` |
+| NanoGPT | `nanogpt` | `NANO_GPT_API_KEY` |
+| Venice AI | `venice` | `VENICE_API_KEY` |
+| AIML API | `aimlapi` | `AIMLAPI_API_KEY` |
+| AI& | `aiand` | `AIAND_API_KEY` |
+| Helmcode | `helmcode` | `HELMCODE_API_KEY` |
+| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` |
+| MiniMax Coding (Global) | `minimax-code` | `MINIMAX_CODE_API_KEY` |
+| MiniMax Coding (CN) | `minimax-code-cn` | `MINIMAX_CODE_CN_API_KEY` |
+| Umans AI Coding Plan | `umans` | `UMANS_AI_CODING_PLAN_API_KEY` |
+| Sakana AI | `sakana` | `SAKANA_API_KEY` |
+| CoralBricks | `coralbricks` | `CORAL_API_KEY` |
+| Wafer Serverless | `wafer-serverless` | `WAFER_SERVERLESS_API_KEY` |
+| Alibaba Token Plan | `alibaba-token-plan` | `ALIBABA_TOKEN_PLAN_API_KEY` |
+| Alibaba Token Plan (CN) | `alibaba-token-plan-cn` | `BAILIAN_TOKEN_PLAN_API_KEY` |
+| Charm Hyper | `charm-hyper` | `CHARM_HYPER_API_KEY`, `HYPER_API_KEY` |
+| LiteLLM Proxy | `litellm` | `LITELLM_API_KEY` |
+| SiliconFlow | `siliconflow` | `SILICONFLOW_API_KEY` |
+| SiliconFlow (CN) | `siliconflow-cn` | `SILICONFLOW_CN_API_KEY` |
+| Zhipu Coding Plan | `zhipu-coding-plan` | `ZHIPU_API_KEY` |
+| Abliteration | `abliteration` | `ABLITERATION_API_KEY`, `ABLIT_KEY` |
+| ClinePass | `cline-pass` | `CLINE_API_KEY` |
+| Command Code | `commandcode` | `COMMAND_CODE_API_KEY`, `COMMANDCODE_API_KEY` |
+| CoreWeave Serverless Inference | `coreweave` | `COREWEAVE_API_KEY` |
+| Fire Pass | `firepass` | `FIREPASS_API_KEY` |
+| Ollama Cloud | `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
+| Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
+
+列出两个变量时二者皆可接受，第一个为主变量。
+
+</details>
+
 ## 快速开始
 
 ### 安装 —— DeepSeek Harness 桌面版 / Web 版

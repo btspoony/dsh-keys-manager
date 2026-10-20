@@ -51,6 +51,53 @@ and recreated on the next add, while an adopted profile is kept and
 re-adopted; in both cases the plugin only fills a declared header the profile
 does not already carry and never overwrites a stored value.
 
+The full list is collapsible below.
+
+<details>
+<summary>All 35 extra providers</summary>
+
+| Provider | Route id | API key env |
+|---|---|---|
+| DeepInfra | `deepinfra` | `DEEPINFRA_API_KEY` |
+| Novita | `novita` | `NOVITA_API_KEY` |
+| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| SambaNova | `sambanova` | `SAMBANOVA_API_KEY` |
+| Qianfan | `qianfan` | `QIANFAN_API_KEY` |
+| GMI Cloud | `gmi-cloud` | `GMI_API_KEY` |
+| Synthetic | `synthetic` | `SYNTHETIC_API_KEY` |
+| ZenMux | `zenmux` | `ZENMUX_API_KEY` |
+| Kilo Gateway | `kilo` | `KILO_API_KEY` |
+| NanoGPT | `nanogpt` | `NANO_GPT_API_KEY` |
+| Venice AI | `venice` | `VENICE_API_KEY` |
+| AIML API | `aimlapi` | `AIMLAPI_API_KEY` |
+| AI& | `aiand` | `AIAND_API_KEY` |
+| Helmcode | `helmcode` | `HELMCODE_API_KEY` |
+| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` |
+| MiniMax Coding (Global) | `minimax-code` | `MINIMAX_CODE_API_KEY` |
+| MiniMax Coding (CN) | `minimax-code-cn` | `MINIMAX_CODE_CN_API_KEY` |
+| Umans AI Coding Plan | `umans` | `UMANS_AI_CODING_PLAN_API_KEY` |
+| Sakana AI | `sakana` | `SAKANA_API_KEY` |
+| CoralBricks | `coralbricks` | `CORAL_API_KEY` |
+| Wafer Serverless | `wafer-serverless` | `WAFER_SERVERLESS_API_KEY` |
+| Alibaba Token Plan | `alibaba-token-plan` | `ALIBABA_TOKEN_PLAN_API_KEY` |
+| Alibaba Token Plan (CN) | `alibaba-token-plan-cn` | `BAILIAN_TOKEN_PLAN_API_KEY` |
+| Charm Hyper | `charm-hyper` | `CHARM_HYPER_API_KEY`, `HYPER_API_KEY` |
+| LiteLLM Proxy | `litellm` | `LITELLM_API_KEY` |
+| SiliconFlow | `siliconflow` | `SILICONFLOW_API_KEY` |
+| SiliconFlow (CN) | `siliconflow-cn` | `SILICONFLOW_CN_API_KEY` |
+| Zhipu Coding Plan | `zhipu-coding-plan` | `ZHIPU_API_KEY` |
+| Abliteration | `abliteration` | `ABLITERATION_API_KEY`, `ABLIT_KEY` |
+| ClinePass | `cline-pass` | `CLINE_API_KEY` |
+| Command Code | `commandcode` | `COMMAND_CODE_API_KEY`, `COMMANDCODE_API_KEY` |
+| CoreWeave Serverless Inference | `coreweave` | `COREWEAVE_API_KEY` |
+| Fire Pass | `firepass` | `FIREPASS_API_KEY` |
+| Ollama Cloud | `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
+| Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
+
+Where two variables are listed, either is accepted; the first is the primary.
+
+</details>
+
 ## Quick start
 
 ### Install — DeepSeek Harness Desktop / Web
