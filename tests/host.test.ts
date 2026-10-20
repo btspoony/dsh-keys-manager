@@ -5666,6 +5666,38 @@ test('an expired intentional-removal marker no longer masks an out-of-band remov
   }
 })
 
+// Round-7 review (R7-SF2): the intentional-removal marker is set just before
+// `deleteRecord` because the removal's own echo must stay silent. A delete
+// that THROWS never removed anything, so its marker must be revoked — left in
+// place it would consume an unrelated out-of-band removal as the manager's own
+// for the whole TTL, hiding the warning, the missing mark, and the stale owner.
+
+test('a failed projection delete does not mask a later out-of-band removal (R7-SF2)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    const pendingWarnings = (): string =>
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    await h.service.activateAccount('anthropic', rowId)
+    h.credentials.raw.failDeleteRecord = true
+    await assert.rejects(() => h.service.fallbackToKeys('anthropic'), /credential store locked/)
+    h.credentials.raw.failDeleteRecord = false
+    // The failed delete produced no echo and no removal: its marker is gone.
+    assert.equal(markers.has('anthropic'), false, 'the failed call revoked its marker')
+    // A genuine out-of-band removal inside the TTL still surfaces.
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(pendingWarnings(), /removed outside Keys Manager/))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, true)
+    // The stale owner entry is dropped with it.
+    assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.some(key => key.projected === true), false)
+  } finally {
+    h.credentials.raw.failDeleteRecord = false
+    await h.close()
+  }
+})
+
 test('removeAccount drops the row, its plugin-scope payload, and falls back when active', async () => {
   const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {

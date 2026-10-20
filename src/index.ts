@@ -2202,8 +2202,22 @@ export class KeysManagerService {
     // marker across its own awaited record re-read, whenever that
     // continuation resumes. The TTL window — not scheduling order —
     // decides how long the marker stays trustworthy.
-    this.intentionalProjectionRemovals.set(provider, Date.now())
-    await records.deleteRecord(projectionKey)
+    const markedAt = Date.now()
+    this.intentionalProjectionRemovals.set(provider, markedAt)
+    try {
+      await records.deleteRecord(projectionKey)
+    } catch (error) {
+      // R7-SF2: a delete that threw removed nothing, so no own-removal echo
+      // is coming. Revoke this call's marker before rethrowing — left in
+      // place it would consume a genuine out-of-band removal as the
+      // manager's own for the whole TTL, hiding the warning, the missing
+      // mark, and the stale owner cleanup. The identity check keeps a newer
+      // marker (there is none on the serialized mutation queue) untouched.
+      if (this.intentionalProjectionRemovals.get(provider) === markedAt) {
+        this.intentionalProjectionRemovals.delete(provider)
+      }
+      throw error
+    }
     return true
   }
 
