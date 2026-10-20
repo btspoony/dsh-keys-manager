@@ -1072,6 +1072,45 @@ test('adding a managed coreweave again refuses when COREWEAVE_PROJECT is gone', 
   }
 })
 
+test('adding a key through the managed path restores a declared header a Models edit dropped', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    await withCoreweaveProject('team/project', async () => {
+      const state = await h.service.addKey('coreweave', 'second', 'sk-second')
+      assert.match(state.warnings.join('\n'), /Restored the missing OpenAI-Project header/)
+    })
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a refused managed key add writes no declared header', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const record = h.store.provider('coreweave')!
+    while (record.keys.length < KEY_LIMIT) {
+      await h.service.addKey('coreweave', `filler ${record.keys.length}`, `sk-filler-${record.keys.length}`)
+    }
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    await withCoreweaveProject('team/project', async () => {
+      await assert.rejects(
+        () => h.service.addKey('coreweave', 'overflow', 'sk-overflow'),
+        new RegExp(`A provider may have at most ${KEY_LIMIT} keys`),
+      )
+    })
+    assert.equal('headers' in h.settings.valueOf('llm-pi-ai').providers.coreweave, false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('adopting a stored coreweave profile without the variable writes nothing', async () => {
   const h = await harness()
   try {
@@ -1275,6 +1314,37 @@ test('a catalog entry that declares a credential header is refused', async () =>
   } finally {
     delete process.env.SYNTHETIC_SECRET
     catalog.delete(synthetic.id)
+    await h.close()
+  }
+})
+
+test('a catalog entry that declares a bare api-key header is refused', async () => {
+  const h = await harness()
+  const catalog = EXTRA_PROVIDER_MAP as Map<string, ExtraProvider>
+  process.env.SYNTHETIC_SECRET = 'sk-synthetic'
+  try {
+    for (const header of ['Api-Key', 'ApiKey']) {
+      const id = `synthetic-${header.toLowerCase()}-header`
+      catalog.set(id, {
+        id,
+        name: 'Synthetic Bare Api-Key Header',
+        api: 'openai-completions',
+        baseURL: 'https://synthetic.example/v1',
+        env: ['SYNTHETIC_SECRET'],
+        headerEnv: { [header]: 'SYNTHETIC_SECRET' },
+        models: [{ id: 'synthetic-model', name: 'Synthetic Model' }],
+      })
+      await assert.rejects(
+        () => h.service.addExtraProvider(id, 'main', 'sk-synthetic'),
+        new RegExp(`${id} declares the credential header ${header}; only non-secret metadata headers can be carried`),
+      )
+      assert.equal(h.settings.valueOf('llm-pi-ai').providers[id], undefined)
+      assert.equal(h.store.provider(id), undefined)
+    }
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_SYNTHETIC')), [])
+  } finally {
+    delete process.env.SYNTHETIC_SECRET
+    for (const id of ['synthetic-api-key-header', 'synthetic-apikey-header']) catalog.delete(id)
     await h.close()
   }
 })

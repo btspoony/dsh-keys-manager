@@ -413,7 +413,7 @@ function discoveredModel(model: DiscoveredModel): ModelRecord | undefined {
 }
 
 /** Credential-bearing header names the carrier must never persist as plain settings. */
-const CREDENTIAL_HEADER_NAMES = new Set(['authorization', 'proxy-authorization', 'cookie', 'x-api-key'])
+const CREDENTIAL_HEADER_NAMES = new Set(['authorization', 'proxy-authorization', 'cookie', 'api-key', 'apikey', 'x-api-key'])
 
 /** Carrier headers are non-secret metadata; a credential-bearing name is refused. */
 function isCredentialHeader(header: string): boolean {
@@ -3308,33 +3308,9 @@ export class KeysManagerService {
       const headers = resolveHeaderEnv(extra)
       const managed = this.store.provider(extraId)
       if (managed !== undefined) {
-        // A managed profile can lose its declared headers through a Models
-        // edit; restore them instead of reporting a managed route whose
-        // header is silently absent. Only a live profile with a healthy
-        // binding is ours to repair: a deleted profile would gain a
-        // header-only half-profile, and a replaced one is the state release
-        // refuses to touch.
-        const liveProfile = this.profileAt(managed.settingsNs, managed.settingsPath)
-        if (headers !== undefined) {
-          if (liveProfile === undefined || this.bindingState(managed) === 'mismatch') {
-            this.pushWarning(
-              `Did not restore the ${Object.keys(headers).join(', ')} header on the ${extraId} route: ${
-                liveProfile === undefined ? 'its Models profile no longer exists' : 'its Models profile was replaced'
-              }.`,
-            )
-          } else {
-            const stored = staticHeaders(liveProfile.headers)
-            this.warnHeaderDrift(extra, headers, stored)
-            const missing = missingHeaders(headers, stored)
-            if (Object.keys(missing).length > 0) {
-              await this.mutateSettings(managed.settingsNs, [
-                { op: 'set', path: [...managed.settingsPath, 'headers'], value: { ...stored, ...missing } },
-              ])
-              this.pushWarning(`Restored the missing ${Object.keys(missing).join(', ')} header on the managed profile.`)
-            }
-          }
-        }
         this.pushWarning('Provider is already managed; the key was added instead.')
+        // The shared managed-key path repairs the declared headers, so every
+        // add-key flow restores them and the repair keeps one implementation.
         await this.addKeyLocked(extraId, input.alias, input.value)
         this.store.touch()
         return this.buildState()
@@ -3440,6 +3416,50 @@ export class KeysManagerService {
     })
   }
 
+  /**
+   * Restore a managed extra route's declared static headers.
+   *
+   * A managed profile can lose its declared headers through a Models edit;
+   * every managed add-key flow repairs them instead of leaving a route whose
+   * required header is silently absent. Only a live profile with a healthy
+   * binding is ours to repair: a deleted profile would gain a header-only
+   * half-profile, and a replaced one is the state release refuses to touch. A
+   * stored value for the same header always wins. A route that cannot resolve
+   * its declared headers only warns: the caller's key write is already
+   * committed, so a refusal here would leave a half-applied add behind.
+   */
+  private async repairDeclaredHeaders(record: ProviderRecord): Promise<void> {
+    const extra = record.extraId === null ? undefined : EXTRA_PROVIDER_MAP.get(record.extraId)
+    if (extra?.headerEnv === undefined) return
+    let headers: Record<string, string> | undefined
+    try {
+      headers = resolveHeaderEnv(extra)
+    } catch (error) {
+      this.pushWarning(
+        `Did not restore the declared headers on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return
+    }
+    if (headers === undefined) return
+    const liveProfile = this.profileAt(record.settingsNs, record.settingsPath)
+    if (liveProfile === undefined || this.bindingState(record) === 'mismatch') {
+      this.pushWarning(
+        `Did not restore the ${Object.keys(headers).join(', ')} header on the ${extra.id} route: ${
+          liveProfile === undefined ? 'its Models profile no longer exists' : 'its Models profile was replaced'
+        }.`,
+      )
+      return
+    }
+    const stored = staticHeaders(liveProfile.headers)
+    this.warnHeaderDrift(extra, headers, stored)
+    const missing = missingHeaders(headers, stored)
+    if (Object.keys(missing).length === 0) return
+    await this.mutateSettings(record.settingsNs, [
+      { op: 'set', path: [...record.settingsPath, 'headers'], value: { ...stored, ...missing } },
+    ])
+    this.pushWarning(`Restored the missing ${Object.keys(missing).join(', ')} header on the managed profile.`)
+  }
+
   /** Add one key; caller already owns the mutation queue. */
   private async addKeyLocked(provider: string, alias: string, value: string): Promise<void> {
     const record = this.store.provider(provider)
@@ -3457,6 +3477,9 @@ export class KeysManagerService {
     if (record.keys.length >= KEY_LIMIT) throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
     const key = await this.createKeyRecord(provider, input.alias, input.value)
     record.keys.push(key)
+    // After the key add: a refused key (capability or capacity) must leave the
+    // settings document untouched, so the repair never runs ahead of it.
+    await this.repairDeclaredHeaders(record)
   }
 
   /** Remote: add one key to a managed provider. */
