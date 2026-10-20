@@ -79,11 +79,12 @@ function sanitizeKey(raw: unknown): KeyRecord | undefined {
   const source = raw as Record<string, unknown>
   if (typeof source.id !== 'string' || source.id.length === 0) return undefined
   if (typeof source.ref !== 'string' || source.ref.length === 0) return undefined
+  const kind: KeyRecord['kind'] = source.kind === 'oauth' ? 'oauth' : 'api-key'
   return {
     id: source.id,
     alias: typeof source.alias === 'string' && source.alias.length > 0 ? source.alias.slice(0, 80) : 'Key',
     ref: source.ref,
-    kind: source.kind === 'oauth' ? 'oauth' : 'api-key',
+    kind,
     enabled: source.enabled !== false,
     createdAt: numberOr(source.createdAt, Date.now()),
     lastUsedAt: numberOr(source.lastUsedAt, 0),
@@ -94,10 +95,15 @@ function sanitizeKey(raw: unknown): KeyRecord | undefined {
     consecutiveFailures: integerOr(source.consecutiveFailures, 0),
     totalUses: integerOr(source.totalUses, 0),
     totalFailures: integerOr(source.totalFailures, 0),
-    // Legacy builds persisted transient read failures as valueMissing. The
-    // credential may be healthy again; re-probe on the next selection instead
-    // of carrying a permanent marker across restarts.
-    valueMissing: false,
+    // The flag carries two meanings, split by row kind:
+    // - api-key rows cache a transient credential read failure. The credential
+    //   may be healthy again, so re-probe on the next selection instead of
+    //   carrying a permanent marker across restarts.
+    // - oauth rows persist the demotion marker. A demoted row no longer
+    //   serves the provider and the projection is gone, so a restarted process
+    //   cannot re-identify an owner; dropping the marker would resurrect the
+    //   row as active/healthy once its cooldown expires.
+    valueMissing: kind === 'oauth' ? source.valueMissing === true : false,
     importedFrom: typeof source.importedFrom === 'string' ? source.importedFrom : null,
     oauth: sanitizeOAuthAccount(source.oauth),
   }

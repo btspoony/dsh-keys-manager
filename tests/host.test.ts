@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
-import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT } from '../src/core'
+import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
 
@@ -2670,6 +2670,58 @@ test('an oauth account row round-trips through the store', async () => {
       expiresAt: 1_700_060_000_000,
       grantRef: 'keys-manager/anthropic-3fa2c1',
     })
+    await reloaded.close()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('an oauth demotion marker survives a restart while an api-key read flag does not', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'keys-manager-oauth-demotion-'))
+  try {
+    const file = join(dir, 'state.json')
+    const store = new KeysManagerStore(file)
+    const cooldownUntil = Date.now() + 60_000
+    // A demoted account row: the projection is gone, so `valueMissing` is the
+    // only persisted indication that this row no longer serves the provider.
+    const demoted = accountRow({
+      provider: 'anthropic',
+      grantRef: 'keys-manager/anthropic-3fa2c1',
+    })
+    demoted.valueMissing = true
+    demoted.cooldownUntil = cooldownUntil
+    // An api-key row still uses the flag for a transient read failure.
+    const apiKey: KeyRecord = {
+      id: 'k1',
+      alias: 'Imported',
+      ref: 'KEYSMGR_ANTHROPIC_AAAAAA_K_111111',
+      kind: 'api-key',
+      enabled: true,
+      createdAt: 0,
+      lastUsedAt: 0,
+      cooldownUntil: 0,
+      lastFailureAt: 0,
+      lastFailureCode: '',
+      failureLevel: 0,
+      consecutiveFailures: 0,
+      totalUses: 0,
+      totalFailures: 0,
+      valueMissing: true,
+      importedFrom: null,
+      oauth: null,
+    }
+    store.state.providers.anthropic = recordWithKeys([demoted, apiKey])
+    store.touch()
+    await store.flush()
+    const reloaded = new KeysManagerStore(file)
+    const oauthRow = reloaded.provider('anthropic')!.keys.find(row => row.kind === 'oauth')!
+    assert.equal(oauthRow.valueMissing, true)
+    // The marker outlives its cooldown: a restarted process cannot re-identify
+    // an owner, so the row must stay missing instead of turning active again.
+    assert.equal(statusOfKey(oauthRow, Date.now()), 'missing')
+    assert.equal(statusOfKey(oauthRow, cooldownUntil + 1), 'missing')
+    // Legacy api-key semantics are unchanged: re-probe instead of persisting.
+    assert.equal(reloaded.provider('anthropic')!.keys.find(row => row.kind === 'api-key')!.valueMissing, false)
     await reloaded.close()
   } finally {
     await rm(dir, { recursive: true, force: true })
