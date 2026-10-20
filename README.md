@@ -26,32 +26,8 @@ manager.
 
 ### Extra providers
 
-`src/providers.ts` contains a curated catalog of 35 extra providers — 21 from
-the original catalog, 13 added in the previous release, and CoreWeave
-Serverless Inference added now. Examples include SiliconFlow, Zhipu coding
-plan, Cline Pass, Ollama Cloud, and Alibaba Token Plan (CN). The catalog is
-derived from [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider
-catalog (MIT).
-An extra id is added only when the shipped DSH catalog does not already
-declare that route id (for example, `meta` and `typesafe` are not
-duplicated); same-endpoint providers with distinct credential identities
-are kept by design.
-
-CoreWeave Serverless Inference needs `COREWEAVE_PROJECT=<team>/<project>` in
-the DSH process environment **before** the provider is added: the value is
-read once and stored as a static `OpenAI-Project` request header on the route
-profile, so a missing variable refuses the add. To change the project value,
-first **release the provider** from Keys Manager, then restart DSH with the
-new `COREWEAVE_PROJECT` value and add the provider again. Release removes the
-`OpenAI-Project` value this plugin wrote while it still equals the current
-environment value; a value it cannot attribute is kept and reported in the UI
-warnings, and a hand-written header that happens to equal the environment
-value is removed by the same rule. A profile the plugin created is removed
-and recreated on the next add, while an adopted profile is kept and
-re-adopted; in both cases the plugin only fills a declared header the profile
-does not already carry and never overwrites a stored value.
-
-The full list is collapsible below.
+This catalog of 35 extra providers comes from
+[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
 
 <details>
 <summary>All 35 extra providers</summary>
@@ -95,6 +71,8 @@ The full list is collapsible below.
 | Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
 
 Where two variables are listed, either is accepted; the first is the primary.
+
+CoreWeave Serverless Inference also needs `COREWEAVE_PROJECT=<team>/<project>` in the DSH process environment before it is added.
 
 </details>
 

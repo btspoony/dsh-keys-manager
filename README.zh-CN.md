@@ -22,11 +22,8 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ### 额外提供商
 
-`src/providers.ts` 收录 35 个精选提供商（原有 21 个、上一版本新增 13 个，以及本次新增的 CoreWeave Serverless Inference）；例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud、Alibaba Token Plan (CN)。目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
-
-CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中：该值在添加时读取一次，并作为静态 `OpenAI-Project` 请求头写进路由档案。缺少该变量会拒绝添加。要更改项目值，请先在 Keys Manager 中**释放（停止接管）该提供商**，再以新的 `COREWEAVE_PROJECT` 值重启 DSH，然后再次添加该提供商。释放时会移除本插件写入、且仍与当前环境变量值相等的 `OpenAI-Project` 值；无法归属的值会保留，并在界面警告中报告；手写的 header 若恰好等于环境变量值，也会按同一规则被移除。插件创建的档案会在下次添加时被移除并重建，接管的档案则保留并重新接管；两种情况都只补齐档案尚未声明的 header，从不覆盖已存储的值。
-
-完整列表见下方折叠区块。
+这 35 个额外提供商收录自
+[oh-my-pi](https://github.com/can1357/oh-my-pi) 的提供商目录（MIT）。
 
 <details>
 <summary>全部 35 个额外提供商</summary>
@@ -70,6 +67,8 @@ CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `CORE
 | Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
 
 列出两个变量时二者皆可接受，第一个为主变量。
+
+CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中。
 
 </details>
 
