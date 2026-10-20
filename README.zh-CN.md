@@ -26,6 +26,12 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ## 快速开始
 
+### 安装 —— DeepSeek Harness 桌面版 / Web 版
+
+桌面版或 Web 版打开 **插件** 页面，点击 **添加插件**，在包名输入框中填入 `dsh-keys-manager` 并点击 **安装**；安装完成后选择 **立即启用** 启用插件。
+
+通过向导安装时，应用会下载与下面 CLI 路径相同的已发布 npm 包，包内已包含构建好的产物。安装完成后刷新页面，让插件的浏览器侧代码被加载。
+
 ### 安装 —— 已发布包
 
 ```sh
@@ -41,7 +47,7 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-只有已发布包的安装路径不会在本地执行构建：`dsh plugin --profile web add dsh-keys-manager` 按原样安装 npm tarball——注册表安装不会运行包生命周期脚本（`prepare` / `prepack`），tarball 内已带构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径不同——安装本地目录会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程不需要手动构建步骤。
+两条 CLI 安装路径的区别在于构建产物的来源：`dsh plugin --profile web add dsh-keys-manager` 安装的已发布 npm tarball 中已包含构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程包含这一步构建；`prepack` 则在打包或发布时生成同样的产物。
 
 安装完成后刷新 Web 页面，让浏览器侧代码被取到。
 
