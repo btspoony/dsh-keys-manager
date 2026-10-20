@@ -51,7 +51,8 @@ describe('bundle composition', () => {
     // the package directory accepts the manifest and names the tarball the
     // manifest declares. `--ignore-scripts` keeps the test off the package's
     // prepack build; the packed contents are gated by packages/llm-omp's own
-    // build test.
+    // build test. This assertion runs the local `npm` CLI, so it needs npm on
+    // PATH (CI installs it with the pinned Node).
     const pack = spawnSync('npm', ['pack', '--dry-run', '--ignore-scripts'], {
       cwd: dirname(manifestPath),
       encoding: 'utf8',

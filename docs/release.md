@@ -52,13 +52,14 @@ tarball asks for that transport version.
 - The transports package has no generated changelog. `CHANGELOG.md` and its
   `## [<version>]` sections stay root-only; the transport is described by its
   own README and git history.
-- `release.yml` publishes the transport only when its exact `package.json`
-  version is not already on npm, so a re-run or a root-only release is
-  idempotent. The tag step always ensures `dsh-llm-omp-transports@<version>`
-  exists.
-- Transport prereleases are refused by release prep: the transport publish has
-  no dist-tag rule yet, so a prerelease would move npm's `latest`. Release the
-  transport with a formal `X.Y.Z`.
+- `release.yml` skips the transport publish when its exact `package.json`
+  version is already on npm from a commit in this repository's history (an
+  ancestor of the release commit), so a re-run or a root-only release is
+  idempotent; a published version whose recorded commit is foreign fails the
+  step. The tag step always ensures `dsh-llm-omp-transports@<version>` exists.
+- Transport prereleases publish to the same derived dist-tag as the root
+  (`alpha`, `beta`, `rc` from `X.Y.Z-alpha.1`), never `latest`; release prep
+  rejects only a prerelease whose derived tag is invalid.
 
 ## npm publishing
 
@@ -75,7 +76,7 @@ at that moment: if it fails, the root publish never runs. That is deliberate —
 the transport is a real dependency of the installed root, so a half-published
 release is worse than none — but it means a transport-side npm problem blocks
 the root. Fix the transport and re-run: the transports step skips itself once
-its exact version is on npm.
+its exact version is on npm from a commit in this history.
 
 ## Actions pull-request permission
 

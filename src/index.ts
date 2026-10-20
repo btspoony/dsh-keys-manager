@@ -1639,8 +1639,12 @@ export class KeysManagerService {
       error => this.failLoginAttempt(attempt, error),
     )
     // A removal awaits this, so it deletes the grant only after the withdrawn
-    // attempt (and any late write it drops) is done.
-    attempt.settled = settled.then(() => undefined, () => undefined)
+    // attempt (and any late write it drops) is done. The route keeps its
+    // pending entry until the seam's `begin` resolves: an earlier settle
+    // (prune, release, cancel) must not hide a commit that is still in flight.
+    attempt.settled = settled.then(() => undefined, () => undefined).finally(() => {
+      if (this.transportInFlight.get(route) === attempt.id) this.transportInFlight.delete(route)
+    })
     return attemptView(attempt)
   }
 
@@ -1676,7 +1680,12 @@ export class KeysManagerService {
     if (records === undefined) throw new Error('The credential store does not support records')
     const pendingId = this.transportInFlight.get(route)
     const pending = pendingId === undefined ? undefined : this.loginAttempts.get(pendingId)
-    if (pending !== undefined && pending.settledAt === undefined) {
+    // Key on the seam promise, not `settledAt`: the prune timeout, a provider
+    // release and a cancel settle the attempt record while `begin` is still
+    // pending (the seam refuses a withdraw during a commit). The epoch bump
+    // and the await must cover that window, or a late `authorized` recreates
+    // the grant this removal deleted.
+    if (pending !== undefined && pending.settled !== undefined) {
       // Bump the epoch before the abort: the attempt's settle path reads it to
       // know this removal owns the record, and this await covers that path.
       this.transportRemovals.set(route, this.transportGenerationOf(route) + 1)
@@ -1740,7 +1749,6 @@ export class KeysManagerService {
         : 'The sign-in attempt was cancelled',
     ))
     if (this.loginsInFlight.get(attempt.provider) === attempt.id) this.loginsInFlight.delete(attempt.provider)
-    if (this.transportInFlight.get(attempt.provider) === attempt.id) this.transportInFlight.delete(attempt.provider)
     attempt.controller.abort()
     attempt.updatedAt = attempt.settledAt
   }

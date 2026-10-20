@@ -358,6 +358,8 @@ function fakeAuthorization(flows: Array<{ key: string; label: string; methods: A
   return {
     flows,
     failBegin: undefined as Error | undefined,
+    /** True while the seam refuses a withdraw because a commit is in flight. */
+    committing: false,
     beganRequests: [] as Array<Record<string, unknown>>,
     /** The single in-flight begin, for tests to settle by hand. */
     pending: undefined as undefined | { request: Record<string, unknown>; resolve: (outcome: { status: string }) => void; reject: (error: Error) => void },
@@ -379,6 +381,9 @@ function fakeAuthorization(flows: Array<{ key: string; label: string; methods: A
         // resolve `authorized` first.
         const signal = request.signal as AbortSignal | undefined
         signal?.addEventListener('abort', () => {
+          // The real seam does not withdraw an attempt that is already
+          // committing; the pending promise resolves only once the commit does.
+          if (this.committing) return
           queueMicrotask(() => resolve({ status: 'cancelled' }))
         }, { once: true })
       })
@@ -6965,6 +6970,30 @@ test('removing a transport account withdraws the pending sign-in and stays remov
     assert.equal(state.transportAccounts?.[0]?.status, 'signed-out')
     assert.equal(state.transportAccounts?.[0]?.active, false)
     assert.equal(h.service.accountAttempt(attempt.id)?.status, 'cancelled')
+    assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a removal withdraws a commit that outlived another settle path', async () => {
+  const h = await transportHarness()
+  try {
+    await h.service.beginTransportLogin('cursor')
+    // The seam is mid-commit, so it ignores the withdraw and `begin` stays
+    // pending; the prune timeout settles the attempt record meanwhile.
+    h.authorization.committing = true
+    h.service.pruneTransient(Date.now() + 365 * 24 * 60 * 60 * 1000)
+
+    const removal = h.service.removeTransportAccount('cursor')
+    // The commit lands after the removal's abort, as a late authorization can.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    const state = await removal
+
+    assert.equal(h.credentials.records.has(CURSOR_SCOPE), false)
+    assert.equal(state.transportAccounts?.[0]?.status, 'signed-out')
+    assert.equal(state.transportAccounts?.[0]?.active, false)
     assertNoPiAiProjection(h)
   } finally {
     await h.close()

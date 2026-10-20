@@ -17,8 +17,8 @@
  * transport version is checked against the `dsh-llm-omp-transports@<version>`
  * tag the Release workflow creates after publishing, and the version written
  * here is exactly the one `release.yml` publishes (that workflow skips an
- * already-published version). Transport prereleases are refused because the
- * workflow publishes the package on npm's default `latest` tag.
+ * already-published version). Both packages derive their npm dist-tag the same
+ * way, so a transport prerelease is validated like the root one.
  *
  * Usage:
  *   node scripts/prepare-release.mjs                  # auto bump root + transport
@@ -29,8 +29,8 @@
  *
  * Exit codes: 0 = bumped (or dry-run resolved) and printed versions; 1 =
  * rejected (unparseable version, existing tag, no commits since the previous
- * release tag, unparseable current package.json version, transport prerelease,
- * or CHANGELOG.md write error).
+ * release tag, unparseable current package.json version, invalid prerelease
+ * dist-tag, or CHANGELOG.md write error).
  */
 
 import { execFileSync } from 'node:child_process'
@@ -67,6 +67,23 @@ function parseVersion(value) {
   }
 }
 
+/**
+ * Refuse a prerelease whose derived npm dist-tag the release workflow would
+ * reject, for either package. The tag is the text between the first '-' and
+ * the first '.' after it ("alpha.1" -> "alpha").
+ */
+function assertPublishablePrerelease(prerelease) {
+  if (prerelease === undefined) return
+  const distTag = prerelease.split('.')[0]
+  if (distTag === 'latest' || !/^[a-z][a-z0-9-]*$/.test(distTag)) {
+    console.error(
+      `Error: prerelease "${prerelease}" maps to invalid npm dist-tag "${distTag}". ` +
+        'Use a prerelease such as alpha.1, beta.1, or rc.1.',
+    )
+    process.exit(1)
+  }
+}
+
 const pkg = JSON.parse(readFileSync(PKG_PATH, 'utf8'))
 const transportsPkg = JSON.parse(readFileSync(TRANSPORTS_PKG_PATH, 'utf8'))
 
@@ -75,19 +92,11 @@ const { versionArg, transportArg, skipTransport, dryRun } = parseArgs(process.ar
 const target = resolveTarget(versionArg, pkg.version, 'package.json')
 const version = formatVersion(target)
 
-// Validate the npm dist-tag derived by the release workflow. A prerelease
-// identifier like "latest" would move the stable tag, and a numeric one like
-// "1" is not a legal npm tag. Reject both before the release PR is opened.
-if (target.prerelease !== undefined) {
-  const distTag = target.prerelease.split('.')[0]
-  if (distTag === 'latest' || !/^[a-z][a-z0-9-]*$/.test(distTag)) {
-    console.error(
-      `Error: prerelease "${target.prerelease}" maps to invalid npm dist-tag "${distTag}". ` +
-        'Use a prerelease such as alpha.1, beta.1, or rc.1.',
-    )
-    process.exit(1)
-  }
-}
+// Validate the npm dist-tag derived by the release workflow for either
+// package. A prerelease identifier like "latest" would move the stable tag,
+// and a numeric one like "1" is not a legal npm tag. Reject both before the
+// release PR is opened.
+assertPublishablePrerelease(target.prerelease)
 
 // The transports package versions independently of the root package. By
 // default a run bumps its patch line; `--skip-transport` opts out, and
@@ -97,16 +106,7 @@ let transportVersion = transportsPkg.version
 if (!skipTransport) {
   transportTarget = resolveTarget(transportArg, transportsPkg.version, 'packages/llm-omp/package.json')
   transportVersion = formatVersion(transportTarget)
-  // release.yml publishes this package without a --tag, so a prerelease would
-  // move npm's `latest` tag. Keep it on formal versions until the workflow
-  // grows the same dist-tag rule as the root publish step.
-  if (transportTarget.prerelease !== undefined) {
-    console.error(
-      `Error: ${TRANSPORT_PACKAGE} publishes formal versions only; "${transportVersion}" is a prerelease ` +
-        'and release.yml would publish it on the `latest` dist-tag.',
-    )
-    process.exit(1)
-  }
+  assertPublishablePrerelease(transportTarget.prerelease)
 }
 const transportTag = transportTarget === undefined ? undefined : `${TRANSPORT_PACKAGE}@${transportVersion}`
 

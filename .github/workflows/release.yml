@@ -162,10 +162,14 @@ jobs:
           # The transport package versions independently of dsh-keys-manager:
           # publish its own package.json version and skip when that exact
           # version is already on npm, so a release re-run (or a root release
-          # that does not bump the transport) stays idempotent. The skip is the
-          # same ownership test the root step applies: the published version
-          # must have come from the commit checked out here, so a version
-          # squatted by a foreign publisher is refused instead of tagged.
+          # that does not bump the transport) stays idempotent. Ownership is
+          # tested by ancestry, not equality: an already-published transport
+          # version is normally published from an ancestor of the release
+          # commit (a documented --skip-transport root release leaves the
+          # transport version behind while HEAD moves), while a version
+          # squatted by a foreign publisher names a commit outside this
+          # repository's history. The root step keeps its equality test
+          # because its version is bumped on every release.
           PKG_DIR="packages/llm-omp"
           PKG_VERSION="$(node -p "require('./${PKG_DIR}/package.json').version")"
           if npm view "dsh-llm-omp-transports@${PKG_VERSION}" version >/dev/null 2>&1; then
@@ -175,11 +179,11 @@ jobs:
               echo "::error::dsh-llm-omp-transports@${PKG_VERSION} is already published without a gitHead; refusing to tag a possibly different commit."
               exit 1
             fi
-            if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
-              echo "::error::dsh-llm-omp-transports@${PKG_VERSION} was published from ${PUBLISHED_SHA}, not ${LOCAL_SHA}."
+            if ! git merge-base --is-ancestor "$PUBLISHED_SHA" HEAD; then
+              echo "::error::dsh-llm-omp-transports@${PKG_VERSION} was published from ${PUBLISHED_SHA}, which is not an ancestor of ${LOCAL_SHA}; refusing to tag a foreign version."
               exit 1
             fi
-            echo "dsh-llm-omp-transports@${PKG_VERSION} is already published from this commit; skipping."
+            echo "dsh-llm-omp-transports@${PKG_VERSION} is already published from ${PUBLISHED_SHA} (an ancestor of ${LOCAL_SHA}); skipping."
             exit 0
           fi
           # npm publish runs the package's own prepack (pnpm run build), which

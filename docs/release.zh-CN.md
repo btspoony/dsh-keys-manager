@@ -12,9 +12,9 @@ CI（`.github/workflows/ci.yml`）先运行根包 typecheck、build、测试，�
 
 发布由 PR 驱动：
 
-1. Actions → **Release prep** → Run workflow。版本留空表示自动 patch 升级，或传入 `X.Y.Z` / `X.Y.Z-prerelease`。传输包版本可选：留空表示按其独立版本线自动 patch 升级，传入正式 `X.Y.Z` 可固定版本，传入 `skip` 则不升级该包。
+1. Actions → **Release prep** → Run workflow。版本留空表示自动 patch 升级，或传入 `X.Y.Z` / `X.Y.Z-prerelease`。传输包版本可选：留空表示按其独立版本线自动 patch 升级，传入 `X.Y.Z` / `X.Y.Z-prerelease` 可固定版本，传入 `skip` 则不升级该包。
 2. 工作流升级两个 `package.json` 版本（传输包独立升级）、从 git log 更新根包 `CHANGELOG.md`、校验构建，并打开 `release v<version>` PR。
-3. 合并发布 PR。**Release** 工作流把 `dsh-keys-manager@<version>` 与 `dsh-llm-omp-transports@<传输包版本>` 以 provenance 发布到 npm（传输包版本若已发布则跳过）、推送 `v<version>` 与包名标签 `dsh-llm-omp-transports@<传输包版本>`，并创建 GitHub Release。
+3. 合并发布 PR。**Release** 工作流把 `dsh-keys-manager@<version>` 与 `dsh-llm-omp-transports@<传输包版本>` 以 provenance 发布到 npm（传输包版本若已从本仓库历史中的提交发布则跳过）、推送 `v<version>` 与包名标签 `dsh-llm-omp-transports@<传输包版本>`，并创建 GitHub Release。
 
 ## 传输包
 
@@ -22,14 +22,14 @@ CI（`.github/workflows/ci.yml`）先运行根包 typecheck、build、测试，�
 
 - `scripts/prepare-release.mjs` 每次运行都会 patch 升级传输包版本。`--transport X.Y.Z` 固定版本，`--skip-transport` 保持不动，`--dry-run` 只校验并打印两个包的版本与标签、不写文件。工作流把同样的选择暴露为可选的 `transport_version` 输入（`skip` 或 `X.Y.Z`）。
 - 传输包没有生成的 changelog。`CHANGELOG.md` 及其 `## [<version>]` 小节只属于根包；传输包由自己的 README 与 git 历史描述。
-- `release.yml` 只在传输包的确切 `package.json` 版本尚未发布到 npm 时发布它，因此重跑或只发布根包都是幂等的。打标签步骤总会确保 `dsh-llm-omp-transports@<version>` 存在。
-- release prep 拒绝传输包预发布版本：传输包发布步骤尚无 dist-tag 规则，预发布版本会移动 npm 的 `latest`。请用正式 `X.Y.Z` 发布传输包。
+- `release.yml` 在传输包的确切 `package.json` 版本已发布、且其记录的提交是本仓库历史中的祖先（ancestor）时跳过发布，因此重跑或只发布根包都是幂等的；记录的提交不属于本仓库历史时该步骤失败。打标签步骤总会确保 `dsh-llm-omp-transports@<version>` 存在。
+- 传输包预发布版本与根包使用同样的派生 dist-tag 规则（`X.Y.Z-alpha.1` → `alpha`），不会移动 `latest`；release prep 只拒绝派生出非法 tag 的预发布版本。
 
 ## npm 发布
 
 npm 发布使用 OIDC trusted publishing（无需 `NPM_TOKEN`）。首次发布前，在 npmjs.com 上为本仓库与 `Release` 工作流配置 Trusted Publisher。**每个发布的包都需要各自的 Trusted Publisher**：`dsh-keys-manager` 与 `dsh-llm-omp-transports` 是两个 npm 包，一个 publisher 条目不会覆盖另一个。预发布版本发布到 prerelease dist-tag，不会移动 `latest`。
 
-`Release` 工作流会**先**发布传输包、后发布根包，且传输包步骤不依赖根包任何东西：它失败时根包发布不会执行。这是有意的——传输包是已安装根包的真实依赖，只发布一半比完全不发布更糟——但也意味着传输包一侧的 npm 问题会阻塞根包。先修好传输包再重跑：其确切版本已在 npm 上时该步骤会自行跳过。
+`Release` 工作流会**先**发布传输包、后发布根包，且传输包步骤不依赖根包任何东西：它失败时根包发布不会执行。这是有意的——传输包是已安装根包的真实依赖，只发布一半比完全不发布更糟——但也意味着传输包一侧的 npm 问题会阻塞根包。先修好传输包再重跑：其确切版本已在 npm 上、且来自本仓库历史中的提交时，该步骤会自行跳过。
 
 ## Actions 创建 PR 的权限
 

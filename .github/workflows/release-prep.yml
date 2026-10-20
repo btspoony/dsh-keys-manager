@@ -89,7 +89,7 @@ jobs:
           T="$TRANSPORT_INPUT"
           # The transport package versions independently: empty bumps its patch
           # line, "skip" leaves it untouched, anything else is passed through
-          # and validated by the script (which also rejects prereleases).
+          # and validated by the script (including the derived dist-tag).
           ARGS=()
           case "$T" in
             "") ;;
