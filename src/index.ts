@@ -900,6 +900,14 @@ export class KeysManagerService {
    */
   private readonly cleaningTests = new Set<string>()
   /**
+   * Generation of the newest cleanup attempt per provider (PR review round 2).
+   * An attempt that outlives its deadline keeps writing while a later attempt
+   * for the same window starts. Only the newest generation may release
+   * provider-wide state — the fence, the borrow marker, the in-flight maps —
+   * so a superseded attempt can never clear isolation a newer window owns.
+   */
+  private readonly cleanupAttempts = new Map<string, number>()
+  /**
    * The abandoned window currently fencing each provider (QC fix wave 3,
    * W-002), so a later test attempt can retry its cleanup. Without this the
    * fence could only ever clear from the abandoned promise's settlement, and a
@@ -1389,7 +1397,12 @@ export class KeysManagerService {
    */
   attachSettings(settings: SettingsLike): void {
     this.settings = settings
-    void this.repairBrokerBindings().catch(error => {
+    // The repair decides from projection ownership, which the constructor
+    // hydrates asynchronously: running it now would read a persisted
+    // projection from an empty owner map as key-pool-served and bind the
+    // route to the broker (PR review round 2). The constructor's own pass
+    // waits for the same promise.
+    void this.projectionHydration.then(() => this.repairBrokerBindings()).catch(error => {
       this.warn(`broker binding repair after the settings mount failed: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
@@ -1999,6 +2012,10 @@ export class KeysManagerService {
       } else {
         await this.compensateFailedHarvest(attempt, harvest)
       }
+      // The rollback restored the rows and the owner map, so the binding must
+      // follow whatever serves the route now: this attempt's projection is
+      // gone, and the surviving pool must serve again (Codex P2).
+      await this.rebindAfterRemoval(attempt.provider)
     }
   }
 
@@ -2282,6 +2299,11 @@ export class KeysManagerService {
           this.activeAccounts.delete(attempt.provider)
           this.store.touch()
         }
+        // The projection the pool was hidden behind is gone, so the route
+        // falls back to whatever still serves it: rebind its pool here rather
+        // than leaving the profile unbound for pi-ai to bypass the broker
+        // (PR review round 2 must-fix).
+        await this.rebindAfterRemoval(attempt.provider)
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
@@ -2437,6 +2459,11 @@ export class KeysManagerService {
       const markedAt = this.intentionalProjectionRemovals.get(provider)
       if (markedAt !== undefined && Date.now() - markedAt <= INTENTIONAL_REMOVAL_TTL_MS) {
         this.intentionalProjectionRemovals.delete(provider)
+        // The manager's own removal left no projection: converge the binding
+        // with the state the removal created, so the surviving pool serves
+        // through the broker instead of pi-ai's bare credential (PR review
+        // round 2).
+        await this.rebindAfterRemoval(provider)
         return
       }
       if (markedAt !== undefined) this.intentionalProjectionRemovals.delete(provider)
@@ -2449,6 +2476,10 @@ export class KeysManagerService {
         this.activeAccounts.delete(provider)
         this.store.touch()
         this.pushWarning(`The ${provider} OAuth grant was removed outside Keys Manager; the route now resolves through its API-key pool.`)
+        // The row is demoted and nothing projects the route, so the binding
+        // must name the key pool now — an unbound profile here read as a
+        // mismatch (Codex P1).
+        await this.rebindAfterRemoval(provider)
       }
       return
     }
@@ -2938,9 +2969,17 @@ export class KeysManagerService {
    * isolation only when it completed. Returns the reason it could not finish.
    */
   private async attemptAbandonedCleanup(window: RowTestWindow): Promise<string | undefined> {
-    this.cleaningTests.add(window.provider)
-    const failure = await this.withinCleanupDeadline(() => this.cleanupTestWindow(window))
+    const provider = window.provider
+    const attempt = (this.cleanupAttempts.get(provider) ?? 0) + 1
+    this.cleanupAttempts.set(provider, attempt)
+    const stillCurrent = (): boolean => this.cleanupAttempts.get(provider) === attempt
+    this.cleaningTests.add(provider)
+    const failure = await this.withinCleanupDeadline(() => this.cleanupTestWindow(window, stillCurrent))
     if (failure !== undefined) return failure
+    // The work outlived its deadline and a newer attempt took the provider
+    // over: its writes may finish (they were decided against the live store),
+    // but it may not release state that attempt now owns.
+    if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
     if (this.testsActive.get(window.provider) === window.test) this.testsActive.delete(window.provider)
     if (this.testsInFlight.get(window.provider) === window.test) this.testsInFlight.delete(window.provider)
     if (this.abandonedWindows.get(window.provider) === window) this.abandonedWindows.delete(window.provider)
@@ -2955,8 +2994,14 @@ export class KeysManagerService {
    * original finally's order, because the binding decision reads the restored
    * owner map — then the borrow marker. Returns the reason the cleanup could
    * not complete.
+   *
+   * `stillCurrent` is passed by abandoned-window attempts only: a superseded
+   * attempt that outlived its deadline may finish its writes, but the
+   * provider-wide borrow marker belongs to the newest attempt (PR review
+   * round 2) — deleting it would let ordinary traffic reach a newer window's
+   * borrowed projection.
    */
-  private async cleanupTestWindow(window: RowTestWindow): Promise<string | undefined> {
+  private async cleanupTestWindow(window: RowTestWindow, stillCurrent?: () => boolean): Promise<string | undefined> {
     // QC fix wave 3 (W-001): a re-read cannot tell the pre-borrow payload from
     // a write that has not landed yet, so the cleanup first waits for the
     // borrow/binding mutations this window started. Past the caller's deadline
@@ -2979,7 +3024,7 @@ export class KeysManagerService {
     if (!rebound && window.releasedBinding) {
       return 'The route credential binding could not be restored after the test; repair it in Models before relying on this route.'
     }
-    this.testBindingBorrows.delete(window.provider)
+    if (stillCurrent === undefined || stillCurrent()) this.testBindingBorrows.delete(window.provider)
     return undefined
   }
 
@@ -4336,6 +4381,25 @@ export class KeysManagerService {
   }
 
   /**
+   * Re-derive a managed route's binding after one of this manager's own
+   * projection removals (or a harvest rollback) hands the route back to its
+   * API-key pool (PR review round 2).
+   *
+   * The removal leaves no projection, so the row that owned it no longer
+   * serves: unless the pool is bound again, pi-ai falls through to its bare
+   * credential instead of the broker reference. A store refusal only warns —
+   * these are compensation paths and must never fail the change that
+   * triggered them; the next repair pass retries.
+   */
+  private async rebindAfterRemoval(provider: string): Promise<void> {
+    try {
+      await this.syncBrokerBinding(provider)
+    } catch (error) {
+      this.warn(`could not re-derive the pi-ai binding for ${provider} after removing its projection: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
    * A refused binding write must not fail the change that triggered it, but
    * it cannot stay in the log alone either: the route may resolve the wrong
    * credential source until the next repair.
@@ -4459,11 +4523,54 @@ export class KeysManagerService {
       // route with an imported API key binds through the one authority.
       // Adoption is the only caller allowed to take over the pre-adoption
       // reference it recorded as `originalApiKeyEnv`.
-      await this.syncBrokerBinding(provider, { takeover: true })
+      const bound = await this.syncBrokerBinding(provider, { takeover: true })
+      if (!bound) {
+        // A refused write left the route recorded as managed with an imported
+        // key while the profile still names the pre-adoption reference — a
+        // state no later repair may touch (it cannot tell that value from a
+        // hand edit). Undo the adoption entirely instead (PR review round 2).
+        await this.rollbackAdoption(record, imported)
+        throw new Error(`The ${provider} profile refused the credential binding write; the adoption was rolled back. Repair the profile in Models and adopt again.`)
+      }
       if (hit !== undefined) this.pushWarning(`Imported the existing credential ${hit.ref}.`)
       this.store.touch()
       return this.buildState()
     })
+  }
+
+  /**
+   * Undo an adoption whose initial binding write was refused (PR review
+   * round 2): drop the managed record and its broker entry, delete the
+   * plugin-scope copy this call created, and put back a pre-adoption
+   * reference that landed despite the refusal. The source credential and the
+   * profile's other fields are never touched — adoption only read them.
+   */
+  private async rollbackAdoption(record: ProviderRecord, imported: KeyRecord | undefined): Promise<void> {
+    const provider = record.provider
+    delete this.store.providers[provider]
+    this.rebuildBrokerMap()
+    if (imported !== undefined) {
+      try {
+        await this.unsetOriginal(imported.ref)
+      } catch (error) {
+        this.warn(`adoption rollback could not delete the imported credential ${imported.ref} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const descriptor = this.describeSettings()
+    const namespace = this.namespace(descriptor, record.settingsNs)
+    const profile = asProfile(namespace === undefined ? undefined : getPath(namespace.value, record.settingsPath))
+    const current = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : undefined
+    if (current === record.brokerRef) {
+      try {
+        const path = [...record.settingsPath, 'apiKeyEnv']
+        await this.mutateSettings(record.settingsNs, [
+          record.originalApiKeyEnv === null ? { op: 'unset', path } : { op: 'set', path, value: record.originalApiKeyEnv },
+        ])
+      } catch (error) {
+        this.warn(`adoption rollback could not restore the pre-adoption reference for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    this.store.touch()
   }
 
   /**
