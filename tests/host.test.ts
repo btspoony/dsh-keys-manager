@@ -6353,6 +6353,97 @@ test('a throwing abort-path projection revoke leaves no marker masking a later r
   }
 })
 
+// I-000125 / PR #23 review (Minor 1): the abort compensation arms its removal
+// marker while the provider is managed, but the echo that consumes that marker
+// is fire-and-forget. A release landing before the echo's body runs makes the
+// provider unmanaged at echo time — the reconciliation is dropped, so nothing
+// spends the marker and it stays armed for its whole TTL. A provider re-adopted
+// inside that window then reads a genuine out-of-band removal as the manager's
+// own: no warning, no `valueMissing`, no stale-owner cleanup.
+//
+// Shape: a failed release (unreadable settings) queues the harvest behind it,
+// so the provider is still managed when the compensation arms. The provider's
+// grant-reconciliation chain is held open, the state an in-flight echo leaves
+// behind, so the removal echo cannot run yet. A successful release then removes
+// the provider — and must drop the marker it can no longer have consumed.
+
+test('a release between arming the removal marker and its echo drops the marker', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  let unpark: (() => void) | undefined
+  try {
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    const chains = (h.service as unknown as { grantReconciliations: Map<string, Promise<void>> }).grantReconciliations
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The seam commits THIS attempt's grant as the provider projection at the
+    // settlement broadcast.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // Park the provider's grant chain: the removal echo the abort compensation
+    // is about to schedule stays queued behind this body, exactly as it does
+    // behind an echo whose record read is still in flight.
+    const parked = new Promise<void>(resolve => { unpark = resolve })
+    chains.set('anthropic', parked)
+    // Release-ahead-of-harvest (I-000122 shape): the release cancels the
+    // sign-in and THEN refuses its preflight, leaving the provider managed, so
+    // the harvest queued behind it arms the marker as a managed provider's.
+    h.settings.failDescribe = true
+    const failedRelease = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => failedRelease, /unreadable/)
+    // The next queued mutation resolves only after the harvest callback ran.
+    await h.service.setSettings({})
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // The compensation removed the projection and armed its one-shot marker.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(markers.has('anthropic'), true, 'the abort compensation armed its own removal marker')
+    // The release that follows succeeds before the parked echo drains.
+    h.settings.failDescribe = false
+    await h.service.releaseProvider('anthropic')
+    assert.equal(h.store.provider('anthropic'), undefined)
+    // The echo for an unmanaged provider is dropped, so the marker must not
+    // outlive the release.
+    assert.equal(markers.has('anthropic'), false, 'the successful release drops the armed marker')
+    unpark?.()
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(markers.has('anthropic'), false, 'the dropped echo cannot re-arm the marker')
+    // Re-adopt inside the marker's TTL and let a fresh sign-in make a row
+    // serve the route again.
+    await h.service.adoptProvider('anthropic')
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const next = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(next.id)!.status, 'ready'))
+    await drainGrantChain(h, 'anthropic')
+    const accountId = h.service.getAccountAttempt(next.id)!.accountId!
+    const row = (): KeyRecord => h.store.provider('anthropic')!.keys.find(key => key.id === accountId)!
+    assert.equal(row().valueMissing, false)
+    // A genuine out-of-band removal inside the 5 s window is still external:
+    // the row is marked missing and the warning is pushed.
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(warnings(), /removed outside Keys Manager/))
+    assert.equal(row().valueMissing, true, 'the externally removed projection demoted its row')
+    assert.equal(
+      h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.some(key => key.projected === true),
+      false,
+      'the stale owner claim was dropped with it',
+    )
+  } finally {
+    unpark?.()
+    await h.close()
+  }
+})
+
 test('removeAccount drops the row, its plugin-scope payload, and falls back when active', async () => {
   const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {

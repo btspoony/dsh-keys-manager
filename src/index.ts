@@ -3492,6 +3492,27 @@ export class KeysManagerService {
     this.activeAccounts.delete(record.provider)
   }
 
+  /**
+   * Drop any armed intentional-removal marker for a provider being released.
+   *
+   * The marker only exists to silence the record-updated echo of the manager's
+   * own projection removal, and that echo is dropped outright once the provider
+   * is unmanaged: {@link onGrantRecordUpdated} returns at event time and
+   * {@link reconcileGrantRecord} at body time. A release can land between the
+   * arm and that echo — the abort compensation arms inside the mutation queue
+   * while its echo is still chained behind an in-flight body — leaving the
+   * marker armed for its whole TTL with nothing left to consume it. A provider
+   * re-adopted inside that window would then read a genuine out-of-band
+   * removal as the manager's own: no warning, no `valueMissing`, no
+   * stale-owner cleanup.
+   *
+   * Called only on the successful release path: a release that throws leaves
+   * the provider managed, and its echo may still legitimately arrive.
+   */
+  private dropIntentionalRemoval(provider: string): void {
+    this.intentionalProjectionRemovals.delete(provider)
+  }
+
   /** Restore the provider profile and drop management; caller owns the queue. */
   private async releaseLocked(provider: string): Promise<void> {
     const record = this.store.provider(provider)
@@ -3520,6 +3541,7 @@ export class KeysManagerService {
     // overwrite the live profile.
     if (binding === 'mismatch') {
       await this.deleteManagedCredentials(record)
+      this.dropIntentionalRemoval(provider)
       delete this.store.providers[provider]
       this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
       this.rebuildBrokerMap()
@@ -3566,6 +3588,7 @@ export class KeysManagerService {
       }
       throw error
     }
+    this.dropIntentionalRemoval(provider)
     delete this.store.providers[provider]
     this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
     this.rebuildBrokerMap()
