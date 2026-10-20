@@ -168,6 +168,10 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     adopt: '接管 Provider',
     loginPromptSubmit: '提交',
     delete: '删除',
+    testKey: '测试连接',
+    testRunning: '测试中…',
+    testPassed: '连接正常 · {ms} ms',
+    testFailed: '连接失败：{error}',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
@@ -1784,5 +1788,56 @@ describe('account ui', () => {
       vi.useRealTimers()
       setRuntimeContext(null)
     }
+  })
+
+  test('both row menus offer a Test action that reports its outcome inline', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const pending: Array<{ args: unknown; resolve: (value: RpcResult) => void }> = []
+    const harness = makeContext({ ok: true, value: state })
+    const originalCall = harness.ctx.connection.rpc.call.bind(harness.ctx.connection.rpc)
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint !== 'keysManager/testKey') return originalCall(channel, endpoint, payload)
+      return await new Promise<RpcResult>(resolve => { pending.push({ args: (payload as { args: unknown }).args, resolve }) })
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    // An account row test sends the pinned row id and reports its latency inline.
+    const openMenu = (className: string): void => {
+      const row = findByClass(view.nodes, className)[0]!
+      const dots = descendants(view.nodes, row).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+      ;(dots[0]!.props!.onClick as () => void)()
+      view.render()
+    }
+    openMenu('km-account-row')
+    const accountTest = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!)
+      .filter(node => node.type === 'button' && node.text.includes('测试连接'))
+    expect(accountTest).toHaveLength(1)
+    ;(accountTest[0]!.props!.onClick as () => void)()
+    await view.flush()
+    expect(view.nodes.some(node => node.text === '测试中…')).toBe(true)
+    expect(pending[0]!.args).toEqual({ provider: 'zai-coding-cn', keyId: 'k_oauth9' })
+    pending[0]!.resolve({ ok: true, value: { ok: true, latencyMs: 812 } })
+    await view.flush()
+    expect(view.nodes.some(node => node.text === '连接正常 · 812 ms')).toBe(true)
+
+    // A second row can be tested afterwards; a failure renders its message.
+    openMenu('km-key-row')
+    const keyTest = descendants(view.nodes, findByClass(view.nodes, 'km-key-row')[0]!)
+      .filter(node => node.type === 'button' && node.text.includes('测试连接'))
+    expect(keyTest).toHaveLength(1)
+    ;(keyTest[0]!.props!.onClick as () => void)()
+    await view.flush()
+    expect(pending[1]!.args).toEqual({ provider: 'zai-coding-cn', keyId: 'k_aaaaaaaa' })
+    pending[1]!.resolve({ ok: true, value: { ok: false, latencyMs: 4, error: 'invalid api key' } })
+    await view.flush()
+    expect(view.nodes.some(node => node.text === '连接失败：invalid api key')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
   })
 })

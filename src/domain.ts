@@ -207,6 +207,18 @@ export interface StateView {
   warnings: string[]
 }
 
+/**
+ * Outcome of one per-row connection test: one minimal request through the
+ * provider route, with no health or selection side effects.
+ */
+export interface KeyTestResult {
+  ok: boolean
+  /** Wall-clock time of the request that was actually sent. */
+  latencyMs: number
+  /** Provider failure message, timeout, or the reason no request was sent. */
+  error?: string
+}
+
 /** One curated extra built-in provider. */
 export interface ExtraProvider {
   id: string

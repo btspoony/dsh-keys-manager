@@ -6851,6 +6851,8 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
       'listAccountAttempts',
       'activateAccount',
       'removeAccount',
+      // Task 2: the per-row connection test rides the same Remote surface.
+      'testKey',
     ])
     const params = (method: string): string[] =>
       invocations.find(invocation => invocation.method === method)!.parameters.map(parameter => parameter.name)
@@ -6860,6 +6862,7 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
     assert.deepEqual(params('listAccountAttempts'), [])
     assert.deepEqual(params('activateAccount'), ['provider', 'accountId'])
     assert.deepEqual(params('removeAccount'), ['provider', 'accountId'])
+    assert.deepEqual(params('testKey'), ['provider', 'keyId'])
     // Every registered invocation names a real service method, so the
     // gateway's `service[invocation.method]` dispatch cannot drift from the
     // registry (typertRemote binds the service instance directly).
@@ -6988,6 +6991,176 @@ test('the attempt cache evicts oldest settled entries past the 128 cap (S3)', as
     assert.equal(attempts.has('la_2'), false)
     assert.equal(attempts.has('la_3'), true)
     assert.ok(attempts.has(view.id))
+  } finally {
+    await h.close()
+  }
+})
+
+// A per-row connection test runs one real `ctx.llm.stream` request under a
+// test-only request scope: the broker answers with the pinned credential and
+// the stream listener skips selection, cursor movement and every health write.
+
+test('testKey pins the selected api-key and never touches health state', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].models = [{ id: 'zai-test-model' }]
+    const provider = h.store.provider('zai-coding-cn')!
+    const target = provider.keys[1]!
+    const before = {
+      row: structuredClone(target),
+      cursor: provider.cursor,
+      bindings: structuredClone(h.store.state.sessionBindings),
+    }
+    const requests: Array<Record<string, any>> = []
+    const resolved: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => {
+      requests.push(options)
+      return h.service.streamListener(options as any, async function* () {
+        resolved.push((await h.credentials.raw.resolve(provider.brokerRef))?.value)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+
+    const result = await h.service.testKey('zai-coding-cn', target.id)
+
+    assert.equal(result.ok, true)
+    assert.ok(result.latencyMs >= 0)
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0]!.provider, 'zai-coding-cn')
+    assert.equal(requests[0]!.model, 'zai-test-model')
+    assert.equal(requests[0]!.maxTokens, 1)
+    assert.deepEqual(requests[0]!.messages, [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }])
+    // The test scope — not the cursor — decided the credential.
+    assert.deepEqual(resolved, ['sk-second'])
+    assert.deepEqual(structuredClone(h.store.provider('zai-coding-cn')!.keys[1]), before.row)
+    assert.equal(h.store.provider('zai-coding-cn')!.cursor, before.cursor)
+    assert.deepEqual(structuredClone(h.store.state.sessionBindings), before.bindings)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failing key test reports the provider failure without cooling the key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].models = [{ id: 'zai-test-model' }]
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'error', failure: { code: 'AUTH', message: 'invalid api key' } } }
+    } as any)
+
+    const result = await h.service.testKey('zai-coding-cn', target.id)
+
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /invalid api key/)
+    assert.equal(target.cooldownUntil, 0)
+    assert.equal(target.totalFailures, 0)
+    assert.equal(target.consecutiveFailures, 0)
+    assert.equal(target.failureLevel, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth row test restores the previous projection', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const first = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-first', email: 'first@example.com', refresh: 'rt-first' })
+    const second = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-second', email: 'second@example.com', refresh: 'rt-second' })
+    // The user's live projection is the second account.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-second', accountId: 'acc-second', email: 'second@example.com' }))
+    await h.service.activateAccount('anthropic', second.rowId)
+    const seenDuringTest: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      const projection = h.credentials.records.get(GRANT_KEY)
+      seenDuringTest.push((projection?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(result.ok, true)
+    // The row under test served the request…
+    assert.deepEqual(seenDuringTest, ['rt-first'])
+    // …and the previous projection is back afterwards.
+    const restored = h.credentials.records.get(GRANT_KEY)
+    assert.equal(restored?.kind, 'grant')
+    assert.equal((restored?.payload as Record<string, unknown>).refresh, 'rt-second')
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.notEqual(rows.find(row => row.id === first.rowId)!.projected, true)
+    assert.equal(rows.find(row => row.id === second.rowId)!.projected, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a provider without a configured model refuses the test without sending a request', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    let calls = 0
+    h.llm.stream = () => {
+      calls += 1
+      return (async function* () {})()
+    }
+    const result = await h.service.testKey('zai-coding-cn', target.id)
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /No model is configured/)
+    assert.equal(calls, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a concurrent test on the same provider is refused with a clear message', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].models = [{ id: 'zai-test-model' }]
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    let release: (() => void) | undefined
+    const gate = new Promise<void>(resolve => { release = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      await gate
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const first = h.service.testKey('zai-coding-cn', target.id)
+    await assert.rejects(() => h.service.testKey('zai-coding-cn', target.id), /already running/)
+    release!()
+    assert.equal((await first).ok, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth row test removes the borrowed projection when the route had none', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const seeded = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    const seen: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      const projection = h.credentials.records.get(GRANT_KEY)
+      seen.push((projection?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', seeded.rowId)
+
+    assert.equal(result.ok, true)
+    assert.deepEqual(seen, ['rt-only'])
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.notEqual(rows.find(row => row.id === seeded.rowId)!.projected, true)
   } finally {
     await h.close()
   }

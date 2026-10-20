@@ -40,6 +40,7 @@ import type {
   AccountAttemptView,
   ExtraProvider,
   KeyRecord,
+  KeyTestResult,
   KeyView,
   ModelRecord,
   OAuthAccount,
@@ -119,6 +120,8 @@ export const OAUTH_GRANT_RECORD_SCOPE = 'llm-pi-ai'
  * generation guard in {@link KeysManagerService.hydrateProjectionOwnership}.
  */
 const HYDRATION_WAIT_MS = 500
+/** Upper bound on one per-row connection test: a stalled provider must not hold the row busy forever. */
+const KEY_TEST_TIMEOUT_MS = 20_000
 
 /**
  * Stable failure code for a harvest whose state flush rejected AND whose
@@ -317,6 +320,10 @@ const INVOCATIONS: InvocationDescriptor[] = [
   endpoint('listAccountAttempts'),
   endpoint('activateAccount', ['provider', 'accountId']),
   endpoint('removeAccount', ['provider', 'accountId']),
+  // One minimal request per key/account row (observation-only: no health,
+  // cursor or binding writes) so a user can tell a bad credential from a bad
+  // route without waiting for a chat failure.
+  endpoint('testKey', ['provider', 'keyId']),
 ]
 
 /** Read a nested value by path. */
@@ -575,6 +582,13 @@ interface RequestScope {
    * row instead of dying in the no-evidence delegation path.
    */
   oauthAccountId: string | null
+  /**
+   * Set only by {@link KeysManagerService.testKey}. A test scope pins the
+   * credential under test itself, so the stream listener routes it straight
+   * through: no key selection, no cursor or sticky binding, and no health
+   * writes on any terminal chunk.
+   */
+  test: boolean
 }
 
 /** Original credential provider methods captured before wrapping. */
@@ -673,6 +687,8 @@ export class KeysManagerService {
   private readonly selectionQueues = new Map<string, Promise<unknown>>()
   private queue: Promise<unknown> = Promise.resolve()
   private closing = false
+  /** Providers with a per-row connection test in flight (serialization). */
+  private readonly testsInFlight = new Set<string>()
   /** Interactive sign-in attempts, by attempt id. */
   private readonly loginAttempts = new Map<string, LoginAttempt>()
   /** The provider → attempt id index for the single-attempt rule. */
@@ -2454,6 +2470,159 @@ export class KeysManagerService {
   }
 
   /**
+   * Remote: send one minimal request with the selected key or account row.
+   *
+   * Observation-only by construction: the request runs under a test-only
+   * request scope, so the broker answers with the pinned credential and the
+   * stream listener skips selection and every health/binding write. An OAuth
+   * row's grant is projected only for the duration of the request; the
+   * projection (and the in-memory owner) that served the route before is
+   * restored even when the request fails, so a test never changes which
+   * account the route is on.
+   */
+  async testKey(provider: string, keyId: string): Promise<KeyTestResult> {
+    const record = this.store.provider(provider)
+    if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
+    const row = record.keys.find(candidate => candidate.id === keyId)
+    if (row === undefined) throw new Error(`Key "${keyId}" not found on ${provider}`)
+    // Concurrent tests would race the projection save/restore; one at a time
+    // per provider is enough for a per-row action and keeps the restore exact.
+    if (this.testsInFlight.has(provider)) throw new Error('A test for this provider is already running')
+    this.testsInFlight.add(provider)
+    try {
+      const model = this.testModel(provider)
+      if (model === undefined) return { ok: false, latencyMs: 0, error: 'No model is configured for this provider' }
+      return row.kind === 'oauth'
+        ? await this.runOAuthRowTest(provider, row, model)
+        : await this.runApiKeyRowTest(provider, row, model)
+    } finally {
+      this.testsInFlight.delete(provider)
+    }
+  }
+
+  /** The first model of the live provider profile, or undefined when unset. */
+  private testModel(provider: string): string | undefined {
+    const record = this.store.provider(provider)
+    if (record === undefined) return undefined
+    const namespace = this.namespace(this.describeSettings(), record.settingsNs)
+    const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, record.settingsPath))
+    return profile === undefined ? undefined : normalizeModels(profile.models)[0]?.id
+  }
+
+  /** One request pinned to the row's API-key literal. */
+  private async runApiKeyRowTest(provider: string, row: KeyRecord, model: string): Promise<KeyTestResult> {
+    const probe = await this.probeKey(row.ref)
+    if (probe.hit === undefined) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: probe.failed ? `Could not read credential ${row.ref}` : 'The stored credential is missing',
+      }
+    }
+    return await this.runTestRequest(provider, model, {
+      provider,
+      keyId: row.id,
+      keyValue: probe.hit.value,
+      keyUsed: false,
+      oauthAccountId: null,
+      test: true,
+    })
+  }
+
+  /** One request with the row's grant temporarily projected as the route's credential. */
+  private async runOAuthRowTest(provider: string, row: KeyRecord, model: string): Promise<KeyTestResult> {
+    const grant = row.oauth
+    if (grant === null) throw new Error(`Key "${row.id}" is not an OAuth account`)
+    const records = this.credentialRecords()
+    if (records === undefined) throw new Error('The credential store does not support records')
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    let result: KeyTestResult = { ok: false, latencyMs: 0, error: 'The test did not run' }
+    // The projection write, the request and the restore share the provider's
+    // grant chain, so a rotation echo cannot observe or overwrite the
+    // temporary projection between them.
+    await this.scheduleGrantReconciliation(provider, async () => {
+      const stored = await records.readRecord(grant.grantRef)
+      if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+        result = {
+          ok: false,
+          latencyMs: 0,
+          error: `The grant payload at ${grant.grantRef} is missing or unusable; sign in to this account again`,
+        }
+        return
+      }
+      const previous = await records.readRecord(projectionKey)
+      const previousOwner = this.activeAccounts.get(provider)
+      try {
+        await records.modifyRecord(projectionKey, () => Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
+        this.claimProjectionOwner(provider, row.id)
+        result = await this.runTestRequest(provider, model, {
+          provider,
+          keyId: null,
+          keyValue: null,
+          keyUsed: false,
+          oauthAccountId: row.id,
+          test: true,
+        })
+      } finally {
+        await this.restoreProjection(records, projectionKey, previous)
+        if (previousOwner === undefined) this.activeAccounts.delete(provider)
+        else this.activeAccounts.set(provider, previousOwner)
+      }
+    })
+    return result
+  }
+
+  /** Put the projection back exactly as it was before a test borrowed it. */
+  private async restoreProjection(
+    records: CredentialRecordsLike,
+    key: string,
+    previous: CredentialRecordLike | undefined,
+  ): Promise<void> {
+    try {
+      if (previous === undefined) await records.deleteRecord(key)
+      else await records.modifyRecord(key, () => Promise.resolve(structuredClone(previous)))
+    } catch (error) {
+      this.pushWarning(`The credential projection at ${key} could not be restored after the test: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * Send the minimal request under the given scope and map its terminal
+   * chunk. A thrown error or the 20-second abort is reported, never swallowed.
+   */
+  private async runTestRequest(provider: string, model: string, scope: RequestScope): Promise<KeyTestResult> {
+    const started = Date.now()
+    const signal = AbortSignal.timeout(KEY_TEST_TIMEOUT_MS)
+    try {
+      const outcome = await this.als.run(scope, async () => {
+        const stream = this.ctx.llm.stream({
+          provider,
+          model,
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+          maxTokens: 1,
+          signal,
+        })
+        for await (const chunk of stream) {
+          if (chunk.type !== 'finish') continue
+          if (chunk.reason !== undefined && chunk.reason.kind === 'error') {
+            const failure = chunk.reason.failure
+            return { ok: false, error: failure?.message ?? failure?.code ?? 'The provider reported a failure' }
+          }
+          return { ok: true }
+        }
+        return { ok: false, error: 'The provider returned no result' }
+      })
+      return { ...outcome, latencyMs: Date.now() - started }
+    } catch (error) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - started,
+        error: signal.aborted ? 'Timed out after 20s' : error instanceof Error ? error.message : String(error),
+      }
+    }
+  }
+
+  /**
    * Demote the cascade to the key pool by deleting the projection record:
    * pi-ai's per-request resolution prefers the stored credential and only
    * falls through to the broker `apiKeyEnv` when none is stored
@@ -4044,6 +4213,11 @@ export class KeysManagerService {
   /** Waterfall listener: bind a key to the request and observe its terminal chunk. */
   streamListener(options: GenerateOptionsLike, next: () => AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
     const providerId = options.provider
+    // A per-row connection test owns its credential pin; it must not select a
+    // key, move a cursor or write health state, so it never enters the
+    // bookkeeping path below.
+    const testScope = this.als.getStore()
+    if (testScope?.test === true) return this.wrapTestStream(next, testScope)
     const sessionId = options.sessionId === undefined ? undefined : String(options.sessionId)
     // `options.provider` is the route the agent/request waterfall finally
     // resolved; noteRequestStep keys its record by the same
@@ -4078,6 +4252,37 @@ export class KeysManagerService {
     if (accountId === undefined) return null
     const row = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
     return row !== undefined && row.kind === 'oauth' && row.oauth !== null ? row.id : null
+  }
+
+  /**
+   * Wrap one connection-test stream: keep the pinned credential scope alive
+   * for every chunk and do nothing else. No selection, no cursor, no health
+   * writes — the request is pure observation.
+   */
+  private wrapTestStream(
+    next: () => AsyncIterable<StreamChunkLike>,
+    scope: RequestScope,
+  ): AsyncIterable<StreamChunkLike> {
+    const service = this
+    let iterator: AsyncIterator<StreamChunkLike> | undefined
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<StreamChunkLike> {
+        return {
+          async next(): Promise<IteratorResult<StreamChunkLike>> {
+            if (iterator === undefined) iterator = await service.als.run(scope, () => next()[Symbol.asyncIterator]())
+            return service.als.run(scope, () => iterator!.next())
+          },
+          async return(value?: unknown): Promise<IteratorResult<StreamChunkLike>> {
+            if (iterator?.return !== undefined) return service.als.run(scope, () => iterator!.return!(value as StreamChunkLike))
+            return { done: true, value: undefined }
+          },
+          async throw(error?: unknown): Promise<IteratorResult<StreamChunkLike>> {
+            if (iterator?.throw !== undefined) return service.als.run(scope, () => iterator!.throw!(error))
+            throw error
+          },
+        }
+      },
+    }
   }
 
   /** Wrap one managed stream so credential resolution sees this key. */
@@ -4147,6 +4352,7 @@ export class KeysManagerService {
                 // when a projection exists, pi-ai serves the stored grant
                 // and this scope owns the failure attribution.
                 oauthAccountId,
+                test: false,
               }
               if (sessionId !== undefined && keyId !== undefined) {
                 const key = bindingKey(sessionId, providerId)

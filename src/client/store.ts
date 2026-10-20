@@ -8,6 +8,8 @@ import type {
   ClientContext,
   ClientSnapshot,
   ClientStore,
+  KeyTestOutcome,
+  KeyTestResult,
   RpcResult,
   StateView,
 } from './types'
@@ -105,6 +107,15 @@ export function createStore(ctx: ClientContext): ClientStore {
     return { ok: true, value: (value ?? null) as AccountAttemptView | null }
   }
 
+  /** A connection test answers with its own result, never a state view. */
+  const testOutcome = (value: unknown): { ok: true; value: KeyTestResult } => {
+    const result = (value ?? {}) as Partial<KeyTestResult>
+    return {
+      ok: true,
+      value: { ok: result.ok === true, latencyMs: result.latencyMs ?? 0, ...(result.error === undefined ? {} : { error: result.error }) },
+    }
+  }
+
   return {
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) {
@@ -150,6 +161,9 @@ export function createStore(ctx: ClientContext): ClientStore {
     },
     removeAccount(provider: string, accountId: string): Promise<ActionOutcome> {
       return send('removeAccount', { provider, accountId }, stateOutcome)
+    },
+    testKey(provider: string, keyId: string): Promise<KeyTestOutcome> {
+      return send('testKey', { provider, keyId }, testOutcome)
     },
     tick() {
       update({ now: Date.now() })

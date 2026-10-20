@@ -44,6 +44,18 @@ export interface LlmRuntimeLike {
   listConfigurableProviders(): DirectoryEntry[]
   listProviders(): Array<{ id: string; name: string }>
   discoverModels(settingsNs: string, request: DiscoveryRequest, signal: AbortSignal): Promise<DiscoveredModel[]>
+  /**
+   * One model request through the provider route. The host runs the
+   * `llm/stream` waterfall, so the manager's own stream listener — and the
+   * broker credential wrapper — observe it exactly like a chat request.
+   */
+  stream(options: {
+    provider: string
+    model: string
+    messages: readonly unknown[]
+    maxTokens?: number
+    signal?: AbortSignal
+  }): AsyncIterable<StreamChunkLike>
 }
 
 /** Credential value/source facts returned by the credential seam. */
