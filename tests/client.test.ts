@@ -120,6 +120,10 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     accountIdentity: '账户',
     accountProjected: '服务中',
     adoptAccountTitle: '使用 OAuth 账户登录后即可使用该 Provider。',
+    // Round-4 nit I-000087: the account row menu entries are located by
+    // their resolved values, not by the stub's key-name echo.
+    accountReauth: '重新认证',
+    accountActivate: '设为当前',
     // Round-4 finding 4 (I-000085): both empty bodies resolve real copy so
     // the capability branch is asserted by value.
     noKeys: '还没有密钥。添加一个后即可使用该 Provider。',
@@ -1040,7 +1044,7 @@ describe('account ui', () => {
     const dots = descendants(view.nodes, badged[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
     ;(dots[0]!.props!.onClick as () => void)()
     view.render()
-    const activate = descendants(view.nodes, badged[0]!).filter(node => node.type === 'button' && node.text.includes('accountActivate'))
+    const activate = descendants(view.nodes, badged[0]!).filter(node => node.type === 'button' && node.text.includes('设为当前'))
     expect(activate).toHaveLength(1)
     expect(activate[0]!.props!.disabled).toBe(true)
 
@@ -1049,7 +1053,7 @@ describe('account ui', () => {
     const otherDots = descendants(view.nodes, otherRow).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
     ;(otherDots[0]!.props!.onClick as () => void)()
     view.render()
-    const otherActivate = descendants(view.nodes, otherRow).filter(node => node.type === 'button' && node.text.includes('accountActivate'))
+    const otherActivate = descendants(view.nodes, otherRow).filter(node => node.type === 'button' && node.text.includes('设为当前'))
     expect(otherActivate).toHaveLength(1)
     expect(otherActivate[0]!.props!.disabled).toBe(false)
     view.unmount()
@@ -1076,7 +1080,7 @@ describe('account ui', () => {
     const dots = descendants(view.nodes, rows[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
     ;(dots[0]!.props!.onClick as () => void)()
     view.render()
-    const activate = descendants(view.nodes, rows[0]!).filter(node => node.type === 'button' && node.text.includes('accountActivate'))
+    const activate = descendants(view.nodes, rows[0]!).filter(node => node.type === 'button' && node.text.includes('设为当前'))
     expect(activate).toHaveLength(1)
     expect(activate[0]!.props!.disabled).toBe(false)
     view.unmount()
@@ -1140,7 +1144,7 @@ describe('account ui', () => {
     const dots = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
     ;(dots[0]!.props!.onClick as () => void)()
     view.render()
-    const reauth = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.text.includes('accountReauth'))
+    const reauth = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.text.includes('重新认证'))
     expect(reauth).toHaveLength(1)
     ;(reauth[0]!.props!.onClick as () => void)()
     await view.flush()
