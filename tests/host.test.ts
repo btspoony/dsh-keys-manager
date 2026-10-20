@@ -726,11 +726,38 @@ test('an OAuth-only route resolves through its grant, never MISSING_CREDENTIAL',
     assert.ok(provider.keys.some(key => key.id === rowId && key.kind === 'oauth'))
     const codex = h.service.getState().providers.find(entry => entry.provider === 'openai-codex')!
     assert.equal(codex.bindingHealthy, true)
-    // pi-ai's own rule, applied to the live profile: a named credential must
-    // resolve, and naming none is what lets the stored grant serve.
+    // pi-ai's own rule, applied to the live profile: naming no credential is
+    // what lets the stored grant serve; a named one would have to resolve
+    // through the credential seam.
     const ref = h.settings.valueOf('llm-pi-ai').providers['openai-codex']?.apiKeyEnv
     assert.equal(ref, undefined)
-    if (ref !== undefined) assert.ok(await h.credentials.raw.resolve(ref))
+  } finally {
+    await h.close()
+  }
+})
+
+test('a hand-edited apiKeyEnv equal to the adoption original survives startup', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const record = h.store.provider('zai-coding-cn')!
+    const profile = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    assert.equal(profile.apiKeyEnv, record.brokerRef)
+    assert.equal(record.originalApiKeyEnv, 'ZAI_CODING_CN_API_KEY')
+    // The user takes the profile back in Models. The value is exactly the
+    // reference adoption replaced, so an exception scoped to
+    // `originalApiKeyEnv` instead of to adoption would silently re-bind it.
+    profile.apiKeyEnv = 'ZAI_CODING_CN_API_KEY'
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    // The startup repair is entirely in-memory; one macrotask turn settles it.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const repaired = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    assert.equal(repaired.apiKeyEnv, 'ZAI_CODING_CN_API_KEY')
+    assert.notEqual(repaired.apiKeyEnv, record.brokerRef)
+    // The take-back stays visible: no heal, no cleared verdict or warning.
+    const zai = restarted.getState().providers.find(entry => entry.provider === 'zai-coding-cn')!
+    assert.equal(zai.bindingHealthy, false)
+    assert.match(String(zai.warning), /Re-adopt/)
   } finally {
     await h.close()
   }
@@ -754,6 +781,51 @@ test('startup self-heal removes a legacy broker reference from a credential-less
     const codex = restarted.getState().providers.find(entry => entry.provider === 'openai-codex')!
     assert.equal(codex.bindingHealthy, true)
     assert.equal(String(codex.warning ?? '').includes('Re-adopt'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a refused binding write surfaces a user warning and never throws', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('openai-codex')
+    const legacy = h.store.provider('openai-codex')!.brokerRef
+    h.settings.valueOf('llm-pi-ai').providers['openai-codex'] = { apiKeyEnv: legacy }
+    // The repair needs a write, and this profile refuses every one.
+    h.settings.writable = false
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // The route keeps the reference it had: nothing was repaired…
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, legacy)
+    // …and the refusal reaches the user, not only the log.
+    const warnings = restarted.getState().warnings.join('\n')
+    assert.match(warnings, /credential reference for openai-codex was not updated/)
+    assert.match(warnings, /read-only/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a settings mount landing after hydration still heals the binding', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('openai-codex')
+    const legacy = h.store.provider('openai-codex')!.brokerRef
+    h.settings.valueOf('llm-pi-ai').providers['openai-codex'] = { apiKeyEnv: legacy }
+    // A service constructed before the settings service is mounted cannot
+    // read a profile, so its startup pass has nothing to repair…
+    const ctxWithoutSettings = {
+      ...(h.ctx as unknown as Record<string, unknown>),
+      get: (name: string) => (name === 'settings' ? undefined : (h.ctx as unknown as { get: (key: string) => unknown }).get(name)),
+    } as unknown as HostContext
+    const restarted = new KeysManagerService(ctxWithoutSettings, h.store)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, legacy)
+    // …and the mount seam retries the same repair in this process instead of
+    // leaving the route broken until the next start.
+    restarted.attachSettings(h.settings)
+    await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, undefined))
   } finally {
     await h.close()
   }
@@ -807,10 +879,46 @@ test('a hand-edited apiKeyEnv is never rewritten by the binding sync', async () 
     const profile = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
     // The user took the profile back in Models.
     profile.apiKeyEnv = 'MY_OWN_REF'
-    await (h.service as any).syncBrokerBinding('zai-coding-cn', { write: false })
+    // Adding a key is a bind-direction sync through a public call site.
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
     assert.equal(profile.apiKeyEnv, 'MY_OWN_REF')
     const zai = h.service.getState().providers.find(entry => entry.provider === 'zai-coding-cn')!
     assert.equal(zai.bindingHealthy, false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('release keeps the pre-adoption apiKeyEnv when an oauth row precedes the key', async () => {
+  const h = await harness()
+  try {
+    // A stale pre-adoption reference plus one usable api-key credential: the
+    // pool starts unbound, the user signs in first and adds a key afterwards,
+    // so the rows are ordered [oauth, api-key].
+    h.settings.valueOf('llm-pi-ai').providers.xai = { apiKeyEnv: 'XAI_LEGACY_REF' }
+    h.credentials.refs.set('XAI_API_KEY', 'sk-xai-user')
+    await h.service.adoptProvider('xai')
+    const record = h.store.provider('xai')!
+    assert.equal(record.originalApiKeyEnv, 'XAI_LEGACY_REF')
+    const brokerRef = record.brokerRef
+    await signInThroughFlow(h, 'xai')
+    // Drop the imported key while the projection serves, then add one back:
+    // the account row stays first in the pool.
+    const imported = record.keys.find(key => key.kind === 'api-key')!
+    await h.service.deleteKey('xai', imported.id)
+    await h.service.addKey('xai', 'mine', 'sk-xai-user-2')
+    // Demotion hands the route back to the pool, so release takes the restore
+    // path (the profile is bound again at that point).
+    await h.service.fallbackToKeys('xai')
+    assert.deepEqual(record.keys.map(key => key.kind), ['oauth', 'api-key'])
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.xai.apiKeyEnv, brokerRef)
+    await h.service.releaseProvider('xai')
+    // The demotion inside the deletion loop must not re-point the released
+    // profile at the broker: that would let the closing unbind strip the
+    // reference the user had before adoption.
+    const released = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.equal(released.apiKeyEnv, 'XAI_LEGACY_REF')
+    assert.equal(h.store.provider('xai'), undefined)
   } finally {
     await h.close()
   }

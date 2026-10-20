@@ -661,6 +661,14 @@ export class KeysManagerService {
   private readonly credentialWrappers = new WeakMap<object, CredentialWrappers>()
   private brokerOwners = new Map<string, string>()
   private readonly bindingCache = new Map<string, 'healthy' | 'mismatch'>()
+  /**
+   * Providers whose managed credentials are being removed right now. While a
+   * provider is unmanaged only the unbind direction of
+   * {@link syncBrokerBinding} may run: a demotion inside the deletion loop
+   * (an `oauth` row iterated before a surviving `api-key` row) must never
+   * re-point the released profile at the broker.
+   */
+  private readonly releasingProviders = new Set<string>()
   private lastBindingPruneAt = 0
   private readonly selectionQueues = new Map<string, Promise<unknown>>()
   private queue: Promise<unknown> = Promise.resolve()
@@ -808,11 +816,7 @@ export class KeysManagerService {
     // projection decides whether the key pool serves), repair every managed
     // provider whose persisted binding the serving credential no longer
     // justifies — the state an older build left on an OAuth-only route.
-    void this.projectionHydration.then(async () => {
-      for (const provider of Object.keys(this.store.providers)) {
-        await this.syncBrokerBinding(provider, { write: false })
-      }
-    }).catch(error => {
+    void this.projectionHydration.then(() => this.repairBrokerBindings()).catch(error => {
       this.warn(`startup broker binding repair failed: ${error instanceof Error ? error.message : String(error)}`)
     })
     this.settledDisposer = this.watchAuthorizationSettled()
@@ -1120,6 +1124,25 @@ export class KeysManagerService {
   private settingsService(): SettingsLike | undefined {
     if (this.settings !== undefined) return this.settings
     return (this.ctx.get as (name: string) => unknown)('settings') as SettingsLike | undefined
+  }
+
+  /**
+   * Mount the settings service — the host's `ctx.inject(['settings'])` seam.
+   *
+   * A mount that lands after construction retries the binding repair: the
+   * startup pass could not read a profile yet and would otherwise leave the
+   * route broken for the whole session.
+   */
+  attachSettings(settings: SettingsLike): void {
+    this.settings = settings
+    void this.repairBrokerBindings().catch(error => {
+      this.warn(`broker binding repair after the settings mount failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /** Unmount the settings service that a re-mount replaced. */
+  detachSettings(settings: SettingsLike): void {
+    if (this.settings === settings) this.settings = undefined
   }
 
   /** Current raw credential provider. */
@@ -3095,26 +3118,41 @@ export class KeysManagerService {
    * actually serves ({@link keyPoolServes}). Every other shape must be
    * unbound, or pi-ai never reaches its own stored OAuth grant.
    *
-   * A value that is neither `undefined` nor this provider's `brokerRef` is a
-   * user hand-edit and is never touched; the `mismatch` verdict stays the
-   * signal that the human took the profile back. A read-side problem or a
-   * refused write degrades to a warning: the callers' committed change must
-   * not fail on a settings problem, and the next startup self-heal retries.
+   * Each direction has exactly one provably owned write:
+   * - bind: a profile that names no credential, or — with `takeover`, passed
+   *   solely by {@link adoptProvider} — the pre-adoption reference adoption
+   *   recorded and deliberately replaces;
+   * - unbind: only the broker reference Keys Manager itself wrote.
+   *
+   * Any other value is a hand-edit (or the pre-adoption reference release
+   * restored): it is never touched, and the `mismatch` verdict stays the
+   * signal that the user took the profile back.
    *
    * `write: false` is the startup repair: it only touches a profile that
-   * already exists, so a first run never materializes one from nothing.
+   * already exists, so a first run never materializes one from nothing. The
+   * release direction is single-sourced in {@link releasingProviders}: a
+   * provider being unmanaged is never bound again, whatever the row order of
+   * the pool it is deleting.
+   *
+   * A read-side problem or a refused write degrades to a warning: the
+   * callers' committed change must not fail on a settings problem, the user
+   * still sees that the route may resolve the wrong credential source, and
+   * the next repair pass retries.
    */
-  private async syncBrokerBinding(provider: string, options: { write?: boolean } = {}): Promise<void> {
+  private async syncBrokerBinding(
+    provider: string,
+    options: { takeover?: boolean; write?: boolean } = {},
+  ): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) return
     const descriptor = this.describeSettings()
     if (!descriptor.readable) {
-      this.warn(`could not re-check the pi-ai broker binding for ${provider}: the settings snapshot is unreadable`)
+      this.bindingWriteRefused(provider, 'the settings snapshot is unreadable')
       return
     }
     const namespace = this.namespace(descriptor, record.settingsNs)
     if (namespace === undefined) {
-      this.warn(`could not re-check the pi-ai broker binding for ${provider}: settings namespace "${record.settingsNs}" is not mounted`)
+      this.bindingWriteRefused(provider, `settings namespace "${record.settingsNs}" is not mounted`)
       return
     }
     const profile = asProfile(getPath(namespace.value, record.settingsPath))
@@ -3122,12 +3160,15 @@ export class KeysManagerService {
     const current = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : undefined
     const desired = this.keyPoolServes(record) ? record.brokerRef : undefined
     if (current === desired) return
-    if (current !== undefined && current !== record.brokerRef) {
-      // Binding may replace the reference the route carried before Keys
-      // Manager took it over (adoption records it as `originalApiKeyEnv`).
-      // Every other value is the user's and is never overwritten — in
-      // particular an unbind must never remove the restored original.
-      if (desired === undefined || current !== record.originalApiKeyEnv) return
+    if (desired === undefined) {
+      // Never strip a value Keys Manager did not write: a user hand-edit and
+      // a restored pre-adoption reference look exactly like this.
+      if (current !== record.brokerRef) return
+    } else {
+      // Never bind over a value Keys Manager did not write — except adoption,
+      // which recorded this exact pre-adoption reference to replace it.
+      if (this.releasingProviders.has(provider)) return
+      if (current !== undefined && !(options.takeover === true && current === record.originalApiKeyEnv)) return
     }
     const path = [...record.settingsPath, 'apiKeyEnv']
     try {
@@ -3135,11 +3176,33 @@ export class KeysManagerService {
         desired === undefined ? { op: 'unset', path } : { op: 'set', path, value: desired },
       ])
     } catch (error) {
-      this.warn(`could not update the pi-ai broker binding for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      this.bindingWriteRefused(provider, error instanceof Error ? error.message : String(error))
       return
     }
     // The profile matches the serving source now, by construction.
     this.bindingCache.set(provider, 'healthy')
+  }
+
+  /**
+   * Repair every managed provider's binding through the one authority. The
+   * startup pass and the settings-mount seam both run it, so a profile that
+   * was unreadable when hydration settled is still healed in this process
+   * instead of waiting for the next start.
+   */
+  private async repairBrokerBindings(): Promise<void> {
+    for (const provider of Object.keys(this.store.providers)) {
+      await this.syncBrokerBinding(provider, { write: false })
+    }
+  }
+
+  /**
+   * A refused binding write must not fail the change that triggered it, but
+   * it cannot stay in the log alone either: the route may resolve the wrong
+   * credential source until the next repair.
+   */
+  private bindingWriteRefused(provider: string, reason: string): void {
+    this.warn(`could not update the pi-ai broker binding for ${provider}: ${reason}`)
+    this.pushWarning(`The pi-ai credential reference for ${provider} was not updated (${reason}). Requests may use a different credential source until this is repaired.`)
   }
 
   /** Candidate credential refs from which an existing key can be imported. */
@@ -3254,7 +3317,9 @@ export class KeysManagerService {
       // to hold keys: an OAuth-only route (`caps.keys === false`, no key row)
       // keeps its profile unbound so pi-ai reaches the stored grant, while a
       // route with an imported API key binds through the one authority.
-      await this.syncBrokerBinding(provider)
+      // Adoption is the only caller allowed to take over the pre-adoption
+      // reference it recorded as `originalApiKeyEnv`.
+      await this.syncBrokerBinding(provider, { takeover: true })
       if (hit !== undefined) this.pushWarning(`Imported the existing credential ${hit.ref}.`)
       this.store.touch()
       return this.buildState()
@@ -3287,7 +3352,14 @@ export class KeysManagerService {
     return { models: normalizeModels(extra.models), failure }
   }
 
-  /** Remote: install and adopt one extra built-in provider. */
+  /**
+   * Remote: install and adopt one extra built-in provider.
+   *
+   * Deliberate exemption from the one-authority rule
+   * ({@link syncBrokerBinding}): this call creates the profile it binds and
+   * the key that serves it in the same mutation, so the write below is the
+   * route's first binding rather than a takeover of a value the user owns.
+   */
   addExtraProvider(extraId: string, alias: string, value: string): Promise<StateView> {
     return this.run(async () => {
       if (typeof extraId !== 'string' || extraId.length === 0) throw new Error('extraId is required')
@@ -3327,6 +3399,8 @@ export class KeysManagerService {
         }
         const key = await this.createKeyRecord(extraId, input.alias, input.value)
         try {
+          // First binding of a profile this manager does not own yet, written
+          // together with the key that serves it (see the method comment).
           await this.mutateSettings('llm-pi-ai', [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }])
         } catch (error) {
           try {
@@ -3356,6 +3430,8 @@ export class KeysManagerService {
       }
       const key = await this.createKeyRecord(extraId, input.alias, input.value)
       try {
+        // The profile and its binding are created together (see the method
+        // comment); no user value exists to take over here.
         await this.mutateSettings('llm-pi-ai', [{ op: 'set', path: ['providers', extraId], value: profile }])
       } catch (error) {
         try {
@@ -3476,7 +3552,14 @@ export class KeysManagerService {
     return namespace === undefined ? undefined : asProfile(getPath(namespace.value, path))
   }
 
-  /** Restore the exact live profile captured before release mutated it. */
+  /**
+   * Restore the exact live profile captured before release mutated it.
+   *
+   * Deliberate exemption from the one-authority rule: release is unmanaging,
+   * so this write puts the pre-adoption document back instead of deriving a
+   * binding from a key pool that is being deleted. Every other caller goes
+   * through {@link syncBrokerBinding}.
+   */
   private async restoreProfileSnapshot(record: ProviderRecord, snapshot: ProfileShape | undefined): Promise<void> {
     if (record.settingsPath.length === 0) {
       const apiKeyEnv = snapshot !== undefined && typeof snapshot.apiKeyEnv === 'string' ? snapshot.apiKeyEnv : record.brokerRef
@@ -3490,27 +3573,40 @@ export class KeysManagerService {
     ])
   }
 
-  /** Remove every managed credential, recording progress before a retry. */
+  /**
+   * Remove every managed credential, recording progress before a retry.
+   *
+   * The provider is flagged as releasing for the whole loop: a demotion
+   * inside it (an `oauth` row iterated before a surviving `api-key` row) must
+   * not re-bind the profile, or the reference release just restored would be
+   * overwritten and then stripped by the closing unbind. While unmanaging the
+   * binding only ever goes one way — off.
+   */
   private async deleteManagedCredentials(record: ProviderRecord): Promise<void> {
-    for (const key of record.keys) {
-      if (key.kind === 'oauth' && key.oauth !== null) {
-        // Same cleanup as removeAccount/deleteKey: when this row owns the
-        // activation projection, demote it first so the released route
-        // resolves through the restored apiKeyEnv instead of a grant whose
-        // manager is gone (pi-ai resolution prefers a stored credential).
-        await this.removeOAuthGrant(record.provider, key)
-      } else {
-        await this.unsetOriginal(key.ref)
+    this.releasingProviders.add(record.provider)
+    try {
+      for (const key of record.keys) {
+        if (key.kind === 'oauth' && key.oauth !== null) {
+          // Same cleanup as removeAccount/deleteKey: when this row owns the
+          // activation projection, demote it first so the released route
+          // resolves through the restored apiKeyEnv instead of a grant whose
+          // manager is gone (pi-ai resolution prefers a stored credential).
+          await this.removeOAuthGrant(record.provider, key)
+        } else {
+          await this.unsetOriginal(key.ref)
+        }
+        key.valueMissing = true
+        this.store.touch()
       }
-      key.valueMissing = true
-      this.store.touch()
+      this.activeAccounts.delete(record.provider)
+      // Every projection row is gone and every key is marked missing. This is
+      // also releaseLocked's binding step: its profile already carries the
+      // captured original, so only a lingering broker reference of our own is
+      // removed and a released route keeps the value the user had.
+      await this.syncBrokerBinding(record.provider)
+    } finally {
+      this.releasingProviders.delete(record.provider)
     }
-    this.activeAccounts.delete(record.provider)
-    // Every projection row is gone and every key is marked missing. This is
-    // also releaseLocked's binding step: its profile is already restored to
-    // the captured original, so a surviving key pool re-binds and a released
-    // route stays unbound.
-    await this.syncBrokerBinding(record.provider)
   }
 
   /** Restore the provider profile and drop management; caller owns the queue. */
@@ -3558,6 +3654,9 @@ export class KeysManagerService {
       } else {
         // Native and pre-existing extra routes own only apiKeyEnv. Leave every
         // other profile field (baseURL, models, hand edits) exactly as it is.
+        // Exempt from the one-authority rule by design: release restores the
+        // pre-adoption document, and the deletion loop that follows is
+        // unbind-only ({@link deleteManagedCredentials}).
         const path = [...record.settingsPath, 'apiKeyEnv']
         await this.mutateSettings(record.settingsNs, [
           record.originalApiKeyEnv !== null
@@ -4406,10 +4505,10 @@ export function apply(ctx: HostContext): void {
   })
 
   ctx.inject(['settings'], child => {
-    service.settings = (child as HostContext).settings
-    return () => {
-      if (service.settings === (child as HostContext).settings) service.settings = undefined
-    }
+    const settings = (child as HostContext).settings
+    if (settings === undefined) return
+    service.attachSettings(settings)
+    return () => service.detachSettings(settings)
   })
 
   const on = ctx.on as unknown as (
