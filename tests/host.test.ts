@@ -10294,3 +10294,378 @@ test('a confirmed projection absence clears the foreign marker and rebinds the p
     await h.close()
   }
 })
+
+// ── PR #26 review round 8 ───────────────────────────────────────────────────
+
+// Review must-fix (I-000167 reopened): a record that is PRESENT and not a grant
+// is not an absence. `reconcileProjectionOwner` used to receive only the grant
+// payload, so a native api-key record that replaced the projection during an
+// OAuth row test arrived as `undefined`: the restore cleared the foreign marker
+// and the window-end sync bound the broker over the native credential.
+test('a native record that replaced the projection keeps the route unbound after a row test', async () => {
+  const h = await harness()
+  const bindingWrites: string[] = []
+  const realMutate = h.settings.mutate.bind(h.settings)
+  try {
+    h.settings.mutate = async (ns: string, ops: any[], revision?: number) => {
+      for (const op of ops) bindingWrites.push(`${op.op} ${op.path.join('/')}`)
+      return await realMutate(ns, ops, revision)
+    }
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-nine', email: 'nine@example.com', refresh: 'rt-nine' })
+    await h.service.activateAccount('anthropic', account.rowId)
+    const profile = (): Record<string, any> => h.settings.valueOf('llm-pi-ai').providers['anthropic']
+    assert.equal(profile().apiKeyEnv, undefined, 'the projected route still named the broker reference')
+
+    let release: (() => void) | undefined
+    let pinged!: () => void
+    const enteredPing = new Promise<void>(resolve => { pinged = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      pinged()
+      await gate
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const test = h.service.testKey('anthropic', account.rowId)
+    await enteredPing
+    // Let the borrow write's record echo settle before the native write, so the
+    // assertion below observes the restore's own decision.
+    await new Promise(resolve => setTimeout(resolve, 30))
+    // A native writer takes the projection over while the test borrows it…
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-value' })
+    // …and the ownership-verified demotion confirms it.
+    await h.service.fallbackToKeys('anthropic', account.rowId)
+    const beforeRelease = bindingWrites.length
+    release!()
+    assert.equal((await test).ok, true)
+    // No binding write was made for the route after the replacement: a present
+    // record keeps the route out of the key pool, so the broker is never bound
+    // over the native credential (the check counts writes because the late
+    // record echo would undo a wrong bind a tick later).
+    assert.deepEqual(bindingWrites.slice(beforeRelease), [],
+      `the cleanup wrote the provider binding over a present native record`)
+
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal(live.kind, 'api-key', 'the restore replaced the native record')
+    assert.equal(profile().apiKeyEnv, undefined,
+      'the window-end sync bound the broker over a present native record')
+  } finally {
+    await h.close()
+  }
+})
+
+// Review should-fix: f8f77c2 fenced the removal branch of the projection
+// restore, but the check after the re-read ran before it, so no test could park
+// an attempt where only that branch fence stops it. This one resumes a
+// superseded attempt into the branch with the projection deleted during a newer
+// window, and pins the owner the newer window holds.
+test('a superseded cleanup cannot clear the owner of a projection removed during the window', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let releaseAttemptOne: (() => void) | undefined
+  let releaseTestOne: (() => void) | undefined
+  let releaseTestTwo: (() => void) | undefined
+  let testOne: Promise<KeyTestResult> | undefined
+  let testTwo: Promise<KeyTestResult> | undefined
+  let stallRestoreRead = false
+  try {
+    let attemptOneParked!: () => void
+    const attemptOneReached = new Promise<void>(resolve => { attemptOneParked = resolve })
+    const attemptOneGate = new Promise<void>(resolve => { releaseAttemptOne = resolve })
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (stallRestoreRead && key === GRANT_KEY) {
+        // Park the FIRST cleanup's projection re-read only.
+        stallRestoreRead = false
+        attemptOneParked()
+        await attemptOneGate
+      }
+      return realRead(key)
+    }
+    const testOneGate = new Promise<void>(resolve => { releaseTestOne = resolve })
+    const testTwoGate = new Promise<void>(resolve => { releaseTestTwo = resolve })
+    let testOneEntered!: () => void
+    let testTwoEntered!: () => void
+    const enteredOne = new Promise<void>(resolve => { testOneEntered = resolve })
+    const enteredTwo = new Promise<void>(resolve => { testTwoEntered = resolve })
+    let testCalls = 0
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testCalls += 1
+        if (testCalls === 1) {
+          testOneEntered()
+          await testOneGate
+        } else {
+          testTwoEntered()
+          await testTwoGate
+        }
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 50
+    const projectedRows = (): string[] => h.service.getState().providers
+      .find(entry => entry.provider === 'anthropic')!.keys
+      .filter(key => key.projected === true)
+      .map(key => key.id)
+
+    // The window borrows `first`'s grant over the live `second` projection, so
+    // its restore reaches the removal branch with `previous !== undefined`.
+    testOne = h.service.testKey('anthropic', first.rowId)
+    await enteredOne
+    stallRestoreRead = true
+    await attemptOneReached
+    // The parked cleanup outlives its own deadline.
+    await new Promise(resolve => setTimeout(resolve, 150))
+    releaseTestOne?.()
+    await testOne
+    await new Promise(resolve => setTimeout(resolve, 50))
+    // The next attempt cleans the abandoned window up and opens a second window
+    // on `second`, held open deliberately: it owns the route now.
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 2_000
+    testTwo = h.service.testKey('anthropic', second.rowId)
+    await enteredTwo
+    assert.deepEqual(projectedRows(), [second.rowId], 'the newer window owns the route')
+    // An external writer removes the projection while that window is open, so
+    // the parked attempt's re-read observes the removal.
+    h.credentials.records.delete(GRANT_KEY)
+
+    releaseAttemptOne?.()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.deepEqual(projectedRows(), [second.rowId],
+      'a superseded cleanup cleared the owner from a removal it no longer owns')
+
+    releaseTestTwo?.()
+    assert.equal((await testTwo).ok, true)
+    // The removal is not undone by the newer window either.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+  } finally {
+    stallRestoreRead = false
+    releaseAttemptOne?.()
+    releaseTestOne?.()
+    releaseTestTwo?.()
+    h.credentials.raw.readRecord = realRead
+    await testOne?.catch(() => undefined)
+    await testTwo?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+// Review should-fix: the same dead fence on the foreign-payload branch. A
+// superseded attempt that reads a native record must not clear the owner a newer
+// window holds.
+test('a superseded cleanup cannot clear the owner from a foreign record', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let releaseAttemptOne: (() => void) | undefined
+  let releaseTestOne: (() => void) | undefined
+  let releaseTestTwo: (() => void) | undefined
+  let testOne: Promise<KeyTestResult> | undefined
+  let testTwo: Promise<KeyTestResult> | undefined
+  let stallRestoreRead = false
+  try {
+    let attemptOneParked!: () => void
+    const attemptOneReached = new Promise<void>(resolve => { attemptOneParked = resolve })
+    const attemptOneGate = new Promise<void>(resolve => { releaseAttemptOne = resolve })
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (stallRestoreRead && key === GRANT_KEY) {
+        stallRestoreRead = false
+        attemptOneParked()
+        await attemptOneGate
+      }
+      return realRead(key)
+    }
+    const testOneGate = new Promise<void>(resolve => { releaseTestOne = resolve })
+    const testTwoGate = new Promise<void>(resolve => { releaseTestTwo = resolve })
+    let testOneEntered!: () => void
+    let testTwoEntered!: () => void
+    const enteredOne = new Promise<void>(resolve => { testOneEntered = resolve })
+    const enteredTwo = new Promise<void>(resolve => { testTwoEntered = resolve })
+    let testCalls = 0
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testCalls += 1
+        if (testCalls === 1) {
+          testOneEntered()
+          await testOneGate
+        } else {
+          testTwoEntered()
+          await testTwoGate
+        }
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 50
+    const projectedRows = (): string[] => h.service.getState().providers
+      .find(entry => entry.provider === 'anthropic')!.keys
+      .filter(key => key.projected === true)
+      .map(key => key.id)
+
+    testOne = h.service.testKey('anthropic', second.rowId)
+    await enteredOne
+    stallRestoreRead = true
+    await attemptOneReached
+    await new Promise(resolve => setTimeout(resolve, 150))
+    releaseTestOne?.()
+    await testOne
+    await new Promise(resolve => setTimeout(resolve, 50))
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 2_000
+    testTwo = h.service.testKey('anthropic', first.rowId)
+    await enteredTwo
+    assert.deepEqual(projectedRows(), [first.rowId], 'the newer window owns the route')
+    // A native api-key record replaces the borrowed projection; the parked
+    // attempt's re-read now carries a payload it cannot attribute.
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-value' })
+
+    releaseAttemptOne?.()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.deepEqual(projectedRows(), [first.rowId],
+      'a superseded cleanup cleared the owner from a foreign record')
+
+    releaseTestTwo?.()
+    assert.equal((await testTwo).ok, true)
+    // The foreign record survives both cleanups.
+    assert.equal(h.credentials.records.get(GRANT_KEY)?.kind, 'api-key')
+  } finally {
+    stallRestoreRead = false
+    releaseAttemptOne?.()
+    releaseTestOne?.()
+    releaseTestTwo?.()
+    h.credentials.raw.readRecord = realRead
+    await testOne?.catch(() => undefined)
+    await testTwo?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+// Review P1: a failed ownership read is not "no projection". Hydration's catch
+// skipped the provider and its finally still marked it hydrated, so the startup
+// repair read an empty owner/foreign map as proof that the pool served and bound
+// the broker over a projection it could not read.
+test('a failed ownership read never lets the startup repair bind the broker', async () => {
+  const h = await harness()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-nine', email: 'nine@example.com', refresh: 'rt-nine' })
+    // A persisted projection this restarted process cannot read, on a route whose
+    // profile the user left unbound.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ accountId: 'acc-nine', email: 'nine@example.com' }))
+    const profile = (): Record<string, any> => h.settings.valueOf('llm-pi-ai').providers['anthropic']
+    delete profile().apiKeyEnv
+    const before = structuredClone(profile())
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) throw new Error('credential store unavailable')
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    restarted.attachSettings(h.settings)
+    await new Promise(resolve => setTimeout(resolve, 100))
+
+    // The profile keeps the shape it had: nothing proved the pool serves.
+    assert.deepEqual(profile(), before)
+    assert.equal(profile().apiKeyEnv, undefined,
+      'the startup repair bound the broker over a projection it could not read')
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+// Review: a finish chunk without a completion reason is not a pass. Only a real
+// completion proves the credential served the request.
+test('a finish chunk without a completion reason is not a pass', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].models = [{ id: 'zai-test-model' }]
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    const runWith = (chunk: unknown): Promise<KeyTestResult> => {
+      h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+        yield chunk
+      } as any)
+      return h.service.testKey('zai-coding-cn', target.id)
+    }
+
+    const silent = await runWith({ type: 'finish' })
+    assert.equal(silent.ok, false, 'a reasonless finish chunk was reported as a pass')
+    assert.match(String(silent.error), /no completion reason/)
+    const unknown = await runWith({ type: 'finish', reason: { kind: 'interrupted' } })
+    assert.equal(unknown.ok, false)
+    assert.match(String(unknown.error), /interrupted/)
+    for (const kind of ['stop', 'length', 'toolUse']) {
+      const outcome = await runWith({ type: 'finish', reason: { kind } })
+      assert.equal(outcome.ok, true, `the ${kind} completion was not reported as a pass`)
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+// Review P2: the borrow marker was registered after the projection write was
+// awaited, so a mutation landing while that write was in flight derived a
+// binding from the pre-borrow world: on an unbound route it bound the broker
+// over the projection the test was about to borrow.
+test('an addKey during the borrow write cannot persist a broker binding', async () => {
+  const h = await harness()
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  let releaseBorrow: (() => void) | undefined
+  let borrowParked!: () => void
+  let stallBorrow = false
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-nine', email: 'nine@example.com', refresh: 'rt-nine' })
+    const profile = (): Record<string, any> => h.settings.valueOf('llm-pi-ai').providers['anthropic']
+    // The route is unbound while the pool could serve it: the shape a release
+    // leaves behind, and the one the borrow's window must not bind.
+    delete profile().apiKeyEnv
+    assert.equal(profile().apiKeyEnv, undefined)
+
+    const borrowReached = new Promise<void>(resolve => { borrowParked = resolve })
+    const borrowGate = new Promise<void>(resolve => { releaseBorrow = resolve })
+    h.credentials.raw.modifyRecord = async (
+      key: string,
+      mutate: (current: FakeCredentialRecord | undefined) => Promise<FakeCredentialRecord | undefined>,
+    ): Promise<FakeCredentialRecord | undefined> => {
+      if (stallBorrow && key === GRANT_KEY) {
+        stallBorrow = false
+        borrowParked()
+        await borrowGate
+      }
+      return realModify(key, mutate)
+    }
+    const seen: Array<{ apiKeyEnv: string | undefined; refresh: string | undefined }> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      seen.push({
+        apiKeyEnv: profile().apiKeyEnv as string | undefined,
+        refresh: (h.credentials.records.get(GRANT_KEY)?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined,
+      })
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    stallBorrow = true
+    const test = h.service.testKey('anthropic', account.rowId)
+    await borrowReached
+    // A user adds a key while the borrow write is still in flight.
+    await h.service.addKey('anthropic', 'during-borrow', 'sk-during-borrow')
+    assert.equal(profile().apiKeyEnv, undefined, 'a mutation bound the broker while the borrow write was pending')
+    releaseBorrow!()
+    assert.equal((await test).ok, true)
+    // The request ran on the account grant, never on the pool…
+    assert.deepEqual(seen, [{ apiKeyEnv: undefined, refresh: 'rt-nine' }])
+    // …and the window ends on the state it restored: the pool serves, so bound.
+    assert.equal(profile().apiKeyEnv, record.brokerRef,
+      'the window never rebound the route its entry snapshot found unbound')
+  } finally {
+    stallBorrow = false
+    releaseBorrow?.()
+    h.credentials.raw.modifyRecord = realModify
+    await h.close()
+  }
+})

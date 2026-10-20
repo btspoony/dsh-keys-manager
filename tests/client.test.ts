@@ -446,6 +446,47 @@ describe('mutation ordering', () => {
 })
 
 
+describe('row test dispatch', () => {
+  // PR #26 review round 8 (P2): the row test went through the mutation queue and
+  // waited behind any pending mutation. Its UI deadline starts at the click, so
+  // a test that ran after the row timed out kept borrowing the route invisibly,
+  // and its late reply looked like a fresh failure.
+  test('a row test is sent at once instead of queueing behind a mutation', async () => {
+    const harness = makeContext()
+    const sent: string[] = []
+    let answerAddKey: ((result: RpcResult) => void) | undefined
+    const parkedAnswer = new Promise<RpcResult>(resolve => { answerAddKey = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      sent.push(endpoint)
+      if (endpoint === 'keysManager/addKey') return await parkedAnswer
+      if (endpoint === 'keysManager/testKey') return { ok: true, value: { ok: true, latencyMs: 7 } }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const pending = store.call('addKey', { provider: 'zai-coding-cn', alias: 'later', value: 'sk-later' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(sent).toEqual(['keysManager/addKey'])
+
+    const outcome = await Promise.race([
+      store.testKey('zai-coding-cn', 'k_aaaaaaaa'),
+      new Promise<'queued'>(resolve => setTimeout(() => resolve('queued'), 50)),
+    ])
+    expect(outcome).not.toBe('queued')
+    if (outcome !== 'queued') expect(outcome).toEqual({ ok: true, value: { ok: true, latencyMs: 7 } })
+    // Observation-only: the mutation keeps the busy slot, no snapshot
+    // replacement, and the row test is never sent a second time.
+    expect(store.getSnapshot().busy).toBe('addKey')
+    expect(sent.filter(endpoint => endpoint === 'keysManager/testKey')).toHaveLength(1)
+
+    answerAddKey!({ ok: true, value: makeState() })
+    await pending
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(sent.filter(endpoint => endpoint === 'keysManager/testKey')).toHaveLength(1)
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+})
+
+
 describe('oauth account store', () => {
   function makeAttempt(): AccountAttemptView {
     return {

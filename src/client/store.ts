@@ -20,9 +20,10 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * Bound the row test's request with the same budget as the UI's row deadline
- * (`client/ui.ts`). A lost answer has no cancellation, but it must not keep
- * owning the caller's serialized mutation slot (PR review SF4).
+ * Bound one row test's request with the same budget as the UI's row deadline
+ * (`client/ui.ts`). A lost answer has no cancellation, but the caller's row
+ * must leave its running state, and a test abandoned at this deadline is never
+ * started later by a queued reply (PR review round 8).
  */
 const TEST_KEY_DEADLINE_MS = 30_000
 
@@ -80,16 +81,13 @@ export function createStore(ctx: ClientContext): ClientStore {
     method: string,
     args: Record<string, unknown>,
     onSuccess: (value: unknown) => T,
-    /** Bound one request so a lost answer releases the queue (SF4). */
-    deadlineMs?: number,
   ): Promise<T | { ok: false; error: string }> => {
     queuedMutations += 1
     update({ busy: method, error: null })
     const run = async (): Promise<T | { ok: false; error: string }> => {
       ++loadSequence // invalidate a load that started before this mutation
       try {
-        const call = rpc(method, args)
-        const result = deadlineMs === undefined ? await call : await withDeadline(call, deadlineMs, method)
+        const result = await rpc(method, args)
         if (!result.ok) throw new Error(result.error.message)
         const outcome = onSuccess(result.value)
         if (queuedMutations === 1) update({ busy: null })
@@ -185,8 +183,20 @@ export function createStore(ctx: ClientContext): ClientStore {
     removeAccount(provider: string, accountId: string): Promise<ActionOutcome> {
       return send('removeAccount', { provider, accountId }, stateOutcome)
     },
-    testKey(provider: string, keyId: string): Promise<KeyTestOutcome> {
-      return send('testKey', { provider, keyId }, testOutcome, TEST_KEY_DEADLINE_MS)
+    async testKey(provider: string, keyId: string): Promise<KeyTestOutcome> {
+      // A row test is a read-style call (PR review round 8), not a queued
+      // mutation: the UI's row deadline starts as soon as the row is clicked,
+      // so queueing the call behind the serialized mutations could time the row
+      // out and then run the test — borrowing the route's projection — with
+      // nobody watching its answer. It sends at once, sets no global busy flag
+      // and never replaces the snapshot: the host's answer is observation-only.
+      try {
+        const result = await withDeadline(rpc('testKey', { provider, keyId }), TEST_KEY_DEADLINE_MS, 'testKey')
+        if (!result.ok) throw new Error(result.error.message)
+        return testOutcome(result.value)
+      } catch (error) {
+        return { ok: false, error: messageOf(error) }
+      }
     },
     tick() {
       update({ now: Date.now() })
