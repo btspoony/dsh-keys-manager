@@ -856,6 +856,84 @@ test('extra provider installation writes a complete pi-ai profile and release re
   }
 })
 
+/** Restore COREWEAVE_PROJECT around one body; `undefined` means "not set". */
+async function withCoreweaveProject(value: string | undefined, body: () => Promise<void>): Promise<void> {
+  const saved = process.env.COREWEAVE_PROJECT
+  if (value === undefined) delete process.env.COREWEAVE_PROJECT
+  else process.env.COREWEAVE_PROJECT = value
+  try {
+    await body()
+  } finally {
+    if (saved === undefined) delete process.env.COREWEAVE_PROJECT
+    else process.env.COREWEAVE_PROJECT = saved
+  }
+}
+
+test('adding coreweave without COREWEAVE_PROJECT refuses before any write', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject(undefined, async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+        /coreweave requires the COREWEAVE_PROJECT environment variable \(OpenAI-Project header/,
+      )
+    })
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave, undefined)
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')), [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('coreweave writes its env-sourced header into the new profile', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', async () => {
+      const state = await h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave')
+      assert.equal(state.providers.find(entry => entry.provider === 'coreweave')!.managed, true)
+    })
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.deepEqual(profile.headers, { 'OpenAI-Project': 'team/project' })
+    assert.match(profile.apiKeyEnv, /^KEYSMGR_COREWEAVE_/)
+    const keyRef = h.store.provider('coreweave')!.keys[0].ref
+    assert.equal(h.credentials.refs.get(keyRef), 'sk-coreweave')
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting an existing coreweave profile fills only the missing header', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.deepEqual(profile.headers, { 'OpenAI-Project': 'team/project' })
+    assert.equal(profile.baseURL, 'https://proxy.example/v1')
+    assert.deepEqual(profile.models, [{ id: 'preseeded-model' }])
+    assert.match(profile.apiKeyEnv, /^KEYSMGR_COREWEAVE_/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an extra provider without headerEnv writes no headers key', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    const profile = h.settings.valueOf('llm-pi-ai').providers.deepinfra
+    assert.equal('headers' in profile, false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('settings update validates and persists retry policy', async () => {
   const h = await harness()
   try {

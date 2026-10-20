@@ -412,6 +412,25 @@ function discoveredModel(model: DiscoveredModel): ModelRecord | undefined {
   })
 }
 
+/**
+ * Resolve one extra provider's declared static request headers from the
+ * environment. Every value must be non-blank; a missing variable refuses the
+ * add before any credential or settings write, because a blank header would
+ * only surface later as an opaque profile-resolution error.
+ */
+function resolveHeaderEnv(extra: ExtraProvider): Record<string, string> | undefined {
+  if (extra.headerEnv === undefined) return undefined
+  const headers: Record<string, string> = {}
+  for (const [header, envName] of Object.entries(extra.headerEnv)) {
+    const value = process.env[envName]?.trim()
+    if (value === undefined || value.length === 0) {
+      throw new Error(`${extra.id} requires the ${envName} environment variable (${header} header, <team>/<project>)`)
+    }
+    headers[header] = value
+  }
+  return headers
+}
+
 /** Public, secret-free key row. */
 function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null): KeyView {
   return {
@@ -3207,6 +3226,9 @@ export class KeysManagerService {
       const descriptor = this.describeSettings()
       const namespace = this.namespace(descriptor, 'llm-pi-ai')
       if (namespace === undefined) throw new Error('The llm-pi-ai settings namespace is not mounted')
+      // Resolved before the first credential/settings write, so a missing
+      // variable refuses the add without leaving a key or a partial profile.
+      const headers = resolveHeaderEnv(extra)
       const existing = asProfile(getPath(namespace.value, ['providers', extraId]))
       if (existing !== undefined) {
         this.pushWarning('A stored profile already exists for this provider; adopting it without replacing its models.')
@@ -3230,8 +3252,14 @@ export class KeysManagerService {
           keys: [],
         }
         const key = await this.createKeyRecord(extraId, input.alias, input.value)
+        const ops: SettingsPathOp[] = [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }]
+        // Fill a missing header block; headers the stored profile already
+        // declares are left untouched.
+        if (headers !== undefined && existing.headers === undefined) {
+          ops.push({ op: 'set', path: ['providers', extraId, 'headers'], value: headers })
+        }
         try {
-          await this.mutateSettings('llm-pi-ai', [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }])
+          await this.mutateSettings('llm-pi-ai', ops)
         } catch (error) {
           try {
             await this.unsetOriginal(key.ref)
@@ -3256,6 +3284,7 @@ export class KeysManagerService {
         api: extra.api,
         baseURL: extra.baseURL,
         apiKeyEnv: brokerRef,
+        ...(headers === undefined ? {} : { headers }),
         models,
       }
       const key = await this.createKeyRecord(extraId, input.alias, input.value)

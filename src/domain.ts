@@ -214,6 +214,8 @@ export interface ExtraProvider {
   api: string
   baseURL: string
   env: string[]
+  /** Static request headers this route needs, each resolved from an environment variable at add time. */
+  headerEnv?: Record<string, string>
   models: ModelRecord[]
 }
 
