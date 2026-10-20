@@ -3187,6 +3187,131 @@ test('a rejected state flush fails the settled login instead of publishing ready
   }
 })
 
+// Codex P2: `store.flush()` can reject AFTER the harvest callback resolved
+// (the state disk filled up between the mutation and its write). The row
+// upsert is already in memory and `attempt.accountId` is set, so the old
+// compensation condition skipped the rollback and left a committed
+// plugin-scope grant — and a live projection — with no durable owner.
+
+test('a rejected state flush rolls the harvested account row back instead of orphaning its grant', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    const realFlush = h.store.flush.bind(h.store)
+    let rejectFlush = true
+    ;(h.store as unknown as { flush: () => Promise<void> }).flush = async () => {
+      if (rejectFlush) throw new Error('disk full')
+      await realFlush()
+    }
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    assert.match(h.service.getAccountAttempt(view.id)!.error ?? '', /disk full/)
+    // The terminal failure advertises no row that was rolled back.
+    assert.equal(h.service.getAccountAttempt(view.id)!.accountId, undefined)
+    // The in-memory row upsert is undone...
+    await eventually(() => assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0))
+    // ...the plugin-scope copy the harvest wrote is gone (no orphan)...
+    await eventually(() => assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0))
+    // ...and the projection this login committed was demoted with it, so no
+    // credential outlives the rolled-back row without a pool owner.
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    // A later successful flush must not resurrect the rolled-back row: the
+    // state document (what a restart loads) stays clean.
+    rejectFlush = false
+    await h.store.flush()
+    const reloaded = new KeysManagerStore(join(h.dir, 'state.json'))
+    try {
+      assert.equal(reloaded.provider('anthropic')?.keys.filter(key => key.kind === 'oauth').length ?? 0, 0)
+    } finally {
+      await reloaded.close()
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+test('a rejected state flush during re-authentication restores the superseded grant reference', async () => {
+  const { h, rowId, grantRef: oldRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+    refresh: 'rt-old-value',
+    expires: 1_800_000_000_000,
+  })
+  try {
+    const realFlush = h.store.flush.bind(h.store)
+    let rejectFlush = true
+    ;(h.store as unknown as { flush: () => Promise<void> }).flush = async () => {
+      if (rejectFlush) throw new Error('disk full')
+      await realFlush()
+    }
+    // The flow commits a rotated grant for the same account.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-new-value',
+      access: 'at-new-value',
+      expires: 1_900_000_000_000,
+    }))
+    const view = await h.service.beginAccountLogin('anthropic', undefined, rowId)
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    assert.match(h.service.getAccountAttempt(view.id)!.error ?? '', /disk full/)
+    const newRef = accountRef('anthropic', createHash('sha256').update('rt-new-value').digest('hex').slice(0, 12))
+    assert.notEqual(newRef, oldRef)
+    // The harvest deleted the superseded generation before its flush
+    // rejected; the rollback restores it, so the reverted row cannot dangle.
+    await eventually(() => assert.equal(h.credentials.records.has(oldRef), true))
+    assert.equal((h.credentials.records.get(oldRef)!.payload as Record<string, unknown>).refresh, 'rt-old-value')
+    // The new generation's copy is gone (no orphan)...
+    await eventually(() => assert.equal(h.credentials.records.has(newRef), false))
+    // ...and the row is back on the pre-harvest grant it can still resolve.
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.oauth!.grantRef, oldRef)
+    assert.equal(row.oauth!.expiresAt, 1_800_000_000_000)
+    assert.equal(row.valueMissing, false)
+    // Durability boundary: a later successful flush persists the reverted
+    // row, which still matches the restored record after a restart.
+    rejectFlush = false
+    await h.store.flush()
+    const reloaded = new KeysManagerStore(join(h.dir, 'state.json'))
+    try {
+      assert.equal(reloaded.provider('anthropic')!.keys.find(key => key.id === rowId)!.oauth!.grantRef, oldRef)
+    } finally {
+      await reloaded.close()
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+test('a resolved state flush keeps the harvested row and both grant records (no rollback)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    let flushes = 0
+    const realFlush = h.store.flush.bind(h.store)
+    h.store.flush = async () => {
+      flushes += 1
+      await realFlush()
+    }
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    // The flush resolved before the ready terminal published.
+    assert.ok(flushes >= 1)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.kind === 'oauth')!
+    assert.equal(h.service.getAccountAttempt(view.id)!.accountId, row.id)
+    assert.equal(h.credentials.records.get(GRANT_KEY)!.kind, 'grant')
+    assert.equal(h.credentials.records.get(row.oauth!.grantRef)!.kind, 'grant')
+    const text = await readFile(join(h.dir, 'state.json'), 'utf8')
+    assert.ok(text.includes(row.id))
+  } finally {
+    await h.close()
+  }
+})
+
 test('concurrent logins for one provider resume the in-flight attempt instead of competing (I-000082)', async () => {
   const h = await harnessWithManagedAnthropic()
   try {

@@ -42,6 +42,7 @@ import type {
   KeyRecord,
   KeyView,
   ModelRecord,
+  OAuthAccount,
   ProviderRecord,
   ProviderView,
   StateView,
@@ -49,6 +50,7 @@ import type {
 import type {
   AttemptState,
   CredentialHit,
+  CredentialRecordLike,
   CredentialRecordsLike,
   CredentialsLike,
   DirectoryEntry,
@@ -149,6 +151,39 @@ interface LoginAttempt {
   controller: AbortController
   resolvePrompt?: (value: string) => void
   rejectPrompt?: (reason: Error) => void
+}
+
+/** The row fields a harvest replaces on a re-authentication. */
+interface HarvestRowSnapshot {
+  oauth: OAuthAccount | null
+  valueMissing: boolean
+  cooldownUntil: number
+}
+
+/** The in-memory row mutation a harvest performed, undone on flush failure. */
+type HarvestRowUndo =
+  | { kind: 'added'; id: string }
+  | { kind: 'updated'; id: string; snapshot: HarvestRowSnapshot }
+
+/**
+ * Everything one harvest mutation wrote, kept so a later failure can
+ * compensate exactly this login's writes. The row/owner facts exist for the
+ * flush-failure rollback: `run` resolves the mutation but not necessarily its
+ * durability, so a rejected `store.flush()` leaves an in-memory upsert on a
+ * document that was never written.
+ */
+interface HarvestFacts {
+  payload: OAuthGrantPayload
+  grantRef: string
+  wroteRef: boolean
+  /** The plugin-scope record the write at `grantRef` overwrote (same-ref re-auth). */
+  previousRef?: CredentialRecordLike
+  /** The superseded generation the harvest deleted (restored on rollback). */
+  superseded?: { ref: string; record: CredentialRecordLike }
+  /** The in-memory row mutation, undone when the state flush rejects. */
+  rowUndo?: HarvestRowUndo
+  /** The projection owner before the harvest claimed it. */
+  ownerUndo?: { had: boolean; owner?: string }
 }
 
 /** Copy a seam prompt into its serializable view (the AbortSignal stays out). */
@@ -1123,8 +1158,9 @@ export class KeysManagerService {
     // Records this login's grant identity for the failure-path
     // compensation below: `wroteRef` says the plugin-scope copy exists, and
     // the projection is reverted only while it still carries exactly this
-    // login's committed payload.
-    let harvest: { payload: OAuthGrantPayload; grantRef: string; wroteRef: boolean } | undefined
+    // login's committed payload. The row/owner facts are only needed when
+    // the state flush rejects after the mutation resolved.
+    let harvest: HarvestFacts | undefined
     try {
       await this.run(async () => {
         const records = this.credentialRecords()
@@ -1144,7 +1180,8 @@ export class KeysManagerService {
         // queued behind it — and when the check below throws, the
         // compensation must still hold this login's payload so the pi-ai
         // projection it already committed can be reverted.
-        harvest = { payload, grantRef, wroteRef: false }
+        const facts: HarvestFacts = { payload, grantRef, wroteRef: false }
+        harvest = facts
         // Managed state and key capacity are checked BEFORE the
         // plugin-scope write (round-2 review, step 4): a login whose row
         // cannot exist must not strand the persisted grant.
@@ -1166,10 +1203,17 @@ export class KeysManagerService {
         if (existing === undefined && providerRecord.keys.length >= KEY_LIMIT) {
           throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
         }
+        // Snapshot the record this write is about to overwrite (same-ref
+        // re-authentication): a rejected state flush rolls the write back,
+        // and the restored row must keep the payload it referenced.
+        if (existing !== undefined && existing.oauth !== null && existing.oauth.grantRef === grantRef) {
+          facts.previousRef = await records.readRecord(grantRef)
+        }
         await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
-        if (harvest !== undefined) harvest.wroteRef = true
-        else harvest = { payload, grantRef, wroteRef: true }
+        facts.wroteRef = true
         const now = Date.now()
+        // The id of the row this mutation appends, when it appends one.
+        let addedId: string | undefined
         if (existing !== undefined) {
           // Replacing the credential removes the superseded plugin-scope
           // record: a changed refresh token hashes to a new ref, and the
@@ -1179,10 +1223,27 @@ export class KeysManagerService {
           // otherwise successful login; the warning keeps it observable.
           if (existing.oauth !== null && existing.oauth.grantRef !== grantRef) {
             try {
+              // Snapshot before deleting: a rejected state flush restores
+              // this record, because the rolled-back row still references
+              // it. Refusing the delete when the read fails keeps the
+              // superseded record reversible instead of dangling.
+              const superseded = await records.readRecord(existing.oauth.grantRef)
+              if (superseded !== undefined) facts.superseded = { ref: existing.oauth.grantRef, record: superseded }
               await records.deleteRecord(existing.oauth.grantRef)
             } catch (error) {
               this.warn(`cleanup of the superseded grant record failed for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
             }
+          }
+          // Snapshot the fields this upsert replaces, so a flush rejection
+          // can restore the row exactly as it was before the harvest.
+          facts.rowUndo = {
+            kind: 'updated',
+            id: existing.id,
+            snapshot: {
+              oauth: existing.oauth === null ? null : structuredClone(existing.oauth),
+              valueMissing: existing.valueMissing,
+              cooldownUntil: existing.cooldownUntil,
+            },
           }
           existing.oauth = {
             ...existing.oauth,
@@ -1210,8 +1271,13 @@ export class KeysManagerService {
           // escalate anything.
           existing.cooldownUntil = 0
         } else {
+          const rowId = newKeyId()
+          addedId = rowId
+          // Record the appended row before the push resolves, so the
+          // failure handler can remove exactly this row.
+          facts.rowUndo = { kind: 'added', id: rowId }
           providerRecord.keys.push({
-            id: newKeyId(),
+            id: rowId,
             alias: attempt.alias ?? payload.email ?? providerRecord.displayName,
             // Deliberately not a credential-ref-grammar name: account rows
             // carry no broker-resolvable literal, and an unparseable ref keeps
@@ -1241,24 +1307,43 @@ export class KeysManagerService {
           })
         }
         this.store.touch()
-        attempt.accountId = existing !== undefined ? existing.id : providerRecord.keys[providerRecord.keys.length - 1]!.id
+        attempt.accountId = existing !== undefined ? existing.id : addedId
+        // Remember who owned the projection before this harvest claims it:
+        // a flush rejection restores that entry instead of leaving the
+        // rolled-back row as the live owner.
+        facts.ownerUndo = this.activeAccounts.has(attempt.provider)
+          ? { had: true, owner: this.activeAccounts.get(attempt.provider) }
+          : { had: false }
         // The grant pi-ai just committed IS the projection; the fresh row
         // owns it until activation or fallback says otherwise.
-        this.claimProjectionOwner(attempt.provider, attempt.accountId)
+        if (attempt.accountId !== undefined) this.claimProjectionOwner(attempt.provider, attempt.accountId)
         // No terminal here: `run` flushes the state document after this
         // callback resolves, and the ready terminal publishes below — only
         // once persistence has actually resolved (round-2 review, step 3).
       })
       this.finishLoginAttempt(attempt, 'ready')
     } catch (error) {
+      // A rejected state flush lands here AFTER the mutation resolved, so
+      // `attempt.accountId` is already set even though `run` never made the
+      // document durable. Undo the in-memory upsert synchronously — before
+      // any queued mutation or retry can serialize a row whose grant the
+      // credential rollback then deletes — and roll the credential writes
+      // back. Only a failure BEFORE the upsert takes the pre-existing
+      // compensation path.
+      const upserted = attempt.accountId !== undefined
+      if (upserted) this.undoHarvestRow(attempt, harvest)
       this.failLoginAttempt(attempt, error)
       this.warn(`oauth sign-in harvest failed for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
-      // Round-2 review step 4: when no row could be created, compensate
-      // with an ownership-checked delete of both written records — the
-      // plugin-scope grant copy (when its write resolved), and the
-      // llm-pi-ai projection only while it still carries THIS login's
-      // payload.
-      if (attempt.accountId === undefined) {
+      // Round-2 review step 4: a harvest whose row was never created is
+      // compensated by deleting both written records — the plugin-scope
+      // grant copy (when its write resolved), and the llm-pi-ai projection
+      // only while it still carries THIS login's payload. A harvest that
+      // DID create its row is rolled back the same way, plus the credential
+      // writes its restored row depends on, because the rejected flush
+      // left that upsert undurable.
+      if (upserted) {
+        await this.compensateFailedFlush(attempt, harvest)
+      } else {
         await this.compensateFailedHarvest(attempt, harvest)
       }
     }
@@ -1295,6 +1380,106 @@ export class KeysManagerService {
   }
 
   /**
+   * Undo the in-memory half of a harvest whose state document was never made
+   * durable (a rejected `store.flush()` after the mutation resolved).
+   *
+   * Runs synchronously from the failure handler so no queued mutation,
+   * debounced write, or retry can observe — or persist — the rolled-back row
+   * between the rejected flush and this undo. The credential rollback that
+   * follows ({@link compensateFailedFlush}) deletes the grant the row
+   * referenced, so leaving the upsert in memory would make the next
+   * successful flush point at a deleted record.
+   */
+  private undoHarvestRow(attempt: LoginAttempt, harvest: HarvestFacts | undefined): void {
+    attempt.accountId = undefined
+    const providerRecord = this.store.provider(attempt.provider)
+    if (providerRecord !== undefined && harvest?.rowUndo !== undefined) {
+      const undo = harvest.rowUndo
+      if (undo.kind === 'added') {
+        const index = providerRecord.keys.findIndex(candidate => candidate.id === undo.id)
+        // Remove exactly the appended row: identity, never position.
+        if (index >= 0) providerRecord.keys.splice(index, 1)
+      } else {
+        const row = providerRecord.keys.find(candidate => candidate.id === undo.id)
+        if (row !== undefined) {
+          row.oauth = undo.snapshot.oauth
+          row.valueMissing = undo.snapshot.valueMissing
+          row.cooldownUntil = undo.snapshot.cooldownUntil
+        }
+      }
+    }
+    if (harvest?.ownerUndo !== undefined) {
+      if (harvest.ownerUndo.had && harvest.ownerUndo.owner !== undefined) {
+        this.activeAccounts.set(attempt.provider, harvest.ownerUndo.owner)
+      } else {
+        this.activeAccounts.delete(attempt.provider)
+      }
+      // Same generation guard the claim bumped: a hydration read started
+      // before/during the harvest must not re-apply the claim just undone.
+      this.ownershipGenerations.set(attempt.provider, (this.ownershipGenerations.get(attempt.provider) ?? 0) + 1)
+    }
+    this.store.touch()
+  }
+
+  /**
+   * Undo the credential writes of a harvest whose state flush rejected.
+   *
+   * Differs from {@link compensateFailedHarvest} in one respect: the row
+   * upsert already happened, so the plugin-scope record cannot simply be
+   * deleted. A same-ref re-authentication overwrote the record the restored
+   * row references, and a changed-ref re-authentication deleted the
+   * superseded generation before the flush failed — both are reverted here,
+   * each write guarded by the exact payload this login committed so a
+   * foreign writer's record is never clobbered. The `llm-pi-ai` projection is
+   * then demoted exactly like any failed harvest (ownership-checked, never a
+   * foreign grant), so no committed credential outlives the rolled-back row
+   * without a pool owner.
+   */
+  private async compensateFailedFlush(attempt: LoginAttempt, harvest: HarvestFacts | undefined): Promise<void> {
+    const records = this.credentialRecords()
+    if (records === undefined) return
+    if (harvest === undefined) {
+      this.warn(`flush-failure compensation refused for ${attempt.provider}: this attempt's committed grant payload is unknown, so the credential surface was left untouched`)
+      return
+    }
+    const provenance = JSON.stringify(harvest.payload)
+    const stillThisPayload = (record: CredentialRecordLike | undefined): boolean =>
+      record !== undefined && record.kind === 'grant'
+      && isOAuthGrantPayload(record.payload) && JSON.stringify(record.payload) === provenance
+    try {
+      if (harvest.previousRef !== undefined) {
+        const previous = harvest.previousRef
+        // Restore the overwritten same-ref record only while the live record
+        // still holds this harvest's payload; the replacement runs inside
+        // the seam's per-key lock.
+        await records.modifyRecord(harvest.grantRef, async current =>
+          stillThisPayload(current) ? structuredClone(previous) : undefined)
+      } else if (harvest.wroteRef) {
+        let owns = false
+        await records.modifyRecord(harvest.grantRef, async current => {
+          owns = stillThisPayload(current)
+          return undefined
+        })
+        if (owns) await records.deleteRecord(harvest.grantRef)
+      }
+    } catch (error) {
+      this.warn(`flush-failure compensation could not restore ${harvest.grantRef} for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (harvest.superseded !== undefined) {
+      const superseded = harvest.superseded
+      try {
+        // Write the superseded generation back only while its ref is still
+        // free: a native writer that reused the ref owns the record now.
+        await records.modifyRecord(superseded.ref, async current =>
+          current === undefined ? structuredClone(superseded.record) : undefined)
+      } catch (error) {
+        this.warn(`flush-failure compensation could not restore ${superseded.ref} for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    await this.revertHarvestProjection(attempt, harvest)
+  }
+
+  /**
    * Roll a failed harvest back to a clean credential surface: the
    * plugin-scope grant copy is deleted when it was written; the
    * `llm-pi-ai` projection is deleted only while it still carries EXACTLY
@@ -1306,10 +1491,7 @@ export class KeysManagerService {
    * there is no proof of ownership, and deleting "whatever is live" is the
    * round-4 defect (I-000083).
    */
-  private async compensateFailedHarvest(
-    attempt: LoginAttempt,
-    harvest: { payload: OAuthGrantPayload; grantRef: string; wroteRef: boolean } | undefined,
-  ): Promise<void> {
+  private async compensateFailedHarvest(attempt: LoginAttempt, harvest: HarvestFacts | undefined): Promise<void> {
     const records = this.credentialRecords()
     if (records === undefined) return
     if (harvest === undefined) {
@@ -1323,6 +1505,17 @@ export class KeysManagerService {
         this.warn(`harvest compensation could not delete ${harvest.grantRef}: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
+    await this.revertHarvestProjection(attempt, harvest)
+  }
+
+  /**
+   * Delete the `llm-pi-ai` projection only while it still carries exactly
+   * this login's settlement-time committed payload. Shared by the
+   * failed-harvest compensation and the flush-failure rollback.
+   */
+  private async revertHarvestProjection(attempt: LoginAttempt, harvest: HarvestFacts): Promise<void> {
+    const records = this.credentialRecords()
+    if (records === undefined) return
     try {
       const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
       // Same atomic decide-and-delete as the demotion path (round-3
