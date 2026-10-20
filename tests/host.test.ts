@@ -3891,6 +3891,66 @@ test('a projection-served success records success on the owning account row (Cod
   }
 })
 
+test('a projection-served request leaves the key pool untouched (C4)', async () => {
+  // Round-5 finding C4: pi-ai serves the stored grant while a projection
+  // exists, so selecting a key here would only mutate unused key state (the
+  // cursor, lastUsedAt, and a sticky binding) on every OAuth-backed request.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const provider = h.store.provider('anthropic')!
+    const pool = provider.keys.filter(key => key.kind === 'api-key')
+    assert.ok(pool.length > 0, 'the pool must hold a key for the skip to be observable')
+    const cursor = provider.cursor
+    const lastUsed = pool.map(key => key.lastUsedAt)
+    const stream = h.service.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-proj-c4', messages: [] },
+      async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    )
+    await consume(stream)
+    // No cursor advance, no lastUsedAt mutation, no sticky binding on any key.
+    assert.equal(provider.cursor, cursor)
+    assert.deepEqual(pool.map(key => key.lastUsedAt), lastUsed)
+    assert.equal(h.store.binding('session-proj-c4', 'anthropic'), undefined)
+    // The projection owner still records its own use.
+    const owner = provider.keys.find(key => key.id === rowId)!
+    assert.ok(owner.lastUsedAt > 0)
+    assert.equal(owner.totalUses, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a broker-key request still advances the key pool (C4)', async () => {
+  // The C4 skip is scoped to projection-served requests: without a
+  // projection the broker path selects, marks, and binds exactly as before.
+  const h = await harnessWithManagedAnthropic()
+  try {
+    await h.service.addKey('anthropic', 'second', 'sk-ant-second')
+    const provider = h.store.provider('anthropic')!
+    const cursor = provider.cursor
+    const selected = provider.keys[0]!
+    const before = selected.lastUsedAt
+    const stream = h.service.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-key-c4', messages: [] },
+      async function* () {
+        // Resolve inside the wrapped scope so the broker marks this request as
+        // having actually used a managed credential.
+        await h.credentials.raw.resolve(provider.brokerRef)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    )
+    await consume(stream)
+    assert.notEqual(provider.cursor, cursor)
+    assert.ok(selected.lastUsedAt > before)
+    assert.equal(h.store.binding('session-key-c4', 'anthropic')!.keyId, selected.id)
+  } finally {
+    await h.close()
+  }
+})
+
 test('an oauth-coded stream failure without an active projection attributes to nothing', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {

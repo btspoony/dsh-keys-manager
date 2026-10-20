@@ -2852,11 +2852,26 @@ export class KeysManagerService {
           async next(): Promise<IteratorResult<StreamChunkLike>> {
             if (!started) {
               started = true
+              // Round-5 finding C4: while a projection exists, pi-ai serves
+              // the stored grant and never consults the broker, so selecting
+              // a key here would only mutate unused key state (cursor,
+              // lastUsedAt, sticky binding) on every OAuth-backed request.
+              // Skip selection entirely; the request is attributed to the
+              // serving account row below. The retry after a demotion runs
+              // with no projection, so it selects from the key pool.
+              const oauthAccountId = service.oauthOwnerFor(providerId)
               let selection: KeySelection = { key: undefined, value: undefined }
-              try {
-                selection = await service.selectKey(providerId, sessionId, step)
-              } catch (error) {
-                service.warn(`key selection failed: ${error instanceof Error ? error.message : String(error)}`)
+              if (oauthAccountId === null) {
+                try {
+                  selection = await service.selectKey(providerId, sessionId, step)
+                } catch (error) {
+                  service.warn(`key selection failed: ${error instanceof Error ? error.message : String(error)}`)
+                }
+              } else if (sessionId !== undefined && step !== undefined) {
+                // A projection-served attempt cannot consume a step retry pin;
+                // dropping it here keeps a stale pin from leaking into a later
+                // attempt of the same step.
+                service.clearRetry(providerId, sessionId, step.turn, step.step)
               }
               keyId = selection.key?.id
               store = {
@@ -2869,7 +2884,7 @@ export class KeysManagerService {
                 // Captured where the broker resolve path is set up (MF2):
                 // when a projection exists, pi-ai serves the stored grant
                 // and this scope owns the failure attribution.
-                oauthAccountId: service.oauthOwnerFor(providerId),
+                oauthAccountId,
               }
               if (sessionId !== undefined && keyId !== undefined) {
                 const key = bindingKey(sessionId, providerId)
