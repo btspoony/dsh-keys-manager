@@ -108,6 +108,25 @@ const INTENTIONAL_REMOVAL_TTL_MS = 5_000
 /** The credential-record scope pi-ai stores its per-provider grants under (llm-pi-ai/src/auth.ts:29). */
 export const OAUTH_GRANT_RECORD_SCOPE = 'llm-pi-ai'
 
+/**
+ * Stable failure code for a harvest whose state flush rejected AND whose
+ * credential-side rollback then failed to write.
+ *
+ * The state flush is the durability boundary `run` enforces, and the rollback
+ * that follows it deletes/restores the credential records the rolled-back row
+ * referenced. When those compensating writes fail too, the attempt's reason
+ * starts with `<code>: ` and keeps the original flush error verbatim after it,
+ * so an upstream caller can branch on {@link isFlushRollbackCompensationFailure}
+ * instead of matching prose. A flush failure whose rollback completed keeps its
+ * original error unchanged — this code is the only added spelling.
+ */
+export const FLUSH_ROLLBACK_COMPENSATION_FAILED = 'FLUSH_ROLLBACK_COMPENSATION_FAILED'
+
+/** Whether an attempt error carries {@link FLUSH_ROLLBACK_COMPENSATION_FAILED}. */
+export function isFlushRollbackCompensationFailure(error: string | undefined): boolean {
+  return typeof error === 'string' && error.startsWith(`${FLUSH_ROLLBACK_COMPENSATION_FAILED}:`)
+}
+
 /** The pi-ai OAuth credential shape a grant record must carry (research: `OAuthCredential`). */
 interface OAuthGrantPayload {
   type: 'oauth'
@@ -1332,6 +1351,10 @@ export class KeysManagerService {
       // compensation path.
       const upserted = attempt.accountId !== undefined
       if (upserted) this.undoHarvestRow(attempt, harvest)
+      // Whether THIS failure handler settles the attempt (a release may have
+      // finalized it first): only an attempt this handler failed may have its
+      // reason enriched with the rollback code below.
+      const settledHere = attempt.settledAt === undefined
       this.failLoginAttempt(attempt, error)
       this.warn(`oauth sign-in harvest failed for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
       // Round-2 review step 4: a harvest whose row was never created is
@@ -1342,7 +1365,17 @@ export class KeysManagerService {
       // writes its restored row depends on, because the rejected flush
       // left that upsert undurable.
       if (upserted) {
-        await this.compensateFailedFlush(attempt, harvest)
+        const rollback = await this.compensateFailedFlush(attempt, harvest)
+        // A rollback that could not write leaves a credential surface the
+        // rolled-back row no longer owns. Tag the terminal reason with the
+        // stable code (keeping the original flush cause after it) so an
+        // upstream caller can branch instead of matching prose.
+        if (rollback.failed && settledHere) {
+          const cause = attempt.error ?? 'the state flush failed'
+          attempt.error = `${FLUSH_ROLLBACK_COMPENSATION_FAILED}: ${cause} (credential rollback incomplete: ${rollback.failures.join('; ')})`
+          attempt.updatedAt = Date.now()
+          this.warn(`${FLUSH_ROLLBACK_COMPENSATION_FAILED} for ${attempt.provider}: the state flush failed and the credential rollback could not be completed`)
+        }
       } else {
         await this.compensateFailedHarvest(attempt, harvest)
       }
@@ -1434,13 +1467,30 @@ export class KeysManagerService {
    * then demoted exactly like any failed harvest (ownership-checked, never a
    * foreign grant), so no committed credential outlives the rolled-back row
    * without a pool owner.
+   *
+   * Resolves with the write failures the rollback hit, if any: a refusal to
+   * touch the surface when provenance is unknown is a deliberate skip, not a
+   * failure, but a rejected compensating write means the credential surface
+   * may still hold records the rolled-back row no longer owns. The caller
+   * tags the attempt with {@link FLUSH_ROLLBACK_COMPENSATION_FAILED} so that
+   * state is distinguishable from a clean rollback (each failure is also
+   * warned about here, message by message).
    */
-  private async compensateFailedFlush(attempt: LoginAttempt, harvest: HarvestFacts | undefined): Promise<void> {
+  private async compensateFailedFlush(
+    attempt: LoginAttempt,
+    harvest: HarvestFacts | undefined,
+  ): Promise<{ failed: boolean; failures: string[] }> {
+    const failures: string[] = []
+    const recordFailure = (prefix: string, error: unknown): void => {
+      const detail = error instanceof Error ? error.message : String(error)
+      failures.push(`${prefix}: ${detail}`)
+      this.warn(`${prefix}: ${detail}`)
+    }
     const records = this.credentialRecords()
-    if (records === undefined) return
+    if (records === undefined) return { failed: false, failures }
     if (harvest === undefined) {
       this.warn(`flush-failure compensation refused for ${attempt.provider}: this attempt's committed grant payload is unknown, so the credential surface was left untouched`)
-      return
+      return { failed: false, failures }
     }
     const provenance = JSON.stringify(harvest.payload)
     const stillThisPayload = (record: CredentialRecordLike | undefined): boolean =>
@@ -1463,7 +1513,7 @@ export class KeysManagerService {
         if (owns) await records.deleteRecord(harvest.grantRef)
       }
     } catch (error) {
-      this.warn(`flush-failure compensation could not restore ${harvest.grantRef} for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+      recordFailure(`flush-failure compensation could not restore ${harvest.grantRef} for ${attempt.provider}`, error)
     }
     if (harvest.superseded !== undefined) {
       const superseded = harvest.superseded
@@ -1473,10 +1523,12 @@ export class KeysManagerService {
         await records.modifyRecord(superseded.ref, async current =>
           current === undefined ? structuredClone(superseded.record) : undefined)
       } catch (error) {
-        this.warn(`flush-failure compensation could not restore ${superseded.ref} for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+        recordFailure(`flush-failure compensation could not restore ${superseded.ref} for ${attempt.provider}`, error)
       }
     }
-    await this.revertHarvestProjection(attempt, harvest)
+    const projection = await this.revertHarvestProjection(attempt, harvest)
+    if (!projection.ok) failures.push(projection.failure)
+    return { failed: failures.length > 0, failures }
   }
 
   /**
@@ -1512,10 +1564,17 @@ export class KeysManagerService {
    * Delete the `llm-pi-ai` projection only while it still carries exactly
    * this login's settlement-time committed payload. Shared by the
    * failed-harvest compensation and the flush-failure rollback.
+   *
+   * Resolves `ok: false` only when the compare/delete writes themselves
+   * rejected; an ownership mismatch is the guard doing its job (the live
+   * record belongs to someone else) and counts as a clean skip.
    */
-  private async revertHarvestProjection(attempt: LoginAttempt, harvest: HarvestFacts): Promise<void> {
+  private async revertHarvestProjection(
+    attempt: LoginAttempt,
+    harvest: HarvestFacts,
+  ): Promise<{ ok: true } | { ok: false; failure: string }> {
     const records = this.credentialRecords()
-    if (records === undefined) return
+    if (records === undefined) return { ok: true }
     try {
       const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
       // Same atomic decide-and-delete as the demotion path (round-3
@@ -1541,8 +1600,11 @@ export class KeysManagerService {
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
+      return { ok: true }
     } catch (error) {
-      this.warn(`harvest compensation could not revert the projection for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+      const failure = `harvest compensation could not revert the projection for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`
+      this.warn(failure)
+      return { ok: false, failure }
     }
   }
 

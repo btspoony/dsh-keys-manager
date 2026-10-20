@@ -7,7 +7,7 @@ import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT } from '../src/core'
-import { apply, KeysManagerService } from '../src/index'
+import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
 
 const ORIGINAL = Symbol.for('cordis.original')
@@ -3227,6 +3227,66 @@ test('a rejected state flush rolls the harvested account row back instead of orp
     } finally {
       await reloaded.close()
     }
+  } finally {
+    await h.close()
+  }
+})
+
+// Round-8 review hardening: the flush rollback can itself fail to write. A
+// caller must be able to tell "flush failed, credential surface restored"
+// apart from "flush failed AND the rollback could not restore it", so the
+// terminal reason carries a stable code. The in-memory rollback runs before
+// any await and must therefore hold while the store keeps failing.
+
+test('a rollback whose compensation writes fail carries the structured failure code', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    // A record this login never wrote: the failing rollback must never
+    // delete it in place of its own leftovers.
+    const foreignRef = accountRef('openai', '0123456789ab')
+    h.credentials.records.set(foreignRef, grantPayload({ refresh: 'rt-foreign-value', access: 'at-foreign-value' }))
+    let flushes = 0
+    ;(h.store as unknown as { flush: () => Promise<void> }).flush = async () => {
+      flushes += 1
+      // The state document stays broken for the whole window: the harvest's
+      // own credential writes resolved before this first flush, but every
+      // compensation write after it must fail too.
+      if (h.store.provider('anthropic')!.keys.some(key => key.kind === 'oauth')) {
+        h.credentials.raw.failModifyRecord = true
+        h.credentials.raw.failDeleteRecord = true
+      }
+      throw new Error('disk full')
+    }
+    const view = await h.service.beginAccountLogin('anthropic', 'Work account')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    const failed = h.service.getAccountAttempt(view.id)!
+    assert.ok(
+      isFlushRollbackCompensationFailure(failed.error),
+      `expected the ${FLUSH_ROLLBACK_COMPENSATION_FAILED} code, got: ${failed.error ?? '<no error>'}`,
+    )
+    // The code leads the reason; the original flush cause stays after it.
+    assert.ok(failed.error!.startsWith(`${FLUSH_ROLLBACK_COMPENSATION_FAILED}: `))
+    assert.match(failed.error ?? '', /disk full/)
+    // The in-memory rollback does not depend on any flush resolving: the
+    // terminal advertises no row and the pool has no harvested account.
+    assert.equal(failed.accountId, undefined)
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
+    // The rollback's own follow-up flush (its touch schedules one) rejects
+    // too — the failure is not one-shot — and must not resurrect the row.
+    await eventually(() => assert.ok(flushes >= 2))
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
+    // The compensation could not delete them, so its own writes survive —
+    // exactly this login's committed payload — and the unrelated foreign
+    // record is untouched (no silent deletion on a failed rollback).
+    const writtenRef = accountRef('anthropic', createHash('sha256').update('rt-secret-value').digest('hex').slice(0, 12))
+    assert.equal(h.credentials.records.get(writtenRef)?.kind, 'grant')
+    assert.equal((h.credentials.records.get(writtenRef)!.payload as { refresh?: string }).refresh, 'rt-secret-value')
+    assert.equal((h.credentials.records.get(GRANT_KEY)!.payload as { refresh?: string }).refresh, 'rt-secret-value')
+    assert.equal(h.credentials.records.has(foreignRef), true)
+    assert.equal((h.credentials.records.get(foreignRef)!.payload as { refresh?: string }).refresh, 'rt-foreign-value')
   } finally {
     await h.close()
   }
