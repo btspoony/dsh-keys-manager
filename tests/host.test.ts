@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
-import { accountRef, KEY_LIMIT } from '../src/core'
+import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT } from '../src/core'
 import { apply, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
 
@@ -3491,7 +3491,6 @@ test('re-authenticating a cooling account clears the stale cooldown (C3)', async
       .markFailure('anthropic', rowId, { code: 'oauth', message: 'OAuth refresh failed for anthropic' })
     const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
     assert.ok(row.cooldownUntil > Date.now())
-    const escalation = { failureLevel: row.failureLevel, consecutiveFailures: row.consecutiveFailures }
     await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
     assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.find(key => key.id === rowId)!.status, 'missing')
 
@@ -3504,11 +3503,47 @@ test('re-authenticating a cooling account clears the stale cooldown (C3)', async
     assert.equal(h.service.getAccountAttempt(view.id)!.accountId, rowId)
 
     // The current window is over: no cooling state, included in the healthy
-    // counts. Escalation history survives, so a later failure still escalates
-    // per the grace window.
+    // counts.
     assert.equal(row.cooldownUntil, 0)
-    assert.equal(row.failureLevel, escalation.failureLevel)
-    assert.equal(row.consecutiveFailures, escalation.consecutiveFailures)
+    const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(provider.keys.find(key => key.id === rowId)!.status, 'active')
+    assert.equal(provider.healthyKeyCount, provider.keys.filter(key => key.status === 'active').length)
+    assert.ok(provider.keys.some(key => key.id === rowId && key.status === 'active'))
+    // Round-5 finding M2: the previous assertions here echoed the preserved
+    // `failureLevel`/`consecutiveFailures` shape and claimed a later failure
+    // would still escalate per the grace window. That claim was false:
+    // `applyFailureCooldown` derives the level only from the previous
+    // `cooldownUntil`, so zeroing the window also resets escalation. Assert
+    // the real behaviour — the next failure starts at level 0 / the base
+    // cooldown instead of "previous level + 1".
+    const next = applyFailureCooldown(row, h.store.settings, Date.now(), undefined)
+    assert.equal(next.level, 0)
+    assert.equal(next.cooldownMs, DEFAULT_SETTINGS.baseCooldownMs)
+  } finally {
+    await h.close()
+  }
+})
+
+test('activating a cooling account clears its stale cooldown (M1)', async () => {
+  // Round-5 finding M1: re-authentication clears the stale cooldown, but the
+  // manual "Set active" recovery did not, so the re-projected grant kept
+  // rendering as cooling and stayed out of the healthy counts until the timer
+  // expired. Both manual recovery paths must end the window.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // The demotion path cools the account AND removes the projection.
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'oauth', message: 'OAuth refresh failed for anthropic' })
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.ok(row.cooldownUntil > Date.now())
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.find(key => key.id === rowId)!.status, 'missing')
+
+    // Manual recovery: "Set active" re-projects the grant and ends the window.
+    await h.service.activateAccount('anthropic', rowId)
+    assert.equal(row.cooldownUntil, 0)
+    assert.equal(row.valueMissing, false)
     const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
     assert.equal(provider.keys.find(key => key.id === rowId)!.status, 'active')
     assert.equal(provider.healthyKeyCount, provider.keys.filter(key => key.status === 'active').length)
@@ -3951,6 +3986,30 @@ test('a broker-key request still advances the key pool (C4)', async () => {
   }
 })
 
+/**
+ * Hold one projection `deleteRecord` open (C1 ordering pin, round-5 finding
+ * M3): the demotion cannot settle until `release()` runs, so a caller that
+ * truly awaits `settleProjectionDemotion` stays pending while the gate is
+ * shut.
+ */
+function deferProjectionDelete(h: Harness, key: string): { started: () => boolean; release: () => void } {
+  const raw = h.credentials.raw
+  const realDelete = raw.deleteRecord.bind(raw)
+  let opened = false
+  let open = (): void => {}
+  const gate = new Promise<void>(resolve => {
+    open = resolve
+  })
+  raw.deleteRecord = async (k: string) => {
+    if (k === key && !opened) {
+      opened = true
+      await gate
+    }
+    return realDelete(k)
+  }
+  return { started: () => opened, release: () => open() }
+}
+
 test('an oauth-coded stream failure fails over to a key within the same request (C1)', async () => {
   // Round-5 finding C1: demoting the projection only helped a LATER request.
   // The failure must carry request-scoped evidence in the same linked form
@@ -4001,6 +4060,63 @@ test('an oauth-coded stream failure fails over to a key within the same request 
     // The account stays demoted: recovery is manual.
     assert.equal(row.valueMissing, true)
   } finally {
+    await h.close()
+  }
+})
+
+test('the retry decision waits for a deferred projection demotion (C1 ordering)', async () => {
+  // Round-5 finding M3: the C1 test above observes the ordering only after the
+  // fact. Pin the `requestErrorListener` await itself — gate the demotion's
+  // `deleteRecord`, fire the oauth failure, and prove the retry decision stays
+  // pending (the grant still serves) until the deferred delete resolves.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  let releaseDelete = (): void => {}
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const deferred = deferProjectionDelete(h, GRANT_KEY)
+    releaseDelete = deferred.release
+    const failure = { code: 'oauth', message: 'OAuth refresh failed for anthropic' }
+    await consume(streamFailure(h, 'anthropic', 'session-c1-order', failure))
+    // The demotion is in flight AND parked on the gate.
+    await eventually(() => assert.equal(deferred.started(), true))
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+
+    let settled = false
+    const pending = h.service.requestErrorListener({
+      provider: 'anthropic',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-c1-order' } },
+    } as unknown as RequestErrorPayload, async () => undefined).then(action => {
+      settled = true
+      return action
+    })
+    // Without the `await settleProjectionDemotion` the retry decision resolves
+    // in microtasks; it must still be pending after a whole macrotask turn.
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.equal(settled, false)
+    // A retry started now would still resolve through the stored grant.
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+
+    deferred.release()
+    assert.deepEqual(await pending, { kind: 'retry' })
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+
+    // The attempt this retry decision authorizes resolves through the pool.
+    h.service.noteRequestStep({ agent: { session: { id: 'session-c1-order' } }, turn: 1, step: 1 }, 'anthropic')
+    await consume(h.service.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-c1-order', messages: [] },
+      async function* () {
+        await h.credentials.raw.resolve(h.store.provider('anthropic')!.brokerRef)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    ))
+    const bound = h.store.binding('session-c1-order', 'anthropic')!
+    assert.equal(h.store.provider('anthropic')!.keys.find(key => key.id === bound.keyId)!.kind, 'api-key')
+  } finally {
+    releaseDelete()
     await h.close()
   }
 })

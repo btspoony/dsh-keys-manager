@@ -1138,10 +1138,14 @@ export class KeysManagerService {
           // Round-5 finding C3: a demoted-and-cooling row kept its stale
           // cooldown timer, so the freshly projected grant still rendered as
           // cooling and stayed out of the healthy counts until that timer
-          // expired. The current window ends with the new grant; the
-          // escalation history (failureLevel/consecutiveFailures) is
-          // deliberately preserved, so a failure after this recovery still
-          // escalates per the grace window.
+          // expired. The window ends with the new grant.
+          // Round-5 finding M2: clearing the window also resets escalation.
+          // `applyFailureCooldown` derives the next level only from the
+          // previous `cooldownUntil` (core.ts:168-174), so a zeroed window
+          // starts the next failure at level 0 / the base cooldown; the
+          // recovery grace window does not apply to a zeroed cooldown. The
+          // leftover `failureLevel`/`consecutiveFailures` fields do not
+          // escalate anything.
           existing.cooldownUntil = 0
         } else {
           providerRecord.keys.push({
@@ -1499,6 +1503,14 @@ export class KeysManagerService {
         Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
       this.claimProjectionOwner(provider, row.id)
       row.valueMissing = false
+      // Round-5 finding M1: manual recovery ends the cooling window too, the
+      // same reset a successful re-authentication applies. A demoted account
+      // is re-activated while its stale cooldown still sits on the row, which
+      // would render the freshly projected grant as cooling and keep it out
+      // of the healthy counts until the timer expires. Clearing the window
+      // also resets escalation: `applyFailureCooldown` derives the next level
+      // from `cooldownUntil` only (core.ts:168-174).
+      row.cooldownUntil = 0
       this.store.touch()
       // Remote methods hand back the refreshed state view (addKey/deleteKey
       // precedent), so the client updates its snapshot in one round trip.
