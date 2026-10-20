@@ -122,6 +122,17 @@ export const OAUTH_GRANT_RECORD_SCOPE = 'llm-pi-ai'
 const HYDRATION_WAIT_MS = 500
 /** Upper bound on one per-row connection test: a stalled provider must not hold the row busy forever. */
 const KEY_TEST_TIMEOUT_MS = 20_000
+/** The test timeout as user-visible copy; derived so the constant stays the single source of truth. */
+const KEY_TEST_TIMEOUT_LABEL = `${KEY_TEST_TIMEOUT_MS / 1000}s`
+/**
+ * Hard bound on how long an ordinary request waits for an in-flight row test
+ * (QC B3). The test's own request timeout covers only `ctx.llm.stream`; its
+ * credential-store reads offer no timeout or cancellation, so without a bound
+ * of its own one stalled seam read parks every ordinary request for the
+ * provider indefinitely. The small margin keeps the wait from cutting short a
+ * test whose provider call used its whole budget.
+ */
+const KEY_TEST_ISOLATION_WAIT_MS = KEY_TEST_TIMEOUT_MS + 5_000
 
 /** The error-like `name` of an unknown thrown value, if it carries one. */
 function errorNameOf(value: unknown): string | undefined {
@@ -708,12 +719,38 @@ export class KeysManagerService {
   private queue: Promise<unknown> = Promise.resolve()
   private closing = false
   /**
-   * Providers with a per-row connection test in flight, mapped to that
-   * test's own promise. The promise is the isolation seam: an ordinary
-   * request for the provider waits on it before resolving a credential, and
-   * reports its own outcome if the test fails.
+   * Providers whose in-flight row test borrows the route's credential
+   * surface (QC B4: an OAuth row test's projection, and the broker reference
+   * it may temporarily release). While a provider is borrowed the binding
+   * authority must not derive a real binding from the borrowed world: a
+   * mutation landing inside the window (`addKey`, `deleteKey`, an account
+   * removal) would otherwise persist an unbind decided about a state that is
+   * not the route's. {@link syncBrokerBinding} consults this exactly like
+   * {@link releasingProviders}; the test's own window-end sync passes
+   * `borrow: true` so the restored state is written back in one step.
+   */
+  private readonly testBindingBorrows = new Set<string>()
+  /**
+   * Providers with a borrowing row test in flight, mapped to that test's own
+   * promise. The promise is the isolation seam: an ordinary request for the
+   * provider waits on it (bounded, see {@link settleProviderTest}) before
+   * resolving a credential, and reports its own outcome if the test fails.
+   * Only OAuth-row tests borrow (QC N7), so only they register here.
    */
   private readonly testsInFlight = new Map<string, Promise<KeyTestResult>>()
+  /**
+   * Every in-flight row test, by provider — the single-concurrent-test lock
+   * for both row kinds. Separate from {@link testsInFlight} because an
+   * api-key test borrows nothing and must not isolate ordinary requests.
+   */
+  private readonly testsActive = new Map<string, Promise<KeyTestResult>>()
+  /**
+   * Upper bound on one ordinary request's wait for an in-flight row test
+   * (QC B3). Injectable so tests can exercise the bound quickly.
+   */
+  private isolationWaitMs = KEY_TEST_ISOLATION_WAIT_MS
+  /** Providers whose isolation-deadline warning already fired (warn once). */
+  private readonly isolationWaitWarned = new Set<string>()
   /** Interactive sign-in attempts, by attempt id. */
   private readonly loginAttempts = new Map<string, LoginAttempt>()
   /** The provider → attempt id index for the single-attempt rule. */
@@ -2292,27 +2329,14 @@ export class KeysManagerService {
       }
       return
     }
-    // SF2: once the new payload persists and the row points at it, delete
-    // the superseded generation's plugin-scope record — harvest parity. A
-    // rotated refresh token must not strand its secret-bearing record
-    // outside manager state; cleanup is best-effort with a warning,
-    // exactly like the harvest-time cleanup.
-    if (previousRef !== rotatedRef) {
-      owner.oauth = { ...owner.oauth!, grantRef: rotatedRef }
-      try {
-        await records.deleteRecord(previousRef)
-      } catch (error) {
-        this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
-      }
-    }
-    // Refresh-derived identity fields are informational and update in place.
-    owner.oauth = {
-      ...owner.oauth!,
-      ...(payload.email === undefined ? {} : { email: payload.email }),
-      ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
-      ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
-    }
-    this.store.touch()
+    // SF2: once the new payload persists, the commit repoints the row at it
+    // and deletes the superseded generation's plugin-scope record (harvest
+    // parity). A rotated refresh token must not strand its secret-bearing
+    // record outside manager state; cleanup is best-effort with a warning,
+    // exactly like the harvest-time cleanup. QC N1: the ref scheme, identity
+    // merge and cleanup are the one write-back owned by
+    // {@link commitGrantGeneration}, shared with the connection test.
+    await this.commitGrantGeneration(provider, owner, payload, rotatedRef)
   }
 
   /**
@@ -2515,9 +2539,72 @@ export class KeysManagerService {
     const row = record.keys.find(candidate => candidate.id === keyId)
     if (row === undefined) return { ok: false, latencyMs: 0, error: `Key "${keyId}" not found on ${provider}` }
     // Concurrent tests would race the projection save/restore; one at a time
-    // per provider is enough for a per-row action and keeps the restore exact.
-    if (this.testsInFlight.has(provider)) {
+    // per provider is enough for a per-row action and keeps the restore exact
+    // (QC N7: the lock covers both row kinds, the isolation guard only the
+    // kind that actually borrows).
+    if (this.testsActive.has(provider)) {
       return { ok: false, latencyMs: 0, error: 'A test for this provider is already running' }
+    }
+    // Everything that awaits — the ownership readiness wait (QC B6) and the
+    // request — belongs to the guarded promise, so a second call cannot slip
+    // past the lock during the wait.
+    const test = this.runRowTest(record, row)
+    this.testsActive.set(provider, test)
+    // The guard holds the whole test as a promise, not just a membership
+    // flag: `streamListener` awaits it so no ordinary request is served by —
+    // or attributed to — the grant an OAuth row test has borrowed. An api-key
+    // test borrows nothing, so it never isolates ordinary traffic (QC N7).
+    if (row.kind === 'oauth') this.testsInFlight.set(provider, test)
+    // QC B3: the in-flight entry is cleared by this watchdog, not only by the
+    // finally below, so a test wedged in an untimed seam call cannot pin the
+    // provider's slot for the rest of the session.
+    const watchdog = setTimeout(() => {
+      if (this.testsActive.get(provider) === test) this.testsActive.delete(provider)
+      if (this.testsInFlight.get(provider) === test) this.testsInFlight.delete(provider)
+      this.warn(`connection test for ${provider} did not settle within ${this.isolationWaitMs}ms; its provider slot is released`)
+    }, this.isolationWaitMs)
+    watchdog.unref?.()
+    try {
+      return await test
+    } finally {
+      clearTimeout(watchdog)
+      if (this.testsActive.get(provider) === test) this.testsActive.delete(provider)
+      if (this.testsInFlight.get(provider) === test) this.testsInFlight.delete(provider)
+    }
+  }
+
+  /**
+   * Decide the route's serving shape and run one row test. Separate from
+   * {@link testKey} so the concurrency lock is registered before the first
+   * await.
+   */
+  private async runRowTest(record: ProviderRecord, row: KeyRecord): Promise<KeyTestResult> {
+    const provider = record.provider
+    // QC B6: the serving source is decided from projection ownership, which a
+    // restarted process hydrates asynchronously. Until that read lands the
+    // shape is unknown, so the honest answer is a refusal with no request
+    // rather than a test attributed to the wrong credential.
+    if (!await this.awaitProjectionOwnership(provider)) {
+      return { ok: false, latencyMs: 0, error: 'Account ownership is still loading; try again in a moment' }
+    }
+    const route = this.testRouteProfile(record)
+    if ('error' in route) return { ok: false, latencyMs: 0, error: route.error }
+    const profile = route.profile
+    const apiKeyEnv = typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : undefined
+    // QC B1: derive the route's serving shape once, from the profile value
+    // read at entry, and only test a row whose credential this shape carries.
+    // pi-ai resolves a named `apiKeyEnv` override before its stored grant, so
+    // `bound` decides that the broker (key pool) authenticates the request and
+    // `projected` that the account's grant does.
+    const bound = apiKeyEnv === record.brokerRef
+    const projected = this.oauthOwnerFor(provider) !== null
+    const foreignReference = apiKeyEnv !== undefined && !bound
+    if (foreignReference) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: `This route is served by the credential reference "${apiKeyEnv}" set in the provider settings, which Keys Manager does not manage. Repair the binding in Models, then test again.`,
+      }
     }
     // C1: a route served by a projected OAuth account resolves that account's
     // stored grant, never the API-key pool. `syncBrokerBinding` unsets the
@@ -2528,36 +2615,54 @@ export class KeysManagerService {
     // borrowing (or deleting) the projection — a diagnostic action must not
     // rewrite the route's credential binding. `oauthOwnerFor` is the read-only
     // ownership oracle; a stale map entry resolves to null and does not refuse.
-    if (row.kind === 'api-key' && this.oauthOwnerFor(provider) !== null) {
+    if (row.kind === 'api-key' && projected) {
       return {
         ok: false,
         latencyMs: 0,
         error: 'This route is currently served by its OAuth account; the API key pool is not in use. Deactivate the account or let the projection fall back, then test again.',
       }
     }
-    const model = this.testModel(provider)
-    if (model === undefined) return { ok: false, latencyMs: 0, error: 'No model is configured for this provider' }
-    // The guard holds the whole test as a promise, not just a membership
-    // flag: `streamListener` awaits it so no ordinary request is served by —
-    // or attributed to — the grant an OAuth row test has borrowed.
-    const test = row.kind === 'oauth'
-      ? this.runOAuthRowTest(provider, row, model)
-      : this.runApiKeyRowTest(provider, row, model)
-    this.testsInFlight.set(provider, test)
-    try {
-      return await test
-    } finally {
-      if (this.testsInFlight.get(provider) === test) this.testsInFlight.delete(provider)
+    if (row.kind === 'api-key' && !bound) {
+      // No `apiKeyEnv` override means pi-ai reads its own stored credential:
+      // the pinned literal never reaches the request, so a pass would be
+      // reported for a key this route did not carry.
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: 'This route is not served by its API-key pool (the provider profile holds no Keys Manager binding). Re-add a key or repair the binding in Models, then test again.',
+      }
     }
+    const model = normalizeModels(profile.models)[0]?.id
+    if (model === undefined) return { ok: false, latencyMs: 0, error: 'No model is configured for this provider' }
+    // QC B1: a broker-bound profile hides the borrowed projection from pi-ai,
+    // so the binding is released for the test window through the one authority
+    // and restored at window end (see runOAuthRowTest).
+    const borrowBinding = row.kind === 'oauth' && bound
+    return row.kind === 'oauth'
+      ? this.runOAuthRowTest(provider, row, model, borrowBinding)
+      : this.runApiKeyRowTest(provider, row, model)
   }
 
-  /** The first model of the live provider profile, or undefined when unset. */
-  private testModel(provider: string): string | undefined {
-    const record = this.store.provider(provider)
-    if (record === undefined) return undefined
-    const namespace = this.namespace(this.describeSettings(), record.settingsNs)
-    const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, record.settingsPath))
-    return profile === undefined ? undefined : normalizeModels(profile.models)[0]?.id
+  /**
+   * The live provider profile one test must reason about, read once at entry
+   * (QC B1/N6), or the reason it cannot be used. An unreadable settings
+   * snapshot and a missing profile are distinct causes, so the row never
+   * claims a model is missing when the settings service is merely absent.
+   */
+  private testRouteProfile(record: ProviderRecord): { profile: ProfileShape } | { error: string } {
+    const descriptor = this.describeSettings()
+    if (!descriptor.readable) {
+      return { error: 'The provider settings could not be read, so the test cannot tell which credential serves this route. Try again in a moment.' }
+    }
+    const namespace = this.namespace(descriptor, record.settingsNs)
+    if (namespace === undefined) {
+      return { error: `The settings namespace "${record.settingsNs}" is not mounted; configure this provider in Models and test again.` }
+    }
+    const profile = asProfile(getPath(namespace.value, record.settingsPath))
+    if (profile === undefined) {
+      return { error: 'This provider has no settings profile yet; configure a model for it and test again.' }
+    }
+    return { profile }
   }
 
   /** One request pinned to the row's API-key literal. */
@@ -2581,7 +2686,12 @@ export class KeysManagerService {
   }
 
   /** One request with the row's grant temporarily projected as the route's credential. */
-  private async runOAuthRowTest(provider: string, row: KeyRecord, model: string): Promise<KeyTestResult> {
+  private async runOAuthRowTest(
+    provider: string,
+    row: KeyRecord,
+    model: string,
+    borrowBinding: boolean,
+  ): Promise<KeyTestResult> {
     const grant = row.oauth
     if (grant === null) return { ok: false, latencyMs: 0, error: `Key "${row.id}" is not an OAuth account` }
     const records = this.credentialRecords()
@@ -2614,23 +2724,51 @@ export class KeysManagerService {
         return
       }
       this.claimProjectionOwner(provider, row.id)
+      // QC B4: from here to the restore the route's credential surface is
+      // borrowed, so no mutation landing inside the window may persist a
+      // binding decision derived from it. The test's own writes pass
+      // `borrow: true`; the window-end sync below writes the restored state.
+      this.testBindingBorrows.add(provider)
       let restoreFailure: string | undefined
       try {
-        result = await this.runTestRequest(provider, model, {
-          provider,
-          keyId: null,
-          keyValue: null,
-          keyUsed: false,
-          oauthAccountId: row.id,
-          test: true,
-        })
+        if (borrowBinding) {
+          // QC B1: a broker-bound profile hands pi-ai the broker reference, so
+          // the projection would be inert for the request. Release it for the
+          // window through the single binding authority (a failed release
+          // refuses the test instead of borrowing a second writer).
+          const released = await this.syncBrokerBinding(provider, { borrow: true })
+          if (!released) {
+            restoreFailure = 'The route is served by its API-key pool and its credential binding could not be released for the test; the account was not tested.'
+          }
+        }
+        if (restoreFailure === undefined) {
+          result = await this.runTestRequest(provider, model, {
+            provider,
+            keyId: null,
+            keyValue: null,
+            keyUsed: false,
+            oauthAccountId: row.id,
+            test: true,
+          })
+        }
       } finally {
         // Compare-by-payload restore: a rotation the request caused is
         // written back to the tested row, a payload another writer stored
         // survives untouched, and anything that could not be reconciled must
         // fail the test instead of reporting a pass on a route left on the
         // tested grant.
-        restoreFailure = await this.restoreProjection(records, provider, row, projectionKey, previous, borrowed)
+        const restored = await this.restoreProjection(records, provider, row, projectionKey, previous, borrowed)
+        if (restoreFailure === undefined) restoreFailure = restored
+        if (borrowBinding) {
+          // QC B4: one sync at window end, after the owner map and the
+          // projection are back, so the persisted binding matches the state
+          // the route actually restored to.
+          const rebound = await this.syncBrokerBinding(provider, { borrow: true })
+          if (!rebound && restoreFailure === undefined) {
+            restoreFailure = 'The route credential binding could not be restored after the test; repair it in Models before relying on this route.'
+          }
+        }
+        this.testBindingBorrows.delete(provider)
       }
       if (restoreFailure !== undefined) {
         result = { ok: false, latencyMs: result.latencyMs, error: restoreFailure }
@@ -2692,8 +2830,9 @@ export class KeysManagerService {
       this.reconcileProjectionOwner(provider, undefined)
       return undefined
     }
+    const rows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
+    const previousOwner = previousGrant === undefined ? undefined : matchOwningAccount(provider, rows, previousGrant)
     if (live !== undefined && !carriesBorrowed) {
-      const rows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
       const rotationOwner = liveGrant === undefined ? undefined : matchOwningAccount(provider, rows, liveGrant)
       if (rotationOwner?.id === row.id && this.accountRowIsManaged(provider, row)) {
         try {
@@ -2715,9 +2854,35 @@ export class KeysManagerService {
         return undefined
       }
     }
+    // QC B2: the pre-test projection already belonged to the tested row, so
+    // the live payload (the borrowed grant, or a rotation just written back
+    // above) IS that row's current grant. Writing `previous` back would revert
+    // it: its echo re-matches the same row, moves `grantRef` to the superseded
+    // generation and deletes the rotated record — leaving the account on a
+    // consumed refresh token.
+    if (previousOwner?.id === row.id) {
+      this.reconcileProjectionOwner(provider, liveGrant)
+      return undefined
+    }
     try {
-      if (previous === undefined) await records.deleteRecord(key)
-      else await records.modifyRecord(key, () => Promise.resolve(structuredClone(previous)))
+      if (previous === undefined) {
+        await records.deleteRecord(key)
+      } else {
+        // QC N2: the compare travels with the write, so a foreign payload
+        // stored between the re-read above and this write is never
+        // overwritten. Only a record that still carries what this test left
+        // (the borrowed grant, or a rotation of the tested row) is replaced.
+        const snapshot = structuredClone(previous)
+        await records.modifyRecord(key, current => {
+          const currentGrant = current !== undefined && current.kind === 'grant' && isOAuthGrantPayload(current.payload)
+            ? current.payload
+            : undefined
+          const testLeft = currentGrant !== undefined && (
+            JSON.stringify(currentGrant) === JSON.stringify(borrowed)
+            || matchOwningAccount(provider, rows, currentGrant)?.id === row.id)
+          return Promise.resolve(testLeft ? snapshot : current)
+        })
+      }
     } catch (error) {
       // The store still holds what the re-read saw: keep the owner map on
       // that payload rather than claiming the pre-test account (I2).
@@ -2739,22 +2904,44 @@ export class KeysManagerService {
   }
 
   /**
-   * Persist one authoritative rotated grant payload for a row: the same
-   * plugin-scope write-back {@link reconcileGrantRecord} performs (record
-   * first, then `grantRef`, then cleanup of the superseded record), without
-   * the echo-specific generation guards — the caller already runs inside the
-   * provider's grant chain and owns the decision.
+   * Persist one authoritative rotated grant payload for a row: write the
+   * plugin-scope record for the rotated generation, then hand the commit to
+   * {@link commitGrantGeneration} — the same tail {@link reconcileGrantRecord}
+   * performs. The caller runs inside the provider's grant chain and owns the
+   * decision, including the echo-specific generation guards, so only the
+   * write-back semantics live here.
    */
   private async writeBackRotation(provider: string, row: KeyRecord, payload: OAuthGrantPayload): Promise<void> {
     const records = this.credentialRecords()
     if (records === undefined) throw new Error('The credential store does not support records')
-    const current = row.oauth
-    if (current === null) throw new Error(`Key "${row.id}" is not an OAuth account`)
+    if (row.oauth === null) throw new Error(`Key "${row.id}" is not an OAuth account`)
     const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
     const rotatedRef = accountRef(provider, hash)
-    const previousRef = current.grantRef
     await records.modifyRecord(rotatedRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
-    row.oauth = {
+    await this.commitGrantGeneration(provider, row, payload, rotatedRef)
+  }
+
+  /**
+   * The single owner of `row.oauth.grantRef` semantics (QC N1): point the row
+   * at the record holding its rotated generation, merge the refresh-derived
+   * identity fields, and remove the superseded record. Both the echo
+   * reconciler and the connection test's rotation write-back commit through
+   * here, so the ref scheme, the identity merge and the cleanup policy have
+   * exactly one implementation.
+   *
+   * The record write stays with the caller: the reconciler must revalidate the
+   * row between that write and this commit (C6-1), so only the tail is shared.
+   */
+  private async commitGrantGeneration(
+    provider: string,
+    owner: KeyRecord,
+    payload: OAuthGrantPayload,
+    rotatedRef: string,
+  ): Promise<void> {
+    const current = owner.oauth
+    if (current === null) return
+    const previousRef = current.grantRef
+    owner.oauth = {
       ...current,
       ...(previousRef === rotatedRef ? {} : { grantRef: rotatedRef }),
       ...(payload.email === undefined ? {} : { email: payload.email }),
@@ -2762,7 +2949,9 @@ export class KeysManagerService {
       ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
     }
     if (previousRef !== rotatedRef) {
+      const records = this.credentialRecords()
       try {
+        if (records === undefined) throw new Error('The credential store does not support records')
         await records.deleteRecord(previousRef)
       } catch (error) {
         this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
@@ -2802,7 +2991,7 @@ export class KeysManagerService {
       return {
         ok: false,
         latencyMs: Date.now() - started,
-        error: isTestTimeoutAbort(error, signal) ? 'Timed out after 20s' : error instanceof Error ? error.message : String(error),
+        error: isTestTimeoutAbort(error, signal) ? `Timed out after ${KEY_TEST_TIMEOUT_LABEL}` : error instanceof Error ? error.message : String(error),
       }
     }
   }
@@ -3492,37 +3681,58 @@ export class KeysManagerService {
    * callers' committed change must not fail on a settings problem, the user
    * still sees that the route may resolve the wrong credential source, and
    * the next repair pass retries.
+   *
+   * Returns whether the profile ends in the shape the serving source justifies
+   * (`true` also when no write was needed). The connection test's borrow is the
+   * one caller that acts on it: a failed release must refuse the test instead
+   * of sending a request the wrong credential source would answer.
+   *
+   * While a row test borrows the route (QC B4) no caller may persist a decision
+   * derived from that borrowed world — an `addKey` landing inside the window
+   * would otherwise unbind the profile for good. The test's own writes pass
+   * `borrow: true`; the window-end sync then writes the restored state.
    */
   private async syncBrokerBinding(
     provider: string,
-    options: { takeover?: boolean; write?: boolean } = {},
-  ): Promise<void> {
+    options: { takeover?: boolean; write?: boolean; borrow?: boolean } = {},
+  ): Promise<boolean> {
     const record = this.store.provider(provider)
-    if (record === undefined) return
+    if (record === undefined) return false
+    // A borrow hides its world from this authority, except while the provider
+    // is being unmanaged: release is a real state change, and the unbind
+    // direction is already one-way there (a release that skipped it would
+    // leave a dangling broker reference on a profile nothing repairs).
+    if (options.borrow !== true && this.testBindingBorrows.has(provider) && !this.releasingProviders.has(provider)) {
+      return false
+    }
     const descriptor = this.describeSettings()
     if (!descriptor.readable) {
+      // QC N3: a composition that has not mounted the settings service yet is
+      // a not-yet, not a repair failure — the mount seam re-runs this pass and
+      // owns the warning if the write then still fails.
+      if (this.settingsService() === undefined) return false
       this.bindingWriteRefused(provider, 'the settings snapshot is unreadable')
-      return
+      return false
     }
     const namespace = this.namespace(descriptor, record.settingsNs)
     if (namespace === undefined) {
       this.bindingWriteRefused(provider, `settings namespace "${record.settingsNs}" is not mounted`)
-      return
+      return false
     }
     const profile = asProfile(getPath(namespace.value, record.settingsPath))
-    if (options.write === false && profile === undefined) return
+    if (options.write === false && profile === undefined) return true
     const current = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : undefined
     const desired = this.keyPoolServes(record) ? record.brokerRef : undefined
-    if (current === desired) return
+    if (current === desired) return true
     if (desired === undefined) {
       // Never strip a value Keys Manager did not write: a user hand-edit and
       // a restored pre-adoption reference look exactly like this.
-      if (current !== record.brokerRef) return
+      if (current !== record.brokerRef) return false
     } else {
       // Never bind over a value Keys Manager did not write — except adoption,
       // which recorded this exact pre-adoption reference to replace it.
-      if (this.releasingProviders.has(provider)) return
-      if (current !== undefined && !(options.takeover === true && current === record.originalApiKeyEnv)) return
+      if (this.releasingProviders.has(provider)) return false
+      if (current !== undefined && !(options.takeover === true && current === record.originalApiKeyEnv)) return false
     }
     const path = [...record.settingsPath, 'apiKeyEnv']
     try {
@@ -3531,10 +3741,11 @@ export class KeysManagerService {
       ])
     } catch (error) {
       this.bindingWriteRefused(provider, error instanceof Error ? error.message : String(error))
-      return
+      return false
     }
     // The profile matches the serving source now, by construction.
     this.bindingCache.set(provider, 'healthy')
+    return true
   }
 
   /**
@@ -4422,14 +4633,18 @@ export class KeysManagerService {
     const binding = this.bindingState(record)
     if (binding === 'mismatch') {
       if (sessionId !== undefined && step !== undefined) this.clearRetry(providerId, sessionId, step.turn, step.step)
-      return this.isolateFromTest(providerId, next())
+      // QC B5: the provider stream is handed over as a thunk on both
+      // branches, so it is constructed after the isolation wait — a mismatch
+      // profile still resolves pi-ai's stored grant, so the borrowed
+      // projection reaches it too.
+      return this.isolateFromTest(providerId, () => next())
     }
     // An ordinary request must never be served by the grant a row test has
     // borrowed for this provider, nor be attributed to the tested account.
     // The isolation wrapper waits for that test to settle before the normal
     // path resolves its credential; a test-scope request returned above, so
     // it never waits on its own guard.
-    return this.isolateFromTest(providerId, this.wrapStream(options, next, providerId, sessionId, step))
+    return this.isolateFromTest(providerId, () => this.wrapStream(options, next, providerId, sessionId, step))
   }
 
   /**
@@ -4446,32 +4661,42 @@ export class KeysManagerService {
 
   /**
    * Keep an ordinary request out of the window where a row test borrows (or
-   * is restoring) this provider's projection. The wrapped stream starts only
-   * after the in-flight test settles; without this wait the request would be
-   * served by the borrowed grant and its outcome attributed to the tested
-   * account. A test-scope request returns from `streamListener` before this
-   * wrapper, so a test never waits on its own guard.
+   * is restoring) this provider's projection. The provider stream is built
+   * only after the bounded wait, so neither branch can start a request inside
+   * the borrowed window; a consumer that cancels during the wait constructs
+   * nothing at all. A test-scope request returns from `streamListener` before
+   * this wrapper, so a test never waits on its own guard.
    */
-  private isolateFromTest(providerId: string, stream: AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
+  private isolateFromTest(
+    providerId: string,
+    open: () => AsyncIterable<StreamChunkLike>,
+  ): AsyncIterable<StreamChunkLike> {
     const service = this
     let iterator: AsyncIterator<StreamChunkLike> | undefined
     let waited = false
+    let closed = false
     return {
       [Symbol.asyncIterator](): AsyncIterator<StreamChunkLike> {
         return {
           async next(): Promise<IteratorResult<StreamChunkLike>> {
+            if (closed) return { done: true, value: undefined }
             if (!waited) {
               waited = true
               await service.settleProviderTest(providerId)
             }
-            if (iterator === undefined) iterator = stream[Symbol.asyncIterator]()
+            // QC N5: the consumer cancelled while this pull waited; there is
+            // no one left to close a stream built here, so never build it.
+            if (closed) return { done: true, value: undefined }
+            if (iterator === undefined) iterator = open()[Symbol.asyncIterator]()
             return iterator.next()
           },
           async return(value?: unknown): Promise<IteratorResult<StreamChunkLike>> {
+            closed = true
             if (iterator?.return !== undefined) return iterator.return(value as StreamChunkLike)
             return { done: true, value: undefined }
           },
           async throw(error?: unknown): Promise<IteratorResult<StreamChunkLike>> {
+            closed = true
             if (iterator?.throw !== undefined) return iterator.throw(error)
             throw error
           },
@@ -4481,18 +4706,34 @@ export class KeysManagerService {
   }
 
   /**
-   * Wait for the in-flight test on this provider to settle. The wait is
-   * bounded by the test's own 20 s request timeout, and a failed test never
-   * fails the waiting request.
+   * Wait (bounded) for the in-flight borrowing test on this provider to
+   * settle. The bound is {@link KEY_TEST_ISOLATION_WAIT_MS}, not the test's
+   * own request timeout: the awaited promise also covers untimed
+   * credential-store reads, so without this an ordinary request could park
+   * here forever. A failed or timed-out test never fails the waiting request.
    */
   private async settleProviderTest(providerId: string): Promise<void> {
     const pending = this.testsInFlight.get(providerId)
     if (pending === undefined) return
-    try {
-      await pending
-    } catch {
-      // The waiting request owns its own outcome.
-    }
+    await new Promise<void>(resolve => {
+      let done = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (): void => {
+        if (done) return
+        done = true
+        if (timer !== undefined) clearTimeout(timer)
+        resolve()
+      }
+      timer = setTimeout(() => {
+        if (!this.isolationWaitWarned.has(providerId)) {
+          this.isolationWaitWarned.add(providerId)
+          this.warn(`connection test for ${providerId} did not settle within ${this.isolationWaitMs}ms; the waiting request proceeds without it`)
+        }
+        finish()
+      }, this.isolationWaitMs)
+      timer.unref?.()
+      void pending.then(finish, finish)
+    })
   }
 
   /**

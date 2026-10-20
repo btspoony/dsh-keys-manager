@@ -382,17 +382,40 @@ interface RowTestState {
   kind: 'running' | 'passed' | 'failed'
   latencyMs?: number
   error?: string
+  /** The client gave up waiting for an answer (QC N4). */
+  timedOut?: boolean
 }
 
 /** Result spans the row's grid columns (the row grids have no full-width cell). */
 const ROW_TEST_STYLE = { gridColumn: '1 / -1', marginTop: '-2px' }
 
-/** Run one row test and fold the wire answer into the inline state. */
+/**
+ * Client-side deadline for one row test. The host bounds its own provider
+ * call at 20 s and may spend a little longer restoring the route, so a lost
+ * or wedged answer must not leave the row's Test action disabled forever
+ * (QC N4).
+ */
+const ROW_TEST_DEADLINE_MS = 30_000
+
+/**
+ * Run one row test and fold the wire answer into the inline state, giving up
+ * at {@link ROW_TEST_DEADLINE_MS} so `running` is always transient (QC N4).
+ */
 async function requestRowTest(store: ClientStore, provider: string, keyId: string): Promise<RowTestState> {
-  const outcome = await store.testKey(provider, keyId)
-  if (!outcome.ok) return { kind: 'failed', error: outcome.error }
-  if (outcome.value.ok) return { kind: 'passed', latencyMs: outcome.value.latencyMs }
-  return { kind: 'failed', error: outcome.value.error ?? '' }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<RowTestState>(resolve => {
+    timer = setTimeout(() => resolve({ kind: 'failed', timedOut: true }), ROW_TEST_DEADLINE_MS)
+  })
+  const answer = store.testKey(provider, keyId).then((outcome): RowTestState => {
+    if (!outcome.ok) return { kind: 'failed', error: outcome.error }
+    if (outcome.value.ok) return { kind: 'passed', latencyMs: outcome.value.latencyMs }
+    return { kind: 'failed', ...(outcome.value.error === undefined ? {} : { error: outcome.value.error }) }
+  })
+  try {
+    return await Promise.race([answer, deadline])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 function testLine(test: RowTestState | null, t: T): React.ReactElement | null {
@@ -403,7 +426,12 @@ function testLine(test: RowTestState | null, t: T): React.ReactElement | null {
   if (test.kind === 'passed') {
     return h('div', { className: 'km-key-time', role: 'status', style: ROW_TEST_STYLE }, t('testPassed', { ms: test.latencyMs ?? 0 }))
   }
-  return h('div', { className: 'km-key-time km-warn', role: 'status', style: ROW_TEST_STYLE }, t('testFailed', { error: test.error ?? '' }))
+  // QC N6: never render an empty failure detail; a deadline and a wire answer
+  // without a reason each carry their own copy.
+  const detail = test.error !== undefined && test.error.length > 0
+    ? test.error
+    : test.timedOut === true ? t('testTimedOut') : t('testFailedUnknown')
+  return h('div', { className: 'km-key-time km-warn', role: 'status', style: ROW_TEST_STYLE }, t('testFailed', { error: detail }))
 }
 
 interface KeyRowProps {

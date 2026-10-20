@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
-import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
+import type { KeyRecord, KeyTestResult, ProviderRecord, ProviderView, StateView } from '../src/domain'
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import { KeysManagerStore } from '../src/store'
@@ -822,10 +822,16 @@ test('a settings mount landing after hydration still heals the binding', async (
     const restarted = new KeysManagerService(ctxWithoutSettings, h.store)
     await new Promise(resolve => setTimeout(resolve, 20))
     assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, legacy)
+    // QC N3: a settings service that is merely not mounted yet is a not-yet,
+    // so the constructor pass stays silent instead of warning about a route
+    // the mount heals a moment later. (The read-only note is buildState's own
+    // statement about the unreadable snapshot, not a repair failure.)
+    assert.deepEqual(restarted.getState().warnings.filter(message => /credential reference/.test(message)), [])
     // …and the mount seam retries the same repair in this process instead of
     // leaving the route broken until the next start.
     restarted.attachSettings(h.settings)
     await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers['openai-codex'].apiKeyEnv, undefined))
+    assert.deepEqual(restarted.getState().warnings.filter(message => /credential reference/.test(message)), [])
   } finally {
     await h.close()
   }
@@ -7457,6 +7463,336 @@ test('a failed restore fails the test and keeps the owner on the live grant', as
     assert.notEqual(rows.find(candidate => candidate.id === second.rowId)!.projected, true)
     assert.ok(state.warnings.some(warning => /could not be restored/.test(warning)))
   } finally {
+    await h.close()
+  }
+})
+
+// QC fix wave — the row test must prove the route actually serves the tested
+// credential (B1), never revert a rotation of the serving account (B2), keep
+// its isolation bounded (B3) and invisible to the binding authority (B4),
+// defer the provider stream on both isolation branches (B5), and refuse while
+// account ownership is still loading (B6).
+
+test('an oauth row test borrows a broker-bound route and restores the binding', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    // The key pool serves the route: adoption bound the profile to the broker.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef)
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    const seen: Array<{ apiKeyEnv: string | undefined; projection: string | undefined }> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      const profile = h.settings.valueOf('llm-pi-ai').providers['anthropic'] as Record<string, any>
+      const projection = h.credentials.records.get(GRANT_KEY)
+      seen.push({
+        apiKeyEnv: profile.apiKeyEnv as string | undefined,
+        projection: (projection?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined,
+      })
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', account.rowId)
+
+    assert.equal(result.ok, true)
+    // The request ran on the account grant, not on the broker reference…
+    assert.deepEqual(seen, [{ apiKeyEnv: undefined, projection: 'rt-only' }])
+    // …and the binding the route had before the test is back.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    const view = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(view.bindingHealthy, true)
+
+    // An ordinary request after the test still resolves the pool key.
+    const keyRow = record.keys.find(candidate => candidate.kind === 'api-key')!
+    const resolved: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      resolved.push((await h.credentials.raw.resolve(record.brokerRef))?.value)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
+    assert.deepEqual(resolved, [h.credentials.refs.get(keyRow.ref)])
+  } finally {
+    await h.close()
+  }
+})
+
+test('an api-key test is refused on a mismatch route', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    // The user took the profile back in Models: a reference Keys Manager never
+    // wrote. pi-ai resolves it before the pinned literal, so a test here could
+    // report a pass for a key the request never carried.
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv = 'ANTHROPIC_AUTH_TOKEN'
+    const keyRow = h.store.provider('anthropic')!.keys.find(candidate => candidate.kind === 'api-key')!
+    let calls = 0
+    // A route that answers successfully: on the pre-fix path this yielded a
+    // false pass for a key the request never carried.
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+
+    const result = await h.service.testKey('anthropic', keyRow.id)
+
+    assert.equal(result.ok, false)
+    assert.equal(result.latencyMs, 0)
+    // The refusal names the credential reference that actually serves the route.
+    assert.match(String(result.error), /ANTHROPIC_AUTH_TOKEN/)
+    assert.equal(calls, 0)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, 'ANTHROPIC_AUTH_TOKEN')
+
+    // The mismatch is about the serving source, not the row: an OAuth row is
+    // refused with the same named source (and without borrowing anything).
+    const accountResult = await h.service.testKey('anthropic', account.rowId)
+    assert.equal(accountResult.ok, false)
+    assert.match(String(accountResult.error), /ANTHROPIC_AUTH_TOKEN/)
+    assert.equal(calls, 0)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+
+    // The same route with no managed binding at all: no `apiKeyEnv` override
+    // means pi-ai reads its own stored credential, so the pinned literal never
+    // reaches the request either.
+    delete h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv
+    const unbound = await h.service.testKey('anthropic', keyRow.id)
+    assert.equal(unbound.ok, false)
+    assert.equal(calls, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a rotation of the serving account during its own test survives', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'].models = [{ id: 'claude-test-model' }]
+    // The tested row IS the route's projection: the case restoring the
+    // pre-test payload would revert.
+    await h.service.activateAccount('anthropic', rowId)
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-serving-rotated').digest('hex').slice(0, 12))
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        h.credentials.records.set(GRANT_KEY, grantPayload({
+          refresh: 'rt-serving-rotated',
+          access: 'at-rotated',
+          accountId: 'acc-9',
+          email: 'dev@example.com',
+        }))
+        h.emitEvent('credentials/record-updated', GRANT_KEY)
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', rowId)
+
+    assert.equal(result.ok, true)
+    // The queued echoes run after the test body; the account must end on the
+    // rotated generation either way.
+    await eventually(() => {
+      const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === rowId)!
+      assert.equal(row.oauth!.grantRef, rotatedRef)
+      const stored = h.credentials.records.get(rotatedRef)!
+      assert.equal(stored.kind, 'grant')
+      assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-serving-rotated')
+      // The superseded generation is gone and the projection is the rotation.
+      assert.equal(h.credentials.records.has(grantRef), false)
+      const live = h.credentials.records.get(GRANT_KEY)!
+      assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-serving-rotated')
+    })
+  } finally {
+    await h.close()
+  }
+})
+
+test('a stalled credential read in an oauth test does not park ordinary requests past the isolation deadline', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let testRun: Promise<KeyTestResult> | undefined
+  let releaseRead: (() => void) | undefined
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  try {
+    const provider = h.store.provider('anthropic')!
+    const row = provider.keys.find(candidate => candidate.id === first.rowId)!
+    const readGate = new Promise<void>(resolve => { releaseRead = resolve })
+    let stalled = false
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === row.oauth!.grantRef && !stalled) {
+        stalled = true
+        await readGate
+      }
+      return realRead(key)
+    }
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 40
+    const ordinaryStarted: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      const projection = h.credentials.records.get(GRANT_KEY)
+      ordinaryStarted.push((projection?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await eventually(() => assert.equal(stalled, true))
+    // The test is parked on an untimed credential read; the ordinary request
+    // must resume after the bounded wait instead of waiting for it.
+    const resumed = await Promise.race([
+      consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 })).then(() => true),
+      new Promise<boolean>(resolve => setTimeout(() => resolve(false), 1500)),
+    ])
+    assert.equal(resumed, true, 'the ordinary request resumed after the bounded wait')
+    // The borrow never landed: the request ran on the user's own projection.
+    assert.deepEqual(ordinaryStarted, ['rt-second'])
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    releaseRead?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('an addKey during an oauth test window does not persist an unbind', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    const record = h.store.provider('anthropic')!
+    let releaseTest!: () => void
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let enterTest!: () => void
+    const testEntered = new Promise<void>(resolve => { enterTest = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        enterTest()
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const testRun = h.service.testKey('anthropic', account.rowId)
+    await testEntered
+    // A mutation landing inside the borrowed window must not persist a binding
+    // decision derived from the borrowed world.
+    await h.service.addKey('anthropic', 'during-test', 'sk-during-test')
+    releaseTest()
+    assert.equal((await testRun).ok, true)
+    // The restored state re-syncs at window end: the pool serves again, so the
+    // profile is bound to the broker exactly as before the test.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef)
+    const view = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(view.bindingHealthy, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a mismatch route builds its provider stream only when the request starts', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    // The user took the profile back: `mismatch` is the isolation branch whose
+    // stream used to be constructed before the wait.
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv = 'ANTHROPIC_AUTH_TOKEN'
+    assert.equal(h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.bindingHealthy, false)
+
+    let opened = 0
+    const open = (): AsyncIterable<unknown> => {
+      opened += 1
+      return {
+        [Symbol.asyncIterator]: () => ({
+          async next(): Promise<IteratorResult<unknown>> { return { done: true, value: undefined } },
+        }),
+      }
+    }
+    const stream = h.service.streamListener(
+      { provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 8 } as any,
+      open as any,
+    )
+    // Construction is deferred until the wrapper's first pull.
+    assert.equal(opened, 0)
+    for await (const _chunk of stream) {
+      // drain
+    }
+    assert.equal(opened, 1)
+
+    // A consumer that never starts must not construct (or leak) the provider
+    // stream at all.
+    let abandoned = 0
+    const cancelled = h.service.streamListener(
+      { provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 8 } as any,
+      (() => {
+        abandoned += 1
+        return {
+          [Symbol.asyncIterator]: () => ({
+            async next(): Promise<IteratorResult<unknown>> { return { done: true, value: undefined } },
+          }),
+        }
+      }) as any,
+    )
+    await cancelled[Symbol.asyncIterator]().return?.()
+    assert.equal(abandoned, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth test refuses while account ownership is still loading', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'].models = [{ id: 'claude-test-model' }]
+    // The ownership hydration read is the slow one: the test must not decide a
+    // serving source from an ownership map that has not landed yet.
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) {
+        await new Promise(resolve => setTimeout(resolve, 60))
+        return undefined
+      }
+      return realRead(key)
+    }
+    let calls = 0
+    h.llm.stream = () => {
+      calls += 1
+      return (async function* () {})()
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    ;(restarted as unknown as { hydrationWaitMs: number }).hydrationWaitMs = 10
+
+    const result = await restarted.testKey('anthropic', rowId)
+
+    assert.equal(result.ok, false)
+    assert.equal(result.latencyMs, 0)
+    assert.match(String(result.error), /ownership is still loading/)
+    assert.equal(calls, 0)
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+test('an unreadable settings snapshot is distinguished from a missing model', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    h.settings.failDescribe = true
+    let calls = 0
+    h.llm.stream = () => {
+      calls += 1
+      return (async function* () {})()
+    }
+    const result = await h.service.testKey('zai-coding-cn', target.id)
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /settings could not be read/)
+    assert.doesNotMatch(String(result.error), /No model is configured/)
+    assert.equal(calls, 0)
+  } finally {
+    h.settings.failDescribe = false
     await h.close()
   }
 })

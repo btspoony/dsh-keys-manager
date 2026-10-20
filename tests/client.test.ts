@@ -172,6 +172,10 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     testRunning: '测试中…',
     testPassed: '连接正常 · {ms} ms',
     testFailed: '连接失败：{error}',
+    // QC N6: the failure copy resolves real values too, so a deadline or an
+    // answer without a reason is asserted by the text the UI renders.
+    testTimedOut: '测试超时，未收到结果',
+    testFailedUnknown: '测试未完成，未返回原因',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
@@ -1839,5 +1843,52 @@ describe('account ui', () => {
     expect(view.nodes.some(node => node.text === '连接失败：invalid api key')).toBe(true)
     view.unmount()
     setRuntimeContext(null)
+  })
+
+  test('a row test that never answers leaves its running state at the client deadline', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const harness = makeContext({ ok: true, value: state })
+    const originalCall = harness.ctx.connection.rpc.call.bind(harness.ctx.connection.rpc)
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint !== 'keysManager/testKey') return originalCall(channel, endpoint, payload)
+      // The host never answers: a lost or wedged RPC.
+      return await new Promise<RpcResult>(() => {})
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    // Only the test's own deadline is faked; the mount harness awaits real
+    // setTimeout(0) ticks, so the fake timers start once rendering is settled.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const row = findByClass(view.nodes, 'km-key-row')[0]!
+      const dots = descendants(view.nodes, row).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+      ;(dots[0]!.props!.onClick as () => void)()
+      view.render()
+      const testItem = descendants(view.nodes, findByClass(view.nodes, 'km-key-row')[0]!)
+        .filter(node => node.type === 'button' && node.text.includes('测试连接'))
+      ;(testItem[0]!.props!.onClick as () => void)()
+      view.render()
+      expect(view.nodes.some(node => node.text === '测试中…')).toBe(true)
+
+      // QC N4: without a client deadline the row stays `running` forever and
+      // its Test action is permanently disabled.
+      await vi.advanceTimersByTimeAsync(120_000)
+      await Promise.resolve()
+      await Promise.resolve()
+      view.render()
+      expect(view.nodes.some(node => node.text === '测试中…')).toBe(false)
+      // QC N6: the failure line never renders an empty detail.
+      expect(view.nodes.some(node => node.text === '连接失败：测试超时，未收到结果')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+      view.unmount()
+      setRuntimeContext(null)
+    }
   })
 })

@@ -13,6 +13,8 @@
   "testRunning": "Testing…",
   "testPassed": "Test passed · {ms} ms",
   "testFailed": "Test failed: {error}",
+  "testTimedOut": "The test timed out without a result",
+  "testFailedUnknown": "The test did not complete and reported no reason",
   "keyStatusEmpty": "No keys",
   "noKeysAccount": "No accounts yet. Add an account to make this provider usable.",
   "loginTitle": "Account sign-in",
