@@ -1530,6 +1530,11 @@ export class KeysManagerService {
    * recorded at that same broadcast (R6-SF1): it names the projection whose
    * failures own a cooldown, so the stale-window reset below clears only a
    * window attributed to an OLDER projection.
+   *
+   * A harvest that finds the attempt already settled writes neither the
+   * plugin-scope copy nor a row, but the projection the seam committed for
+   * this attempt is still demoted (ownership-checked, I-000122): a
+   * failed/cancelled login must not keep serving through the route.
    */
   private async harvestLogin(
     attempt: LoginAttempt,
@@ -1625,10 +1630,20 @@ export class KeysManagerService {
         // user sees is failed while the harvest would write the grant and
         // the account row. Revalidate settlement immediately before the
         // first credential write: a settled attempt must never grow a grant
-        // copy or a row. Nothing of this harvest is written yet, so the
-        // abort needs no compensation, and the release already published the
-        // terminal it owns.
-        if (attempt.settledAt !== undefined) return
+        // copy or a row.
+        //
+        // I-000122: aborting the write is not enough. The seam committed
+        // THIS attempt's grant as the provider's `llm-pi-ai` projection at
+        // the settlement broadcast, so returning here would leave the route
+        // serving a grant whose login failed/cancelled. Compensate that
+        // projection through the same ownership-checked path the failure
+        // handler uses: only this attempt's captured payload is deleted and
+        // a foreign or newer live grant is never touched. The release
+        // already published the terminal it owns.
+        if (attempt.settledAt !== undefined) {
+          await this.compensateFailedHarvest(attempt, harvest)
+          return
+        }
         await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
         facts.wroteRef = true
         const now = Date.now()
@@ -1979,6 +1994,30 @@ export class KeysManagerService {
    * Resolves `ok: false` only when the compare/delete writes themselves
    * rejected; an ownership mismatch is the guard doing its job (the live
    * record belongs to someone else) and counts as a clean skip.
+   *
+   * Every manager-initiated projection deletion registers the one-shot
+   * {@link intentionalProjectionRemovals} marker before the delete, exactly
+   * as {@link decideAndDeleteProjection} does (I-000125). Unmarked, the
+   * removal's own `credentials/record-updated` echo reconciles as an
+   * external deletion: the route's previously active managed account is
+   * flagged `valueMissing`, its owner claim is dropped and a misleading
+   * "removed outside Keys Manager" warning is pushed — even though that
+   * row and its plugin-scope grant are untouched.
+   *
+   * The marker only silences that echo; the route's state is corrected
+   * explicitly. The removal leaves the route with no stored projection, so the
+   * provider's owner claim — whatever it named before this attempt's grant
+   * replaced the record — is untruthful: {@link oauthOwnerFor} keeps naming a
+   * row pi-ai no longer resolves, `wrapStream` skips key-pool selection, oauth
+   * failures are attributed to that row, and the client keeps "Set active"
+   * disabled — the account cannot be re-activated. The claim is therefore
+   * invalidated (I-000125), and ONLY the claim: the surviving row keeps its
+   * `grantRef` and its `valueMissing: false`, so it stays managed and
+   * re-activatable while the route falls back to its API-key pool.
+   *
+   * The marker is armed only while the provider is still managed: a released
+   * provider has no echo consumer, and a marker nothing consumes would stay
+   * armed for its whole TTL and mask a genuine out-of-band removal.
    */
   private async revertHarvestProjection(
     attempt: LoginAttempt,
@@ -2007,7 +2046,48 @@ export class KeysManagerService {
         return undefined
       })
       if (owns && await this.projectionStillMatches(records, projectionKey, decidedAgainst)) {
-        await records.deleteRecord(projectionKey)
+        // The claim this removal makes untruthful, captured before the awaited
+        // delete. A newer activation or login claiming the route while the
+        // delete is in flight wins: its generation moves, and its claim names
+        // whatever that writer actually put in place.
+        const ownerBeforeRemoval = this.activeAccounts.get(attempt.provider)
+        const generation = this.ownershipGenerations.get(attempt.provider) ?? 0
+        // Mark BEFORE the delete, same one-shot bookkeeping the demotion
+        // path uses: the deletion's echo handler reads this marker across
+        // its own awaited record re-read, so the removal stays silent for
+        // this manager's own demotion instead of demoting the active
+        // account.
+        const markedAt = Date.now()
+        // Only arm the marker where an echo can reach its consumer: the
+        // dispatcher drops record-updates for an unmanaged provider, and a
+        // marker nothing consumes would mask a genuine out-of-band removal for
+        // its whole TTL.
+        const providerManaged = this.store.provider(attempt.provider) !== undefined
+        if (providerManaged) this.intentionalProjectionRemovals.set(attempt.provider, markedAt)
+        try {
+          await records.deleteRecord(projectionKey)
+        } catch (error) {
+          // A delete that threw removed nothing, so no own-removal echo is
+          // coming. Revoke this call's marker before the failure leaves this
+          // method — left in place it would consume a genuine out-of-band
+          // removal as the manager's own for the whole TTL, hiding the
+          // warning, the missing mark, and the stale owner cleanup. The
+          // identity check keeps a newer marker untouched.
+          if (providerManaged && this.intentionalProjectionRemovals.get(attempt.provider) === markedAt) {
+            this.intentionalProjectionRemovals.delete(attempt.provider)
+          }
+          throw error
+        }
+        // The removal succeeded: the projection the rows were claimed against
+        // is gone, so the provider's owner claim must go with it. The row is
+        // deliberately left untouched — same `grantRef`, still `valueMissing:
+        // false` — because it is still managed and its grant is still live;
+        // re-activating it re-projects the route.
+        if (ownerBeforeRemoval !== undefined
+          && (this.ownershipGenerations.get(attempt.provider) ?? 0) === generation) {
+          this.activeAccounts.delete(attempt.provider)
+          this.store.touch()
+        }
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
@@ -2146,7 +2226,6 @@ export class KeysManagerService {
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return
     const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
-    if (accounts.length === 0) return
     const activeId = this.activeAccounts.get(provider)
     const active = activeId === undefined
       ? undefined
@@ -2179,6 +2258,13 @@ export class KeysManagerService {
       }
       return
     }
+    // I-000125 marker hygiene: the removal branch above is the marker's ONLY
+    // consumer, so it must run before this early return. A provider that holds
+    // no OAuth row cannot be demoted (nothing to mark and nobody to warn), but
+    // its own removal echo still lands here — returning first would leave the
+    // marker armed for its whole TTL and mask a genuine out-of-band removal of
+    // the projection that serves a row added inside that window.
+    if (accounts.length === 0) return
     if (record.kind === 'api-key') {
       // Native api-key management took the route over: the manager no
       // longer owns any projection here.
@@ -3592,6 +3678,27 @@ export class KeysManagerService {
     this.activeAccounts.delete(record.provider)
   }
 
+  /**
+   * Drop any armed intentional-removal marker for a provider being released.
+   *
+   * The marker only exists to silence the record-updated echo of the manager's
+   * own projection removal, and that echo is dropped outright once the provider
+   * is unmanaged: {@link onGrantRecordUpdated} returns at event time and
+   * {@link reconcileGrantRecord} at body time. A release can land between the
+   * arm and that echo — the abort compensation arms inside the mutation queue
+   * while its echo is still chained behind an in-flight body — leaving the
+   * marker armed for its whole TTL with nothing left to consume it. A provider
+   * re-adopted inside that window would then read a genuine out-of-band
+   * removal as the manager's own: no warning, no `valueMissing`, no
+   * stale-owner cleanup.
+   *
+   * Called only on the successful release path: a release that throws leaves
+   * the provider managed, and its echo may still legitimately arrive.
+   */
+  private dropIntentionalRemoval(provider: string): void {
+    this.intentionalProjectionRemovals.delete(provider)
+  }
+
   /** Restore the provider profile and drop management; caller owns the queue. */
   private async releaseLocked(provider: string): Promise<void> {
     const record = this.store.provider(provider)
@@ -3620,6 +3727,7 @@ export class KeysManagerService {
     // overwrite the live profile.
     if (binding === 'mismatch') {
       await this.deleteManagedCredentials(record)
+      this.dropIntentionalRemoval(provider)
       delete this.store.providers[provider]
       this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
       this.rebuildBrokerMap()
@@ -3698,6 +3806,7 @@ export class KeysManagerService {
       }
       throw error
     }
+    this.dropIntentionalRemoval(provider)
     delete this.store.providers[provider]
     this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
     this.rebuildBrokerMap()
