@@ -2,14 +2,16 @@
  * Projection unit tests: request mapping and event translation.
  *
  * The request cases pin the seam contract (system prompt placement, history
- * roles, effort → wire model routing, and the typed refusals this task owns);
- * the event cases pin block indexes, terminal usage/finish mapping, and the
- * deliberate failure modes for events the task cannot carry.
+ * roles, tool declarations and tool-result replay, effort → wire model routing,
+ * and the typed refusals this task owns); the event cases pin block indexes,
+ * terminal usage/finish mapping, tool-call translation, and the deliberate
+ * failure modes for events the route cannot carry.
  */
 import {
   ToolCallId,
   attributionHeaders,
   createAssistantMessage,
+  createDeveloperMessage,
   createSystemMessage,
   createToolResultMessage,
   createUserMessage,
@@ -21,8 +23,9 @@ import { CURSOR_MODELS } from '../src/catalog/cursor.js'
 import type { OmpAssistantMessage, OmpAssistantMessageEvent, OmpUsage } from '../src/omp.js'
 import {
   CONTENT_UNSUPPORTED,
+  MALFORMED_TOOL_CALL,
   STREAM_CLOSED,
-  TOOLS_UNSUPPORTED,
+  TOOL_ARGUMENTS_INVALID,
   UNKNOWN_EVENT,
   UNKNOWN_FINISH,
   UNSUPPORTED_REASONING_EFFORT,
@@ -221,9 +224,7 @@ describe('projectRequest', () => {
     // DSH's compaction producer (`dsh-compaction-basic`) always sets `purpose`
     // and forwards a configured `maxTokens`; refusing either would kill every
     // compaction before the transport. Both are ignored, so the compacted
-    // history projects exactly like any other turn. The projection is
-    // knob-compatible but not tool-history-compatible: real compaction also
-    // sends `toolHistory` (Task 2), which still throws `TOOLS_UNSUPPORTED`.
+    // history projects exactly like any other turn.
     const projected = projectRequest(
       SONNET,
       request(
@@ -252,24 +253,29 @@ describe('projectRequest', () => {
     })
   })
 
-  it('still refuses the tool history real compaction carries', () => {
-    // The knobs above are accepted, but `dsh-compaction-basic` also sends the
-    // session's `toolHistory`, so compaction stays Task-2-gated: this assertion
-    // documents the limit instead of claiming the turn works.
-    expect(() =>
-      projectRequest(
-        SONNET,
-        request(
-          [createUserMessage({ content: [{ type: 'text', text: 'Summarize' }], source: { kind: 'user' } })],
-          {
-            purpose: 'compaction',
-            maxTokens: 8192,
-            toolHistory: { tools: [{ name: 'read', description: 'read', parameters: {} }], updates: [] },
-          },
-        ),
-        't',
-      ),
-    ).toThrowError(expect.objectContaining({ code: TOOLS_UNSUPPORTED }))
+  it('accepts the tool history real compaction carries', () => {
+    // `dsh-compaction-basic` sends the session's `toolHistory`. Cursor's wire
+    // advertises one declaration set per request and carries no declaration
+    // updates, so the history is consumed (DSH already folded the active set
+    // into `tools`) rather than refused; a compaction with no active tools
+    // therefore advertises none and claims no external executor.
+    const projected = projectRequest(
+      SONNET,
+      request([createUserMessage({ content: [{ type: 'text', text: 'Summarize' }], source: { kind: 'user' } })], {
+        purpose: 'compaction',
+        maxTokens: 8192,
+        toolHistory: {
+          tools: [{ name: 'read', description: 'read', parameters: {} }],
+          updates: [
+            { messageId: 'message-1' as never, additions: [{ name: 'grep', description: 'grep', parameters: {} }] },
+          ],
+        },
+      }),
+      't',
+    )
+
+    expect(projected.context.tools).toBeUndefined()
+    expect(projected.options.externalToolExecutor).toBeUndefined()
   })
 
   it('projects a session-title-shaped request', () => {
@@ -298,8 +304,8 @@ describe('projectRequest', () => {
       'the-token',
     )
 
-    // No `externalToolExecutor`: this task refuses every tool frame, so the turn
-    // advertises no executor to the transport (Task 2 turns it on with tools).
+    // No `externalToolExecutor`: the request advertises no tool, so there is no
+    // DSH tool loop the transport could hand an MCP call to.
     expect(projected.options).toEqual({
       apiKey: 'the-token',
       signal: controller.signal,
@@ -308,23 +314,142 @@ describe('projectRequest', () => {
     })
   })
 
-  it('refuses tools, tool history and tool results with a typed code', () => {
-    expect(() =>
-      projectRequest(SONNET, request([], { tools: [{ name: 'read', description: 'read', parameters: {} }] }), 't'),
-    ).toThrowError(expect.objectContaining({ code: TOOLS_UNSUPPORTED }))
-    expect(() =>
-      projectRequest(SONNET, request([], { toolHistory: { tools: [], updates: [] } }), 't'),
-    ).toThrowError(expect.objectContaining({ code: TOOLS_UNSUPPORTED }))
+  it('projects the active tool declarations and claims the external executor', () => {
+    const projected = projectRequest(
+      SONNET,
+      request(
+        [createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } })],
+        {
+          tools: [
+            {
+              name: 'lookup_doc',
+              description: 'Look a document up',
+              parameters: { type: 'object', properties: { query: { type: 'string' } } },
+            },
+            // A duplicate name keeps the last declaration, matching DSH's own
+            // name-keyed declaration folding.
+            { name: 'lookup_doc', description: 'Look it up again', parameters: {} },
+          ],
+        },
+      ),
+      't',
+    )
+
+    expect(projected.context.tools).toEqual([
+      { name: 'lookup_doc', description: 'Look it up again', parameters: {} },
+    ])
+    // The executor is claimed exactly when a declaration is advertised.
+    expect(projected.options.externalToolExecutor).toBe(true)
+  })
+
+  it('replays assistant tool calls and their results as paired history steps', () => {
+    const projected = projectRequest(
+      SONNET,
+      request([
+        createUserMessage({ content: [{ type: 'text', text: 'Read it' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: [{ type: 'tool-call', id: ToolCallId('call-1'), name: 'lookup_doc', arguments: '{"query":"hi"}' }],
+          source: { provider: 'cursor', model: 'claude-4.5-sonnet' },
+        }),
+        createToolResultMessage({
+          callId: ToolCallId('call-1'),
+          content: [{ type: 'text', text: 'document body' }],
+          isError: false,
+        }),
+        createUserMessage({ content: [{ type: 'text', text: 'Summarize it' }], source: { kind: 'user' } }),
+      ]),
+      't',
+    )
+
+    expect(projected.context.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Read it' }], timestamp: 0 },
+      expect.objectContaining({
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'call-1', name: 'lookup_doc', arguments: { query: 'hi' } }],
+      }),
+      {
+        role: 'toolResult',
+        toolCallId: 'call-1',
+        toolName: 'lookup_doc',
+        content: [{ type: 'text', text: 'document body' }],
+        isError: false,
+        timestamp: 0,
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Summarize it' }], timestamp: 0 },
+    ])
+  })
+
+  it('replays an orphan tool result without a name instead of refusing the history', () => {
+    // A compacted/truncated history can start with a result whose call is gone.
+    // The transport renders it as text; the projection must not lose the turn.
+    const projected = projectRequest(
+      SONNET,
+      request([
+        createToolResultMessage({
+          callId: ToolCallId('call-orphan'),
+          content: [{ type: 'text', text: 'orphan output' }],
+          isError: true,
+        }),
+      ]),
+      't',
+    )
+
+    expect(projected.context.messages).toEqual([
+      expect.objectContaining({ role: 'toolResult', toolCallId: 'call-orphan', toolName: '', isError: true }),
+    ])
+  })
+
+  it('folds tool-update blocks out of developer history', () => {
+    // Cursor cannot replay a declaration change; the active declarations are
+    // sent as MCP tools, so an update-only developer message projects to nothing.
+    const projected = projectRequest(
+      SONNET,
+      request([
+        createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } }),
+        createDeveloperMessage({
+          content: [{ type: 'tool-addition', toolName: 'lookup_doc' }],
+          source: { kind: 'user' },
+        }),
+      ]),
+      't',
+    )
+
+    expect(projected.context.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }], timestamp: 0 },
+    ])
+  })
+
+  it('refuses historical tool arguments that are not a JSON object', () => {
+    const call = (argumentsText: string): GenerateOptions =>
+      request([
+        createAssistantMessage({
+          content: [{ type: 'tool-call', id: ToolCallId('call-1'), name: 'lookup_doc', arguments: argumentsText }],
+          source: { provider: 'cursor', model: 'claude-4.5-sonnet' },
+        }),
+      ])
+
+    expect(() => projectRequest(SONNET, call('not json'), 't')).toThrowError(
+      expect.objectContaining({ code: TOOL_ARGUMENTS_INVALID }),
+    )
+    expect(() => projectRequest(SONNET, call('[1,2]'), 't')).toThrowError(
+      expect.objectContaining({ code: TOOL_ARGUMENTS_INVALID }),
+    )
+    // Empty arguments are a legal no-argument call.
+    expect(projectRequest(SONNET, call(''), 't').context.messages[0]).toMatchObject({
+      content: [{ type: 'toolCall', arguments: {} }],
+    })
+  })
+
+  it('refuses non-text tool result content instead of dropping it', () => {
     expect(() =>
       projectRequest(
         SONNET,
         request([
-          createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } }),
-          createToolResultMessage({ callId: ToolCallId('call-1'), content: [{ type: 'text', text: 'ok' }], isError: false }),
+          createToolResultMessage({ callId: ToolCallId('call-1'), content: [IMAGE], isError: false }),
         ]),
         't',
       ),
-    ).toThrowError(expect.objectContaining({ code: TOOLS_UNSUPPORTED }))
+    ).toThrowError(expect.objectContaining({ code: CONTENT_UNSUPPORTED }))
   })
 
   it('refuses image content instead of dropping it', () => {
@@ -470,10 +595,58 @@ describe('projectEvents', () => {
     expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'EMPTY_RESPONSE' } } })
   })
 
-  it('refuses tool-call and image events with a typed code', async () => {
+  it('translates a tool-call lifecycle and finishes tool-calls on a default stop', async () => {
+    // The external handoff leaves `stopReason` at `stop`: DSH's loop, not the
+    // provider, decides the turn ends on a call. The assembled content is what
+    // makes the finish `tool-calls`.
+    const partial: OmpAssistantMessage = {
+      role: 'assistant',
+      model: 'claude-4.5-sonnet',
+      content: [{ type: 'toolCall', id: 'call-1', name: 'lookup_doc', arguments: {} }],
+      usage: usage(),
+      stopReason: 'stop',
+    }
+    const chunks = await collect([
+      { type: 'toolcall_start', contentIndex: 0, partial },
+      { type: 'toolcall_delta', contentIndex: 0, delta: '{"query":', partial },
+      { type: 'toolcall_delta', contentIndex: 0, delta: '"hi"}', partial },
+      {
+        type: 'toolcall_end',
+        contentIndex: 0,
+        toolCall: { type: 'toolCall', id: 'call-1', name: 'lookup_doc', arguments: { query: 'hi' } },
+      },
+      {
+        type: 'done',
+        reason: 'stop',
+        message: {
+          ...partial,
+          content: [{ type: 'toolCall', id: 'call-1', name: 'lookup_doc', arguments: { query: 'hi' } }],
+          usage: usage({ input: 5, output: 2, totalTokens: 7 }),
+        },
+      },
+    ])
+
+    expect(chunks).toEqual([
+      { type: 'block-start', index: 0, blockType: 'tool-call' },
+      { type: 'tool-call-delta', index: 0, id: ToolCallId('call-1'), name: 'lookup_doc', argumentsDelta: '{"query":' },
+      { type: 'tool-call-delta', index: 0, id: ToolCallId('call-1'), name: 'lookup_doc', argumentsDelta: '"hi"}' },
+      {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'tool-call', id: ToolCallId('call-1'), name: 'lookup_doc', arguments: '{"query":"hi"}' },
+      },
+      { type: 'usage', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ])
+  })
+
+  it('refuses a tool-call event that carries no call block', async () => {
     await expect(collect([{ type: 'toolcall_start', contentIndex: 0 }])).rejects.toMatchObject({
-      code: TOOLS_UNSUPPORTED,
+      code: MALFORMED_TOOL_CALL,
     })
+  })
+
+  it('refuses image events with a typed code', async () => {
     await expect(collect([{ type: 'image_end', contentIndex: 0 }])).rejects.toMatchObject({
       code: CONTENT_UNSUPPORTED,
     })

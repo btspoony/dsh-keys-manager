@@ -9,9 +9,8 @@
  * - message fields the plugin writes into outbound history (`api`, `provider`,
  *   `timestamp`) are optional here because event fixtures and stream messages do
  *   not need them, while history mapping always supplies them;
- * - a content block carries `text` or `thinking`; other omp block kinds (tool
- *   calls, images) are recognized by their `type` and rejected where this task
- *   cannot carry them;
+ * - a content block carries `text`, `thinking`, or a tool call; image blocks are
+ *   recognized by their `type` and rejected where this route cannot carry them;
  * - the drift gate in `tests/build.test.ts` pins the omp version and source
  *   hashes, so a bump that changes these shapes fails before the plugin reads
  *   them.
@@ -81,6 +80,17 @@ export interface OmpContentBlock {
   readonly type: string
   readonly text?: string
   readonly thinking?: string
+  readonly id?: string
+  readonly name?: string
+  readonly arguments?: Readonly<Record<string, unknown>>
+}
+
+/** A tool invocation the transport emits for DSH's tool loop to execute. */
+export interface OmpToolCallBlock extends OmpContentBlock {
+  readonly type: 'toolCall'
+  readonly id: string
+  readonly name: string
+  readonly arguments: Readonly<Record<string, unknown>>
 }
 
 /** An omp assistant message: outbound history and the terminal stream payload. */
@@ -113,8 +123,25 @@ export interface OmpUserMessage {
   readonly timestamp: number
 }
 
+/** One tool result replayed in conversation history. */
+export interface OmpToolResultMessage {
+  readonly role: 'toolResult'
+  readonly toolCallId: string
+  readonly toolName: string
+  readonly content: readonly OmpContentBlock[]
+  readonly isError: boolean
+  readonly timestamp: number
+}
+
 /** Conversation history the transport accepts from the plugin. */
-export type OmpHistoryMessage = OmpUserMessage | OmpAssistantMessage
+export type OmpHistoryMessage = OmpUserMessage | OmpAssistantMessage | OmpToolResultMessage
+
+/** One tool declaration advertised to Cursor as an MCP tool. */
+export interface OmpTool {
+  readonly name: string
+  readonly description: string
+  readonly parameters: Record<string, unknown>
+}
 
 /** Stream opened; carries no content of its own. */
 export interface OmpStartEvent {
@@ -161,10 +188,27 @@ export interface OmpThinkingEndEvent {
   readonly content: string
 }
 
-/** A tool-call block lifecycle event (Task 2 of the plan carries these). */
-export interface OmpToolCallEvent {
-  readonly type: 'toolcall_start' | 'toolcall_delta' | 'toolcall_end'
+/** A tool-call block opened at `contentIndex`; the call's identity rides on `partial`. */
+export interface OmpToolCallStartEvent {
+  readonly type: 'toolcall_start'
   readonly contentIndex: number
+  readonly partial?: OmpAssistantMessage
+}
+
+/** More raw JSON arguments for the open tool-call block. */
+export interface OmpToolCallDeltaEvent {
+  readonly type: 'toolcall_delta'
+  readonly contentIndex: number
+  readonly delta?: string
+  readonly partial?: OmpAssistantMessage
+}
+
+/** The tool-call block closed at `contentIndex` with its assembled call. */
+export interface OmpToolCallEndEvent {
+  readonly type: 'toolcall_end'
+  readonly contentIndex: number
+  readonly toolCall?: OmpToolCallBlock
+  readonly partial?: OmpAssistantMessage
 }
 
 /** An image block completed inside the assistant turn. */
@@ -196,7 +240,9 @@ export type OmpAssistantMessageEvent =
   | OmpThinkingStartEvent
   | OmpThinkingDeltaEvent
   | OmpThinkingEndEvent
-  | OmpToolCallEvent
+  | OmpToolCallStartEvent
+  | OmpToolCallDeltaEvent
+  | OmpToolCallEndEvent
   | OmpImageEvent
   | OmpDoneEvent
   | OmpErrorEvent
@@ -220,6 +266,8 @@ export interface OmpCursorOptions {
 export interface OmpCursorContext {
   readonly systemPrompt?: readonly string[]
   readonly messages: readonly OmpHistoryMessage[]
+  /** Active tool declarations, advertised to Cursor as MCP tools. */
+  readonly tools?: readonly OmpTool[]
 }
 
 /** The injected transport shape: omp's `streamCursor`. */

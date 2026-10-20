@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest'
 
 import { CURSOR_ROUTE, OmpCursorAdapter, UNKNOWN_MODEL, UNKNOWN_PROVIDER } from '../src/adapter.js'
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
-import { STREAM_CLOSED, TOOLS_UNSUPPORTED, projectRequest } from '../src/projection.js'
+import { CONTENT_UNSUPPORTED, STREAM_CLOSED, projectRequest } from '../src/projection.js'
 import { scriptedTransport } from './replay.js'
 
 const SONNET = CURSOR_MODELS.find(row => row.id === 'claude-4.5-sonnet')
@@ -192,8 +192,19 @@ describe('OmpCursorAdapter text streaming', () => {
     })
 
     await expect(
-      collect(adapter.stream(request({ tools: [{ name: 'read', description: 'read', parameters: {} }] }))),
-    ).rejects.toMatchObject({ code: TOOLS_UNSUPPORTED })
+      collect(
+        adapter.stream(
+          request({
+            messages: [
+              createUserMessage({
+                content: [{ type: 'image', attachment: { attachmentId: 'img', mediaType: 'image/png' } } as never],
+                source: { kind: 'user' },
+              }),
+            ],
+          }),
+        ),
+      ),
+    ).rejects.toMatchObject({ code: CONTENT_UNSUPPORTED })
     expect(reads).toBe(0)
     expect(calls).toHaveLength(0)
   })
@@ -345,12 +356,6 @@ describe('OmpCursorAdapter failures', () => {
 
     expect(chunks.map(chunk => chunk.type)).toEqual(['usage', 'finish'])
     expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code, status } } })
-  })
-
-  it('refuses a tool-call turn with a typed code (Task 2 owns handoff)', async () => {
-    const { adapter } = adapterFor('cursor-tool-frame.jsonl')
-
-    await expect(collect(adapter.stream(request()))).rejects.toMatchObject({ code: TOOLS_UNSUPPORTED })
   })
 
   it('fails a stream that ended without a terminal event', async () => {

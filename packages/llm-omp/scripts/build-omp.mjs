@@ -150,7 +150,12 @@ const ompJsonAsEsm = () => ({
 const ompShims = () => ({
   name: 'omp-node-shims',
   setup(build_) {
-    build_.onResolve({ filter: /^@oh-my-pi\/pi-utils(\/.*)?$/ }, () => ({ path: PI_UTILS_SHIM }))
+    build_.onResolve({ filter: /^@oh-my-pi\/pi-utils(\/.*)?$/ }, args => {
+      // The shim re-exports omp's real JSON parser instead of reimplementing it;
+      // redirecting that import would resolve straight back to the shim.
+      if (args.importer === PI_UTILS_SHIM) return undefined
+      return { path: PI_UTILS_SHIM }
+    })
     build_.onResolve({ filter: /^bun(:.*)?$/ }, () => ({ path: BUN_SHIM }))
   },
 })
@@ -189,6 +194,14 @@ async function main() {
     '@oh-my-pi/pi-catalog/src/models.json': join(piCatalogRoot, 'src/models.json'),
     '@oh-my-pi/pi-catalog/src/wire/cursor.ts': join(piCatalogRoot, 'src/wire/cursor.ts'),
     '@oh-my-pi/pi-catalog/src/compat/rules/auth/cursor.kdl': join(piCatalogRoot, 'src/compat/rules/auth/cursor.kdl'),
+    // Real JSON algorithms the shim re-exports (not a reimplementation).
+    '@oh-my-pi/pi-utils/src/json-lexer.ts': join(packageRootOf('@oh-my-pi/pi-utils'), 'src/json-lexer.ts'),
+    '@oh-my-pi/pi-utils/src/json-parse.ts': join(packageRootOf('@oh-my-pi/pi-utils'), 'src/json-parse.ts'),
+    // The external-executor handoff text the wire fixture asserts verbatim.
+    '@oh-my-pi/pi-ai/src/providers/cursor-external-tool-handoff.md': join(
+      piAiRoot,
+      'src/providers/cursor-external-tool-handoff.md',
+    ),
   }
 
   const sourceHashes = {}

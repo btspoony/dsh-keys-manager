@@ -3,8 +3,8 @@
   "piCatalogVersion": "18.12.3",
   "esbuildVersion": "0.28.2",
   "entry": "lib/omp/cursor.mjs",
-  "moduleCount": 131,
-  "bytes": 1372931,
+  "moduleCount": 133,
+  "bytes": 1392691,
   "shimSymbols": {
     "pi-utils": [
       "$env",
@@ -12,11 +12,14 @@
       "$pickenv",
       "LRUCache",
       "classifyJsonPrefix",
+      "debug",
+      "error",
       "escapeXmlText",
       "extractHttpStatusFromError",
       "extractRetryHint",
       "getAgentDir",
       "getLogsDir",
+      "info",
       "isBunTestRuntime",
       "isEnoent",
       "isRecord",
@@ -30,6 +33,7 @@
       "stringifyJson",
       "structuredCloneJSON",
       "truncate",
+      "warn",
       "wrapFetchForExtraCa"
     ],
     "bun-modules": [
@@ -86,6 +90,9 @@
     "@oh-my-pi/pi-catalog/src/discovery/cursor-proto.ts": "sha256:fc98341073be49c4f1b81af94204444a0421ed98a6805de51cfc342cbd772e99",
     "@oh-my-pi/pi-catalog/src/models.json": "sha256:39fb09654ee3812043bc062e426d8e7aa13cd273435fa7b8a203a76246c8735c",
     "@oh-my-pi/pi-catalog/src/wire/cursor.ts": "sha256:1fead4198e3622d8d0b40ea83cb718f2927cf51a05b598ffd048212aa1a7e886",
-    "@oh-my-pi/pi-catalog/src/compat/rules/auth/cursor.kdl": "sha256:91e418257bb11fa6d32c0eadcbe2f25947d39ef2fcc0577fcf17de1694febe4b"
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/cursor.kdl": "sha256:91e418257bb11fa6d32c0eadcbe2f25947d39ef2fcc0577fcf17de1694febe4b",
+    "@oh-my-pi/pi-utils/src/json-lexer.ts": "sha256:c3ccb7932cd36a39db5c6a2f0cd331c8f91dddb56e621aa29b1f61b4c35757ef",
+    "@oh-my-pi/pi-utils/src/json-parse.ts": "sha256:9f3388c00ee71ac7a0feddbd362fd7ac907ec7e67c28e30e745c38acff78a6bf",
+    "@oh-my-pi/pi-ai/src/providers/cursor-external-tool-handoff.md": "sha256:620487ffda8ccfb39fa60700d9aae63a752c8f4359cf0939ddb125734d668b5d"
   }
 }

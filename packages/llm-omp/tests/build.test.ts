@@ -31,7 +31,12 @@ import { describe, expect, it } from 'vitest'
 import { jsonAsEsmModule } from '../scripts/build-omp.mjs'
 import { shimImportsOf } from '../scripts/omp-reach.mjs'
 import { Bun as BunGlobal, CryptoHasher, SHA256 } from '../scripts/omp-shim/bun-global'
-import { LRUCache } from '../scripts/omp-shim/pi-utils'
+import {
+  LRUCache,
+  classifyJsonPrefix,
+  parseJsonWithRepair,
+  parseStreamingJsonThrottled,
+} from '../scripts/omp-shim/pi-utils'
 import { CURSOR_CATALOG_SOURCE, CURSOR_MODELS } from '../src/catalog/cursor.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
@@ -227,6 +232,11 @@ describe('omp drift gate', () => {
     expect(keys).toContain('@oh-my-pi/pi-ai/src/providers/cursor.ts')
     expect(keys).toContain('@oh-my-pi/pi-catalog/src/discovery/cursor-proto.ts')
     expect(keys).toContain('@oh-my-pi/pi-catalog/src/wire/cursor.ts')
+    // The shim re-exports the real JSON algorithms, so their sources are part of
+    // the semantic surface the artifact ships.
+    expect(keys).toContain('@oh-my-pi/pi-utils/src/json-lexer.ts')
+    expect(keys).toContain('@oh-my-pi/pi-utils/src/json-parse.ts')
+    expect(keys).toContain('@oh-my-pi/pi-ai/src/providers/cursor-external-tool-handoff.md')
     for (const key of keys) {
       expect(sha256(installedSourcePath(key)), key).toBe(manifest.sourceHashes[key])
     }
@@ -356,6 +366,30 @@ describe('omp pi-utils shim contract', () => {
     // `a` was read, so `b` is the oldest entry now.
     expect(cache.has('a')).toBe(true)
     expect(cache.has('b')).toBe(false)
+  })
+
+  it('repairs the JSON malformations a model emits instead of dropping arguments', () => {
+    // These are the real omp algorithms, re-exported rather than approximated:
+    // a strict parse would turn each of these into a silently absent tool
+    // argument. The last case must still throw — a truncated final parse is a
+    // bad tool call, not one to execute.
+    expect(parseJsonWithRepair('{"query": "hi",}')).toEqual({ query: 'hi' })
+    expect(parseJsonWithRepair("{'query': 'hi'}")).toEqual({ query: 'hi' })
+    expect(parseJsonWithRepair('{"query": "it\'s"}')).toEqual({ query: "it's" })
+    expect(() => parseJsonWithRepair('{"query": ')).toThrow()
+  })
+
+  it('keeps streaming updates geometric and classifies partial prefixes', () => {
+    // The throttled parse is the tool-argument hot path: it must return the
+    // parsed prefix plus the length it consumed, and skip re-parsing until the
+    // buffer grew by max(256, len / 32).
+    const first = parseStreamingJsonThrottled<Record<string, unknown>>('{"query": "he', 0)
+    expect(first).toEqual({ value: { query: 'he' }, parsedLen: 13 })
+    expect(parseStreamingJsonThrottled('{"query": "he', 13)).toBeNull()
+
+    expect(classifyJsonPrefix('{"query": ')).toBe('prefix')
+    expect(classifyJsonPrefix('{"query":"hi"}')).toBe('complete')
+    expect(classifyJsonPrefix('{"query":"hi"}x')).toBe('invalid')
   })
 })
 

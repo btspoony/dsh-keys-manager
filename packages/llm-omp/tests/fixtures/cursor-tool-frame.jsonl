@@ -1,4 +1,0 @@
-{"type":"start"}
-{"type":"toolcall_start","contentIndex":0}
-{"type":"toolcall_delta","contentIndex":0,"delta":"{\"path\":\"/tmp/a\"}"}
-{"type":"toolcall_end","contentIndex":0}

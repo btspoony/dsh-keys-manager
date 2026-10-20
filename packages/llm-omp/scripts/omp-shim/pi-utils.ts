@@ -10,12 +10,18 @@
  * the bundled graph reaches (`shimImports`) — so a `simplify:` member becoming
  * reachable shows up as a manifest diff instead of a silent degradation.
  *
- * Semantics are intentionally conservative rather than clever. Anything marked
- * `simplify:` is a bounded stand-in whose real behaviour only matters once the
- * streaming projection lands; it must be revisited by the fixtures that
- * exercise it, not extended speculatively.
+ * Semantics are intentionally conservative rather than clever. The JSON
+ * parser/streamer are omp's own implementations re-exported (not reimplemented),
+ * because tool arguments are load-bearing; anything else marked `simplify:` is a
+ * bounded stand-in (retry hints and logging, where the seam or the host owns the
+ * policy) and is documented at its declaration.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import {
+  classifyJsonPrefix as realClassifyJsonPrefix,
+  parseJsonWithRepair as realParseJsonWithRepair,
+  parseStreamingJsonThrottled as realParseStreamingJsonThrottled,
+} from '@oh-my-pi/pi-utils/json-parse'
 
 /** Environment accessor omp reads as a record (`$env.KEY`). */
 export const $env: Record<string, string | undefined> = new Proxy(
@@ -72,6 +78,31 @@ export const logger = {
   error: console.error,
 }
 
+/**
+ * Level functions of omp's `@oh-my-pi/pi-utils/logger` subpath.
+ *
+ * Modules in this graph import that subpath as a namespace (`import * as
+ * logger`), so the names must exist on *this module's* namespace; the root
+ * `logger` object above is the other, object-shaped consumer. A namespace
+ * member this shim does not export resolves to `undefined` and throws only on
+ * the first debug call — which is why these are named explicitly.
+ */
+export function debug(message: string, context?: Record<string, unknown>): void {
+  logger.debug(message, context)
+}
+
+export function info(message: string, context?: Record<string, unknown>): void {
+  logger.info(message, context)
+}
+
+export function warn(message: string, context?: Record<string, unknown>): void {
+  logger.warn(message, context)
+}
+
+export function error(message: string, context?: Record<string, unknown>): void {
+  logger.error(message, context)
+}
+
 /** HTTP status carried by a thrown fetch/HTTP2 error, when present. */
 export function extractHttpStatusFromError(error: unknown): number | undefined {
   const status = (error as { status?: unknown; statusCode?: unknown } | null)?.status
@@ -112,27 +143,34 @@ export function escapeXmlText(text: string): string {
 /**
  * Parse JSON that may be truncated mid-stream.
  *
- * `simplify:` a strict parse plus `undefined` on failure. omp repairs partial
- * tool-argument JSON while it streams; the projection task owns that behaviour
- * and must not inherit a silent `undefined` here.
+ * The real omp parser (tolerant lexer + relaxed tree builder) is re-exported
+ * through a named binding rather than approximated: Cursor's `mcpArgs` frames
+ * carry argument maps whose values this must decode, and a strict parse plus
+ * `undefined` would turn an LLM-malformed argument into a silently missing tool
+ * argument. The build lets this one import reach the installed
+ * `@oh-my-pi/pi-utils` source (the shim itself is exempt from the package
+ * substitution), so the semantics are omp's byte-for-byte and the drift gate
+ * hashes the two sources that implement them.
  */
-export function parseJsonWithRepair<T = unknown>(text: string): T {
-  try {
-    return JSON.parse(text) as T
-  } catch {
-    return undefined as unknown as T
-  }
-}
+export const parseJsonWithRepair = realParseJsonWithRepair
+
+/**
+ * Throttled streaming parse used on Cursor's tool-argument hot path.
+ *
+ * The real implementation's geometric gate (re-parse only after the buffer
+ * grows by `len / 32`, floored at 256 bytes) is what keeps a long argument
+ * buffer O(N log N) instead of O(N²); the returned `parsedLen` is the cursor
+ * the transport persists on the block.
+ */
+export const parseStreamingJsonThrottled = realParseStreamingJsonThrottled
 
 /**
  * Classify a JSON prefix as complete / partial while streaming.
  *
- * `simplify:` reports `complete`; the streaming projection (Task 2) replaces
- * this with the real prefix classifier when tool-argument deltas are wired.
+ * The `complete` / `prefix` / `invalid` verdict decides whether a streamed
+ * buffer can absorb the next argument chunk or is already unsalvageable.
  */
-export function classifyJsonPrefix(_text: string): string {
-  return 'complete'
-}
+export const classifyJsonPrefix = realClassifyJsonPrefix
 
 /** JSON serialization helper omp uses for cache keys and logging. */
 export function stringifyJson(value: unknown): string {
@@ -219,16 +257,6 @@ export function structuredCloneJSON<T>(value: T): T {
 /** Truncate with an ellipsis marker. */
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}…`
-}
-
-/**
- * Throttled streaming-JSON parser.
- *
- * `simplify:` returns `undefined` until the tool-argument projection needs
- * partial values; the Task 2 fixtures are the contract that upgrades it.
- */
-export function parseStreamingJsonThrottled(_text: string): unknown {
-  return undefined
 }
 
 /** Text sanitizer for provider-visible content. */

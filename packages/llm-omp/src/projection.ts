@@ -6,15 +6,22 @@
  * - {@link projectRequest} turns one assembled `GenerateOptions` into the
  *   transport's three arguments (model, context, options): the one-shot
  *   `system` argument and a leading run of system messages move to Cursor's
- *   rule slot, history keeps text and reasoning, and the selected reasoning
- *   effort becomes the routed wire model id.
+ *   rule slot, history keeps text, reasoning, tool calls and tool results, the
+ *   active tool declarations become MCP tool definitions, and the selected
+ *   reasoning effort becomes the routed wire model id.
  * - {@link projectEvents} turns the transport's `AssistantMessageEvent` stream
  *   into `StreamChunk`s. Block indexes stay omp's `contentIndex`, as the
  *   reference pi-ai adapter does, and failures arrive as a terminal `finish`
  *   (usage first) rather than as throws, matching omp's in-band error style.
  *
- * Scope: this plan's Task 1 carries text, reasoning, usage and finish. Tool
- * calls (Task 2) and images are refused with a typed `LlmError` instead of
+ * Tool execution stays on DSH's side. Cursor's server drives execution over its
+ * exec channel, so the transport runs in external-executor mode: an unhandled
+ * MCP call is emitted as an unresolved tool call and answered with a handoff,
+ * then DSH's loop runs the tool and the next request replays the result from
+ * `toolHistory`/`tool` messages. The adapter never executes a tool itself.
+ *
+ * Scope: this plan's Task 1 carries text, reasoning, tool calls and tool
+ * results. Images and files are refused with a typed `LlmError` instead of
  * being dropped, so an unsupported turn fails loudly and names the limit. The
  * same rule covers genuinely unsupported content: a reasoning effort the model
  * does not advertise and a system message that is not part of the leading
@@ -28,11 +35,15 @@
  * (`dsh-session-title-llm`) request and forwards a configured `maxTokens` with
  * the compaction one, so refusing either would buy nothing the wire can carry;
  * Cursor enforces the catalog `maxTokens` limit server-side, from the model
- * object this projection already sends. Ignoring the knobs does not make
- * compaction usable yet: `dsh-compaction-basic` also sends the session's
- * `toolHistory`, which this projection refuses with `TOOLS_UNSUPPORTED` until
- * Task 2 projects tool history, so compaction is Task-2-gated rather than a
- * knob issue.
+ * object this projection already sends.
+ *
+ * `toolHistory` is consumed but cannot be replayed: the transport advertises one
+ * declaration set per request (MCP definitions) and its history carries no
+ * declaration updates. DSH's own `projectToolUpdates` already folds history
+ * into `options.tools` for a route that declares no update mode, so the active
+ * set is the projection and `toolHistory` only has to be accepted rather than
+ * refused — without that, a session that ever changed tools could not use this
+ * route at all.
  *
  * @module dsh-llm-omp-transports/projection
  */
@@ -40,6 +51,7 @@ import {
   CONTEXT_WINDOW_EXCEEDED_CODE,
   EMPTY_RESPONSE_CODE,
   LlmError,
+  ToolCallId,
   attributionHeaders,
   isContextWindowExceededError,
 } from '@deepseek-ai/dsh-llm'
@@ -50,6 +62,8 @@ import type {
   LlmFailure,
   StreamChunk,
   TokenUsage,
+  ToolCallBlock,
+  ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 
 import type {
@@ -61,13 +75,17 @@ import type {
   OmpCursorModel,
   OmpCursorOptions,
   OmpHistoryMessage,
+  OmpTool,
+  OmpToolCallBlock,
   OmpUsage,
 } from './omp.js'
 
-/** Machine code for a request or stream carrying tool calls this task cannot answer. */
-export const TOOLS_UNSUPPORTED = 'TOOLS_UNSUPPORTED'
-/** Machine code for content kinds (images, files, tool updates) the adapter cannot send. */
+/** Machine code for content kinds (images, files) the adapter cannot send. */
 export const CONTENT_UNSUPPORTED = 'CONTENT_UNSUPPORTED'
+/** Machine code for a historical tool call whose arguments are not a JSON object. */
+export const TOOL_ARGUMENTS_INVALID = 'TOOL_ARGUMENTS_INVALID'
+/** Machine code for a tool-call event that does not carry its call block. */
+export const MALFORMED_TOOL_CALL = 'MALFORMED_TOOL_CALL'
 /** Machine code for an event kind this adapter does not recognize. */
 export const UNKNOWN_EVENT = 'UNKNOWN_EVENT'
 /** Machine code for a terminal stop reason the adapter does not recognize. */
@@ -118,9 +136,10 @@ export interface ProjectedRequest {
  * @param accessToken - bearer token already resolved for this call; omit it to
  *   project before the credential is read.
  * @returns the transport arguments, ready to hand to `streamCursor`.
- * @throws LlmError with {@link TOOLS_UNSUPPORTED} when the request carries tools.
- * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this task cannot send, and
- *   for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
  * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} when the effort is not advertised by
  *   the model.
  */
@@ -129,13 +148,15 @@ export function projectRequest(
   options: GenerateOptions,
   accessToken?: string,
 ): ProjectedRequest {
-  if (options.tools !== undefined && options.tools.length > 0) throw toolsUnsupported('request tools')
-  if (options.toolHistory !== undefined) throw toolsUnsupported('tool history')
-
   const wireModelId = resolveWireModelId(row, options.reasoningEffort)
+  const tools = projectTools(options)
   const systemPrompt: string[] = []
   if (options.system !== undefined && options.system.length > 0) systemPrompt.push(options.system)
   const messages: OmpHistoryMessage[] = []
+  // Tool results carry no name of their own; replay pairs them by call id and
+  // needs the declaration's name, so the assistant turn that issued the call
+  // supplies it while history is projected in order.
+  const toolNames = new Map<string, string>()
   // The transport carries system text only as a prefix (`systemPrompt`), so a
   // system message is accepted while the conversation has not started yet;
   // anything later would have to be moved ahead of user turns to be sent.
@@ -148,12 +169,17 @@ export function projectRequest(
     }
     leading = false
     if (message.role === 'user' || message.role === 'developer') {
-      messages.push({ role: message.role, content: plainContent(message.content, message.role), timestamp: 0 })
-    } else if (message.role === 'assistant') {
-      messages.push(historyAssistant(message))
-    } else {
-      throw toolsUnsupported('tool results in history')
+      const content = plainContent(message.content, message.role)
+      // A developer message that carried only tool updates projects to no wire
+      // content; emitting an empty turn would add noise Cursor has to replay.
+      if (content.length > 0) messages.push({ role: message.role, content, timestamp: 0 })
+      continue
     }
+    if (message.role === 'assistant') {
+      messages.push(historyAssistant(message, toolNames))
+      continue
+    }
+    messages.push(historyToolResult(message, toolNames))
   }
 
   return {
@@ -161,22 +187,42 @@ export function projectRequest(
     context: {
       ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
       messages,
+      ...(tools !== undefined ? { tools } : {}),
     },
     options: {
       ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
       ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
       ...(wireModelId !== undefined ? { wireModelId } : {}),
-      // Deliberately no `externalToolExecutor`: this task refuses every request
-      // that carries tools and every tool-call frame, so the turn has no
-      // executor to offer. Claiming one would make the transport hand a
-      // Cursor-initiated MCP call back as a tool-call handoff that
-      // `projectEvents` then fails with `TOOLS_UNSUPPORTED`; leaving it off
-      // lets the transport answer the call itself as unknown. Task 2 sets it
-      // once it projects tools.
+      // Claim an external executor only when a tool is actually advertised.
+      // Without one there is no DSH tool loop to run a Cursor-initiated MCP
+      // call: the transport would emit an unresolved tool call that nothing
+      // answers, so it must answer the server frame itself as unknown. With one
+      // it hands the call to DSH and answers the frame with the handoff result.
+      ...(tools !== undefined ? { externalToolExecutor: true } : {}),
       headers: attributionHeaders(),
     },
   }
+}
+
+/**
+ * Project the request's active tool declarations onto Cursor's MCP tool list.
+ *
+ * `options.tools` is authoritative: DSH already folds `toolHistory` into it for
+ * a route that declares no update mode, and Cursor's wire advertises one
+ * declaration set per request with no way to replay an update. `deferLoading`
+ * is dropped because Cursor has no deferred-loading concept; a deferred tool
+ * must be callable from this route's first request or it never becomes usable.
+ * @param options - the assembled request.
+ * @returns the declarations in request order, or `undefined` when none are active.
+ */
+function projectTools(options: GenerateOptions): readonly OmpTool[] | undefined {
+  if (options.tools === undefined || options.tools.length === 0) return undefined
+  const byName = new Map<string, OmpTool>()
+  for (const tool of options.tools) {
+    byName.set(tool.name, { name: tool.name, description: tool.description, parameters: tool.parameters })
+  }
+  return [...byName.values()]
 }
 
 /**
@@ -232,11 +278,18 @@ function systemText(content: readonly ContentBlock[]): string[] {
   })
 }
 
-/** Map user/developer content to Cursor's text-only turn steps. */
+/**
+ * Map user content to Cursor's text-only turn steps.
+ *
+ * Developer content may also carry `tool-addition` / `tool-removal` blocks,
+ * which have no wire representation: the active declarations travel as MCP
+ * tool definitions instead, so those blocks are folded out rather than refused.
+ */
 function plainContent(content: readonly ContentBlock[], role: 'user' | 'developer'): OmpContentBlock[] {
-  return content.map(block => {
-    if (block.type !== 'text') throw unsupportedContent(block.type, role)
-    return { type: 'text', text: block.text }
+  return content.flatMap((block): OmpContentBlock[] => {
+    if (block.type === 'text') return [{ type: 'text', text: block.text }]
+    if (role === 'developer' && (block.type === 'tool-addition' || block.type === 'tool-removal')) return []
+    throw unsupportedContent(block.type, role)
   })
 }
 
@@ -253,8 +306,11 @@ function plainContent(content: readonly ContentBlock[], role: 'user' | 'develope
  * Reasoning from another provider is dropped rather than forwarded: it is not
  * Cursor-signed, the transport replays reasoning only for such history, and for
  * a K3 target the mismatched identity makes it refuse the history outright.
+ *
+ * Tool calls keep their provider-issued id so the transport can pair the
+ * replayed call with the `toolResult` step that answers it.
  */
-function historyAssistant(message: DshAssistantMessage): OmpAssistantMessage {
+function historyAssistant(message: DshAssistantMessage, toolNames: Map<string, string>): OmpAssistantMessage {
   const source = message.source
   const cursorSourced = source.provider === CURSOR_PROVIDER
   return {
@@ -262,6 +318,10 @@ function historyAssistant(message: DshAssistantMessage): OmpAssistantMessage {
     content: message.content.flatMap((block): OmpContentBlock[] => {
       if (block.type === 'text') return [{ type: 'text', text: block.text }]
       if (block.type === 'reasoning') return cursorSourced ? [{ type: 'thinking', thinking: block.text }] : []
+      if (block.type === 'tool-call') {
+        toolNames.set(block.id, block.name)
+        return [{ type: 'toolCall', id: block.id, name: block.name, arguments: toolArguments(block) }]
+      }
       throw unsupportedContent(block.type, 'assistant')
     }),
     model: source.model,
@@ -273,13 +333,50 @@ function historyAssistant(message: DshAssistantMessage): OmpAssistantMessage {
   }
 }
 
-function toolsUnsupported(what: string): LlmError {
-  return new LlmError(`llm-omp: ${what} are not supported on the cursor route yet`, TOOLS_UNSUPPORTED)
+/**
+ * Map one DSH `tool` message to the omp result step the transport replays.
+ *
+ * The name comes from the assistant call carried earlier in the same history;
+ * an orphan result (a truncated history) keeps an empty name, which the
+ * transport renders as text because nothing pairs it. Non-text result content
+ * is refused rather than dropped, like every other non-text block.
+ */
+function historyToolResult(message: ToolResultMessage, toolNames: ReadonlyMap<string, string>): OmpHistoryMessage {
+  return {
+    role: 'toolResult',
+    toolCallId: message.toolCallId,
+    toolName: toolNames.get(message.toolCallId) ?? '',
+    content: message.content.map(block => {
+      if (block.type !== 'text') throw unsupportedContent(block.type, 'tool')
+      return { type: 'text', text: block.text }
+    }),
+    isError: message.isError === true,
+    timestamp: 0,
+  }
+}
+
+/** Parse a historical tool call's raw JSON arguments into Cursor's object shape. */
+function toolArguments(block: ToolCallBlock): Readonly<Record<string, unknown>> {
+  if (block.arguments.trim().length === 0) return {}
+  let value: unknown
+  try {
+    value = JSON.parse(block.arguments)
+  } catch {
+    throw invalidToolArguments(`tool call "${block.name}" (${block.id}) carries arguments that are not JSON`)
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw invalidToolArguments(`tool call "${block.name}" (${block.id}) arguments must be a JSON object`)
+  }
+  return value as Record<string, unknown>
+}
+
+function invalidToolArguments(detail: string): LlmError {
+  return new LlmError(`llm-omp: ${detail}`, TOOL_ARGUMENTS_INVALID)
 }
 
 function unsupportedContent(kind: string, role: string): LlmError {
   return new LlmError(
-    `llm-omp: the cursor route carries text and reasoning only; ${role} message content block "${kind}" is not supported`,
+    `llm-omp: the cursor route carries text, reasoning and tool calls only; ${role} message content block "${kind}" is not supported`,
     CONTENT_UNSUPPORTED,
   )
 }
@@ -287,14 +384,17 @@ function unsupportedContent(kind: string, role: string): LlmError {
 /**
  * Translate one omp Cursor event stream into DSH chunks.
  *
- * Known-but-unsupported events (tool calls, images) throw a typed error; an
- * unknown event kind throws {@link UNKNOWN_EVENT} rather than being skipped.
+ * Known-but-unsupported events (images) throw a typed error; an unknown event
+ * kind throws {@link UNKNOWN_EVENT} rather than being skipped. A tool-call
+ * lifecycle becomes DSH's `block-start` / `tool-call-delta` / `block-end`
+ * sequence, and the turn finishes `tool-calls` whether the transport labelled
+ * it `toolUse` or left the default `stop`.
  * @param events - the transport's event stream for one turn.
  * @param signal - caller cancellation; an abort that races a provider error
  *   classifies that error as an aborted finish, as the seam expects.
  * @returns chunks ending with `usage` then `finish`.
- * @throws LlmError for unsupported or unrecognized events, and when the source
- *   ends without a terminal event.
+ * @throws LlmError for unsupported or unrecognized events, a tool-call event
+ *   without its call block, and when the source ends without a terminal event.
  */
 export async function* projectEvents(
   events: AsyncIterable<OmpAssistantMessageEvent>,
@@ -322,10 +422,38 @@ export async function* projectEvents(
       case 'text_end':
         yield { type: 'block-end', index: event.contentIndex, block: { type: 'text', text: event.content } }
         break
-      case 'toolcall_start':
-      case 'toolcall_delta':
-      case 'toolcall_end':
-        throw toolsUnsupported(`cursor "${event.type}" events`)
+      case 'toolcall_start': {
+        // Resolve the call now: DSH needs its id on every following delta, and a
+        // start without a block would leave a block that can never be closed.
+        toolCallOf(event.contentIndex, event.partial)
+        yield { type: 'block-start', index: event.contentIndex, blockType: 'tool-call' }
+        break
+      }
+      case 'toolcall_delta': {
+        const call = toolCallOf(event.contentIndex, event.partial)
+        yield {
+          type: 'tool-call-delta',
+          index: event.contentIndex,
+          id: ToolCallId(call.id),
+          name: call.name,
+          argumentsDelta: event.delta ?? '',
+        }
+        break
+      }
+      case 'toolcall_end': {
+        const call = event.toolCall ?? toolCallOf(event.contentIndex, event.partial)
+        yield {
+          type: 'block-end',
+          index: event.contentIndex,
+          block: {
+            type: 'tool-call',
+            id: ToolCallId(call.id),
+            name: call.name,
+            arguments: JSON.stringify(call.arguments ?? {}),
+          },
+        }
+        break
+      }
       case 'image_end':
         throw unsupportedContent('image', 'assistant')
       case 'done':
@@ -346,14 +474,40 @@ export async function* projectEvents(
 }
 
 /**
+ * Read the tool call one event with `contentIndex` refers to.
+ *
+ * omp emits `toolcall_start` / `toolcall_delta` with the assembled message as
+ * `partial`, whose block at `contentIndex` is the call that was just pushed; an
+ * adapter cannot invent the id, so a missing block is a malformed stream rather
+ * than something to paper over.
+ */
+function toolCallOf(contentIndex: number, partial: OmpAssistantMessage | undefined): OmpToolCallBlock {
+  const block = partial?.content[contentIndex]
+  if (block?.type !== 'toolCall' || typeof block.id !== 'string' || typeof block.name !== 'string') {
+    throw new LlmError(
+      `llm-omp: cursor tool-call event at index ${contentIndex} carries no call block`,
+      MALFORMED_TOOL_CALL,
+    )
+  }
+  return block as OmpToolCallBlock
+}
+
+/**
  * Map omp's finished message to a DSH finish reason.
+ *
+ * The transport leaves `stopReason` at its default `stop` for an external
+ * handoff — the agent loop, not the provider, decides the turn ends on a tool
+ * call — so the assembled content is what identifies a tool-call finish.
  * @param message - the assembled assistant message.
  * @param reason - the terminal event's own reason.
  * @returns the mapped finish chunk.
  * @throws LlmError with {@link UNKNOWN_FINISH} for a reason outside the mapped set.
  */
 function doneFinish(message: OmpAssistantMessage, reason: 'stop' | 'length' | 'toolUse'): FinishChunk {
+  if (reason === 'toolUse') return finishOf('tool-calls')
+  if (reason === 'length') return finishOf('max-tokens')
   if (reason === 'stop') {
+    if (message.content.some(block => block.type === 'toolCall')) return finishOf('tool-calls')
     if (message.content.length === 0) {
       return finishOf('error', {
         message: `llm-omp: cursor model "${message.model}" completed the turn with no content`,
@@ -362,8 +516,6 @@ function doneFinish(message: OmpAssistantMessage, reason: 'stop' | 'length' | 't
     }
     return finishOf('stop')
   }
-  if (reason === 'length') return finishOf('max-tokens')
-  if (reason === 'toolUse') return finishOf('tool-calls')
   throw new LlmError(`llm-omp: unrecognized cursor stop reason "${String(reason)}"`, UNKNOWN_FINISH)
 }
 
