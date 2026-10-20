@@ -3376,12 +3376,24 @@ export class KeysManagerService {
     const key = provider.keys.find(candidate => candidate.id === keyId)
     if (key === undefined) return
     const now = Date.now()
-    if (key.cooldownUntil > now && now - key.lastFailureAt < 10_000) return
+    // R6-SF1/R7-SF1: the projection generation is read at failure time and
+    // stamped on the row's window. It must be stamped on EVERY observed
+    // failure, including one the dedupe below skips: a failure of a freshly
+    // projected grant that lands inside an existing window still belongs to
+    // the new projection, and leaving the old stamp would let a later
+    // harvest clear a window the new projection earned.
+    const generation = this.ownershipGenerations.get(providerId) ?? 0
+    if (key.cooldownUntil > now && now - key.lastFailureAt < 10_000) {
+      // Dedupe skips only the cooldown EXTENSION; the attribution stamp
+      // always follows the live projection.
+      this.cooldownGenerations.set(key.id, generation)
+      return
+    }
     const result = applyFailureCooldown(key, this.store.settings, now, failure)
     // R6-SF1: stamp which projection earned this window. The generation is
     // read at failure time — never derived later from a cooldown timestamp —
     // so a harvest can clear only a window an older projection earned.
-    this.cooldownGenerations.set(key.id, this.ownershipGenerations.get(providerId) ?? 0)
+    this.cooldownGenerations.set(key.id, generation)
     // D1/D2 pool arbitration: when the OAuth grant itself failed (the pinned
     // pi-ai `ModelsError("oauth", …)` code), the account cools down AND the
     // cascade demotes to the key pool by deleting the projection record.

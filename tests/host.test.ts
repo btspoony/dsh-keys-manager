@@ -4137,6 +4137,51 @@ test('a stale cooldown stamped in the same millisecond still recovers (R6-SF1)',
   }
 })
 
+// Round-7 review (R7-SF1): `markFailure` returned inside the 10s dedupe
+// window BEFORE stamping `cooldownGenerations`, so a failure of the freshly
+// projected grant that arrived while the harvest was still parked kept the
+// PREVIOUS generation's stamp — and the harvest then cleared a window the new
+// projection had earned. The dedupe may skip extending the cooldown, but the
+// attribution stamp must follow the projection.
+
+test('a deduped failure still stamps the new projection generation (R7-SF1)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const internals = h.service as unknown as {
+      markFailure: (provider: string, keyId: string, failure: unknown) => void
+    }
+    // The previous projection already earned a cooling window.
+    internals.markFailure('anthropic', rowId, { code: 'server_error', message: 'upstream 500' })
+    const oldWindow = row.cooldownUntil
+    assert.ok(oldWindow > Date.now(), 'the old window is cooling the row')
+    // Re-authentication re-projects the account; park the harvest before its
+    // plugin-copy write so the new generation is already serving.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.credentials.raw.readRecordDelayMs = 80
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // The new grant fails inside the dedupe window: it does not extend the
+    // cooldown (that is what the dedupe is for), but the window is now the
+    // NEW projection's.
+    internals.markFailure('anthropic', rowId, { code: 'server_error', message: 'upstream 500' })
+    h.credentials.raw.readRecordDelayMs = 0
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    // The harvest must not wipe a window its freshly projected grant earned.
+    assert.ok(row.cooldownUntil > Date.now(), 'the window survives the harvest')
+    const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(provider.keys.find(key => key.id === rowId)!.status, 'cooling')
+    assert.equal(provider.healthyKeyCount, provider.keys.filter(key => key.status === 'active').length)
+  } finally {
+    h.credentials.raw.readRecordDelayMs = 0
+    await h.close()
+  }
+})
+
 test('activating a cooling account clears its stale cooldown (M1)', async () => {
   // Round-5 finding M1: re-authentication clears the stale cooldown, but the
   // manual "Set active" recovery did not, so the re-projected grant kept
