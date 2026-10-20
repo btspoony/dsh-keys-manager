@@ -3042,6 +3042,21 @@ async function eventually(check: () => void): Promise<void> {
   check()
 }
 
+/**
+ * Drain one provider's grant-reconciliation chain.
+ *
+ * `onGrantRecordUpdated` is fire-and-forget (the seam event carries no
+ * completion channel), so an assertion about what an echo did or did not
+ * write must wait until the chain is genuinely empty — one mutation-queue
+ * turn is not enough. The chain entry disappears only when its newest body
+ * has settled, so an absent entry proves every echo of the mutations written
+ * so far has been processed.
+ */
+async function drainGrantChain(h: Harness, provider: string): Promise<void> {
+  const chains = (h.service as unknown as { grantReconciliations: Map<string, Promise<void>> }).grantReconciliations
+  await eventually(() => assert.equal(chains.get(provider), undefined))
+}
+
 const GRANT_KEY = 'llm-pi-ai/anthropic'
 
 function grantPayload(overrides: Record<string, unknown> = {}): FakeCredentialRecord {
@@ -3784,11 +3799,19 @@ test('a harvest queued behind a failed release demotes the settled projection (r
 // owner claim is dropped and a misleading "removed outside Keys Manager"
 // warning is pushed, although that row and its plugin-scope grant are
 // untouched by the abort.
+//
+// The marker alone only silences that echo (follow-up review I1): the route
+// keeps no projection while the manager still claims one. The truthful end
+// state is explicit — the surviving owner is re-projected from its own
+// plugin-scope record, so the claim names the grant pi-ai really serves.
 
-test('a settled abort marks its projection demotion as the manager\'s own removal (I-000125)', async () => {
+test('a settled abort re-projects the surviving account instead of claiming a missing projection (I-000125)', async () => {
   const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
   try {
     const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
     const isProjected = (): boolean => h.service.buildState().providers
       .find(entry => entry.provider === 'anthropic')!.keys
       .some(key => key.id === rowId && key.projected === true)
@@ -3796,9 +3819,19 @@ test('a settled abort marks its projection demotion as the manager\'s own remova
     // Let the activation echo's reconciliation round finish before the
     // attempt's grant replaces the projection, so nothing below is
     // attributable to that round.
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await drainGrantChain(h, 'anthropic')
     assert.equal(isProjected(), true)
     assert.equal(warnings().includes('removed outside Keys Manager'), false)
+    // Pin the ordering the marker exists for: the removal's echo reconciles
+    // WHILE the re-projection's own read is still in flight (the seam's event
+    // fan-out is not ordered against the writer's continuation). Parking that
+    // read makes the race deterministic instead of leaving it to microtask
+    // luck: without the marker the echo demotes the row and pushes the
+    // misleading warning before the re-projection can restore anything.
+    raw.readRecord = async (key: string) => {
+      if (key === grantRef) await new Promise(resolve => setTimeout(resolve, 20))
+      return realRead(key)
+    }
     // The seam commits THIS attempt's grant as the provider projection at
     // the settlement broadcast; it belongs to a different account.
     h.credentials.records.set(GRANT_KEY, grantPayload({
@@ -3819,17 +3852,77 @@ test('a settled abort marks its projection demotion as the manager\'s own remova
     // The next queued mutation resolves only after the harvest callback ran.
     await h.service.setSettings({})
     assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
-    // The projection this attempt committed is demoted...
-    assert.equal(h.credentials.records.has(GRANT_KEY), false)
-    // ...and the deletion's echo must not read back as an external removal:
-    // the already-managed account keeps its row, its plugin-scope grant and
+    // The reconciliation chain (the removal's echo and the re-projection's
+    // echo) is fire-and-forget: drain it before asserting on what it wrote.
+    await drainGrantChain(h, 'anthropic')
+    // Snapshot the warnings before any `buildState()` call — it drains them.
+    const emitted = warnings()
+    // The attempt's grant is gone from the route, and the previous account
+    // serves it again from its own live plugin-scope record. The manager's
+    // `projected: true` therefore stays TRUE because it is true — not merely
+    // because the reconciler was silenced.
+    const projection = h.credentials.records.get(GRANT_KEY)
+    assert.notEqual(projection, undefined, 'the surviving account is re-projected')
+    assert.equal((projection!.payload as Record<string, unknown>).refresh, 'rt-seed-value')
+    assert.equal((projection!.payload as Record<string, unknown>).accountId, 'acc-1')
+    // The already-managed account keeps its row, its plugin-scope grant and
     // its owner claim, and no misleading warning is emitted.
     const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
     assert.equal(row.valueMissing, false, 'the active account is not demoted')
     assert.equal(row.oauth!.grantRef, grantRef)
     assert.equal(h.credentials.records.has(grantRef), true)
     assert.equal(isProjected(), true, 'the active account keeps its owner claim')
-    assert.equal(warnings().includes('removed outside Keys Manager'), false)
+    assert.equal(emitted.includes('removed outside Keys Manager'), false)
+    // The one-shot marker was consumed by the removal's own echo.
+    assert.equal(markers.has('anthropic'), false)
+  } finally {
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+// I-000125, fallback half: re-projection needs the surviving account's own
+// plugin-scope record. When it is gone the manager cannot honestly keep
+// claiming the route, so it demotes the row with the cause it actually knows —
+// never the "removed outside Keys Manager" wording, which describes an
+// external writer.
+
+test('a settled abort demotes the surviving account when its grant cannot be re-projected (I-000125)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  try {
+    const isProjected = (): boolean => h.service.buildState().providers
+      .find(entry => entry.provider === 'anthropic')!.keys
+      .some(key => key.id === rowId && key.projected === true)
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The record backing the claim disappears out of band; the row still
+    // names it, so re-projection has nothing to write back.
+    h.credentials.records.delete(grantRef)
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    // The mutation that drains the harvest also hands back the state response,
+    // which carries (and drains) the warnings pushed while it ran.
+    const settled = await h.service.setSettings({})
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    const emitted = settled.warnings.join('\n')
+    // Nothing is projected any more, and the manager now says so.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, true, 'the surviving row is demoted')
+    assert.equal(isProjected(), false, 'no account claims the removed projection')
+    assert.match(emitted, /sign-in failed or was cancelled/)
+    assert.equal(emitted.includes('removed outside Keys Manager'), false)
   } finally {
     await h.close()
   }
@@ -6203,6 +6296,65 @@ test('a failed projection delete does not mask a later out-of-band removal (R7-S
     assert.equal(row.valueMissing, true)
     // The stale owner entry is dropped with it.
     assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.some(key => key.projected === true), false)
+  } finally {
+    h.credentials.raw.failDeleteRecord = false
+    await h.close()
+  }
+})
+
+// I-000125 (second producer of the one-shot marker): `revertHarvestProjection`
+// registers the same marker as `decideAndDeleteProjection` and revokes it —
+// identity-checked — when the delete throws. The shared consumer's one-shot
+// and expiry behaviour is already pinned by the W5 expiry test and the R7-SF2
+// failed-delete test above; this case proves the NEW call site revokes its own
+// marker too, so the abort path cannot mask a later genuine out-of-band
+// removal for the rest of the TTL.
+
+test('a throwing abort-path projection revoke leaves no marker masking a later removal (I-000125)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  try {
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    // `warn()` logs through the host logger; `pushWarning()` rides the state
+    // response. The compensation failure is a log line, the out-of-band
+    // removal is a state warning — capture both.
+    const logged: string[] = []
+    h.ctx.logger.warn = (message: string) => { logged.push(message) }
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The seam commits THIS attempt's grant as the route projection.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    // Fail the compensation's projection delete: the marker is set right
+    // before it and must be revoked before the failure leaves the method.
+    h.credentials.raw.failDeleteRecord = true
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    await h.service.setSettings({})
+    h.credentials.raw.failDeleteRecord = false
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // The failed revoke is observable and left no marker behind.
+    assert.ok(
+      logged.some(message => message.includes('could not revert the projection for anthropic')),
+      `expected a compensation failure log, got: ${logged.join(' | ')}`,
+    )
+    assert.equal(markers.has('anthropic'), false, 'the failed revoke revoked its marker')
+    // The delete threw, so the record is still live; a genuine out-of-band
+    // removal inside the TTL window still surfaces the demotion warning.
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(warnings(), /removed outside Keys Manager/))
+    assert.equal(h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!.valueMissing, true)
   } finally {
     h.credentials.raw.failDeleteRecord = false
     await h.close()

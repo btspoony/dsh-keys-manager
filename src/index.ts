@@ -1906,6 +1906,19 @@ export class KeysManagerService {
    * flagged `valueMissing`, its owner claim is dropped and a misleading
    * "removed outside Keys Manager" warning is pushed — even though that
    * row and its plugin-scope grant are untouched.
+   *
+   * The marker only silences that echo. It does NOT make the manager's state
+   * truthful: after the delete the route has no stored projection while
+   * {@link activeAccounts} still names the account that served it, so
+   * `oauthOwnerFor` keeps rendering `projected: true` and oauth failures stay
+   * attributed to a row pi-ai no longer resolves. The transition is therefore
+   * written explicitly here, by {@link restorePreviousProjection}, once the
+   * removal succeeded (I-000125, truthfulness half).
+   *
+   * Known bound: while the marker is set and the removal's echo never arrives
+   * (the handler returns early for a provider no longer managed), a genuine
+   * out-of-band removal inside the TTL window is masked. The TTL bounds that
+   * window; this second producer does not widen it beyond the demotion path.
    */
   private async revertHarvestProjection(
     attempt: LoginAttempt,
@@ -1913,6 +1926,10 @@ export class KeysManagerService {
   ): Promise<{ ok: true } | { ok: false; failure: string }> {
     const records = this.credentialRecords()
     if (records === undefined) return { ok: true }
+    // The account that owned the projection before this attempt's grant
+    // replaced it. Captured before the delete because the delete is what
+    // makes the retained claim untruthful; restored explicitly afterwards.
+    const previousOwner = this.activeAccounts.get(attempt.provider)
     try {
       const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
       // Same atomic decide-and-delete as the demotion path (round-3
@@ -1955,6 +1972,9 @@ export class KeysManagerService {
           }
           throw error
         }
+        // The removal succeeded: the route lost the projection this attempt
+        // committed, so the manager must now say what actually serves it.
+        await this.restorePreviousProjection(attempt.provider, previousOwner, attempt.accountId, harvest.payload)
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
@@ -1964,6 +1984,106 @@ export class KeysManagerService {
       this.warn(failure)
       return { ok: false, failure }
     }
+  }
+
+  /**
+   * Write the projection state the manager can actually stand behind after
+   * this manager removed the attempt's committed grant.
+   *
+   * The `llm-pi-ai/<provider>` record belongs to the ROUTE, not to the failed
+   * attempt: before the sign-in it held `previousOwner`'s grant, and that
+   * owner's plugin-scope record is still live (the abort path never wrote it;
+   * the flush rollback restored it). Rewriting it through the same
+   * read → project → claim sequence {@link activateAccount} uses keeps the
+   * route serving the account it served before, so `oauthOwnerFor`,
+   * `projected` and oauth failure attribution name the row pi-ai really
+   * resolves. That is the truthful end state — a marker alone would leave the
+   * row claiming a projection that no longer exists.
+   *
+   * When the surviving owner cannot be re-projected — its plugin-scope record
+   * is gone or unusable, the row was removed meanwhile, or the attempt itself
+   * owned the row — the row is demoted with the cause the manager actually
+   * knows (the sign-in failed or was cancelled), never the "removed outside
+   * Keys Manager" wording that describes an external writer.
+   *
+   * No previous owner — a first-ever login for the route — keeps the silent
+   * delete: there is no claim to correct and no row to demote.
+   */
+  private async restorePreviousProjection(
+    provider: string,
+    previousOwner: string | undefined,
+    attemptAccountId: string | undefined,
+    attemptPayload: OAuthGrantPayload,
+  ): Promise<void> {
+    if (previousOwner === undefined) return
+    const providerRecord = this.store.provider(provider)
+    if (providerRecord === undefined) return
+    const row = providerRecord.keys.find(candidate =>
+      candidate.id === previousOwner && candidate.kind === 'oauth' && candidate.oauth !== null)
+    if (row === undefined || row.oauth === null) {
+      // The row that used to serve this route is gone (its removal path owns
+      // the claim) — there is nothing left to re-project or demote.
+      if (this.activeAccounts.get(provider) === previousOwner) {
+        this.activeAccounts.delete(provider)
+        this.store.touch()
+      }
+      return
+    }
+    if (this.activeAccounts.get(provider) !== previousOwner) {
+      // A newer activation or login already claimed the route and wrote its
+      // own projection; this attempt's stale observation must not overrule it.
+      return
+    }
+    const records = this.credentialRecords()
+    if (records !== undefined && previousOwner !== attemptAccountId) {
+      const grantRef = row.oauth.grantRef
+      let stored: CredentialRecordLike | undefined
+      try {
+        stored = await records.readRecord(grantRef)
+      } catch (error) {
+        this.warn(`the ${provider} projection could not be restored after the failed sign-in: reading ${grantRef} failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      // The rollback that restores a re-authentication's superseded generation
+      // is best-effort. When it did not land, this record still holds the
+      // failed attempt's own payload — projecting that would present the
+      // failed sign-in's credential as the previous account's grant.
+      if (stored !== undefined && stored.payload !== undefined
+        && JSON.stringify(stored.payload) === JSON.stringify(attemptPayload)) {
+        this.warn(`the ${provider} projection was not restored: ${grantRef} still holds the failed sign-in's payload`)
+      } else if (stored !== undefined && stored.kind === 'grant' && isOAuthGrantPayload(stored.payload)) {
+        const generation = this.ownershipGenerations.get(provider) ?? 0
+        let wrote = false
+        try {
+          await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, async current => {
+            // Fill only the slot this removal just freed: a native writer that
+            // already put a grant back owns the projection now, and its echo
+            // reconciles the ownership; overwriting it would destroy a record
+            // this manager never captured.
+            if (current !== undefined) return undefined
+            wrote = true
+            return { kind: 'grant', payload: structuredClone(stored!.payload) }
+          })
+        } catch (error) {
+          this.warn(`the ${provider} projection could not be restored after the failed sign-in: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        if (wrote) {
+          // The previous account serves the route again: keep its claim (and
+          // its generation) so attribution follows the live projection. A
+          // newer claim landing during the write wins, exactly like a stale
+          // hydration or echo adoption.
+          if ((this.ownershipGenerations.get(provider) ?? 0) === generation) this.claimProjectionOwner(provider, row.id)
+          return
+        }
+      }
+    }
+    if (this.activeAccounts.get(provider) !== previousOwner) return
+    // Re-projection is not available: demote the surviving row with the real
+    // cause. The projection is already gone, so the route resolves through its
+    // API-key pool and the row must say so.
+    row.valueMissing = true
+    this.activeAccounts.delete(provider)
+    this.store.touch()
+    this.pushWarning(`The ${provider} sign-in failed or was cancelled; Keys Manager removed its pending projection, so the route now resolves through its API-key pool. Re-activate the account or sign in again to restore it.`)
   }
 
   /** Expire wedged sign-ins and drop long-settled attempt records. */
