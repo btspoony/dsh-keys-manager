@@ -1433,6 +1433,11 @@ export class KeysManagerService {
    * recorded at that same broadcast (R6-SF1): it names the projection whose
    * failures own a cooldown, so the stale-window reset below clears only a
    * window attributed to an OLDER projection.
+   *
+   * A harvest that finds the attempt already settled writes neither the
+   * plugin-scope copy nor a row, but the projection the seam committed for
+   * this attempt is still demoted (ownership-checked, I-000122): a
+   * failed/cancelled login must not keep serving through the route.
    */
   private async harvestLogin(
     attempt: LoginAttempt,
@@ -1528,10 +1533,21 @@ export class KeysManagerService {
         // user sees is failed while the harvest would write the grant and
         // the account row. Revalidate settlement immediately before the
         // first credential write: a settled attempt must never grow a grant
-        // copy or a row. Nothing of this harvest is written yet, so the
-        // abort needs no compensation, and the release already published the
-        // terminal it owns.
-        if (attempt.settledAt !== undefined) return
+        // copy or a row.
+        //
+        // I-000122: aborting the write is not enough. The seam committed
+        // THIS attempt's grant as the provider's `llm-pi-ai` projection at
+        // the settlement broadcast, so returning here would leave the route
+        // serving a grant whose login failed/cancelled. Compensate that
+        // projection through the same ownership-checked path the failure
+        // handler uses: only the payload captured for this attempt is
+        // deleted, a foreign or newer live grant is never touched, and
+        // unknown provenance stays a loud skip. The release already
+        // published the terminal it owns.
+        if (attempt.settledAt !== undefined) {
+          await this.compensateFailedHarvest(attempt, harvest)
+          return
+        }
         await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
         facts.wroteRef = true
         const now = Date.now()

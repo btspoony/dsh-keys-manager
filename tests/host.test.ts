@@ -3668,13 +3668,16 @@ test('a release that wins the race still lets the revoked login clean its projec
   }
 })
 
-// Codex P2 (PR #17): a release queued AHEAD of the harvest can finalize the
-// attempt and then fail its own preflight (unreadable settings), leaving the
-// provider managed. The authorized settlement arrived while that release body
-// was still parked, so the harvest's pre-queue settled guard passed and its
-// callback ran afterwards — and used to write the grant copy plus the account
-// row while the attempt the user sees stayed failed. The callback must
-// revalidate settlement immediately before its first credential write.
+// Codex P2 (PR #17) + I-000122: a release queued AHEAD of the harvest can
+// finalize the attempt and then fail its own preflight (unreadable settings),
+// leaving the provider managed. The authorized settlement arrived while that
+// release body was still parked, so the harvest's pre-queue settled guard
+// passed and its callback ran afterwards — and used to write the grant copy
+// plus the account row while the attempt the user sees stayed failed. The
+// callback must revalidate settlement immediately before its first credential
+// write, and because the seam already committed this attempt's grant as the
+// provider projection at that broadcast, it must also demote that projection
+// before returning instead of leaving the route on a failed login's grant.
 
 test('a queued harvest never writes credentials for an attempt a failed release already settled (P2)', async () => {
   const h = await harnessWithManagedAnthropic()
@@ -3701,11 +3704,14 @@ test('a queued harvest never writes credentials for an attempt a failed release 
     // so the absence checks below are deterministic rather than a timing bet.
     await h.service.setSettings({})
     // No credential write and no row upsert: the settled attempt keeps the
-    // terminal it already has, and the seam's projection stays untouched
-    // because nothing of this harvest was ever written to compensate.
+    // terminal it already has. The projection the seam committed for this
+    // attempt at the settlement broadcast is demoted through the
+    // ownership-checked compensation (I-000122), so a failed login cannot
+    // keep serving, while the provider itself stays managed.
     assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
     assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
-    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    assert.notEqual(h.store.provider('anthropic'), undefined)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
     const settled = h.service.getAccountAttempt(view.id)!
     assert.equal(settled.status, 'failed')
     assert.equal(settled.accountId, undefined)
@@ -3719,6 +3725,101 @@ test('a queued harvest never writes credentials for an attempt a failed release 
     await eventually(() => assert.equal(h.service.getAccountAttempt(next.id)!.status, 'ready'))
     assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 1)
   } finally {
+    await h.close()
+  }
+})
+
+// Issue #18 (store I-000122), the named release-ahead-of-harvest regression:
+// a release queued ahead of the harvest cancels the sign-in and then refuses
+// its own preflight, so the provider survives while the seam has already
+// committed this attempt's grant as the route's projection. The queued harvest
+// must demote that projection (ownership-checked) instead of leaving the route
+// authenticated against a failed login — and an account that was already
+// managed must keep its row and its plugin-scope grant untouched.
+
+test('a harvest queued behind a failed release demotes the settled projection (release-ahead-of-harvest)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  try {
+    // The seam committed THIS attempt's grant as the provider projection.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // The release queues first and then fails its preflight, so the provider
+    // survives and the harvest queued behind it still runs.
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    // The settlement broadcast arrives while the release body is parked.
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    // The next queued mutation resolves only after the harvest callback ran.
+    await h.service.setSettings({})
+    // The release owns the terminal; the harvest adds nothing to it.
+    const failed = h.service.getAccountAttempt(view.id)!
+    assert.equal(failed.status, 'failed')
+    assert.match(failed.error ?? '', /released during sign-in/)
+    assert.equal(failed.accountId, undefined)
+    // No plugin-scope copy and no row for the settled attempt.
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 1)
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').map(key => key.id).join(','), rowId)
+    // The projection this attempt committed is demoted...
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    // ...while the account that was already managed keeps its grant copy.
+    assert.equal(h.credentials.records.has(grantRef), true)
+  } finally {
+    await h.close()
+  }
+})
+
+// I-000122 provenance safety: the settled abort may only demote the projection
+// while it still carries the payload captured for THIS attempt. A newer or
+// native grant that replaced it before the queued harvest ran belongs to
+// someone else and must survive the abort.
+
+test('a settled abort never demotes a projection another writer replaced (I-000122)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  const warnings: string[] = []
+  h.ctx.logger.warn = (message: string) => {
+    warnings.push(message)
+  }
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-settled-attempt', access: 'at-settled-attempt' }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    // The settlement capture reads this attempt's payload; a native writer
+    // replaces the projection immediately afterwards, before the queued
+    // harvest runs.
+    raw.readRecord = async (key: string) => {
+      const record = await realRead(key)
+      if (key === GRANT_KEY) {
+        h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-replacement', access: 'at-native-replacement' }))
+      }
+      return record
+    }
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    await h.service.setSettings({})
+    // The live projection belongs to another writer: untouched.
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.notEqual(live, undefined)
+    assert.equal((live!.payload as Record<string, unknown>).refresh, 'rt-native-replacement')
+    // The refused demotion is observable, not silent.
+    assert.ok(
+      warnings.some(message => message.includes('kept the projection for anthropic')),
+      `expected a compensation skip warning, got: ${warnings.join(' | ')}`,
+    )
+  } finally {
+    raw.readRecord = realRead
     await h.close()
   }
 })
