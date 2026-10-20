@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
-import type { KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
+import type { ExtraProvider, KeyRecord, ProviderRecord, ProviderView, StateView } from '../src/domain'
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
+import { EXTRA_PROVIDER_MAP } from '../src/providers'
 import { KeysManagerStore } from '../src/store'
 
 const ORIGINAL = Symbol.for('cordis.original')
@@ -857,12 +858,12 @@ test('extra provider installation writes a complete pi-ai profile and release re
 })
 
 /** Restore COREWEAVE_PROJECT around one body; `undefined` means "not set". */
-async function withCoreweaveProject(value: string | undefined, body: () => Promise<void>): Promise<void> {
+async function withCoreweaveProject<T>(value: string | undefined, body: () => Promise<T>): Promise<T> {
   const saved = process.env.COREWEAVE_PROJECT
   if (value === undefined) delete process.env.COREWEAVE_PROJECT
   else process.env.COREWEAVE_PROJECT = value
   try {
-    await body()
+    return await body()
   } finally {
     if (saved === undefined) delete process.env.COREWEAVE_PROJECT
     else process.env.COREWEAVE_PROJECT = saved
@@ -1093,6 +1094,187 @@ test('adopting a stored coreweave profile without the variable writes nothing', 
     assert.equal(h.store.provider('coreweave'), undefined)
     assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')), [])
   } finally {
+    await h.close()
+  }
+})
+
+test('adding coreweave installs the seed catalog without running model discovery', async () => {
+  const h = await harness()
+  try {
+    const discover = vi.spyOn(h.llm, 'discoverModels')
+    const state = await withCoreweaveProject('team/project', () =>
+      h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+    )
+    // Discovery cannot carry the declared header, so the probe would only fail.
+    assert.equal(discover.mock.calls.length, 0)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.equal(profile.models.length, 44)
+    assert.doesNotMatch(state.warnings.join('\n'), /Model discovery failed/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again leaves a deleted Models profile alone', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave
+    const state = await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-second'))
+    // No header-only half-profile is created for a route whose profile is gone.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave, undefined)
+    assert.match(
+      state.warnings.join('\n'),
+      /Did not restore the OpenAI-Project header on the coreweave route: its Models profile no longer exists/,
+    )
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again skips the repair on a replaced profile', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    namespace.value.providers.coreweave.apiKeyEnv = 'HAND_WRITTEN_REF'
+    const state = await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-second'))
+    // A mismatch binding is the state release refuses to touch; repair skips it too.
+    assert.equal('headers' in h.settings.valueOf('llm-pi-ai').providers.coreweave, false)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave.apiKeyEnv, 'HAND_WRITTEN_REF')
+    assert.match(state.warnings.join('\n'), /Did not restore the OpenAI-Project header on the coreweave route: its Models profile was replaced/)
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a stored declared header that disagrees with the environment is reported and kept', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const state = await withCoreweaveProject('team/new', () => h.service.addExtraProvider('coreweave', 'second', 'sk-second'))
+    assert.match(
+      state.warnings.join('\n'),
+      /The stored OpenAI-Project header on the coreweave route differs from the value COREWEAVE_PROJECT now supplies; the stored value was kept\./,
+    )
+    // The stored value is never overwritten by drift reporting.
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a profile whose declared header disagrees with the environment reports the drift', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'OpenAI-Project': 'user/own' },
+    }
+    const state = await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'))
+    assert.match(
+      state.warnings.join('\n'),
+      /The stored OpenAI-Project header on the coreweave route differs from the value COREWEAVE_PROJECT now supplies; the stored value was kept\./,
+    )
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('releasing a profile whose declared header cannot be attributed reports it in the state warnings', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'OpenAI-Project': 'user/own' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    // The variable is gone, so the kept header must surface in the UI state.
+    const state = await withCoreweaveProject(undefined, () => h.service.releaseProvider('coreweave'))
+    assert.match(
+      state.warnings.join('\n'),
+      /Release left the OpenAI-Project header in the coreweave profile: COREWEAVE_PROJECT is no longer set, so an injected value cannot be identified\./,
+    )
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('header identity is case-insensitive for filling and release attribution', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'openai-project': 'team/project' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    // A stored lowercase variant is the same Fetch field: no second variant.
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'openai-project': 'team/project' })
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.equal('headers' in profile, false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a header value Fetch cannot carry is refused before any write', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team\nproject', async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+        /coreweave cannot carry the COREWEAVE_PROJECT value as the OpenAI-Project header: it is not a valid Fetch header value/,
+      )
+    })
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave, undefined)
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')), [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('a catalog entry that declares a credential header is refused', async () => {
+  const h = await harness()
+  const synthetic: ExtraProvider = {
+    id: 'synthetic-secret-header',
+    name: 'Synthetic Secret Header',
+    api: 'openai-completions',
+    baseURL: 'https://synthetic.example/v1',
+    env: ['SYNTHETIC_SECRET'],
+    headerEnv: { Authorization: 'SYNTHETIC_SECRET' },
+    models: [{ id: 'synthetic-model', name: 'Synthetic Model' }],
+  }
+  const catalog = EXTRA_PROVIDER_MAP as Map<string, ExtraProvider>
+  catalog.set(synthetic.id, synthetic)
+  process.env.SYNTHETIC_SECRET = 'sk-synthetic'
+  try {
+    await assert.rejects(
+      () => h.service.addExtraProvider(synthetic.id, 'main', 'sk-synthetic'),
+      /synthetic-secret-header declares the credential header Authorization; only non-secret metadata headers can be carried/,
+    )
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers[synthetic.id], undefined)
+    assert.equal(h.store.provider(synthetic.id), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_SYNTHETIC')), [])
+  } finally {
+    delete process.env.SYNTHETIC_SECRET
+    catalog.delete(synthetic.id)
     await h.close()
   }
 })
