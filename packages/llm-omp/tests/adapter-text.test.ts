@@ -120,6 +120,36 @@ describe('OmpCursorAdapter text streaming', () => {
     expect(issued).toBe(2)
   })
 
+  it('forwards the request signal to the access resolver, so a refresh can be abandoned', async () => {
+    const { transport } = scriptedTransport('cursor-text.jsonl')
+    const controller = new AbortController()
+    let received: AbortSignal | undefined
+    const adapter = new OmpCursorAdapter({
+      access: async signal => {
+        received = signal
+        return 'test-token'
+      },
+      transport,
+    })
+
+    await collect(adapter.stream(request({ signal: controller.signal })))
+
+    expect(received).toBe(controller.signal)
+  })
+
+  it('surfaces a dead sign-in from the resolver as REAUTH_REQUIRED before the transport runs', async () => {
+    const { transport, calls } = scriptedTransport('cursor-text.jsonl')
+    const adapter = new OmpCursorAdapter({
+      access: async () => {
+        throw new LlmError('llm-omp: Cursor ended this session; sign in again', 'REAUTH_REQUIRED')
+      },
+      transport,
+    })
+
+    await expect(collect(adapter.stream(request()))).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' })
+    expect(calls).toHaveLength(0)
+  })
+
   it('cancels an already-aborted turn without a credential read or transport call', async () => {
     const { transport, calls } = scriptedTransport('cursor-text.jsonl')
     let reads = 0

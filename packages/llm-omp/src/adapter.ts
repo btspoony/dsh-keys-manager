@@ -4,9 +4,10 @@
  * The route speaks Cursor's own agent protocol (`agent.v1.AgentService/Run`
  * over HTTP/2) through the omp build artifact in `lib/omp/cursor.mjs`. The
  * transport is injected rather than imported so this module stays free of the
- * 14 MB build artifact and tests can replay recorded event scripts. Task 3
- * wires the bundled `streamCursor` at registration; the credential seam
- * provides {@link OmpCursorAdapterConfig.access}.
+ * 14 MB build artifact and tests can replay recorded event scripts. The plugin
+ * wires the bundled `streamCursor` at registration and the credential seam
+ * provides {@link OmpCursorAdapterConfig.access}, which refreshes an expiring
+ * grant under the store's lock before it answers.
  *
  * The catalog is the generated `src/catalog/cursor.ts`, so `listModels` and
  * `resolveModel` answer without a network call and carry the transport flags the
@@ -25,14 +26,12 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 
 import { CURSOR_MODELS } from './catalog/cursor.js'
+import { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 import { abortedFinish, projectEvents, projectRequest } from './projection.js'
 import type { CursorModelRow, OmpCursorOptions, OmpCursorTransport } from './omp.js'
 
 /** The provider route this adapter owns. */
 export const CURSOR_ROUTE = 'cursor'
-
-/** Credential scope Task 3 wires this resolver to. */
-const CREDENTIAL_REF = 'llm-omp-transports/cursor'
 
 /** Machine code for a model id the generated catalog does not contain. */
 export const UNKNOWN_MODEL = 'UNKNOWN_MODEL'
@@ -69,10 +68,12 @@ export interface OmpCursorAdapterConfig {
    * Resolve the Cursor bearer token for one request.
    *
    * @remarks
-   * Asynchronous because Task 3 reads and refreshes the `llm-omp-transports/cursor`
-   * credential through the credentials seam. Tests inject a fake.
+   * Asynchronous because it reads and refreshes the `llm-omp-transports/cursor`
+   * credential through the credentials seam. The request signal is forwarded
+   * so an aborted turn can abandon a refresh instead of writing it late. Tests
+   * inject a fake.
    */
-  access: () => Promise<string>
+  access: (signal?: AbortSignal) => Promise<string>
   /**
    * The omp transport, normally the `streamCursor` export of
    * `lib/omp/cursor.mjs`. The seam tests drive it with recorded event scripts.
@@ -134,7 +135,7 @@ export class OmpCursorAdapter extends LlmAdapter {
     // write). Only a request that can be served resolves `access` and carries
     // its token into the transport options.
     const request = projectRequest(row, options)
-    const accessKey = assertUsableApiKey(await this.config.access(), 'llm-omp', CREDENTIAL_REF)
+    const accessKey = assertUsableApiKey(await this.config.access(options.signal), 'llm-omp', CURSOR_CREDENTIAL_KEY)
     if (aborted()) {
       yield abortedFinish()
       return

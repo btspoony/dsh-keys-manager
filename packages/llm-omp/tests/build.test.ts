@@ -38,6 +38,7 @@ import {
   parseStreamingJsonThrottled,
 } from '../scripts/omp-shim/pi-utils'
 import { CURSOR_CATALOG_SOURCE, CURSOR_MODELS } from '../src/catalog/cursor.js'
+import { CURSOR_AUTH } from '../src/cursor/auth.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -225,6 +226,25 @@ describe('omp drift gate', () => {
     // The manifest names its build tool: a developer resolving a different
     // patch sees a manifest diff that says which version produced it.
     expect(manifest.esbuildVersion).toBe(installedVersion('esbuild'))
+  })
+
+  it('copies the pinned Cursor identity and endpoints into the auth module', () => {
+    // The auth module may not import `@oh-my-pi/*` at runtime, so its client id,
+    // client version and endpoints are copies. Pin them to the installed sources
+    // the transport already depends on; an omp bump that moves either value fails
+    // here instead of presenting an identity the server no longer serves.
+    const wire = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/wire/cursor.ts'), 'utf8')
+    const oauth = readFileSync(installedSourcePath('@oh-my-pi/pi-ai/src/registry/oauth/cursor.ts'), 'utf8')
+    expect(wire).toContain(`"${CURSOR_AUTH.clientVersion}"`)
+    for (const copy of [
+      CURSOR_AUTH.loginUrl,
+      CURSOR_AUTH.pollUrl,
+      CURSOR_AUTH.refreshUrl,
+      CURSOR_AUTH.profileUrl,
+      CURSOR_AUTH.clientId,
+    ]) {
+      expect(oauth, copy).toContain(`"${copy}"`)
+    }
   })
 
   it('hashes the transport sources the bundle was built from', () => {
