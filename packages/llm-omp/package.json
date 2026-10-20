@@ -12,6 +12,11 @@
     "oh-my-pi"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/btspoony/dsh-keys-manager",
+    "directory": "packages/llm-omp"
+  },
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
   "exports": {
