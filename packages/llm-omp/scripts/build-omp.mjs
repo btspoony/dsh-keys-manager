@@ -6,12 +6,18 @@
  * Node shims in `scripts/omp-shim/`, and writes one ESM artifact. The runtime
  * package therefore depends on nothing from `@oh-my-pi/*`.
  *
- * Two contracts make an omp bump safe:
+ * Three contracts make an omp bump safe:
  *
  * 1. A missing shim symbol or a new shim *category* fails this build loudly.
  * 2. `scripts/omp-manifest.json` records the pinned versions, the measured
  *    artifact, the shim surface, and the hashes of every source whose semantics
  *    the transport depends on; `tests/build.test.ts` re-checks all of it.
+ * 3. The manifest also records which shim symbols the bundled graph *reaches*
+ *    (`shimImports`, derived from the esbuild metafile), so an omp bump that
+ *    starts calling a deliberately degraded `simplify:` member fails the drift
+ *    gate with a one-line manifest diff. `lib/omp/metafile.json` is the build
+ *    output the test re-derives those facts from; it is gitignored and excluded
+ *    from the published tarball.
  *
  * Determinism: no timestamps, no source maps, sorted manifest keys, so a rebuild
  * of an unchanged pin produces a byte-identical artifact and manifest.
@@ -26,16 +32,27 @@ import { fileURLToPath } from 'node:url'
 
 import { build } from 'esbuild'
 
+import { shimImportsOf } from './omp-reach.mjs'
+
 const scriptsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(scriptsDir)
 
 const ENTRY = join(scriptsDir, 'omp-entry.ts')
 const OUT = join(packageRoot, 'lib', 'omp', 'cursor.mjs')
+/** esbuild's own graph description; `tests/build.test.ts` re-derives `shimImports` from it. */
+const METAFILE = join(packageRoot, 'lib', 'omp', 'metafile.json')
 const MANIFEST = join(scriptsDir, 'omp-manifest.json')
 
 const PI_UTILS_SHIM = join(scriptsDir, 'omp-shim', 'pi-utils.ts')
 const BUN_SHIM = join(scriptsDir, 'omp-shim', 'bun-modules.ts')
 const BUN_GLOBAL_SHIM = join(scriptsDir, 'omp-shim', 'bun-global.ts')
+
+/** Shim module name → its path as esbuild keys the metafile (relative to the package root). */
+const SHIM_PATHS = {
+  'pi-utils': relative(packageRoot, PI_UTILS_SHIM).split('\\').join('/'),
+  'bun-modules': relative(packageRoot, BUN_SHIM).split('\\').join('/'),
+  'bun-global': relative(packageRoot, BUN_GLOBAL_SHIM).split('\\').join('/'),
+}
 
 /** Resolve the on-disk root of an installed package (its `package.json` owner). */
 function packageRootOf(name) {
@@ -49,6 +66,11 @@ function packageRootOf(name) {
     dir = dirname(dir)
   }
   throw new Error(`llm-omp: cannot locate the installed package ${name}`)
+}
+
+/** Version of the installed esbuild; recorded because it decides `bytes`/`moduleCount`. */
+function esbuildVersion() {
+  return JSON.parse(readFileSync(join(packageRootOf('esbuild'), 'package.json'), 'utf8')).version
 }
 
 /** Named ESM exports of a shim module (the drift-gated shim surface), sorted. */
@@ -72,6 +94,14 @@ function sha256(bytes) {
  * catalog data is read as a module by its own call sites. Emitting it as a
  * JavaScript module keeps the default-export shape those call sites expect and
  * sidesteps attribute handling inside the bundle entirely.
+ *
+ * Each top-level key is its own binding and the default export re-assembles them
+ * by reference, so the module stays tree-shake-able: a call site that imports
+ * named keys sheds every key it does not read, and a default import that no
+ * retained code reads lets esbuild drop the catalog entirely. (A per-key
+ * `export const key = module[key]` over one shared literal pins that literal
+ * into the bundle whatever the graph reads: 10.3 MB of model catalog before this
+ * form, nothing after.)
  */
 const ompJsonAsEsm = () => ({
   name: 'omp-json-as-esm',
@@ -89,11 +119,14 @@ const ompJsonAsEsm = () => ({
           ? Object.keys(data).filter(key => /^[A-Za-z_$][\w$]*$/.test(key))
           : []
       if (names.length === 0) return { contents: text, loader: 'json' }
-      const exports = names.map(name => `export const ${name} = __module[${JSON.stringify(name)}];`).join('\n')
-      return {
-        contents: `const __module = ${JSON.stringify(data)};\nexport default __module;\n${exports}\n`,
-        loader: 'js',
-      }
+      const bindings = names.map((name, index) => ({ name, local: `__key_${index}` }))
+      const contents = [
+        ...bindings.map(({ name, local }) => `const ${local} = ${JSON.stringify(data[name])};`),
+        ...bindings.map(({ name, local }) => `export const ${name} = ${local};`),
+        `export default { ${bindings.map(({ name, local }) => `${JSON.stringify(name)}: ${local}`).join(', ')} };`,
+        '',
+      ].join('\n')
+      return { contents, loader: 'js' }
     })
   },
 })
@@ -147,9 +180,12 @@ for (const [key, path] of Object.entries(tracked)) {
 }
 
 const artifact = await readFile(OUT)
+await writeFile(METAFILE, `${JSON.stringify(result.metafile)}\n`)
+
 const manifest = {
   ompVersion: piAiVersion,
   piCatalogVersion,
+  esbuildVersion: esbuildVersion(),
   entry: relative(packageRoot, OUT).split('\\').join('/'),
   moduleCount: Object.keys(result.metafile.inputs).length,
   bytes: artifact.byteLength,
@@ -158,6 +194,7 @@ const manifest = {
     'bun-modules': shimSymbols(BUN_SHIM),
     'bun-global': shimSymbols(BUN_GLOBAL_SHIM),
   },
+  shimImports: shimImportsOf(result.metafile, { packageRoot, shimPaths: SHIM_PATHS }),
   sourceHashes,
 }
 
@@ -166,12 +203,15 @@ await writeFile(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`)
 const modules = Object.keys(result.metafile.inputs)
 console.log(
   `llm-omp: bundled ${manifest.moduleCount} modules → ${manifest.entry} (${manifest.bytes} bytes) ` +
-    `from @oh-my-pi/pi-ai@${piAiVersion}`,
+    `from @oh-my-pi/pi-ai@${piAiVersion} with esbuild@${manifest.esbuildVersion}`,
 )
 console.log(
   `llm-omp: shim surface pi-utils=${manifest.shimSymbols['pi-utils'].length} ` +
     `bun-modules=${manifest.shimSymbols['bun-modules'].length} ` +
-    `bun-global=${manifest.shimSymbols['bun-global'].length}`,
+    `bun-global=${manifest.shimSymbols['bun-global'].length}; ` +
+    `reached pi-utils=${manifest.shimImports['pi-utils'].length} ` +
+    `bun-modules=${manifest.shimImports['bun-modules'].length} ` +
+    `bun-global=${manifest.shimImports['bun-global'].length}`,
 )
 for (const [key, hash] of Object.entries(sourceHashes)) console.log(`llm-omp: ${hash}  ${key}`)
 if (process.env.OMP_BUILD_DEBUG) {

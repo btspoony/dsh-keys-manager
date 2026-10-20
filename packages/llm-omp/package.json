@@ -25,7 +25,8 @@
   },
   "files": [
     "lib",
-    "bundle"
+    "bundle",
+    "!lib/omp/metafile.json"
   ],
   "dsh": {
     "bundle": {
@@ -36,7 +37,9 @@
     "generate:catalog": "node scripts/generate-catalog.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build-omp.mjs && tsc -p tsconfig.build.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepare": "pnpm run build",
+    "prepack": "pnpm run build"
   },
   "engines": {
     "node": "^22.19 || >=24"

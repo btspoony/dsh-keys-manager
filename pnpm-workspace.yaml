@@ -12,6 +12,9 @@ nodeLinker: hoisted
 
 allowBuilds:
   esbuild: true
+# Required, not machine-local: pnpm's release-age policy rejects the exact
+# @oh-my-pi 18.12.3 pins while they are still fresh, and these are the pins the
+# omp transport is built against. Remove only by bumping to ages that pass.
 minimumReleaseAgeExclude:
   - '@oh-my-pi/omptype@18.12.3'
   - '@oh-my-pi/pi-ai@18.12.3'

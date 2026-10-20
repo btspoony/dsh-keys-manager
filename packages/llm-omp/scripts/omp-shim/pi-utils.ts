@@ -5,8 +5,10 @@
  * omp ships TypeScript sources that import a Bun-oriented utility package; the
  * transport itself is Node-portable (`node:http2`, `node:crypto`, timers), so the
  * build swaps that package for this module. The surface is enumerable: esbuild
- * fails the build loudly on any named export this file does not provide, which
- * is the drift gate behind `omp-manifest.json#shimSymbols`.
+ * fails the build loudly on any named export this file does not provide, and
+ * `omp-manifest.json` records both that surface (`shimSymbols`) and the names
+ * the bundled graph reaches (`shimImports`) — so a `simplify:` member becoming
+ * reachable shows up as a manifest diff instead of a silent degradation.
  *
  * Semantics are intentionally conservative rather than clever. Anything marked
  * `simplify:` is a bounded stand-in whose real behaviour only matters once the

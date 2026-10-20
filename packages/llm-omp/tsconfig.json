@@ -9,8 +9,11 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
+    // The build tests import the plain-ESM helpers in `scripts/`; their type
+    // surface is the JSDoc inside those modules.
+    "allowJs": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src", "tests", "scripts/omp-shim"]
+  "include": ["src", "tests", "scripts"]
 }

@@ -6,15 +6,20 @@
  * Only the members the transport graph actually reaches are implemented, and
  * each one is faithful where its value is observable:
  *
- * - `env` / `write` / `SHA256` / `CryptoHasher` keep their real semantics —
- *   blob ids and content keys are SHA-256 digests the server round-trips, so a
- *   stand-in that produced different bytes would break blob-addressed turns.
+ * - `env` / `write` / `SHA256` / `CryptoHasher` keep their real semantics and
+ *   their container types — blob ids and content keys are SHA-256 digests the
+ *   server round-trips, so a stand-in that produced different bytes (or handed
+ *   back a `Uint8Array` where Bun returns an `ArrayBuffer`) would break
+ *   blob-addressed turns and `instanceof ArrayBuffer` checks.
  * - `hash` is the one deliberate substitution: Bun hashes with wyhash, and this
  *   build chains FNV-1a. The transport uses that value only as an in-process
  *   turn digest (replay-vs-rebuild decisions), so a different-but-deterministic
  *   value degrades to "rebuild from content" across restarts instead of
  *   replaying a stale checkpoint. Upgrade path: vendor Bun's wyhash if a
  *   durable cross-process digest ever becomes load-bearing.
+ *   The *value* is substituted; the *contract* is not: it returns a `number`
+ *   like Bun (the u64 bit pattern as a double), so a digest serializes with
+ *   `JSON.stringify` and compares numerically at every call site.
  *
  * @module @dsh-keys-manager/llm-omp/omp-shim/bun-global
  */
@@ -38,13 +43,26 @@ const FNV_OFFSET_BASIS = 0xcbf29ce484222325n
 const FNV_PRIME = 0x100000001b3n
 const MASK_64 = 0xffffffffffffffffn
 
+/**
+ * Coerce a Bun-style seed to the chain's `bigint` input.
+ * `Math.trunc` keeps a fractional seed working, where `BigInt(seed)` alone throws.
+ */
+function toSeed(seed: number | bigint): bigint {
+  return BigInt(Math.trunc(Number(seed)))
+}
+
 /** Deterministic 64-bit FNV-1a chain; `seed` continues a previous hash. */
 function fnv1a64(value: HashInput, seed: number | bigint = 0): bigint {
-  let hash = (FNV_OFFSET_BASIS ^ BigInt(seed)) & MASK_64
+  let hash = (FNV_OFFSET_BASIS ^ toSeed(seed)) & MASK_64
   for (const byte of toBytes(value)) {
     hash = ((hash ^ BigInt(byte)) * FNV_PRIME) & MASK_64
   }
   return hash
+}
+
+/** The digest's own bytes as the `ArrayBuffer` Bun's hashing members return. */
+function exactBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 /** SHA-256 helper mirroring `Bun.SHA256` (static `hash`, and an incremental form). */
@@ -53,16 +71,17 @@ export class SHA256 {
 
   /**
    * Digest `data`; a `Uint8Array` target receives the raw bytes, a string target
-   * is a `node:crypto` output encoding.
+   * is a `node:crypto` output encoding, and no target yields the digest's bytes
+   * as an `ArrayBuffer` like Bun.
    */
-  static hash(data: HashInput, target?: Uint8Array | string): string | Uint8Array {
+  static hash(data: HashInput, target?: Uint8Array | string): string | Uint8Array | ArrayBuffer {
     const digest = createHash('sha256').update(binaryLike(data)).digest()
     if (target instanceof Uint8Array) {
       target.set(digest.subarray(0, target.length))
       return target
     }
     if (typeof target === 'string') return digest.toString(target as BinaryToTextEncoding)
-    return new Uint8Array(digest)
+    return exactBuffer(digest)
   }
 
   update(data: HashInput): this {
@@ -70,8 +89,8 @@ export class SHA256 {
     return this
   }
 
-  digest(encoding?: string): string | Uint8Array {
-    if (encoding === undefined) return new Uint8Array(this.#hash.digest())
+  digest(encoding?: string): string | ArrayBuffer {
+    if (encoding === undefined) return exactBuffer(this.#hash.digest())
     return this.#hash.digest(encoding as BinaryToTextEncoding)
   }
 }
@@ -89,8 +108,8 @@ export class CryptoHasher {
     return this
   }
 
-  digest(encoding?: string): string | Uint8Array {
-    if (encoding === undefined) return new Uint8Array(this.#hash.digest())
+  digest(encoding?: string): string | ArrayBuffer {
+    if (encoding === undefined) return exactBuffer(this.#hash.digest())
     return this.#hash.digest(encoding as BinaryToTextEncoding)
   }
 }
@@ -98,8 +117,11 @@ export class CryptoHasher {
 /** The `Bun` global surface the transport graph reads. */
 export const Bun = {
   env: process.env,
-  /** See the module note: deterministic FNV-1a instead of wyhash. */
-  hash: (value: HashInput, seed: number | bigint = 0): bigint => fnv1a64(value, seed),
+  /**
+   * See the module note: deterministic FNV-1a instead of wyhash, with Bun's
+   * `number` return contract (the u64 bit pattern, not a `bigint`).
+   */
+  hash: (value: HashInput, seed: number | bigint = 0): number => Number(fnv1a64(value, seed) & MASK_64),
   SHA256,
   CryptoHasher,
   /** Write a file and report the byte count, like `Bun.write`. */

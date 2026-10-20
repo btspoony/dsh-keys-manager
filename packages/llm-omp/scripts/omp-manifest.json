@@ -1,9 +1,10 @@
 {
   "ompVersion": "18.12.3",
   "piCatalogVersion": "18.12.3",
+  "esbuildVersion": "0.28.2",
   "entry": "lib/omp/cursor.mjs",
   "moduleCount": 131,
-  "bytes": 14710907,
+  "bytes": 1372538,
   "shimSymbols": {
     "pi-utils": [
       "$env",
@@ -48,6 +49,36 @@
       "Bun",
       "CryptoHasher",
       "SHA256"
+    ]
+  },
+  "shimImports": {
+    "pi-utils": [
+      "$env",
+      "$flag",
+      "*",
+      "LRUCache",
+      "classifyJsonPrefix",
+      "escapeXmlText",
+      "extractHttpStatusFromError",
+      "extractRetryHint",
+      "getLogsDir",
+      "isBunTestRuntime",
+      "isEnoent",
+      "isRecord",
+      "isRetryableError",
+      "isUnexpectedSocketCloseMessage",
+      "logger",
+      "parseJsonWithRepair",
+      "parseStreamingJsonThrottled",
+      "sanitizeText",
+      "stringifyJson",
+      "structuredCloneJSON",
+      "truncate",
+      "wrapFetchForExtraCa"
+    ],
+    "bun-modules": [],
+    "bun-global": [
+      "Bun"
     ]
   },
   "sourceHashes": {
