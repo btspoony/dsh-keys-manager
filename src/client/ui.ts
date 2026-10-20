@@ -672,7 +672,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
   const [adopting, setAdopting] = React.useState(false)
   const [releasing, setReleasing] = React.useState(false)
   const [confirmRelease, setConfirmRelease] = React.useState(false)
-  const [login, setLogin] = React.useState<{ alias?: string; attemptId: string } | null>(null)
+  const [login, setLogin] = React.useState<{ attemptId: string } | null>(null)
   const [startingLogin, setStartingLogin] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const managed = provider.managed
@@ -712,7 +712,10 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
    * Start one interactive OAuth sign-in and open the login dialog for it.
    * `targetAccountId` (round-3 finding 6) names the row a re-authentication
    * replaces: the host binds the committed grant to that row, so a rotated
-   * token with no identity metadata cannot duplicate the account.
+   * token with no identity metadata cannot duplicate the account. The dialog
+   * state carries only the attempt id (round-4 nit): the alias is host-side
+   * naming input for a new row, never dialog state, so keeping it there invited
+   * the wrong assumption about which account a resumed attempt belongs to.
    */
   async function openLogin(targetAccountId?: string, alias?: string): Promise<void> {
     if (startingLogin) return
@@ -724,7 +727,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
       setError(result.error)
       return
     }
-    if (result.value !== null) setLogin({ alias, attemptId: result.value.id })
+    if (result.value !== null) setLogin({ attemptId: result.value.id })
   }
 
   /**

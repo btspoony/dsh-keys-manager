@@ -3072,6 +3072,56 @@ test('concurrent logins for one provider resume the in-flight attempt instead of
   }
 })
 
+// Round-4 finding 3 (I-000084): the resume short-circuit must not bypass the
+// requested target. Reusing A's pending flow for a re-authentication of B
+// would bind the new grant to A, so the target is validated first and a
+// resume is accepted only for the SAME target.
+
+test('a pending sign-in is not resumed for a different target (I-000084)', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({ accountId: 'acc-a', email: 'a@example.com' })
+  try {
+    const { rowId: rowB } = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b-value' })
+    const pending = await h.service.beginAccountLogin('anthropic', undefined, rowA)
+    // Asking for B while A's flow is pending is refused — never silently
+    // resumed as A.
+    await assert.rejects(
+      () => h.service.beginAccountLogin('anthropic', undefined, rowB),
+      /already pending for a different account/,
+    )
+    // The refusal minted no second flow and left A's attempt untouched.
+    assert.equal(h.authorization.beganRequests.length, 1)
+    assert.equal(h.service.getAccountAttempt(pending.id)!.status, 'pending')
+    // An unknown target is validated (and refused) BEFORE the resume, not
+    // hidden behind it.
+    await assert.rejects(() => h.service.beginAccountLogin('anthropic', undefined, 'k_missing'), /not found/)
+    // The matching target resumes the same attempt and the same seam flow.
+    const resumed = await h.service.beginAccountLogin('anthropic', undefined, rowA)
+    assert.equal(resumed.id, pending.id)
+    assert.equal(h.authorization.beganRequests.length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a targetless begin resumes only a targetless pending sign-in (I-000084)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    const pending = await h.service.beginAccountLogin('anthropic')
+    const resumed = await h.service.beginAccountLogin('anthropic')
+    assert.equal(resumed.id, pending.id)
+    // A target-carrying request cannot adopt a targetless flow: that flow
+    // would bind the grant to whatever the harvest's fallback picks, not to
+    // the requested row.
+    await assert.rejects(
+      () => h.service.beginAccountLogin('anthropic', undefined, rowId),
+      /already pending without a target account/,
+    )
+    assert.equal(h.authorization.beganRequests.length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
 // Round-2 review step 4: a harvest is compensated and gated. Releasing a
 // provider revokes its in-flight sign-in, and a login whose row cannot be
 // created (key capacity) never strands the grant records it touched.

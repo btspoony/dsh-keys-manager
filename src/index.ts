@@ -850,6 +850,19 @@ export class KeysManagerService {
     if (flow === undefined) throw new Error(`Provider "${provider}" offers no OAuth sign-in flow`)
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed; adopt it before signing in`)
+    // Validate the re-authentication target up front (round-3 finding 6):
+    // the harvest binds the new grant to this row, so it must already name
+    // a live OAuth account of this provider. It runs BEFORE the pending
+    // resume (round-4 finding 3): a resume must never smuggle an older
+    // attempt's target past the request's own validation, so an unknown or
+    // foreign id is refused even while another sign-in is pending.
+    let cleanTarget: string | undefined
+    if (typeof targetAccountId === 'string' && targetAccountId.length > 0) {
+      const target = providerRecord.keys.find(candidate => candidate.id === targetAccountId)
+      if (target === undefined) throw new Error(`Account "${targetAccountId}" not found on ${provider}`)
+      if (target.kind !== 'oauth' || target.oauth === null) throw new Error(`Key "${targetAccountId}" is not an OAuth account`)
+      cleanTarget = targetAccountId
+    }
     if (this.loginsInFlight.has(provider)) {
       // F3 (I-000082): a pending attempt IS the flow — reopening the dialog
       // resumes it (same id, same notices, same parked prompt) instead of
@@ -858,20 +871,19 @@ export class KeysManagerService {
       // attempt clears its provider slot, so the next begin starts fresh.
       const attemptId = this.loginsInFlight.get(provider)
       const inFlight = attemptId === undefined ? undefined : this.loginAttempts.get(attemptId)
-      if (inFlight !== undefined && inFlight.settledAt === undefined) return attemptView(inFlight)
+      if (inFlight !== undefined && inFlight.settledAt === undefined) {
+        // Round-4 finding 3: reuse is sound only when the resumed attempt
+        // signs in the SAME target the caller asked for (or both name no
+        // target). Silently resuming another row's flow would bind the new
+        // grant to the older attempt's target.
+        if (inFlight.targetAccountId === cleanTarget) return attemptView(inFlight)
+        throw new Error(inFlight.targetAccountId === undefined
+          ? `A sign-in for ${provider} is already pending without a target account; finish or cancel it before signing in to a specific account`
+          : `A sign-in for ${provider} is already pending for a different account; finish or cancel it before signing in to ${cleanTarget ?? 'this provider'}`)
+      }
       // Stale slot (should not happen — finishing always clears it): drop it
       // and start a fresh flow rather than wedging the provider.
       this.loginsInFlight.delete(provider)
-    }
-    // Validate the re-authentication target up front (round-3 finding 6):
-    // the harvest binds the new grant to this row, so it must already name
-    // a live OAuth account of this provider.
-    let cleanTarget: string | undefined
-    if (typeof targetAccountId === 'string' && targetAccountId.length > 0) {
-      const target = providerRecord.keys.find(candidate => candidate.id === targetAccountId)
-      if (target === undefined) throw new Error(`Account "${targetAccountId}" not found on ${provider}`)
-      if (target.kind !== 'oauth' || target.oauth === null) throw new Error(`Key "${targetAccountId}" is not an OAuth account`)
-      cleanTarget = targetAccountId
     }
     const cleanAlias = typeof alias === 'string' ? alias.trim().slice(0, MAX_ALIAS) : undefined
     const now = Date.now()
