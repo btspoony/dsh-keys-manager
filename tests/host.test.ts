@@ -9786,3 +9786,79 @@ test('a projection deletion after a foreign replacement rebinds the surviving po
     await h.close()
   }
 })
+
+// PR #26 review round 4, P1 #1: the foreign-projection marker only warned. A
+// route that was still broker-bound kept resolving the managed pool, because
+// pi-ai reads `apiKeyEnv` before its own stored grant — the native account the
+// warning announced never served a request.
+
+test('a foreign grant taking over a broker-bound route unbinds the profile', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-managed', email: 'managed@example.com' })
+  try {
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    const record = h.store.provider('anthropic')!
+    const poolValues = record.keys
+      .filter(key => key.kind === 'api-key')
+      .map(key => h.credentials.refs.get(key.ref))
+    // Demotion hands the route back to the surviving pool: the broker-bound
+    // shape a native sign-in then lands on.
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.fallbackToKeys('anthropic')
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef)
+
+    // A native sign-in writes an orphan grant no pool row owns.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-foreign-takeover',
+      access: 'at-foreign-takeover',
+      accountId: 'acc-foreign',
+      email: 'foreign@example.com',
+    }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await drainGrantChain(h, 'anthropic')
+
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, undefined,
+      'the broker reference stayed on a route the foreign grant now serves')
+    // What pi-ai resolves for one request: the profile's named credential
+    // first, its own stored grant when the profile names none.
+    const resolved: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      const apiKeyEnv = h.settings.valueOf('llm-pi-ai').providers.anthropic?.apiKeyEnv
+      resolved.push(typeof apiKeyEnv === 'string'
+        ? (await h.credentials.raw.resolve(apiKeyEnv))?.value
+        : String((h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).access))
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
+    assert.deepEqual(resolved, ['at-foreign-takeover'])
+    assert.equal(poolValues.includes(resolved[0]), false, `the request resolved ${String(resolved[0])}, a pool key`)
+  } finally {
+    await h.close()
+  }
+})
+
+// PR #26 review round 4, P1 #2: hydration only classified a valid OAuth grant.
+// A persisted native api-key record (or any record this pool cannot interpret)
+// left the route looking projection-free, so the startup repair bound the
+// broker over it — and pi-ai prefers `apiKeyEnv` over the native record.
+
+test('a persisted native api-key record keeps a mixed route unbound after startup', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-managed', email: 'managed@example.com' })
+  try {
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    // The profile names no credential: exactly the shape the startup repair
+    // bound over the native record.
+    h.settings.valueOf('llm-pi-ai').providers.anthropic = { models: [{ id: 'claude-test-model' }] }
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-out-of-band' })
+
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 40))
+
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, undefined,
+      'the startup repair bound the pool over a native api-key record')
+    assert.ok(h.credentials.records.has(GRANT_KEY), 'the native record survives startup')
+    assert.equal(restarted.getState().providers.find(entry => entry.provider === 'anthropic')!.bindingHealthy, true)
+  } finally {
+    await h.close()
+  }
+})

@@ -1089,7 +1089,10 @@ export class KeysManagerService {
    * after a restart. An orphan projection — no matching row, e.g. a foreign
    * or stale grant — is left untouched: the manager never adopts a grant it
    * does not own, and out-of-band updates keep surfacing the native-
-   * management warning.
+   * management warning. A live record that is not a managed grant at all (a
+   * native api-key, an unrecognized payload) is foreign for the same reason
+   * (PR review round 4): it serves the route, so the startup repair must not
+   * bind the broker over it.
    *
    * Returns its own completion (round-8 finding I-000108), and the returned
    * promise is already caught, so a failed hydration degrades to "no owner"
@@ -1122,8 +1125,15 @@ export class KeysManagerService {
               this.warn(`projection ownership hydration could not read ${grantKey}: ${error instanceof Error ? error.message : String(error)}`)
               continue
             }
-            if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) continue
-            const owner = matchOwningAccount(provider, accounts, record.payload)
+            // No record: nothing projects this route, so the pool may serve it.
+            if (record === undefined) continue
+            // A live record this pool cannot interpret — a native api-key, an
+            // unrecognized payload — serves the route ahead of any broker
+            // reference exactly like an unowned grant, so it is classified as
+            // foreign below (PR review round 4).
+            const owner = record.kind === 'grant' && isOAuthGrantPayload(record.payload)
+              ? matchOwningAccount(provider, accounts, record.payload)
+              : undefined
             // A newer activation/login claimed the owner while this read was in
             // flight: the stale read is discarded, never written over it.
             if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) continue
@@ -1133,9 +1143,9 @@ export class KeysManagerService {
               this.activeAccounts.set(provider, owner.id)
               this.foreignProjections.delete(provider)
             } else {
-              // Present but unowned (PR review round 3): the projection still
-              // serves, so the pool is not the route's credential source and
-              // the startup repair must not bind it.
+              // Present but not a managed OAuth grant (PR review rounds 3–4):
+              // the projection still serves, so the pool is not the route's
+              // credential source and the startup repair must not bind it.
               this.foreignProjections.add(provider)
             }
           } finally {
@@ -2042,7 +2052,7 @@ export class KeysManagerService {
       // The rollback restored the rows and the owner map, so the binding must
       // follow whatever serves the route now: this attempt's projection is
       // gone, and the surviving pool must serve again (Codex P2).
-      await this.rebindAfterRemoval(attempt.provider)
+      await this.syncBindingAfterProjectionChange(attempt.provider)
     }
   }
 
@@ -2330,7 +2340,7 @@ export class KeysManagerService {
         // falls back to whatever still serves it: rebind its pool here rather
         // than leaving the profile unbound for pi-ai to bypass the broker
         // (PR review round 2 must-fix).
-        await this.rebindAfterRemoval(attempt.provider)
+        await this.syncBindingAfterProjectionChange(attempt.provider)
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
@@ -2493,7 +2503,7 @@ export class KeysManagerService {
         // with the state the removal created, so the surviving pool serves
         // through the broker instead of pi-ai's bare credential (PR review
         // round 2).
-        await this.rebindAfterRemoval(provider)
+        await this.syncBindingAfterProjectionChange(provider)
         return
       }
       if (markedAt !== undefined) this.intentionalProjectionRemovals.delete(provider)
@@ -2513,7 +2523,7 @@ export class KeysManagerService {
       // only an owned one (PR review round 3): a native writer can replace the
       // managed projection first and delete it later, leaving the pool to
       // serve an unbound profile.
-      await this.rebindAfterRemoval(provider)
+      await this.syncBindingAfterProjectionChange(provider)
       return
     }
     // I-000125 marker hygiene: the removal branch above is the marker's ONLY
@@ -2531,6 +2541,9 @@ export class KeysManagerService {
       // broker reference, so the pool is not the route's source (round 3).
       this.foreignProjections.add(provider)
       this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
+      // pi-ai resolves the broker reference before this record, so a route
+      // left bound would keep serving the pool (PR review round 4).
+      await this.syncBindingAfterProjectionChange(provider)
       return
     }
     if (!isOAuthGrantPayload(record.payload)) {
@@ -2539,6 +2552,7 @@ export class KeysManagerService {
       this.activeAccounts.delete(provider)
       this.foreignProjections.add(provider)
       this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
+      await this.syncBindingAfterProjectionChange(provider)
       return
     }
     const payload = record.payload
@@ -2555,6 +2569,7 @@ export class KeysManagerService {
       this.activeAccounts.delete(provider)
       this.foreignProjections.add(provider)
       this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
+      await this.syncBindingAfterProjectionChange(provider)
       return
     }
     // C6-1 pre-write revalidation: removeAccount / releaseProvider run on
@@ -4465,21 +4480,22 @@ export class KeysManagerService {
   }
 
   /**
-   * Re-derive a managed route's binding after one of this manager's own
-   * projection removals (or a harvest rollback) hands the route back to its
-   * API-key pool (PR review round 2).
+   * Re-derive a managed route's binding after its projection changed outside
+   * this manager's account pool: a removal, a committed harvest that handed
+   * the route back to its API-key pool (PR review round 2), or a foreign
+   * projection taking a bound route over (round 4).
    *
-   * The removal leaves no projection, so the row that owned it no longer
-   * serves: unless the pool is bound again, pi-ai falls through to its bare
-   * credential instead of the broker reference. A store refusal only warns —
-   * these are compensation paths and must never fail the change that
+   * The route's serving source is no longer the managed pool, or the pool is
+   * the only source left: either way `syncBrokerBinding` derives the one
+   * profile shape pi-ai's resolution order requires. A store refusal only
+   * warns — these are compensation paths and must never fail the change that
    * triggered them; the next repair pass retries.
    */
-  private async rebindAfterRemoval(provider: string): Promise<void> {
+  private async syncBindingAfterProjectionChange(provider: string): Promise<void> {
     try {
       await this.syncBrokerBinding(provider)
     } catch (error) {
-      this.warn(`could not re-derive the pi-ai binding for ${provider} after removing its projection: ${error instanceof Error ? error.message : String(error)}`)
+      this.warn(`could not re-derive the pi-ai binding for ${provider} after its projection changed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
