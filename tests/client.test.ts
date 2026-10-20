@@ -138,6 +138,12 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     loginFailed: '登录失败',
     uses: '使用 {n} 次',
     failures: '失败 {n} 次',
+    // R7 nit: the account-row status pill is asserted through the resolved
+    // copy, so the whole visible status set is resolved — never the stub's
+    // key-name echo.
+    keyStatusActive: '正常',
+    keyStatusCooling: '冷却中',
+    keyStatusMissing: '凭证缺失',
     keyStatusEmpty: '暂无密钥',
     keyStatusUnmanaged: '未接管',
     unmanaged: '未接管',
@@ -1210,7 +1216,33 @@ describe('account ui', () => {
     // joined string pin of the separator format.
     expect(inside.some(node => node.text === '使用 3 次')).toBe(true)
     expect(inside.some(node => node.text === '失败 1 次')).toBe(true)
-    expect(findByClass(view.nodes, 'km-status').length).toBeGreaterThanOrEqual(1)
+    // R7 nit: scope the pill query to the account row — the provider header
+    // renders one too, so a whole-view count passes even when the row's own
+    // pill is missing — and assert the resolved copy.
+    const pills = findByClass(inside, 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('正常')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a demoted account row resolves the missing status copy', async () => {
+    // R7 nit: the demoted row's own pill renders the resolved
+    // "credential missing" copy, scoped to the row instead of the view.
+    const state = makeState()
+    state.providers[0] = { ...makeOauthProvider(), keys: [{ ...makeOauthKey(), status: 'missing', valueMissing: true }] }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const pills = findByClass(descendants(view.nodes, row), 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('凭证缺失')
     view.unmount()
     setRuntimeContext(null)
   })
