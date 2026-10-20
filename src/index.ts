@@ -1240,6 +1240,13 @@ export class KeysManagerService {
         if (existing !== undefined && existing.oauth !== null && existing.oauth.grantRef === grantRef) {
           facts.previousRef = await records.readRecord(grantRef)
         }
+        // R5-SF3: the cooldown reset below clears only the window the OLD
+        // grant earned. The seam broadcasts the committed grant as soon as
+        // pi-ai writes it, so the freshly committed grant can already be
+        // serving requests while this write is awaited; a failure landing in
+        // that window belongs to the new generation and must keep cooling.
+        // The instant this write starts is the boundary between the two.
+        const writeStartedAt = Date.now()
         await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
         facts.wroteRef = true
         const now = Date.now()
@@ -1300,7 +1307,11 @@ export class KeysManagerService {
           // recovery grace window does not apply to a zeroed cooldown. The
           // leftover `failureLevel`/`consecutiveFailures` fields do not
           // escalate anything.
-          existing.cooldownUntil = 0
+          // Round-5 finding SF3: only a cooldown that PREDATES this harvest's
+          // write is the old grant's. `applyFailureCooldown` always stamps
+          // `lastFailureAt`, so a failure recorded after the write started
+          // belongs to the freshly committed grant and its window stands.
+          if (existing.lastFailureAt < writeStartedAt) existing.cooldownUntil = 0
         } else {
           const rowId = newKeyId()
           addedId = rowId

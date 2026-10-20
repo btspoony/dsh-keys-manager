@@ -3978,6 +3978,45 @@ test('re-authenticating a cooling account clears the stale cooldown (C3)', async
   }
 })
 
+// Round-5 review (R5-SF3): the C3/M1 clear ends the OLD grant's window, but it
+// ran unconditionally after the harvest's awaited credential writes. A
+// failure of the freshly committed grant landing inside that window found its
+// cooldown zeroed, so the route kept retrying a grant that had just failed and
+// the healthy counts were wrong. Only a cooldown that predates the harvest's
+// own write is cleared.
+
+test('a failure landing inside the harvest write keeps the cooldown it earned (R5-SF3)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    // Re-login of the seeded account commits grantPayload()'s refresh token,
+    // so the harvest writes the plugin-scope record for that generation.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const committedRef = accountRef('anthropic', createHash('sha256').update('rt-secret-value').digest('hex').slice(0, 12))
+    const held = holdRotationWrite(h, committedRef)
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await held.started
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    // The freshly committed grant already failed while the harvest write is
+    // parked: that cooldown belongs to the new generation.
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'server_error', message: 'upstream 500' })
+    const earned = row.cooldownUntil
+    assert.ok(earned > Date.now(), 'the fresh failure cools the row')
+    held.release()
+    await held.finished
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    // The harvest must not wipe the window its own grant already earned.
+    assert.equal(row.cooldownUntil, earned)
+    assert.ok(row.lastFailureAt > 0)
+    assert.equal(row.oauth!.grantRef, committedRef)
+    assert.equal(h.credentials.records.has(committedRef), true)
+  } finally {
+    await h.close()
+  }
+})
+
 test('activating a cooling account clears its stale cooldown (M1)', async () => {
   // Round-5 finding M1: re-authentication clears the stale cooldown, but the
   // manual "Set active" recovery did not, so the re-projected grant kept
