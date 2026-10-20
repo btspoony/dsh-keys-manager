@@ -1,0 +1,59 @@
+{
+  "name": "@dsh-keys-manager/llm-omp",
+  "version": "0.0.0",
+  "private": false,
+  "type": "module",
+  "description": "DSH transport plugin: serves providers whose wire protocols only oh-my-pi's own transport code can speak (Cursor first), by registering its own routes on the dsh-llm seam.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "llm",
+    "transport",
+    "cursor",
+    "oh-my-pi"
+  ],
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./bundle/cordis.patch.yml": "./bundle/cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "bundle"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./bundle/cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/build-omp.mjs && tsc -p tsconfig.build.json",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-authorization": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5",
+    "@oh-my-pi/pi-ai": "18.12.3",
+    "@oh-my-pi/pi-catalog": "18.12.3",
+    "esbuild": "^0.28.2"
+  }
+}

@@ -43,6 +43,21 @@ jobs:
       - name: Test
         run: pnpm run test
 
+      # Workspace package @dsh-keys-manager/llm-omp. Its build bundles the pinned
+      # omp Cursor transport, so it runs before the tests that check the artifact
+      # loads on Node and that the committed drift manifest still matches.
+      - name: Typecheck llm-omp
+        run: pnpm --filter @dsh-keys-manager/llm-omp typecheck
+
+      - name: Build llm-omp
+        run: pnpm --filter @dsh-keys-manager/llm-omp build
+
+      - name: Test llm-omp
+        run: pnpm --filter @dsh-keys-manager/llm-omp test
+
+      - name: Assert the llm-omp drift manifest is current
+        run: git diff --exit-code -- packages/llm-omp/scripts/omp-manifest.json
+
       - name: Assert packed tarball contents
         run: |
           set -euo pipefail

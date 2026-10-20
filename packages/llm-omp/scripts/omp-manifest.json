@@ -1,0 +1,60 @@
+{
+  "ompVersion": "18.12.3",
+  "piCatalogVersion": "18.12.3",
+  "entry": "lib/omp/cursor.mjs",
+  "moduleCount": 131,
+  "bytes": 14710907,
+  "shimSymbols": {
+    "pi-utils": [
+      "$env",
+      "$flag",
+      "$pickenv",
+      "LRUCache",
+      "classifyJsonPrefix",
+      "escapeXmlText",
+      "extractHttpStatusFromError",
+      "extractRetryHint",
+      "getAgentDir",
+      "getLogsDir",
+      "isBunTestRuntime",
+      "isEnoent",
+      "isRecord",
+      "isRetryableError",
+      "isUnexpectedSocketCloseMessage",
+      "logger",
+      "once",
+      "parseJsonWithRepair",
+      "parseStreamingJsonThrottled",
+      "sanitizeText",
+      "stringifyJson",
+      "structuredCloneJSON",
+      "truncate",
+      "wrapFetchForExtraCa"
+    ],
+    "bun-modules": [
+      "$",
+      "Cookie",
+      "CookieMap",
+      "Database",
+      "FFIType",
+      "YAML",
+      "dlopen",
+      "env",
+      "file",
+      "ptr",
+      "write"
+    ],
+    "bun-global": [
+      "Bun",
+      "CryptoHasher",
+      "SHA256"
+    ]
+  },
+  "sourceHashes": {
+    "@oh-my-pi/pi-ai/src/providers/cursor.ts": "sha256:080c421a3db8e0c4170451b4b243060fe5713a001ff6423f1296e1a3298f8326",
+    "@oh-my-pi/pi-catalog/src/discovery/cursor-proto.ts": "sha256:fc98341073be49c4f1b81af94204444a0421ed98a6805de51cfc342cbd772e99",
+    "@oh-my-pi/pi-catalog/src/models.json": "sha256:39fb09654ee3812043bc062e426d8e7aa13cd273435fa7b8a203a76246c8735c",
+    "@oh-my-pi/pi-catalog/src/wire/cursor.ts": "sha256:1fead4198e3622d8d0b40ea83cb718f2927cf51a05b598ffd048212aa1a7e886",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/cursor.kdl": "sha256:91e418257bb11fa6d32c0eadcbe2f25947d39ef2fcc0577fcf17de1694febe4b"
+  }
+}

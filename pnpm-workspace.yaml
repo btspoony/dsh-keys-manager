@@ -1,3 +1,9 @@
+# pnpm workspace: the root package stays the Keys Manager plugin; `packages/*`
+# holds sibling DSH plugins (starting with the llm-omp transport plugin).
+packages:
+  - '.'
+  - 'packages/*'
+
 # Standalone plugin repo: @deepseek-ai/* peers are provided by the DSH
 # installation at runtime, so they are declared as peers rather than
 # auto-installed into this checkout.
@@ -6,3 +12,16 @@ nodeLinker: hoisted
 
 allowBuilds:
   esbuild: true
+minimumReleaseAgeExclude:
+  - '@oh-my-pi/omptype@18.12.3'
+  - '@oh-my-pi/pi-ai@18.12.3'
+  - '@oh-my-pi/pi-catalog@18.12.3'
+  - '@oh-my-pi/pi-natives-darwin-arm64@18.12.3'
+  - '@oh-my-pi/pi-natives-darwin-x64@18.12.3'
+  - '@oh-my-pi/pi-natives-linux-arm64@18.12.3'
+  - '@oh-my-pi/pi-natives-linux-x64@18.12.3'
+  - '@oh-my-pi/pi-natives-win32-arm64@18.12.3'
+  - '@oh-my-pi/pi-natives-win32-x64@18.12.3'
+  - '@oh-my-pi/pi-natives@18.12.3'
+  - '@oh-my-pi/pi-utils@18.12.3'
+  - '@oh-my-pi/pi-wire@18.12.3'
