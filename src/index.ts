@@ -46,9 +46,13 @@ import type {
   ProviderRecord,
   ProviderView,
   StateView,
+  TransportAccountStatus,
+  TransportAccountView,
 } from './domain.js'
 import type {
   AttemptState,
+  AuthorizationFlowEntry,
+  AuthorizationInteractionLike,
   CredentialHit,
   CredentialRecordLike,
   CredentialRecordsLike,
@@ -67,6 +71,7 @@ import type {
   SettingsLike,
   SettingsPathOp,
   StreamChunkLike,
+  TransportGrantLike,
 } from './host-types.js'
 import { EXTRA_PROVIDER_MAP, EXTRA_PROVIDERS } from './providers.js'
 import { KeysManagerStore, ensureStateFile, statePath } from './store.js'
@@ -107,6 +112,15 @@ const MAX_ALIAS = 80
 const INTENTIONAL_REMOVAL_TTL_MS = 5_000
 /** The credential-record scope pi-ai stores its per-provider grants under (llm-pi-ai/src/auth.ts:29). */
 export const OAUTH_GRANT_RECORD_SCOPE = 'llm-pi-ai'
+/**
+ * The credential-record scope the llm-omp transports package owns: one
+ * `llm-omp-transports/<route>` grant per transport route (its
+ * `CURSOR_CREDENTIAL_KEY` is `llm-omp-transports/cursor`). Keys Manager reads
+ * those records to list/verify an account and deletes one on removal; it
+ * never writes one and never projects one into `llm-pi-ai/<provider>`, so a
+ * transport route keeps serving from its own adapter-owned credential.
+ */
+export const TRANSPORT_CREDENTIAL_SCOPE = 'llm-omp-transports'
 /**
  * Upper bound on one stream's wait for projection-ownership hydration
  * (round-9 should-fix). Hydration reads one `readRecord` per OAuth provider
@@ -317,6 +331,12 @@ const INVOCATIONS: InvocationDescriptor[] = [
   endpoint('listAccountAttempts'),
   endpoint('activateAccount', ['provider', 'accountId']),
   endpoint('removeAccount', ['provider', 'accountId']),
+  // Transport accounts (llm-omp-transports/<route>): managed beside the pi-ai
+  // pool, never through it. The sign-in reuses the same attempt machinery and
+  // is polled through `accountAttempt` above.
+  endpoint('beginTransportLogin', ['provider']),
+  endpoint('activateTransportAccount', ['provider']),
+  endpoint('removeTransportAccount', ['provider']),
 ]
 
 /** Read a nested value by path. */
@@ -444,6 +464,55 @@ function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | nu
             : {}),
         }
       : {}),
+  }
+}
+
+/**
+ * The usable grant of one transport record, or undefined when the record is
+ * absent or carries a payload this manager cannot read. The payload belongs
+ * to the transports package, so every field is checked structurally.
+ */
+function transportGrantOf(record: CredentialRecordLike | undefined): TransportGrantLike | undefined {
+  if (record === undefined || record.kind !== 'grant') return undefined
+  const payload = record.payload
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined
+  const source = payload as Record<string, unknown>
+  if (typeof source.access !== 'string' || source.access.length === 0) return undefined
+  if (typeof source.expires !== 'number' || !Number.isFinite(source.expires)) return undefined
+  return {
+    access: source.access,
+    expires: source.expires,
+    ...(typeof source.refresh === 'string' && source.refresh.length > 0 ? { refresh: source.refresh } : {}),
+    ...(typeof source.email === 'string' && source.email.length > 0 ? { email: source.email } : {}),
+    ...(typeof source.accountId === 'string' && source.accountId.length > 0 ? { accountId: source.accountId } : {}),
+  }
+}
+
+/**
+ * One transport account row from its route flow and stored record.
+ *
+ * A transport route keeps exactly ONE grant record, and the route's adapter
+ * resolves that record per request — so a usable grant IS the route's live
+ * credential. There is no projection to select between: `active` only
+ * restates that, and activation can never write a pi-ai record. The row
+ * exists while signed out, so the UI can offer the sign-in that writes it.
+ */
+function transportAccountOf(flow: AuthorizationFlowEntry, record: CredentialRecordLike | undefined, now: number): TransportAccountView {
+  const grant = transportGrantOf(record)
+  const status: TransportAccountStatus = grant !== undefined
+    ? grant.expires > now
+      ? 'active'
+      : grant.refresh === undefined ? 'needs-reauth' : 'expired'
+    : record === undefined ? 'signed-out' : 'needs-reauth'
+  return {
+    id: flow.key.slice(TRANSPORT_CREDENTIAL_SCOPE.length + 1),
+    scope: flow.key,
+    displayName: flow.label,
+    ...(grant?.email === undefined ? {} : { email: grant.email }),
+    ...(grant?.accountId === undefined ? {} : { accountId: grant.accountId }),
+    ...(grant?.expires === undefined ? {} : { expiresAt: grant.expires }),
+    status,
+    active: grant !== undefined,
   }
 }
 
@@ -670,6 +739,17 @@ export class KeysManagerService {
   /** The provider → attempt id index for the single-attempt rule. */
   private readonly loginsInFlight = new Map<string, string>()
   private loginSequence = 0
+  /** The route → attempt id index for the single transport sign-in rule. */
+  private readonly transportInFlight = new Map<string, string>()
+  /**
+   * Transport-account rows, hydrated from the `llm-omp-transports/<route>`
+   * records. Kept out of the pi-ai pool document on purpose: the rows are a
+   * read-only projection of another package's records, rebuilt by
+   * {@link refreshTransportAccounts} and rendered by `buildState`.
+   */
+  private transportRows: TransportAccountView[] = []
+  /** Tail of the serialized transport read chain. */
+  private transportRefresh: Promise<void> | undefined
   /** The account row whose grant payload currently IS the projection, per provider. */
   private readonly activeAccounts = new Map<string, string>()
   /**
@@ -806,6 +886,7 @@ export class KeysManagerService {
     this.projectionHydration = this.hydrateProjectionOwnership()
     this.settledDisposer = this.watchAuthorizationSettled()
     this.recordUpdatedDisposer = this.watchGrantRecordUpdated()
+    this.refreshTransportAccountsIfIdle()
   }
 
   /**
@@ -1165,6 +1246,26 @@ export class KeysManagerService {
   }
 
   /**
+   * Resolve one transport route's sign-in flow.
+   *
+   * The transports package registers `llm-omp-transports/<route>` itself, so
+   * the live flow list is also this manager's inventory of transport routes:
+   * a route with no registered flow is not a transport account surface, and a
+   * route whose record exists but whose flow is gone is not listed at all
+   * (there would be nothing to sign in with).
+   */
+  private transportFlowFor(route: string): AuthorizationFlowEntry | undefined {
+    return (this.ctx.authorization?.list() ?? [])
+      .find(entry => entry.key === `${TRANSPORT_CREDENTIAL_SCOPE}/${route}` && entry.methods.some(method => method.id === 'oauth'))
+  }
+
+  /** Every registered transport flow, in seam order. */
+  private transportFlows(): AuthorizationFlowEntry[] {
+    return (this.ctx.authorization?.list() ?? [])
+      .filter(entry => entry.key.startsWith(`${TRANSPORT_CREDENTIAL_SCOPE}/`) && entry.methods.some(method => method.id === 'oauth'))
+  }
+
+  /**
    * Warn once per channel: a lost subscription silently disables a whole
    * feature (harvest never runs; rotations never sync), so the degradation
    * must be observable instead of indistinguishable from success.
@@ -1226,6 +1327,43 @@ export class KeysManagerService {
     }
     if (settlement === 'cancelled') this.finishLoginAttempt(attempt, 'cancelled')
     else this.failLoginAttempt(attempt, new Error(`the sign-in attempt failed (${settlement || 'unknown outcome'})`))
+  }
+
+  /**
+   * The seam interaction one attempt hands to its flow.
+   *
+   * Shared by the pi-ai and transport sign-ins: both surfaces park notices and
+   * prompts on the same {@link LoginAttempt} and are polled through
+   * `accountAttempt`; only what happens after `authorized` differs.
+   */
+  private attemptInteraction(attempt: LoginAttempt): AuthorizationInteractionLike {
+    return {
+      notify: (notice: { message: string; url?: string; code?: string }): void => {
+        attempt.notices.push(noticeView(notice))
+        if (attempt.notices.length > 32) attempt.notices.shift()
+        attempt.updatedAt = Date.now()
+      },
+      prompt: (prompt: { kind?: string; message: string; placeholder?: string; options?: unknown; signal?: AbortSignal }): Promise<string> =>
+        new Promise<string>((resolve, reject) => {
+          if (attempt.settledAt !== undefined) {
+            reject(new Error('This sign-in attempt has already ended'))
+            return
+          }
+          if (prompt.signal?.aborted === true) {
+            reject(new Error('The sign-in prompt was withdrawn'))
+            return
+          }
+          attempt.status = 'prompt'
+          attempt.updatedAt = Date.now()
+          attempt.prompt = promptView(prompt)
+          attempt.resolvePrompt = resolve
+          attempt.rejectPrompt = reject
+          // Cancellation propagates to the awaited prompt: a seam-side
+          // withdrawal of this signal releases a flow parked here instead
+          // of leaving it pending forever.
+          prompt.signal?.addEventListener('abort', () => reject(new Error('The sign-in prompt was withdrawn')), { once: true })
+        }),
+    }
   }
 
   /**
@@ -1297,33 +1435,7 @@ export class KeysManagerService {
       this.loginsInFlight.delete(provider)
       throw new Error('The credential store does not support records; OAuth sign-in is unavailable')
     }
-    const interaction = {
-      notify: (notice: { message: string; url?: string; code?: string }): void => {
-        attempt.notices.push(noticeView(notice))
-        if (attempt.notices.length > 32) attempt.notices.shift()
-        attempt.updatedAt = Date.now()
-      },
-      prompt: (prompt: { kind?: string; message: string; placeholder?: string; options?: unknown; signal?: AbortSignal }): Promise<string> =>
-        new Promise<string>((resolve, reject) => {
-          if (attempt.settledAt !== undefined) {
-            reject(new Error('This sign-in attempt has already ended'))
-            return
-          }
-          if (prompt.signal?.aborted === true) {
-            reject(new Error('The sign-in prompt was withdrawn'))
-            return
-          }
-          attempt.status = 'prompt'
-          attempt.updatedAt = Date.now()
-          attempt.prompt = promptView(prompt)
-          attempt.resolvePrompt = resolve
-          attempt.rejectPrompt = reject
-          // Cancellation propagates to the awaited prompt: a seam-side
-          // withdrawal of this signal releases a flow parked here instead
-          // of leaving it pending forever.
-          prompt.signal?.addEventListener('abort', () => reject(new Error('The sign-in prompt was withdrawn')), { once: true })
-        }),
-    }
+    const interaction = this.attemptInteraction(attempt)
     const beginPromise = this.ctx.authorization!.begin({
       key: flow.key,
       method: flow.method,
@@ -1377,6 +1489,153 @@ export class KeysManagerService {
   }
 
   /**
+   * Re-read every `llm-omp-transports/<route>` grant into
+   * {@link transportRows}.
+   *
+   * Every caller gets a pass appended after the one already in flight, so an
+   * awaiting caller observes a read that started after its own write (a
+   * removal, a sign-in commit). Poll-only callers use
+   * {@link refreshTransportAccountsIfIdle} instead, so a slow store cannot
+   * accumulate one pass per page tick. A failed read leaves that route's
+   * previous row alone instead of claiming the account disappeared; the next
+   * pass retries.
+   */
+  refreshTransportAccounts(): Promise<void> {
+    const previous = this.transportRefresh ?? Promise.resolve()
+    const pass = previous.then(() => this.readTransportAccounts(), () => this.readTransportAccounts())
+    const tail = pass.then(() => undefined, () => undefined)
+    this.transportRefresh = tail
+    void tail.then(() => {
+      if (this.transportRefresh === tail) this.transportRefresh = undefined
+    })
+    return pass
+  }
+
+  /** Poll hint: start a pass only when none is in flight. */
+  private refreshTransportAccountsIfIdle(): void {
+    if (this.transportRefresh === undefined) void this.refreshTransportAccounts()
+  }
+
+  /** One read pass over every registered transport route. */
+  private async readTransportAccounts(): Promise<void> {
+    try {
+      const flows = this.transportFlows()
+      if (flows.length === 0) {
+        this.transportRows = []
+        return
+      }
+      const records = this.credentialRecords()
+      const now = Date.now()
+      const rows: TransportAccountView[] = []
+      for (const flow of flows) {
+        let record: CredentialRecordLike | undefined
+        if (records !== undefined) {
+          try {
+            record = await records.readRecord(flow.key)
+          } catch (error) {
+            const previous = this.transportRows.find(row => row.scope === flow.key)
+            if (previous !== undefined) rows.push(previous)
+            this.warn(`transport account ${flow.key} could not be read: ${error instanceof Error ? error.message : String(error)}`)
+            continue
+          }
+        }
+        rows.push(transportAccountOf(flow, record, now))
+      }
+      this.transportRows = rows
+    } catch (error) {
+      // Fire-and-forget callers (getState, the record watcher) must never see
+      // a rejection; the previous rows stay until the next pass.
+      this.warn(`transport account refresh failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * Remote: start one transport sign-in.
+   *
+   * The flow lives on the transports package's own key
+   * (`llm-omp-transports/<route>`), so the grant it commits stays that route's
+   * credential: nothing here harvests it into a pool row or a `llm-pi-ai`
+   * projection. The attempt is otherwise the same record the pi-ai dialog
+   * polls through `accountAttempt`, so the client reuses that dialog; an
+   * authorized outcome is terminal here (the flow has already committed).
+   */
+  async beginTransportLogin(route: string): Promise<AccountAttemptView> {
+    if (typeof route !== 'string' || route.length === 0) throw new TypeError('provider is required')
+    const flow = this.transportFlowFor(route)
+    if (flow === undefined) throw new Error(`Provider "${route}" offers no transport sign-in flow`)
+    const pendingId = this.transportInFlight.get(route)
+    if (pendingId !== undefined) {
+      const pendingAttempt = this.loginAttempts.get(pendingId)
+      if (pendingAttempt !== undefined && pendingAttempt.settledAt === undefined) return attemptView(pendingAttempt)
+      this.transportInFlight.delete(route)
+    }
+    const now = Date.now()
+    const attempt: LoginAttempt = {
+      id: `la_${(++this.loginSequence).toString(36)}_${randomBytes(4).toString('hex')}`,
+      provider: route,
+      status: 'pending',
+      notices: [],
+      createdAt: now,
+      updatedAt: now,
+      controller: new AbortController(),
+    }
+    this.loginAttempts.set(attempt.id, attempt)
+    this.capLoginAttempts()
+    this.transportInFlight.set(route, attempt.id)
+    // `transportFlowFor` already proved the seam is mounted (it lists the flows).
+    void this.ctx.authorization!.begin({
+      key: flow.key,
+      method: 'oauth',
+      interaction: this.attemptInteraction(attempt),
+      signal: attempt.controller.signal,
+    }).then(
+      outcome => {
+        if (outcome.status === 'authorized') {
+          this.finishLoginAttempt(attempt, 'ready')
+          void this.refreshTransportAccounts()
+          return
+        }
+        this.finishLoginAttempt(attempt, 'cancelled')
+      },
+      error => this.failLoginAttempt(attempt, error),
+    )
+    return attemptView(attempt)
+  }
+
+  /**
+   * Remote: confirm one transport route's stored grant.
+   *
+   * A transport route has exactly one grant record and its adapter resolves
+   * that record per request, so the stored grant already IS the route's live
+   * credential. Activation is therefore a state-level re-read: it writes
+   * nothing (in particular no `llm-pi-ai/<route>` projection, which the
+   * transport route never consults) and reports the current status so the UI
+   * can tell "active" from "expired" or "sign in again".
+   */
+  async activateTransportAccount(route: string): Promise<StateView> {
+    if (this.transportFlowFor(route) === undefined) throw new Error(`Provider "${route}" offers no transport account`)
+    await this.refreshTransportAccounts()
+    return this.buildState()
+  }
+
+  /**
+   * Remote: drop one transport route's grant record.
+   *
+   * The record is the whole account — the transports package re-creates none —
+   * so deleting it leaves the route signed out until the next sign-in. No
+   * manager state is written, hence no `run` queue and no state flush.
+   */
+  async removeTransportAccount(route: string): Promise<StateView> {
+    const flow = this.transportFlowFor(route)
+    if (flow === undefined) throw new Error(`Provider "${route}" offers no transport account`)
+    const records = this.credentialRecords()
+    if (records === undefined) throw new Error('The credential store does not support records')
+    await records.deleteRecord(flow.key)
+    await this.refreshTransportAccounts()
+    return this.buildState()
+  }
+
+  /**
    * Detach the parked prompt. With a reason the flow's awaited promise is
    * rejected too — a parked prompt dropped un-rejected would leave the
    * seam's flow (and the provider's single-flight slot) wedged until its
@@ -1406,6 +1665,7 @@ export class KeysManagerService {
         : 'The sign-in attempt was cancelled',
     ))
     if (this.loginsInFlight.get(attempt.provider) === attempt.id) this.loginsInFlight.delete(attempt.provider)
+    if (this.transportInFlight.get(attempt.provider) === attempt.id) this.transportInFlight.delete(attempt.provider)
     attempt.controller.abort()
     attempt.updatedAt = attempt.settledAt
   }
@@ -2003,6 +2263,16 @@ export class KeysManagerService {
    * is still current before committing.
    */
   private onGrantRecordUpdated(key: string): void {
+    // A transport route's record is another package's credential: a write or
+    // removal there (its adapter re-authenticating, or a sign-in on another
+    // surface) only re-reads the account list. It must never reach the pi-ai
+    // reconciliation path below, which would look for a pool row that does not
+    // exist and warn about native management of a route this manager does not
+    // own.
+    if (key.startsWith(`${TRANSPORT_CREDENTIAL_SCOPE}/`)) {
+      void this.refreshTransportAccounts()
+      return
+    }
     if (!key.startsWith(`${OAUTH_GRANT_RECORD_SCOPE}/`)) return
     const provider = key.slice(OAUTH_GRANT_RECORD_SCOPE.length + 1)
     if (this.store.provider(provider) === undefined) return
@@ -3010,11 +3280,22 @@ export class KeysManagerService {
       pausedKeyCount: allKeys.filter(key => key.status === 'paused').length,
       bindingsCount: Object.keys(this.store.state.sessionBindings).length,
       warnings,
+      transportAccounts: this.transportRows.map(row => ({ ...row })),
     }
   }
 
-  /** Remote: complete manager state. */
+  /**
+   * Remote: complete manager state.
+   *
+   * The transport rows come from another package's records, and reading them
+   * is async while this endpoint is synchronous, so every poll starts a
+   * refresh for the next one (the client ticks every second), unless one is
+   * already in flight. The constructor warms the first read and record
+   * updates refresh immediately, so the one-tick lag only shows on a cold
+   * start.
+   */
   getState(): StateView {
+    this.refreshTransportAccountsIfIdle()
     return this.buildState()
   }
 

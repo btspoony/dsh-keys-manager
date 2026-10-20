@@ -1,7 +1,7 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView } from './types'
+import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from './format'
@@ -97,6 +97,30 @@ function statusKey(status: KeyStatus | ProviderStatus): string {
     // would contradict the Managed badge rendered beside it.
     case 'empty': return 'keyStatusEmpty'
     default: return 'keyStatusUnmanaged'
+  }
+}
+
+/**
+ * Transport account status copy. A transport grant has three observable
+ * states beyond "signed out": fresh, expired-but-refreshable (the route's
+ * adapter renews it on the next request), and expired without a refresh token
+ * (only a new sign-In can restore service).
+ */
+function transportStatusKey(status: TransportAccountStatus): string {
+  switch (status) {
+    case 'active': return 'transportStatusActive'
+    case 'expired': return 'transportStatusExpired'
+    case 'needs-reauth': return 'transportStatusNeedsReauth'
+    default: return 'transportStatusSignedOut'
+  }
+}
+
+function transportStatusTone(status: TransportAccountStatus): Tone {
+  switch (status) {
+    case 'active': return 'success'
+    case 'expired': return 'warn'
+    case 'needs-reauth': return 'error'
+    default: return 'idle'
   }
 }
 
@@ -667,6 +691,125 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
   )
 }
 
+interface TransportAccountRowProps {
+  account: TransportAccountView
+}
+
+/**
+ * One `llm-omp-transports/<route>` account.
+ *
+ * Visually a sibling of {@link AccountRow}, but the model underneath differs:
+ * a transport route keeps exactly one grant record and its own adapter
+ * resolves it, so there is nothing to project into pi-ai and "Set active" can
+ * only re-read the stored grant. Removal deletes that record, and sign-in
+ * starts the transports package's own flow.
+ */
+function TransportAccountRow({ account }: TransportAccountRowProps): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const locale = useLocaleId()
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const [confirm, setConfirm] = React.useState(false)
+  const [login, setLogin] = React.useState<{ attemptId: string } | null>(null)
+
+  async function signIn(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.beginTransportLogin(account.id)
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    if (result.value !== null) setLogin({ attemptId: result.value.id })
+  }
+
+  async function activate(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.activateTransportAccount(account.id)
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+  }
+
+  async function remove(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.removeTransportAccount(account.id)
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+    else setConfirm(false)
+  }
+
+  const identity = account.email ?? account.accountId ?? account.displayName
+  const tone = transportStatusTone(account.status)
+  return h('div', { className: 'km-account-row km-transport-row' },
+    h('div', { className: 'km-key-identity' },
+      h('div', { className: 'km-key-alias-line' },
+        h('span', { className: 'km-account-glyph', 'aria-hidden': true }, h(Icon, { name: 'user', size: 13 })),
+        h('span', { className: 'km-key-alias' }, identity),
+        h('span', { className: 'km-tag km-tag-accent' }, t('transportTag')),
+      ),
+      // The credential scope, never the payload: the record is the account.
+      h('div', { className: 'km-key-sub' },
+        h('span', { className: 'km-mono km-muted' }, account.scope),
+      ),
+    ),
+    h('div', { className: 'km-key-status' },
+      h('span', { className: cx('km-status', `km-status-${tone}`) },
+        h('span', { className: cx('km-dot', `km-dot-${tone}`) }),
+        h('span', null, t(transportStatusKey(account.status))),
+      ),
+    ),
+    // The expiry column stays a clock, not a countdown: the route's adapter
+    // renews the grant itself, so "expired" here means "renews on next use".
+    h('div', { className: 'km-key-last' },
+      account.expiresAt === undefined
+        ? h('div', { className: 'km-key-time km-muted' }, t('never'))
+        : h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
+    ),
+    h('div', { className: 'km-key-actions' },
+      h(Button, {
+        size: 'small',
+        disabled: busy,
+        onClick: signIn,
+        title: account.active ? t('accountReauth') : t('transportSignIn'),
+      }, busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'refresh', size: 14 }),
+        t(account.active ? 'accountReauth' : 'transportSignIn')),
+      // Activation writes nothing (the record IS the live grant); the entry
+      // stays disabled while the grant is already usable.
+      h(Button, {
+        size: 'small',
+        variant: 'ghost',
+        disabled: busy || account.status === 'active',
+        onClick: activate,
+      }, h(Icon, { name: 'check', size: 14 }), t('accountActivate')),
+      h(Button, {
+        size: 'small',
+        variant: 'danger',
+        disabled: busy,
+        onClick: () => setConfirm(true),
+      }, h(Icon, { name: 'trash', size: 14 }), t('delete')),
+    ),
+    error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
+    confirm ? h(Modal, {
+      title: t('transportRemoveTitle', { name: account.displayName }),
+      onClose: () => setConfirm(false),
+      busy,
+      footer: [
+        h(Button, { key: 'cancel', onClick: () => setConfirm(false), disabled: busy }, t('cancel')),
+        h(Button, { key: 'delete', variant: 'danger', onClick: remove, disabled: busy }, busy ? t('deleting') : t('deleteConfirm')),
+      ],
+    }, h('p', { className: 'km-modal-copy' }, t('transportRemoveBody'))) : null,
+    login !== null ? h(LoginDialog, {
+      provider: { displayName: account.displayName },
+      attemptId: login.attemptId,
+      onClose: () => setLogin(null),
+    }) : null,
+  )
+}
+
 interface ProviderCardProps {
   provider: ProviderView
   expanded: boolean
@@ -920,7 +1063,8 @@ function safeNoticeUrl(url: string | undefined): string | null {
 }
 
 interface LoginDialogProps {
-  provider: ProviderView
+  /** Only the display name is rendered; a transport account supplies one too. */
+  provider: { displayName: string }
   attemptId: string
   onClose: () => void
 }
@@ -1246,6 +1390,9 @@ function KeysManagerBody(): React.ReactElement {
   }, [runtime, snapshot.status])
 
   const providers = state?.providers ?? []
+  // Additive host field: a snapshot from a build without transport support
+  // renders no section at all.
+  const transportAccounts = state?.transportAccounts ?? []
   const normalizedQuery = query.trim().toLowerCase()
   const matches = (provider: ProviderView): boolean => {
     if (normalizedQuery.length === 0) return true
@@ -1375,6 +1522,17 @@ function KeysManagerBody(): React.ReactElement {
               h(Button, { variant: 'ghost', size: 'small', onClick: () => setShowAllAvailable(false) }, t('showLess')),
             )
           : null,
+    ) : null,
+
+    !loading && !failed && transportAccounts.length > 0 ? h('section', { className: 'km-section' },
+      h('div', { className: 'km-section-head' },
+        h('h2', { className: 'km-section-title' }, t('transportAccounts')),
+        h('span', { className: 'km-section-count' }, transportAccounts.length),
+      ),
+      h('div', { className: 'km-provider-list' }, transportAccounts.map(account => h(TransportAccountRow, {
+        key: account.scope,
+        account,
+      }))),
     ) : null,
 
     !loading && !failed ? h('section', { className: 'km-section' }, h(SettingsCard)) : null,
