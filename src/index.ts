@@ -107,6 +107,18 @@ const MAX_ALIAS = 80
 const INTENTIONAL_REMOVAL_TTL_MS = 5_000
 /** The credential-record scope pi-ai stores its per-provider grants under (llm-pi-ai/src/auth.ts:29). */
 export const OAUTH_GRANT_RECORD_SCOPE = 'llm-pi-ai'
+/**
+ * Upper bound on one stream's wait for projection-ownership hydration
+ * (round-9 should-fix). Hydration reads one `readRecord` per OAuth provider
+ * serially and the seam offers no timeout or cancellation, so a single
+ * stalled read can keep that promise pending indefinitely. The wait is
+ * therefore bounded: 500 ms is generous for a healthy local credential-store
+ * read while keeping a stalled read from stalling the request (and every
+ * managed provider behind it) for longer than half a second. The hydration
+ * itself is never cancelled — a late result still lands through the
+ * generation guard in {@link KeysManagerService.hydrateProjectionOwnership}.
+ */
+const HYDRATION_WAIT_MS = 500
 
 /**
  * Stable failure code for a harvest whose state flush rejected AND whose
@@ -630,6 +642,29 @@ function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OA
     candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined)
 }
 
+/** Outcome of {@link raceTimeout}: the promise settled, or the bound elapsed. */
+type TimeoutResult<T> = { settled: true; value: T } | { settled: false }
+
+/**
+ * Resolve with `promise`'s completion, or with `{ settled: false }` once `ms`
+ * elapses — whichever comes first. The input promise keeps running: a timeout
+ * never cancels the work behind it (round-9 should-fix: the hydration read
+ * must still land, only this wait is bounded). The timer is always cleared, so
+ * a fast settlement leaves nothing pending.
+ */
+function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<TimeoutResult<T>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<TimeoutResult<T>>(resolve => {
+    timer = setTimeout(() => resolve({ settled: false }), ms)
+  })
+  return Promise.race([
+    promise.then(value => ({ settled: true as const, value })),
+    timeout,
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
 export class KeysManagerService {
   readonly ctx: HostContext
   readonly store: KeysManagerStore
@@ -737,10 +772,19 @@ export class KeysManagerService {
    * grant, and an OAuth failure would be classified as externally
    * authenticated instead of cooling the account. The promise never rejects
    * (hydration catches and warns per provider, then falls back to "no
-   * owner"), so awaiting it cannot wedge requests; once resolved, later
-   * requests only pay a microtask.
+   * owner"), so awaiting it cannot throw; the wait is bounded separately by
+   * {@link hydrationWaitMs} because it can still stay pending forever.
    */
   private projectionHydration: Promise<void> = Promise.resolve()
+  /**
+   * Upper bound on one stream's wait for {@link projectionHydration}
+   * (round-9 should-fix). The hydration read has no timeout of its own, so
+   * without a bound one stalled `readRecord` would gate every managed stream.
+   * Injectable so tests can exercise the bound quickly.
+   */
+  private hydrationWaitMs = HYDRATION_WAIT_MS
+  /** Providers whose bounded-wait warning already fired (warn once). */
+  private readonly hydrationWaitWarned = new Set<string>()
   /** Channels whose lost-subscription warning already fired (warn once). */
   private readonly subscriptionLostWarnings = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
@@ -812,6 +856,36 @@ export class KeysManagerService {
     })().catch(error => {
       this.warn(`projection ownership hydration failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+  }
+
+  /**
+   * Wait (bounded) until projection-ownership hydration can attribute this
+   * request, and report whether it did.
+   *
+   * A provider without OAuth rows can never own a projection, so it never
+   * waits — a stalled read for some other provider must not delay it
+   * (round-9 should-fix: this used to gate every managed provider, API-key-
+   * only ones included).
+   *
+   * Returns false when the bound elapsed first. The caller then treats
+   * attribution as unknown (no owner) and keeps key state untouched: a
+   * projection may still be serving, and selecting/mutating a key here would
+   * repeat the I-000108 corruption. The hydration promise is not cancelled,
+   * so a late result still lands under the generation guard and later
+   * requests are attributed normally.
+   */
+  private async awaitProjectionOwnership(providerId: string): Promise<boolean> {
+    const provider = this.store.provider(providerId)
+    if (provider === undefined) return true
+    const hasOauthRows = provider.keys.some(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
+    if (!hasOauthRows) return true
+    const outcome = await raceTimeout(this.projectionHydration, this.hydrationWaitMs)
+    if (outcome.settled) return true
+    if (!this.hydrationWaitWarned.has(providerId)) {
+      this.hydrationWaitWarned.add(providerId)
+      this.warn(`projection ownership hydration did not settle within ${this.hydrationWaitMs}ms for ${providerId}; requests proceed without an attributed account until it does`)
+    }
+    return false
   }
 
   /**
@@ -3708,10 +3782,11 @@ export class KeysManagerService {
               // Attribution must wait for it — otherwise this request selects
               // and mutates a key cursor even though pi-ai serves the stored
               // grant, and an OAuth failure is classified as externally
-              // authenticated. The promise never rejects (see
-              // `projectionHydration`), and later requests only pay a
-              // microtask once it is resolved.
-              await service.projectionHydration
+              // authenticated. Round-9 should-fix: the wait is bounded and is
+              // skipped entirely for providers that hold no OAuth rows, so a
+              // stalled credential read can neither wedge this request nor
+              // delay an API-key-only provider.
+              const hydrated = await service.awaitProjectionOwnership(providerId)
               // Round-5 finding C4: while a projection exists, pi-ai serves
               // the stored grant and never consults the broker, so selecting
               // a key here would only mutate unused key state (cursor,
@@ -3719,15 +3794,20 @@ export class KeysManagerService {
               // Skip selection entirely; the request is attributed to the
               // serving account row below. The retry after a demotion runs
               // with no projection, so it selects from the key pool.
-              const oauthAccountId = service.oauthOwnerFor(providerId)
+              //
+              // When the bounded wait elapsed, attribution is unknown: no
+              // owner, and no key selection either, because a projection may
+              // still be serving (the hydration result lands later under its
+              // generation guard).
+              const oauthAccountId = hydrated ? service.oauthOwnerFor(providerId) : null
               let selection: KeySelection = { key: undefined, value: undefined }
-              if (oauthAccountId === null) {
+              if (hydrated && oauthAccountId === null) {
                 try {
                   selection = await service.selectKey(providerId, sessionId, step)
                 } catch (error) {
                   service.warn(`key selection failed: ${error instanceof Error ? error.message : String(error)}`)
                 }
-              } else if (sessionId !== undefined && step !== undefined) {
+              } else if (hydrated && sessionId !== undefined && step !== undefined) {
                 // A projection-served attempt cannot consume a step retry pin;
                 // dropping it here keeps a stale pin from leaking into a later
                 // attempt of the same step.

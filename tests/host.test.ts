@@ -6213,6 +6213,103 @@ test('a stream waits for projection hydration before attributing the request (I-
   }
 })
 
+// Round-9 review (should-fix, I-000110): the hydration promise never rejects,
+// but it can stay pending forever — `readRecord` has no timeout and the
+// hydration read runs per provider, serially. Awaiting it unbounded let one
+// stalled read block every managed stream, API-key-only providers included.
+// The attribution wait is now bounded: on timeout the request proceeds with NO
+// owner and without selecting/mutating key state (a projection may be serving,
+// so mutating would repeat the I-000108 corruption), and the hydration itself
+// is never cancelled — a late result still lands through the generation guard.
+
+test('a stalled projection read does not block a stream and attributes no owner (R9 SF)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    // The projection persisted by the previous run would belong to this row;
+    // the read that would prove it never settles.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const provider = h.store.provider('anthropic')!
+    const row = provider.keys.find(key => key.id === rowId)!
+    const rowBefore = structuredClone(row)
+    const cursorBefore = provider.cursor
+    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+    let stalled = false
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) {
+        stalled = true
+        return new Promise<FakeCredentialRecord | undefined>(() => {})
+      }
+      return realRead(key)
+    }
+    try {
+      const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+      ;(restarted as unknown as { hydrationWaitMs: number }).hydrationWaitMs = 40
+      assert.equal(stalled, true, 'the stalled hydration read was exercised')
+
+      const startedAt = Date.now()
+      await consume(restarted.streamListener(
+        { provider: 'anthropic', model: 'model', sessionId: 'session-stalled', messages: [] },
+        async function* () {
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        } as any,
+      ))
+      // It returned at all: the wait was bounded, not the stalled read.
+      assert.ok(Date.now() - startedAt < 2000, 'the request was not blocked by the stalled read')
+      // No owner: attribution stayed unknown, so nothing about the row or the
+      // key selection moved.
+      assert.deepEqual(row, rowBefore)
+      assert.equal(provider.cursor, cursorBefore)
+      assert.equal(h.store.binding('session-stalled', 'anthropic'), undefined)
+      // The plugin-scope projection is untouched (nothing demoted or deleted).
+      assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    } finally {
+      h.credentials.raw.readRecord = realRead
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+test('a provider without OAuth rows is not delayed by another provider\'s stalled hydration (R9 SF)', async () => {
+  const h = await harness()
+  try {
+    // A stalled OAuth read for anthropic...
+    await h.service.adoptProvider('anthropic')
+    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-9', email: 'dev@example.com' })
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    // ...while the request targets an API-key-only provider that can never
+    // own a projection.
+    await h.service.adoptProvider('deepseek-official')
+    await h.service.addKey('deepseek-official', 'peer', 'sk-deepseek-peer')
+    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) return new Promise<FakeCredentialRecord | undefined>(() => {})
+      return realRead(key)
+    }
+    try {
+      const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+      ;(restarted as unknown as { hydrationWaitMs: number }).hydrationWaitMs = 1000
+      const startedAt = Date.now()
+      await consume(restarted.streamListener(
+        { provider: 'deepseek-official', model: 'model', sessionId: 'session-peer', messages: [] },
+        async function* () {
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        } as any,
+      ))
+      // No OAuth rows means no projection can serve this provider, so it must
+      // not wait for hydration (let alone its bound).
+      assert.ok(Date.now() - startedAt < 400, `the API-key-only request waited ${Date.now() - startedAt}ms`)
+      // It still selected (and marked) a key from the pool as before.
+      assert.ok(h.store.provider('deepseek-official')!.keys[0]!.lastUsedAt > 0)
+    } finally {
+      h.credentials.raw.readRecord = realRead
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+
 test('a restarted service does not adopt an orphan projection and still warns on its updates', async () => {
   const h = await harness()
   try {
