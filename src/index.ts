@@ -424,11 +424,42 @@ function resolveHeaderEnv(extra: ExtraProvider): Record<string, string> | undefi
   for (const [header, envName] of Object.entries(extra.headerEnv)) {
     const value = process.env[envName]?.trim()
     if (value === undefined || value.length === 0) {
-      throw new Error(`${extra.id} requires the ${envName} environment variable (${header} header, <team>/<project>)`)
+      throw new Error(`${extra.id} requires the ${envName} environment variable (${header} header)`)
     }
     headers[header] = value
   }
   return headers
+}
+
+/** Read a stored profile header map, keeping only the string values a header can carry. */
+function staticHeaders(value: unknown): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (value === null || typeof value !== 'object') return headers
+  for (const [header, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') headers[header] = entry
+  }
+  return headers
+}
+
+/** Resolve the declared header values the environment currently supplies. */
+function environmentHeaders(extra: ExtraProvider | undefined): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (extra?.headerEnv === undefined) return headers
+  for (const [header, envName] of Object.entries(extra.headerEnv)) {
+    const value = process.env[envName]?.trim()
+    if (value !== undefined && value.length > 0) headers[header] = value
+  }
+  return headers
+}
+
+/** Declared headers the stored map does not carry yet; a stored value always wins. */
+function missingHeaders(declared: Record<string, string> | undefined, stored: Record<string, string>): Record<string, string> {
+  const missing: Record<string, string> = {}
+  if (declared === undefined) return missing
+  for (const [header, value] of Object.entries(declared)) {
+    if (stored[header] === undefined) missing[header] = value
+  }
+  return missing
 }
 
 /** Public, secret-free key row. */
@@ -3217,7 +3248,23 @@ export class KeysManagerService {
       const input = validateKeyInput(alias, value)
       const extra = EXTRA_PROVIDER_MAP.get(extraId)
       if (extra === undefined) throw new Error(`Unknown extra provider "${extraId}"`)
-      if (this.store.provider(extraId) !== undefined) {
+      // Resolved before the first credential/settings write on every add path,
+      // so a missing variable refuses the add without leaving a key or a
+      // partial profile.
+      const headers = resolveHeaderEnv(extra)
+      const managed = this.store.provider(extraId)
+      if (managed !== undefined) {
+        // A managed profile can lose its declared headers through a Models
+        // edit; restore them instead of reporting a managed route whose
+        // header is silently absent.
+        const stored = staticHeaders(this.profileAt(managed.settingsNs, managed.settingsPath)?.headers)
+        const missing = missingHeaders(headers, stored)
+        if (Object.keys(missing).length > 0) {
+          await this.mutateSettings(managed.settingsNs, [
+            { op: 'set', path: [...managed.settingsPath, 'headers'], value: { ...stored, ...missing } },
+          ])
+          this.pushWarning(`Restored the missing ${Object.keys(missing).join(', ')} header on the managed profile.`)
+        }
         this.pushWarning('Provider is already managed; the key was added instead.')
         await this.addKeyLocked(extraId, input.alias, input.value)
         this.store.touch()
@@ -3226,9 +3273,6 @@ export class KeysManagerService {
       const descriptor = this.describeSettings()
       const namespace = this.namespace(descriptor, 'llm-pi-ai')
       if (namespace === undefined) throw new Error('The llm-pi-ai settings namespace is not mounted')
-      // Resolved before the first credential/settings write, so a missing
-      // variable refuses the add without leaving a key or a partial profile.
-      const headers = resolveHeaderEnv(extra)
       const existing = asProfile(getPath(namespace.value, ['providers', extraId]))
       if (existing !== undefined) {
         this.pushWarning('A stored profile already exists for this provider; adopting it without replacing its models.')
@@ -3253,10 +3297,12 @@ export class KeysManagerService {
         }
         const key = await this.createKeyRecord(extraId, input.alias, input.value)
         const ops: SettingsPathOp[] = [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }]
-        // Fill a missing header block; headers the stored profile already
-        // declares are left untouched.
-        if (headers !== undefined && existing.headers === undefined) {
-          ops.push({ op: 'set', path: ['providers', extraId, 'headers'], value: headers })
+        // Fill the declared headers the stored profile does not carry; a value
+        // the profile already sets for the same header is never overwritten.
+        const storedHeaders = staticHeaders(existing.headers)
+        const missing = missingHeaders(headers, storedHeaders)
+        if (Object.keys(missing).length > 0) {
+          ops.push({ op: 'set', path: ['providers', extraId, 'headers'], value: { ...storedHeaders, ...missing } })
         }
         try {
           await this.mutateSettings('llm-pi-ai', ops)
@@ -3396,7 +3442,7 @@ export class KeysManagerService {
     })
   }
 
-  /** Read one live profile for release-time cleanup decisions. */
+  /** Read one live profile for repair and release-time cleanup decisions. */
   private profileAt(ns: string, path: readonly string[]): ProfileShape | undefined {
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, ns)
@@ -3478,14 +3524,44 @@ export class KeysManagerService {
         await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
         profileMutated = true
       } else {
-        // Native and pre-existing extra routes own only apiKeyEnv. Leave every
-        // other profile field (baseURL, models, hand edits) exactly as it is.
+        // Native and pre-existing extra routes own only the values this plugin
+        // wrote: apiKeyEnv, plus the declared static headers it injected into
+        // an adopted profile. Leave every other profile field (baseURL,
+        // models, hand edits) exactly as it is.
         const path = [...record.settingsPath, 'apiKeyEnv']
-        await this.mutateSettings(record.settingsNs, [
+        const ops: SettingsPathOp[] = [
           record.originalApiKeyEnv !== null
             ? { op: 'set', path, value: record.originalApiKeyEnv }
             : { op: 'unset', path },
-        ])
+        ]
+        // An injected header is identified by the environment value the add
+        // wrote into it, so no extra record field has to remember the write.
+        // Anything else stays, and release says so instead of guessing.
+        const storedHeaders = staticHeaders(liveProfile?.headers)
+        const extra = record.extraId === null ? undefined : EXTRA_PROVIDER_MAP.get(record.extraId)
+        const envHeaders = environmentHeaders(extra)
+        const injected: string[] = []
+        for (const [header, envName] of Object.entries(extra?.headerEnv ?? {})) {
+          const stored = storedHeaders[header]
+          if (stored === undefined) continue
+          const envValue = envHeaders[header]
+          if (envValue === undefined) {
+            this.warn(`Release left the ${header} header in the ${provider} profile: ${envName} is no longer set, so an injected value cannot be identified.`)
+          } else if (stored === envValue) {
+            injected.push(header)
+          } else {
+            this.warn(`Release left the ${header} header in the ${provider} profile: it is not the value ${envName} currently supplies.`)
+          }
+        }
+        if (injected.length > 0) {
+          const remaining = Object.keys(storedHeaders).filter(header => !injected.includes(header))
+          if (remaining.length === 0) {
+            ops.push({ op: 'unset', path: [...record.settingsPath, 'headers'] })
+          } else {
+            for (const header of injected) ops.push({ op: 'unset', path: [...record.settingsPath, 'headers', header] })
+          }
+        }
+        await this.mutateSettings(record.settingsNs, ops)
         profileMutated = true
         // Remove an auto-created profile only when it is still empty after
         // clearing apiKeyEnv; a profile with later user edits stays.

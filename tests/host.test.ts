@@ -929,6 +929,169 @@ test('an extra provider without headerEnv writes no headers key', async () => {
     await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
     const profile = h.settings.valueOf('llm-pi-ai').providers.deepinfra
     assert.equal('headers' in profile, false)
+    // The whole profile, not just the absent key, keeps its pre-carrier shape.
+    assert.deepEqual(profile, {
+      displayName: 'DeepInfra',
+      api: 'openai-completions',
+      baseURL: 'https://api.deepinfra.com/v1/openai',
+      apiKeyEnv: profile.apiKeyEnv,
+      models: [
+        { id: 'discovered-chat', name: 'Discovered Chat', contextWindow: 128000, maxTokens: 8192, input: ['text'] },
+        { id: 'discovered-vision', name: 'Discovered Vision', input: ['text', 'image'] },
+      ],
+    })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a stored coreweave profile fills only the declared headers it lacks', async () => {
+  const scenarios = [
+    { seed: {}, expected: { 'OpenAI-Project': 'team/project' } },
+    { seed: { 'X-Trace': 'keep-me' }, expected: { 'X-Trace': 'keep-me', 'OpenAI-Project': 'team/project' } },
+    { seed: { 'OpenAI-Project': 'user/own' }, expected: { 'OpenAI-Project': 'user/own' } },
+  ]
+  for (const scenario of scenarios) {
+    const h = await harness()
+    try {
+      const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+      namespace.value.providers.coreweave = {
+        api: 'openai-completions',
+        baseURL: 'https://proxy.example/v1',
+        models: [{ id: 'preseeded-model' }],
+        headers: scenario.seed,
+      }
+      await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+      assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, scenario.expected)
+    } finally {
+      await h.close()
+    }
+  }
+})
+
+test('releasing an adopted coreweave profile removes the injected header and restores apiKeyEnv', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      apiKeyEnv: 'COREWEAVE_API_KEY',
+      models: [{ id: 'preseeded-model' }],
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+    const keyRef = h.store.provider('coreweave')!.keys[0].ref
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    // The block the plugin wrote is gone; the rest of the adopted profile stays.
+    assert.equal('headers' in profile, false)
+    assert.equal(profile.apiKeyEnv, 'COREWEAVE_API_KEY')
+    assert.deepEqual(profile.models, [{ id: 'preseeded-model' }])
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.equal(h.credentials.refs.has(keyRef), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('releasing an adopted coreweave profile keeps headers the plugin did not inject', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'X-Trace': 'keep-me' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, {
+      'X-Trace': 'keep-me',
+      'OpenAI-Project': 'team/project',
+    })
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'X-Trace': 'keep-me' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('releasing an adopted coreweave profile keeps a declared header the user authored', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'OpenAI-Project': 'user/own' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    // Adoption never overwrote the stored value, so release must not delete it.
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again restores a declared header a Models edit dropped', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    await withCoreweaveProject('team/project', async () => {
+      const state = await h.service.addExtraProvider('coreweave', 'main', 'sk-second')
+      assert.match(state.warnings.join('\n'), /Restored the missing OpenAI-Project header/)
+    })
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again refuses when COREWEAVE_PROJECT is gone', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    await withCoreweaveProject(undefined, async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-second'),
+        /coreweave requires the COREWEAVE_PROJECT environment variable \(OpenAI-Project header/,
+      )
+    })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 1)
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a stored coreweave profile without the variable writes nothing', async () => {
+  const h = await harness()
+  try {
+    const seeded = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      apiKeyEnv: 'COREWEAVE_API_KEY',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'X-Trace': 'keep-me' },
+    }
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = structuredClone(seeded)
+    await withCoreweaveProject(undefined, async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+        /coreweave requires the COREWEAVE_PROJECT environment variable \(OpenAI-Project header/,
+      )
+    })
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave, seeded)
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')), [])
   } finally {
     await h.close()
   }
