@@ -2126,9 +2126,15 @@ export class KeysManagerService {
    * arbiter. `fallbackToKeys` marks every account row value-missing so the
    * live arbitration — projection presence plus probe fail-skip over a
    * kind-agnostic cursor ring — keeps serving only real candidates.
+   *
+   * `accountId` names the row whose failure triggers this demotion (R7-MF).
+   * It is resolved when the queued body runs, so the demotion deletes only a
+   * projection that still belongs to THAT row: activating another account
+   * while the failing request is in flight must not lose the new account's
+   * healthy projection.
    */
-  fallbackToKeys(provider: string): Promise<void> {
-    return this.run(() => this.fallbackToKeysUnqueued(provider))
+  fallbackToKeys(provider: string, accountId?: string): Promise<void> {
+    return this.run(() => this.fallbackToKeysUnqueued(provider, accountId))
   }
 
   /**
@@ -2227,18 +2233,24 @@ export class KeysManagerService {
   }
 
   /**
-   * The fallback body; callers own the mutation queue. `owner` narrows the
-   * ownership check to one explicit row (removeAccount/deleteKey pass the
-   * removed row); without it the provider's active account decides.
+   * The fallback body; callers own the mutation queue. `target` narrows the
+   * ownership check to one explicit row: removal call sites pass the removed
+   * row object, the failure path passes the failing row's id (R7-MF) — an
+   * id is re-resolved here because the failure's demotion is queued and the
+   * row object may be detached by the time it runs. Without a target the
+   * provider's active account decides.
    */
-  private async fallbackToKeysUnqueued(provider: string, owner?: KeyRecord): Promise<void> {
+  private async fallbackToKeysUnqueued(provider: string, target?: KeyRecord | string): Promise<void> {
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return
     const activeId = this.activeAccounts.get(provider)
-    const active = owner ?? (activeId === undefined
-      ? undefined
-      : providerRecord.keys.find(candidate =>
-          candidate.id === activeId && candidate.kind === 'oauth' && candidate.oauth !== null))
+    const resolveOAuthRow = (candidate: KeyRecord | undefined): KeyRecord | undefined =>
+      candidate !== undefined && candidate.kind === 'oauth' && candidate.oauth !== null ? candidate : undefined
+    const active = resolveOAuthRow(typeof target === 'string'
+      ? providerRecord.keys.find(candidate => candidate.id === target)
+      : target ?? (activeId === undefined
+        ? undefined
+        : providerRecord.keys.find(candidate => candidate.id === activeId)))
     // Ownership-verified delete: demote the projection only while it still
     // belongs to this row. The compare runs inside the seam's per-key lock
     // and the delete follows it (decideAndDeleteProjection, round-3
@@ -3382,7 +3394,11 @@ export class KeysManagerService {
       // Round-5 finding C1: publish the demotion so the request-error handler
       // can wait for the projection to actually be gone before its retry
       // re-enters the stream (otherwise pi-ai serves the stored grant again).
-      const demotion = this.fallbackToKeys(providerId).catch(error => {
+      // R7-MF: carry THIS row's identity through the queued demotion. The
+      // failure belongs to the account that served the request, not to
+      // whichever account is active when the queue drains — a "Set active"
+      // landing in between must keep its healthy projection.
+      const demotion = this.fallbackToKeys(providerId, key.id).catch(error => {
         this.warn(`key-pool fallback failed for ${providerId}: ${error instanceof Error ? error.message : String(error)}`)
       })
       this.projectionDemotions.set(providerId, demotion)

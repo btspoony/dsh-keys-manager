@@ -3832,6 +3832,46 @@ test('fallbackToKeys deletes the projection so resolution reaches the key pool',
   }
 })
 
+// Round-7 review (R7-MF): a failure is attributed to the row that SERVED the
+// request. The demotion is queued, so it must carry that row's identity
+// instead of re-resolving "the active account" when it executes: activating
+// another account while the failing request is still in flight must never
+// delete the new account's healthy projection.
+
+test('a failing account demotes its own projection, never the newly activated one (R7-MF)', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({ accountId: 'acc-a', email: 'a@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowA)
+    // Account B takes over the projection while A's request is in flight.
+    const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b' })
+    await h.service.activateAccount('anthropic', b.rowId)
+    const projectedPayload = JSON.stringify(h.credentials.records.get(GRANT_KEY)!.payload)
+    const internals = h.service as unknown as {
+      markFailure: (provider: string, keyId: string, failure: unknown) => void
+      run: (operation: () => Promise<void>) => Promise<void>
+    }
+    // The in-flight request finally fails with the pinned pi-ai oauth code.
+    internals.markFailure('anthropic', rowA, { code: 'oauth', message: 'OAuth refresh failed for anthropic' })
+    // Drain the mutation queue: the queued demotion has actually run by now.
+    await internals.run(async () => {})
+    // A cools down; B's projection and owner claim survive untouched.
+    const rowOfA = h.store.provider('anthropic')!.keys.find(key => key.id === rowA)!
+    assert.ok(rowOfA.cooldownUntil > Date.now(), 'the failing account is cooled')
+    assert.equal(h.credentials.records.has(GRANT_KEY), true, 'the healthy projection is not deleted')
+    assert.equal(JSON.stringify(h.credentials.records.get(GRANT_KEY)!.payload), projectedPayload)
+    // The route still serves through B: healthy, unmarked, and badged.
+    const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
+    const rowOfB = provider.keys.find(key => key.id === b.rowId)!
+    assert.equal(rowOfB.valueMissing, false)
+    assert.equal(rowOfB.status, 'active')
+    assert.equal(rowOfB.projected, true)
+    assert.equal(provider.keys.filter(key => key.projected === true).length, 1)
+    assert.ok(provider.healthyKeyCount >= 1)
+  } finally {
+    await h.close()
+  }
+})
+
 /**
  * Round-3 finding 1: land a native sign-in's grant inside the ownership
  * window. `afterReads` counts how many `readRecord` calls for `key` must
