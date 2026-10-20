@@ -2519,6 +2519,22 @@ export class KeysManagerService {
     if (this.testsInFlight.has(provider)) {
       return { ok: false, latencyMs: 0, error: 'A test for this provider is already running' }
     }
+    // C1: a route served by a projected OAuth account resolves that account's
+    // stored grant, never the API-key pool. `syncBrokerBinding` unsets the
+    // profile's broker reference while a projection exists, so the adapter has
+    // no `apiKey` override to hand pi-ai and the test scope's pinned literal is
+    // never consulted: an api-key row test here would report a pass for a key
+    // the request did not carry. Refuse with the serving source instead of
+    // borrowing (or deleting) the projection — a diagnostic action must not
+    // rewrite the route's credential binding. `oauthOwnerFor` is the read-only
+    // ownership oracle; a stale map entry resolves to null and does not refuse.
+    if (row.kind === 'api-key' && this.oauthOwnerFor(provider) !== null) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: 'This route is currently served by its OAuth account; the API key pool is not in use. Deactivate the account or let the projection fall back, then test again.',
+      }
+    }
     const model = this.testModel(provider)
     if (model === undefined) return { ok: false, latencyMs: 0, error: 'No model is configured for this provider' }
     // The guard holds the whole test as a promise, not just a membership
@@ -2634,8 +2650,8 @@ export class KeysManagerService {
    * plugin-scope write-back {@link reconcileGrantRecord} performs), because
    * the provider may already have consumed the superseded refresh token. A
    * foreign or newer payload (another account, a native writer) is left
-   * untouched. In every branch the owner map ends consistent with what the
-   * store actually holds.
+   * untouched, and a record removed during the window stays removed. In every
+   * branch the owner map ends consistent with what the store actually holds.
    *
    * Returns a failure message when the restore or the rotation write-back
    * did not land, so the caller reports `{ ok: false }` instead of a false
@@ -2664,6 +2680,18 @@ export class KeysManagerService {
       ? previous.payload
       : undefined
     const carriesBorrowed = liveGrant !== undefined && JSON.stringify(liveGrant) === JSON.stringify(borrowed)
+    // R2-1: the pre-test projection was deleted while this test ran. That
+    // removal came from a writer outside the provider's grant chain — the
+    // manager's own projection release, or a native sign-out — so the
+    // pre-test payload is not this test's to put back: resurrecting it would
+    // restore a credential its owner just stopped serving. The record stays
+    // absent and the owner map follows the (empty) live store. The
+    // `previous === undefined` case is different — that projection was this
+    // test's own write — and is deleted below.
+    if (live === undefined && previous !== undefined) {
+      this.reconcileProjectionOwner(provider, undefined)
+      return undefined
+    }
     if (live !== undefined && !carriesBorrowed) {
       const rows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
       const rotationOwner = liveGrant === undefined ? undefined : matchOwningAccount(provider, rows, liveGrant)

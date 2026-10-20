@@ -7192,12 +7192,57 @@ async function harnessWithTwoProjectedAccounts() {
   return { h, first, second }
 }
 
-// C1 is rejected on installed-package evidence (resolve.js:16-22 takes an
-// explicit api-key override ahead of a stored grant). This case pins the
-// precedence: an api-key row test carries the key under test even while the
-// provider has a projected account, so re-routing it through projection
-// borrowing would have to break this test.
-test('an api-key test still uses its own literal when the provider has a projected account', async () => {
+// C1: a route served by a projected OAuth account resolves the account's
+// stored grant. The adapter only hands pi-ai an `apiKey` override when the
+// profile names an `apiKeyEnv`, and Task 1 deliberately unsets that reference
+// while a projection is live, so the test scope's pinned literal is never
+// consulted: an api-key row test here would report a pass for a key the
+// request did not carry. The row is refused with the serving source instead,
+// without a request and without borrowing or deleting the projection.
+test('an api-key test is refused while the oauth account serves the route', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-first', email: 'first@example.com', refresh: 'rt-first' })
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-first', accountId: 'acc-first', email: 'first@example.com' }))
+    await h.service.activateAccount('anthropic', account.rowId)
+    const keyRow = h.store.provider('anthropic')!.keys.find(row => row.kind === 'api-key')!
+    let calls = 0
+    // A route that answers successfully: on the pre-fix path this yielded a
+    // false pass for a key the request never carried.
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+
+    const result = await h.service.testKey('anthropic', keyRow.id)
+
+    assert.equal(result.ok, false)
+    assert.equal(result.latencyMs, 0)
+    // The refusal names the credential actually serving the route.
+    assert.match(String(result.error), /served by its OAuth account/)
+    assert.match(String(result.error), /API key pool is not in use/)
+    // No request was sent for a key this route cannot carry…
+    assert.equal(calls, 0)
+    // …and the account's projection is untouched (no borrow, no delete).
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-first')
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.find(row => row.id === account.rowId)!.projected, true)
+    assert.notEqual(rows.find(row => row.id === keyRow.id)!.projected, true)
+    assert.equal(h.store.provider('anthropic')!.keys.find(row => row.id === keyRow.id)!.totalUses, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+// The refusal above is about the serving source, not the row: once the
+// account is demoted the profile is bound to the pool again, so the very same
+// api-key row is testable and carries its own literal.
+test('an api-key test works again after the projection is demoted', async () => {
   const h = await harness()
   try {
     h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
@@ -7208,6 +7253,8 @@ test('an api-key test still uses its own literal when the provider has a project
     const provider = h.store.provider('anthropic')!
     const keyRow = provider.keys.find(row => row.kind === 'api-key')!
     const literal = h.credentials.refs.get(keyRow.ref)!
+    await h.service.fallbackToKeys('anthropic')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
     const resolved: Array<string | undefined> = []
     h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
       resolved.push((await h.credentials.raw.resolve(provider.brokerRef))?.value)
@@ -7217,14 +7264,7 @@ test('an api-key test still uses its own literal when the provider has a project
     const result = await h.service.testKey('anthropic', keyRow.id)
 
     assert.equal(result.ok, true)
-    // The pinned literal — not the projected account's grant — is what the
-    // request carried.
     assert.deepEqual(resolved, [literal])
-    // An api-key test leaves the account projection untouched.
-    const live = h.credentials.records.get(GRANT_KEY)!
-    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-first')
-    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
-    assert.equal(rows.find(row => row.id === account.rowId)!.projected, true)
   } finally {
     await h.close()
   }
@@ -7360,6 +7400,32 @@ test('a foreign projection written during the test window is not overwritten', a
     const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
     assert.equal(rows.find(candidate => candidate.id === other.rowId)!.projected, true)
     assert.notEqual(rows.find(candidate => candidate.id === first.rowId)!.projected, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an externally removed projection is not resurrected by an oauth test', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  try {
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        // The projection is removed during the ping by a writer outside the
+        // provider's grant chain (a release, a native sign-out); the seam
+        // broadcasts the post-commit removal like any other record write.
+        await h.credentials.raw.deleteRecord(GRANT_KEY)
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(result.ok, true)
+    // The removal stands: the pre-test projection is not written back.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    // No row is projected any more — the owner map follows the empty store.
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.filter(candidate => candidate.projected === true).length, 0)
   } finally {
     await h.close()
   }
