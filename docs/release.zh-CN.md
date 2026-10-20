@@ -6,7 +6,7 @@
 
 CI（`.github/workflows/ci.yml`）先运行根包 typecheck、build、测试，以及对 `lib/index.js`、`lib/client.js`、`bundle/cordis.patch.yml` 的 packed tarball 断言；随后运行 `dsh-llm-omp-transports` workspace 包的 typecheck、build、测试与 drift manifest 校验。
 
-工作流会在测试套件之前安装固定版本的 `@deepseek-ai/dsh`（`0.2.1-rc.2`），并在最后执行显式的安装/装载证明步骤（`vitest run tests/install.test.ts`）：本地打包两个 tarball、把根插件装进全新 profile，组合后的 loader 树必须同时包含两个组件。CI 环境下缺少 `dsh` 或 `pnpm` 时 `tests/install.test.ts` 直接失败而不是跳过；只有本地运行保留跳过这一便利。
+工作流会在测试套件之前安装固定版本的 `@deepseek-ai/dsh`（`0.2.1-rc.2`），并在最后执行显式的安装/装载证明步骤（`vitest run tests/install.test.ts`）：本地打包两个 tarball、把根插件装进全新 profile，组合后的 loader 树必须同时包含两个组件。只有该步骤设置 `INSTALL_PROOF=required` 时，缺少 `dsh` 或 `pnpm` 才会直接失败而不是跳过；先前的 `Test` 步骤排除该文件，发布工作流以普通套件运行且不带该变量——它们不安装 CLI，因此跳过该证明而不是在发布前失败。
 
 ## 发布流程
 

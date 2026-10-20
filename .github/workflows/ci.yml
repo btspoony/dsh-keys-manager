@@ -34,9 +34,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The install/load proof runs the real CLI, and `tests/install.test.ts`
-      # fails (rather than skips) in CI when `dsh` is missing on PATH. Pin the
-      # CLI explicitly so the proof is versioned with the change that adds it.
+      # The install/load proof runs the real CLI, and its focused step below
+      # (`INSTALL_PROOF=required`) fails rather than skips when `dsh` is missing
+      # on PATH. Pin the CLI explicitly so the proof is versioned with the change
+      # that adds it.
       - name: Install a pinned dsh CLI
         run: npm install --global @deepseek-ai/dsh@0.2.1-rc.2
 
@@ -46,8 +47,11 @@ jobs:
       - name: Build
         run: pnpm run build
 
+      # The install/load proof is excluded here: it is the heaviest step (both
+      # packages packed, each `prepack` a full build, plus a fresh profile
+      # install), so it runs once per job in the focused step below.
       - name: Test
-        run: pnpm run test
+        run: pnpm exec vitest run --exclude tests/install.test.ts
 
       # Workspace package dsh-llm-omp-transports. Its build bundles the pinned
       # omp Cursor transport, so it runs before the tests that check the artifact
@@ -80,7 +84,10 @@ jobs:
       # a fresh DSH profile, and asserts the composed loader tree carries BOTH
       # components. It needs both builds above (each package's own `prepack`
       # also rebuilds) and the pinned `dsh` installed before the suite.
+      # INSTALL_PROOF=required is what makes a missing `dsh`/`pnpm` fail here
+      # instead of skip; the release workflows run the plain suite without it,
+      # install no CLI, and so skip this proof rather than fail before publish.
       - name: Install/load proof (packed profile mounts both components)
         env:
-          CI: "true"
+          INSTALL_PROOF: required
         run: pnpm exec vitest run tests/install.test.ts

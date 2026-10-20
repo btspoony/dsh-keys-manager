@@ -13,8 +13,11 @@ The job installs a pinned `@deepseek-ai/dsh` (`0.2.1-rc.2`) before the suite
 and ends with an explicit install/load proof step (`vitest run
 tests/install.test.ts`): both tarballs are packed, the root plugin is installed
 into a fresh profile, and the composed loader tree must carry both components.
-`tests/install.test.ts` fails in CI when `dsh` or `pnpm` is missing instead of
-skipping; only a local run keeps the convenience skip.
+`tests/install.test.ts` fails instead of skipping only when
+`INSTALL_PROOF=required` is set, which that step alone does; the earlier `Test`
+step excludes the file, and the release workflows run the plain suite without
+the flag — they install no CLI and skip the proof rather than fail before
+publishing.
 
 ## Release flow
 
