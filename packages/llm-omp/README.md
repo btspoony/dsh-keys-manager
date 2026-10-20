@@ -135,8 +135,9 @@ plugin-manager UI or any Cursor network behavior.
 This package versions independently of `dsh-keys-manager`; the root
 `CHANGELOG.md` and its generated sections cover the root package only. A
 release-prep run bumps the transports version by default (opt out with
-`--skip-transport`, or pin one with `--transport X.Y.Z`) and the Release
-workflow publishes it and pushes the `dsh-llm-omp-transports@<version>` tag.
+`--skip-transport`, or pin one with `--transport X.Y.Z` / `X.Y.Z-prerelease`)
+and the Release workflow publishes it and pushes the
+`dsh-llm-omp-transports@<version>` tag.
 The root [release docs](../../docs/release.md) describe the full flow.
 
 Package documentation is English-only; the root `README.md` /

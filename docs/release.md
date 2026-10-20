@@ -25,8 +25,9 @@ Releases are PR-driven:
 
 1. Actions → **Release prep** → Run workflow. Leave the version empty for an
    automatic patch bump, or pass `X.Y.Z` / `X.Y.Z-prerelease`. The transports
-   version is optional: leave it empty for its automatic patch bump, pass a
-   formal `X.Y.Z` to pin it, or `skip` to leave that package unchanged.
+   version is optional: leave it empty for its automatic patch bump, pass
+   `X.Y.Z` / `X.Y.Z-prerelease` to pin it (dist-tag derived from the
+   suffix), or `skip` to leave that package unchanged.
 2. The workflow bumps both `package.json` versions (the transports package on
    its own line), updates the root `CHANGELOG.md` from git log, validates the
    build, and opens a `release v<version>` PR.
