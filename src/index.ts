@@ -3311,7 +3311,9 @@ export class KeysManagerService {
         this.pushWarning('Provider is already managed; the key was added instead.')
         // The shared managed-key path repairs the declared headers, so every
         // add-key flow restores them and the repair keeps one implementation.
-        await this.addKeyLocked(extraId, input.alias, input.value)
+        // Hand it the value resolved above: the entry refusal stays the single
+        // decision for this surface, and the environment is read once per add.
+        await this.addKeyLocked(extraId, input.alias, input.value, headers)
         this.store.touch()
         return this.buildState()
       }
@@ -3424,21 +3426,27 @@ export class KeysManagerService {
    * required header is silently absent. Only a live profile with a healthy
    * binding is ours to repair: a deleted profile would gain a header-only
    * half-profile, and a replaced one is the state release refuses to touch. A
-   * stored value for the same header always wins. A route that cannot resolve
-   * its declared headers only warns: the caller's key write is already
-   * committed, so a refusal here would leave a half-applied add behind.
+   * stored value for the same header always wins. The caller may pass the
+   * headers it already resolved at its own entry (where a missing variable can
+   * still refuse the add before any write); otherwise this method resolves
+   * them. Either way a failure only warns, because the key has already been
+   * added: a route whose headers cannot be resolved, and a settings write that
+   * cannot be performed, both leave the repair pending for the next add so a
+   * half-applied add is never turned into a rejected one.
    */
-  private async repairDeclaredHeaders(record: ProviderRecord): Promise<void> {
+  private async repairDeclaredHeaders(record: ProviderRecord, declared?: Record<string, string>): Promise<void> {
     const extra = record.extraId === null ? undefined : EXTRA_PROVIDER_MAP.get(record.extraId)
     if (extra?.headerEnv === undefined) return
-    let headers: Record<string, string> | undefined
-    try {
-      headers = resolveHeaderEnv(extra)
-    } catch (error) {
-      this.pushWarning(
-        `Did not restore the declared headers on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      return
+    let headers = declared
+    if (headers === undefined) {
+      try {
+        headers = resolveHeaderEnv(extra)
+      } catch (error) {
+        this.pushWarning(
+          `Did not restore the declared headers on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        return
+      }
     }
     if (headers === undefined) return
     const liveProfile = this.profileAt(record.settingsNs, record.settingsPath)
@@ -3454,14 +3462,24 @@ export class KeysManagerService {
     this.warnHeaderDrift(extra, headers, stored)
     const missing = missingHeaders(headers, stored)
     if (Object.keys(missing).length === 0) return
-    await this.mutateSettings(record.settingsNs, [
-      { op: 'set', path: [...record.settingsPath, 'headers'], value: { ...stored, ...missing } },
-    ])
+    try {
+      await this.mutateSettings(record.settingsNs, [
+        { op: 'set', path: [...record.settingsPath, 'headers'], value: { ...stored, ...missing } },
+      ])
+    } catch (error) {
+      // The key and its credential are already written; a failing settings
+      // write must not reject the add. The repair stays pending, so the next
+      // add-key flow retries it.
+      this.pushWarning(
+        `Did not restore the ${Object.keys(missing).join(', ')} header on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return
+    }
     this.pushWarning(`Restored the missing ${Object.keys(missing).join(', ')} header on the managed profile.`)
   }
 
   /** Add one key; caller already owns the mutation queue. */
-  private async addKeyLocked(provider: string, alias: string, value: string): Promise<void> {
+  private async addKeyLocked(provider: string, alias: string, value: string, declaredHeaders?: Record<string, string>): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
     // MF1: the key-pool restriction lives on the key entry path. A route
@@ -3479,7 +3497,7 @@ export class KeysManagerService {
     record.keys.push(key)
     // After the key add: a refused key (capability or capacity) must leave the
     // settings document untouched, so the repair never runs ahead of it.
-    await this.repairDeclaredHeaders(record)
+    await this.repairDeclaredHeaders(record, declaredHeaders)
   }
 
   /** Remote: add one key to a managed provider. */

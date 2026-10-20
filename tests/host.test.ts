@@ -1046,7 +1046,12 @@ test('adding a managed coreweave again restores a declared header a Models edit 
     delete namespace.value.providers.coreweave.headers
     await withCoreweaveProject('team/project', async () => {
       const state = await h.service.addExtraProvider('coreweave', 'main', 'sk-second')
-      assert.match(state.warnings.join('\n'), /Restored the missing OpenAI-Project header/)
+      // Pinned order: the managed-route notice precedes the repair notice, so a
+      // future reorder of the user-visible warnings cannot pass silently.
+      assert.deepEqual(state.warnings, [
+        'Provider is already managed; the key was added instead.',
+        'Restored the missing OpenAI-Project header on the managed profile.',
+      ])
     })
     assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
     assert.equal(h.store.provider('coreweave')!.keys.length, 2)
@@ -1089,6 +1094,37 @@ test('adding a key through the managed path restores a declared header a Models 
   }
 })
 
+test('a failed header repair degrades to a warning and keeps the added key', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    // The repair's settings write fails the way a read-only or conflicting
+    // profile does; the key and its credential are already written by then.
+    h.settings.failMutate = true
+    await withCoreweaveProject('team/project', async () => {
+      const added = await h.service.addKey('coreweave', 'second', 'sk-second')
+      assert.deepEqual(added.warnings, [
+        'Did not restore the OpenAI-Project header on the coreweave route: revision conflict',
+      ])
+      // The managed add-provider surface degrades the same way, with its own
+      // notice still first (M-2 order pin).
+      const managed = await h.service.addExtraProvider('coreweave', 'third', 'sk-third')
+      assert.deepEqual(managed.warnings, [
+        'Provider is already managed; the key was added instead.',
+        'Did not restore the OpenAI-Project header on the coreweave route: revision conflict',
+      ])
+    })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 3)
+    assert.equal([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')).length, 3)
+    // The repair stayed pending: the header is still absent, not half-written.
+    assert.equal('headers' in h.settings.valueOf('llm-pi-ai').providers.coreweave, false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a refused managed key add writes no declared header', async () => {
   const h = await harness()
   try {
@@ -1099,6 +1135,8 @@ test('a refused managed key add writes no declared header', async () => {
     }
     const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
     delete namespace.value.providers.coreweave.headers
+    const refsBefore = [...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE'))
+    assert.equal(refsBefore.length, KEY_LIMIT)
     await withCoreweaveProject('team/project', async () => {
       await assert.rejects(
         () => h.service.addKey('coreweave', 'overflow', 'sk-overflow'),
@@ -1106,6 +1144,32 @@ test('a refused managed key add writes no declared header', async () => {
       )
     })
     assert.equal('headers' in h.settings.valueOf('llm-pi-ai').providers.coreweave, false)
+    // The capacity refusal precedes the credential write too, so a reorder
+    // that minted the credential before the cap check cannot pass silently.
+    assert.deepEqual(
+      [...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')),
+      refsBefore,
+    )
+  } finally {
+    await h.close()
+  }
+})
+
+test('a capability-refused managed key add writes no credential', async () => {
+  const h = await harness()
+  try {
+    // MF1: adoption manages the OAuth-only route for accounts, so it is a
+    // managed provider whose key pool is refused by capability alone.
+    await h.service.adoptProvider('openai-codex')
+    const refsBefore = [...h.credentials.refs.keys()]
+    await assert.rejects(
+      () => h.service.addKey('openai-codex', 'second', 'sk-second'),
+      /OAuth|API key|API-key/,
+    )
+    // The capability refusal precedes createKeyRecord: no credential is
+    // minted for an add that never becomes a key.
+    assert.deepEqual([...h.credentials.refs.keys()], refsBefore)
+    assert.equal(h.store.provider('openai-codex')!.keys.length, 0)
   } finally {
     await h.close()
   }
