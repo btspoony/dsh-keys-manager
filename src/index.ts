@@ -72,7 +72,7 @@ import { EXTRA_PROVIDER_MAP, EXTRA_PROVIDERS } from './providers.js'
 import { KeysManagerStore, ensureStateFile, statePath } from './store.js'
 
 export const name = 'keys-manager'
-export const inject = ['llm', 'credentials', 'typert']
+export const inject = ['llm', 'credentials', 'typert', 'authorization']
 export const provide = ['keysManager']
 
 const SERVICE = 'keysManager'
