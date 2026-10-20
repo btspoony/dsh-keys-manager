@@ -8,9 +8,10 @@
  * source hash, so an omp bump fails there before this table can describe the
  * wrong models.
  *
- * Rows that advertise efforts without routing them are carried unchanged: an
- * effort with no `effortRouting` entry sends the row's own wire id, which is
- * omp's own resolution for it. No row's effort list is filtered.
+ * Rows that advertise efforts without routing them are carried unchanged, and
+ * on each of them every advertised effort resolves to the same wire id (the
+ * row's own, `requestModelId ?? id`): selecting one is a wire-level no-op,
+ * exactly as in omp. No row's effort list is filtered.
  *
  * @module @dsh-keys-manager/llm-omp/catalog/cursor
  */

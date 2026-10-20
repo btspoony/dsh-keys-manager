@@ -26,7 +26,6 @@ import {
   UNKNOWN_EVENT,
   UNKNOWN_FINISH,
   UNSUPPORTED_REASONING_EFFORT,
-  UNSUPPORTED_REQUEST_OPTION,
   projectEvents,
   projectRequest,
 } from '../src/projection.js'
@@ -164,21 +163,66 @@ describe('projectRequest', () => {
     expect(projectRequest(PLAIN, request([]), 'token').options.wireModelId).toBeUndefined()
   })
 
-  it('refuses a request option the transport cannot carry instead of dropping it', () => {
-    expect(() => projectRequest(SONNET, request([], { maxTokens: 1024 }), 't')).toThrowError(
-      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
+  it('ignores advisory request fields the Cursor wire cannot carry', () => {
+    // `maxTokens`, `temperature`, `stop` and `purpose` have no field on Cursor's
+    // agent protocol, so they are advisory here: never forwarded, never a throw.
+    const projected = projectRequest(
+      SONNET,
+      request([], { maxTokens: 1024, temperature: 0.2, stop: ['\n\nUser:'], purpose: 'compaction' }),
+      't',
     )
-    expect(() => projectRequest(SONNET, request([], { temperature: 0.2 }), 't')).toThrowError(
-      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
+
+    expect(projected.options).toEqual({ apiKey: 't', headers: attributionHeaders() })
+  })
+
+  it('projects a compaction-shaped request instead of refusing its purpose and cap', () => {
+    // DSH's compaction producer (`dsh-compaction-basic`) always sets `purpose`
+    // and forwards a configured `maxTokens`; refusing either would kill every
+    // compaction before the transport. Both are ignored, so the compacted
+    // history projects exactly like any other turn.
+    const projected = projectRequest(
+      SONNET,
+      request(
+        [
+          createSystemMessage('Summarize the conversation.'),
+          createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } }),
+          createAssistantMessage({
+            content: [{ type: 'text', text: 'Hello' }],
+            source: { provider: 'cursor', model: 'claude-4.5-sonnet' },
+          }),
+          createUserMessage({ content: [{ type: 'text', text: 'Now' }], source: { kind: 'user' } }),
+        ],
+        { purpose: 'compaction', maxTokens: 8192, sessionId: 'session-1' as never },
+      ),
+      'token',
     )
-    expect(() => projectRequest(SONNET, request([], { stop: ['\n\nUser:'] }), 't')).toThrowError(
-      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
+
+    expect(projected.model.id).toBe('claude-4.5-sonnet')
+    expect(projected.context.systemPrompt).toEqual(['Summarize the conversation.'])
+    expect(projected.context.messages.map(message => message.role)).toEqual(['user', 'assistant', 'user'])
+    // Neither the cap nor the purpose may reappear in the transport call.
+    expect(projected.options).toEqual({
+      apiKey: 'token',
+      sessionId: 'session-1',
+      headers: attributionHeaders(),
+    })
+  })
+
+  it('projects a session-title-shaped request', () => {
+    // `dsh-session-title-llm` sets `purpose: 'session-title'` and no cap.
+    const projected = projectRequest(
+      SONNET,
+      request(
+        [createUserMessage({ content: [{ type: 'text', text: 'Name this session' }], source: { kind: 'user' } })],
+        { purpose: 'session-title' },
+      ),
+      'token',
     )
-    expect(() => projectRequest(SONNET, request([], { purpose: 'compaction' }), 't')).toThrowError(
-      expect.objectContaining({ code: UNSUPPORTED_REQUEST_OPTION }),
-    )
-    // An empty stop list asks for nothing, so it is not a dropped intent.
-    expect(() => projectRequest(SONNET, request([], { stop: [] }), 't')).not.toThrow()
+
+    expect(projected.context.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Name this session' }], timestamp: 0 },
+    ])
+    expect(projected.options).toEqual({ apiKey: 'token', headers: attributionHeaders() })
   })
 
   it('carries the token, signal, session and headers', () => {

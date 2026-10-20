@@ -16,11 +16,20 @@
  * Scope: this plan's Task 1 carries text, reasoning, usage and finish. Tool
  * calls (Task 2) and images are refused with a typed `LlmError` instead of
  * being dropped, so an unsupported turn fails loudly and names the limit. The
- * same rule covers the request surface: a reasoning effort no route can carry,
- * a request option Cursor's agent protocol has no field for (`maxTokens`,
- * `temperature`, `stop`, `purpose`), and a system message that is not part of
- * the leading prompt are all refused by name rather than silently dropped or
- * reordered.
+ * same rule covers genuinely unsupported content: a reasoning effort the model
+ * does not advertise and a system message that is not part of the leading
+ * prompt are refused by name rather than silently dropped or reordered.
+ *
+ * Request knobs are not content, and this route ignores them. Cursor's agent
+ * protocol has no field for an output cap, a sampling temperature, stop
+ * sequences or an auxiliary-call purpose, so those `GenerateOptions` fields are
+ * advisory here: they never reach the transport and never fail the call. DSH
+ * sets `purpose` on every compaction (`dsh-compaction-basic`) and session-title
+ * (`dsh-session-title-llm`) request and forwards a configured `maxTokens` with
+ * the compaction one, so refusing either would disable the two mechanisms that
+ * keep a long session alive without buying anything the wire can carry; Cursor
+ * enforces the catalog `maxTokens` limit server-side, from the model object
+ * this projection already sends.
  *
  * @module @dsh-keys-manager/llm-omp/projection
  */
@@ -64,8 +73,6 @@ export const UNKNOWN_FINISH = 'UNKNOWN_FINISH'
 export const STREAM_CLOSED = 'STREAM_CLOSED'
 /** Machine code for a reasoning effort the selected model does not advertise. */
 export const UNSUPPORTED_REASONING_EFFORT = 'UNSUPPORTED_REASONING_EFFORT'
-/** Machine code for a `GenerateOptions` field the Cursor wire protocol cannot express. */
-export const UNSUPPORTED_REQUEST_OPTION = 'UNSUPPORTED_REQUEST_OPTION'
 /** Machine code for a turn the caller's own signal cancelled. */
 const ABORTED_CODE = 'ABORTED'
 
@@ -94,6 +101,11 @@ export interface ProjectedRequest {
 
 /**
  * Project one DSH request onto the omp transport's arguments.
+ *
+ * Advisory request fields the Cursor wire cannot carry (`maxTokens`,
+ * `temperature`, `stop`, `purpose`) are ignored, not forwarded: the route has
+ * no field for them, and Cursor applies the catalog output limit server-side.
+ *
  * @param row - catalog row for the requested model.
  * @param options - the assembled DSH request.
  * @param accessToken - Cursor bearer token resolved for this call.
@@ -103,13 +115,10 @@ export interface ProjectedRequest {
  *   for a system message that is not part of the leading prompt.
  * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} when the effort is not advertised by
  *   the model.
- * @throws LlmError with {@link UNSUPPORTED_REQUEST_OPTION} for a request field the transport
- *   cannot carry.
  */
 export function projectRequest(row: CursorModelRow, options: GenerateOptions, accessToken: string): ProjectedRequest {
   if (options.tools !== undefined && options.tools.length > 0) throw toolsUnsupported('request tools')
   if (options.toolHistory !== undefined) throw toolsUnsupported('tool history')
-  refuseUnsupportedOptions(options)
 
   const wireModelId = resolveWireModelId(row, options.reasoningEffort)
   const systemPrompt: string[] = []
@@ -159,36 +168,6 @@ export function projectRequest(row: CursorModelRow, options: GenerateOptions, ac
 }
 
 /**
- * Refuse every request field the Cursor wire protocol has no way to express.
- *
- * The seam's `GenerateOptions` is provider-neutral, so a route can be handed
- * knobs its transport never reads. Dropping them would let a caller's output
- * cap, stop strings, sampling temperature or auxiliary-call purpose disappear
- * without a trace, so each present field fails the call by name instead.
- */
-function refuseUnsupportedOptions(options: GenerateOptions): void {
-  if (options.maxTokens !== undefined) {
-    refuseUnsupportedOption(
-      'maxTokens',
-      'the transport sends no per-request output cap; Cursor enforces the catalog cap server-side',
-    )
-  }
-  if (options.temperature !== undefined) {
-    refuseUnsupportedOption('temperature', 'Cursor selects sampling parameters server-side')
-  }
-  if (options.stop !== undefined && options.stop.length > 0) {
-    refuseUnsupportedOption('stop', 'the transport has no stop-sequence field')
-  }
-  if (options.purpose !== undefined) {
-    refuseUnsupportedOption('purpose', 'the transport has no auxiliary-call metadata field')
-  }
-}
-
-function refuseUnsupportedOption(name: string, detail: string): never {
-  throw new LlmError(`llm-omp: cursor requests cannot carry "${name}": ${detail}`, UNSUPPORTED_REQUEST_OPTION)
-}
-
-/**
  * Resolve the wire model id for one selected reasoning effort.
  *
  * Mirrors the transport's own resolution (`@oh-my-pi/pi-catalog`
@@ -196,8 +175,10 @@ function refuseUnsupportedOption(name: string, detail: string): never {
  * mapped wire id, while an advertised effort with no routing entry sends the
  * row's own id (`requestModelId ?? id`), which the transport already falls back
  * to when it is handed no `wireModelId`. Returning `undefined` for that case is
- * therefore the same request the reference implementation sends — and it keeps
- * every effort {@link CursorModelRow.thinking} advertises selectable.
+ * therefore the same request the reference implementation sends, and it keeps
+ * every advertised effort acceptable. On an unrouted row every advertised
+ * effort resolves to that same id, so choosing one is a wire-level no-op,
+ * exactly as it is in omp.
  * @param row - catalog row whose `thinking` describes the advertised efforts.
  * @param effort - selected omp effort id, or `undefined` for the provider default.
  * @returns the routed wire id, or `undefined` to send the row's own id.

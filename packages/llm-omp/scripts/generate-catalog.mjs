@@ -17,11 +17,14 @@
  * Reasoning efforts are copied verbatim, including rows that advertise efforts
  * with no `effortRouting` (19 of the pinned catalog's 123 rows). omp resolves an
  * unrouted effort to the row's own wire id (`requestModelId ?? id`) in
- * `@oh-my-pi/pi-catalog/src/model-thinking.ts`, so those efforts are selectable
- * without a routing entry and this generator narrows no effort list. The
- * projection mirrors that fallback, and `tests/adapter-text.test.ts` asserts
- * every advertised effort resolves, so an omp bump that starts refusing one
- * fails there instead of surfacing as a runtime `UNSUPPORTED_REASONING_EFFORT`.
+ * `@oh-my-pi/pi-catalog/src/model-thinking.ts`, and every downstream wire
+ * decision (`cursorMaxMode`, discovery route, `cursorModelParameters`) derives
+ * from that one id, so on those rows every advertised effort sends exactly the
+ * same request: effort selection is a wire-level no-op, exactly as in omp. The
+ * list is still carried unfiltered because the catalog advertises it and the
+ * projection mirrors the fallback; `tests/adapter-text.test.ts` asserts every
+ * advertised effort resolves, so an omp bump that starts refusing one fails
+ * there instead of surfacing as a runtime `UNSUPPORTED_REASONING_EFFORT`.
  *
  * @module @dsh-keys-manager/llm-omp/generate-catalog
  */
@@ -121,9 +124,10 @@ const file = `/**
  * source hash, so an omp bump fails there before this table can describe the
  * wrong models.
  *
- * Rows that advertise efforts without routing them are carried unchanged: an
- * effort with no \`effortRouting\` entry sends the row's own wire id, which is
- * omp's own resolution for it. No row's effort list is filtered.
+ * Rows that advertise efforts without routing them are carried unchanged, and
+ * on each of them every advertised effort resolves to the same wire id (the
+ * row's own, \`requestModelId ?? id\`): selecting one is a wire-level no-op,
+ * exactly as in omp. No row's effort list is filtered.
  *
  * @module @dsh-keys-manager/llm-omp/catalog/cursor
  */

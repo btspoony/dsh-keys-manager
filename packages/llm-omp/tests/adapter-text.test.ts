@@ -164,10 +164,11 @@ describe('OmpCursorAdapter catalog', () => {
     })
   })
 
-  it('advertises no output cap, because nothing materializes one', async () => {
+  it('advertises no output cap, because nothing enforces one', async () => {
     // The seam turns `defaultMaxTokens` into a caller-visible `maxTokens` on
-    // every request, and the projection refuses that field (the Cursor
-    // transport has no per-request cap), so the adapter must not advertise it.
+    // every request, and the projection ignores that field (Cursor's wire has no
+    // per-request cap; the server applies the catalog limit), so advertising a
+    // default would promise a cap nothing honors.
     const { adapter } = adapterFor('cursor-text.jsonl')
 
     const info = await adapter.resolveModel(CURSOR_ROUTE, 'claude-4.5-sonnet')
@@ -186,7 +187,9 @@ describe('OmpCursorAdapter catalog', () => {
   it('advertises only reasoning efforts the projection resolves, on every row', async () => {
     // The catalogue's public contract: whatever `resolveModel` offers must reach
     // the transport. 19 rows advertise efforts with no routing entry; those send
-    // the row's own id (omp's own fallback) instead of throwing.
+    // the row's own id (omp's own fallback) instead of throwing, so on each of
+    // them every advertised effort is the same wire request — selection is a
+    // wire-level no-op, exactly as in omp.
     const { adapter } = adapterFor('cursor-text.jsonl')
     let checked = 0
 

@@ -74,6 +74,16 @@ export class OmpCursorAdapter extends LlmAdapter {
     super()
   }
 
+  /**
+   * Describe the route.
+   *
+   * @remarks
+   * Cursor's agent protocol takes no client-side output cap, sampling
+   * temperature, stop sequence or auxiliary-call purpose: the wire carries no
+   * field for any of them, so the projection ignores those `GenerateOptions`
+   * values instead of forwarding them. Cursor applies the catalog `maxTokens`
+   * limit server-side.
+   */
   override providerInfo(provider: string): LlmProviderInfo {
     return { id: provider, name: 'Cursor' }
   }
@@ -131,11 +141,15 @@ function modelInfo(provider: string, row: CursorModelRow): LlmResolvedModelInfo 
     inputModalities: [...row.input],
     context: { contextWindow: row.contextWindow },
     // No `defaultMaxTokens`. The seam materializes that number into `maxTokens`
-    // on every request that omits one, and the Cursor transport has no
-    // per-request output-cap field: the projection refuses a caller-set
-    // `maxTokens` instead of dropping it, so advertising a default would only
-    // produce refusals. Cursor enforces the catalog cap server-side, from the
-    // `maxTokens` the model object already carries.
+    // on every request that omits one, and Cursor's wire has no per-request
+    // output-cap field: the projection ignores `maxTokens` rather than
+    // forwarding it, so advertising a default would only promise a cap nothing
+    // enforces. Cursor applies the catalog cap server-side, from the `maxTokens`
+    // the model object already carries.
+    // Every effort list is advertised exactly as the catalog declares it. On a
+    // row with no `effortRouting` entry each advertised effort resolves to the
+    // same wire id — the row's own — so those selections are wire-level no-ops,
+    // exactly as in omp.
     ...(efforts.length > 0
       ? {
           reasoning: {
