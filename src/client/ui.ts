@@ -60,9 +60,18 @@ function providerInitial(provider: ProviderView | undefined): string {
   return source.length === 0 ? '?' : source.slice(0, 1).toUpperCase()
 }
 
-/** True when the provider ships a native OAuth sign-in flow. */
+/**
+ * True when this route can offer OAuth sign-in right now.
+ *
+ * C6-2: the catalog's `nativeAuth.oauth` flag says the provider supports
+ * OAuth upstream; the host's `accountSupported` verdict says this Harness
+ * build has a flow it can actually begin. The host verdict is authoritative
+ * whenever present, so a nativeAuth.oauth route without a pi-ai flow hides
+ * Add account instead of opening a sign-in that would fail. Older host
+ * snapshots that predate the field keep the catalog-only behaviour.
+ */
 function oauthCapable(provider: ProviderView): boolean {
-  return provider.nativeAuth?.oauth === true
+  return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
 }
 
 /**

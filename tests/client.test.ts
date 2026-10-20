@@ -133,6 +133,9 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     keyStatusEmpty: '暂无密钥',
     keyStatusUnmanaged: '未接管',
     unmanaged: '未接管',
+    // C6-2: the flow-less route renders the unsupported headline; resolve
+    // the real dictionary value instead of the key echo.
+    unsupported: '暂不支持密钥池',
     // Round-3 N2: the delete-account copy is asserted through its
     // distinguishing phrases, so the stub resolves the real values.
     deleteAccountBody: '这会从凭证库中删除该账户保存的 OAuth 授权。如果它是当前账户，该 Provider 路由将停用它并回落到 API-key 池；Provider 仍保持接管状态。',
@@ -917,6 +920,70 @@ describe('account ui', () => {
     expect(addKey).toBeDefined()
     expect(addKey!.props!.disabled).toBe(true)
     expect(findButtons(managedView.nodes, 'addAccount')).toHaveLength(1)
+    managedView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a nativeAuth.oauth route without a registered flow hides Add account (C6-2)', async () => {
+    // C6-2: the catalog flag says the provider supports OAuth upstream, but
+    // the host verdict says no flow can begin here. The sign-in entry must be
+    // hidden — offering it would open a dialog whose begin() fails.
+    const reason = 'This provider has no OAuth sign-in flow registered in this Harness build'
+    const unmanaged = makeState()
+    unmanaged.providers[0] = {
+      ...makeState().providers[0]!,
+      provider: 'google-gemini-cli',
+      displayName: 'Google Gemini CLI',
+      managed: false,
+      configured: false,
+      active: false,
+      supported: false,
+      accountSupported: false,
+      reason,
+      nativeAuth: { env: [], oauth: true },
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'unmanaged',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: unmanaged })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(0)
+    // Neither capability exists, so Adopt is disabled and the unsupported
+    // headline carries the host's truthful reason instead of a sign-in
+    // invitation only the flow-less route cannot honour.
+    expect(findButtons(view.nodes, 'adopt')[0]!.props!.disabled).toBe(true)
+    expect(findByClass(view.nodes, 'km-adopt-title')[0]!.text).toBe('暂不支持密钥池')
+    expect(view.nodes.map(node => node.text)).toContain(reason)
+    view.unmount()
+
+    // The same verdict on a managed route hides Add account beside the
+    // (disabled) Add key entry.
+    const managed = makeState()
+    managed.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: false,
+      reason,
+    }
+    const managedHarness = makeContext({ ok: true, value: managed })
+    const managedStore = createStore(managedHarness.ctx)
+    setRuntimeContext({ ctx: managedHarness.ctx, store: managedStore })
+    const managedView = mountView(KeysManagerBody)
+    await managedView.flush()
+    const managedHead = findByClass(managedView.nodes, 'km-provider-head')[0]
+    expect(managedHead).toBeDefined()
+    ;(managedHead!.props!.onClick as () => void)()
+    managedView.render()
+    expect(findButtons(managedView.nodes, 'addAccount')).toHaveLength(0)
+    expect(findButtons(managedView.nodes, 'addKey')[0]!.props!.disabled).toBe(true)
     managedView.unmount()
     setRuntimeContext(null)
   })

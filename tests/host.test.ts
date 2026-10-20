@@ -243,6 +243,55 @@ function fakeLlm(): any {
           },
           defaultBaseURL: 'https://api.anthropic.com',
         },
+        // The remaining pi-ai OAuth providers this build registers flows
+        // for. Kept in the directory fixture so the account-capability
+        // verdicts are asserted for the whole supported set, not only the
+        // two routes other tests adopt.
+        {
+          provider: 'github-copilot',
+          displayName: 'GitHub Copilot',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'github-copilot'],
+          nativeAuth: { env: [], oauth: true },
+        },
+        {
+          provider: 'kimi-coding',
+          displayName: 'Kimi Coding',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'kimi-coding'],
+          nativeAuth: { env: [], oauth: true },
+        },
+        {
+          provider: 'openrouter',
+          displayName: 'OpenRouter',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'openrouter'],
+          nativeAuth: { env: ['OPENROUTER_API_KEY'], oauth: true },
+        },
+        {
+          provider: 'radius',
+          displayName: 'Radius',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'radius'],
+          nativeAuth: { env: [], oauth: true },
+        },
+        {
+          provider: 'xai',
+          displayName: 'xAI',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'xai'],
+          nativeAuth: { env: ['XAI_API_KEY'], oauth: true },
+        },
+        // C6-2 fixture: an OAuth-capable catalog route whose flow is NOT
+        // registered (extension-backed OAuth is deferred from this
+        // increment). It must report key- AND account-unsupported.
+        {
+          provider: 'google-gemini-cli',
+          displayName: 'Google Gemini CLI',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'google-gemini-cli'],
+          nativeAuth: { env: [], oauth: true },
+        },
         {
           provider: 'cloudflare-ai-gateway',
           displayName: 'Cloudflare AI Gateway',
@@ -2711,6 +2760,72 @@ test('the service resolves the oauth flow for every pi-ai oauth provider', async
     assert.equal(h.service.oauthFlowFor('zai-coding-cn'), undefined)
     assert.equal(h.service.oauthFlowFor('amazon-bedrock'), undefined)
     assert.equal(h.service.oauthFlowFor('no-such-provider'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+// C6-2: account capability requires an actually-beginable pi-ai flow, not
+// merely the catalog's nativeAuth.oauth flag. The full supported set must
+// stay account-capable; a nativeAuth.oauth route without a flow must be
+// reported key- and account-unsupported with the truthful reason.
+
+test('every pi-ai OAuth provider this build registers stays account-capable (C6-2)', async () => {
+  const h = await harness()
+  try {
+    const state = h.service.buildState()
+    for (const provider of OAUTH_PROVIDERS) {
+      const view = state.providers.find(entry => entry.provider === provider)
+      assert.ok(view !== undefined, `${provider} is missing from the directory`)
+      assert.equal(view!.nativeAuth?.oauth, true)
+      assert.equal(view!.accountSupported, true, `${provider} must remain account-capable`)
+      assert.deepEqual(h.service.oauthFlowFor(provider), { key: `llm-pi-ai/${provider}`, method: 'oauth' })
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+test('an OAuth-capable route with no registered flow is key- and account-unsupported (C6-2)', async () => {
+  const h = await harness()
+  try {
+    const view = h.service.buildState().providers.find(entry => entry.provider === 'google-gemini-cli')!
+    assert.equal(view.nativeAuth?.oauth, true)
+    assert.equal(view.supported, false)
+    assert.equal(view.accountSupported, false)
+    assert.match(String(view.reason), /no OAuth sign-in flow/)
+    assert.equal(h.service.oauthFlowFor('google-gemini-cli'), undefined)
+    // Adoption is reachable through either capability; neither exists here,
+    // so the route is refused up front with the flow gap as the reason.
+    await assert.rejects(
+      () => h.service.adoptProvider('google-gemini-cli'),
+      /no OAuth sign-in flow/,
+    )
+    assert.equal(h.store.provider('google-gemini-cli'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('account capability is resolved lazily from the live flow list (C6-2 ordering)', async () => {
+  const h = await harness()
+  try {
+    // Construction order can mount the authorization seam after this
+    // plugin: while no flow is enumerable the route stays account-unsupported
+    // instead of caching the catalog flag.
+    const flows = h.authorization.flows
+    h.authorization.flows = []
+    try {
+      const hidden = h.service.buildState().providers.find(entry => entry.provider === 'openai-codex')!
+      assert.equal(hidden.accountSupported, false)
+      assert.match(String(hidden.reason), /no OAuth sign-in flow/)
+    } finally {
+      h.authorization.flows = flows
+    }
+    // Once the flows are live, the next state build re-evaluates and the
+    // same route is account-capable again.
+    const visible = h.service.buildState().providers.find(entry => entry.provider === 'openai-codex')!
+    assert.equal(visible.accountSupported, true)
   } finally {
     await h.close()
   }

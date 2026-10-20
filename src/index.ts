@@ -404,6 +404,17 @@ const UNSUPPORTED_KEY_POOL_PROVIDERS: Readonly<Record<string, string>> = Object.
 })
 
 /**
+ * Why an OAuth-capable catalog route cannot be managed as an account here.
+ *
+ * C6-2: `nativeAuth.oauth` is a catalog fact — the provider supports OAuth
+ * upstream. Actually signing in needs a pi-ai flow registered with this
+ * Harness build's authorization seam, which extension-backed routes may not
+ * have (they are explicitly deferred from this increment). Offering "Add
+ * account" without a flow would promise a sign-in that cannot start.
+ */
+const NO_OAUTH_FLOW_REASON = 'This provider has no OAuth sign-in flow registered in this Harness build'
+
+/**
  * How one route can be managed, split by mode (MF1): the single-key pool
  * and OAuth account management are separate capabilities. A route may be
  * account-adoptable while carrying no key-pool credential at all
@@ -424,14 +435,21 @@ interface CapabilitySplit {
  * {@link UNSUPPORTED_KEY_POOL_PROVIDERS} table keeps its meaning: it is a
  * verdict about API keys, so an OAuth-capable route listed there remains
  * adoptable for accounts while its key entry stays blocked.
+ *
+ * `oauthFlow` is the live answer from {@link KeysManagerService.oauthFlowAvailable}
+ * — C6-2 requires an actually-beginable flow, not the catalog flag alone.
  */
-function capabilityOf(entry: DirectoryEntry, profile: ProfileShape | undefined): CapabilitySplit {
+function capabilityOf(entry: DirectoryEntry, profile: ProfileShape | undefined, oauthFlow: boolean): CapabilitySplit {
   if (entry.error !== undefined) return { keys: false, accounts: false, reason: entry.error }
+  const accounts = entry.nativeAuth?.oauth === true && oauthFlow
   const unsupportedReason = UNSUPPORTED_KEY_POOL_PROVIDERS[entry.provider]
   if (unsupportedReason !== undefined) {
-    return { keys: false, accounts: entry.nativeAuth?.oauth === true, reason: unsupportedReason }
+    // The table's reason describes the key verdict; when the only possible
+    // capability (accounts) is unavailable too, the flow gap is the truthful
+    // explanation a user needs.
+    const reason = entry.nativeAuth?.oauth === true && !oauthFlow ? NO_OAUTH_FLOW_REASON : unsupportedReason
+    return { keys: false, accounts, reason }
   }
-  const accounts = entry.nativeAuth?.oauth === true
   if (entry.provider === 'deepseek-official') return { keys: true, accounts }
   if (profile !== undefined && typeof profile.apiKeyEnv === 'string' && profile.apiKeyEnv.length > 0) return { keys: true, accounts }
   const auth = entry.nativeAuth
@@ -440,20 +458,33 @@ function capabilityOf(entry: DirectoryEntry, profile: ProfileShape | undefined):
     // capabilities; the oauth-only verdict below is for routes with no
     // key credential at all.
     if (auth.env.some(isKeyishEnv)) return { keys: true, accounts }
-    if (auth.oauth) return { keys: false, accounts: true, reason: 'This provider signs in with an OAuth account; no API key is used' }
+    if (auth.oauth) {
+      return oauthFlow
+        ? { keys: false, accounts: true, reason: 'This provider signs in with an OAuth account; no API key is used' }
+        : { keys: false, accounts: false, reason: NO_OAUTH_FLOW_REASON }
+    }
     if (auth.env.length > 0) return { keys: false, accounts: false, reason: 'This provider uses native cloud credentials, not one API key' }
     return { keys: false, accounts: false, reason: 'This provider declares no API-key authentication' }
   }
   return { keys: true, accounts }
 }
 
-/** Whether the route can be adopted for OAuth account management (MF1). */
-function accountSupportOf(entry: DirectoryEntry | undefined, managed: ProviderRecord | undefined): ProviderSupport {
-  if (managed !== undefined) return { supported: true }
+/**
+ * Whether the route can be adopted for OAuth account management (MF1).
+ *
+ * C6-2: `nativeAuth.oauth` alone is not enough. Account support requires a
+ * flow the authorization seam can begin, resolved from the live flow list on
+ * every call (see {@link KeysManagerService.oauthFlowAvailable}): the seam
+ * may mount after this plugin, so availability is never cached at
+ * construction. While the flow list is empty (seam not mounted yet) support
+ * is false; the next state build re-evaluates once flows are enumerable.
+ */
+function accountSupportOf(entry: DirectoryEntry | undefined, oauthFlow: boolean): ProviderSupport {
   if (entry === undefined) return { supported: false, reason: 'This provider route is not registered' }
   if (entry.error !== undefined) return { supported: false, reason: entry.error }
-  if (entry.nativeAuth?.oauth === true) return { supported: true }
-  return { supported: false, reason: 'This provider offers no OAuth account sign-in' }
+  if (entry.nativeAuth?.oauth !== true) return { supported: false, reason: 'This provider offers no OAuth account sign-in' }
+  if (!oauthFlow) return { supported: false, reason: NO_OAUTH_FLOW_REASON }
+  return { supported: true }
 }
 
 /** Request-local credential context established by the stream listener. */
@@ -785,6 +816,11 @@ export class KeysManagerService {
    * with the oauth method offered first (`login.ts:40-47`). A provider with
    * no such flow (not OAuth-capable, or not installed) resolves to
    * undefined, which callers must treat as "sign-in unavailable".
+   *
+   * Availability is read from the live seam on every call, never cached:
+   * the authorization service may mount after this plugin, so a route whose
+   * flow is not enumerable yet stays account-unsupported until the flow list
+   * exists (the client re-reads state after that ordering settles).
    */
   oauthFlowFor(provider: string): { key: string; method: string } | undefined {
     const flows = this.ctx.authorization?.list() ?? []
@@ -792,6 +828,16 @@ export class KeysManagerService {
     if (flow === undefined) return undefined
     if (!flow.methods.some(method => method.id === 'oauth')) return undefined
     return { key: flow.key, method: 'oauth' }
+  }
+
+  /**
+   * C6-2: can this route's OAuth sign-in actually begin right now? Account
+   * capability is gated on this instead of the catalog's `nativeAuth.oauth`
+   * flag alone, so a route without a registered pi-ai flow never offers an
+   * Add account that would fail. The check is lazy — see {@link oauthFlowFor}.
+   */
+  private oauthFlowAvailable(provider: string): boolean {
+    return this.oauthFlowFor(provider) !== undefined
   }
 
   /**
@@ -1914,9 +1960,10 @@ export class KeysManagerService {
       const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, entry.settingsPath))
       const managed = this.store.provider(entry.provider)
       const extra = EXTRA_PROVIDER_MAP.get(entry.provider)
-      const caps = capabilityOf(entry, profile)
+      const oauthFlow = this.oauthFlowAvailable(entry.provider)
+      const caps = capabilityOf(entry, profile, oauthFlow)
       const support: ProviderSupport = { supported: caps.keys, ...(caps.reason === undefined ? {} : { reason: caps.reason }) }
-      const accountSupport = accountSupportOf(entry, managed)
+      const accountSupport = accountSupportOf(entry, oauthFlow)
       const apiKeyEnv = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : null
       const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
       const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
@@ -2160,8 +2207,9 @@ export class KeysManagerService {
       // route adopts with zero keys (account-only management); a key-only
       // route adopts as before; the key-pool table alone no longer blocks
       // an adoptable account route.
-      const caps = capabilityOf(entry, profile)
-      const accountSupport = accountSupportOf(entry, undefined)
+      const oauthFlow = this.oauthFlowAvailable(entry.provider)
+      const caps = capabilityOf(entry, profile, oauthFlow)
+      const accountSupport = accountSupportOf(entry, oauthFlow)
       if (!caps.keys && !accountSupport.supported) {
         throw new Error(caps.reason ?? accountSupport.reason ?? 'This provider cannot be managed')
       }
@@ -2355,7 +2403,7 @@ export class KeysManagerService {
     if (entry !== undefined) {
       const namespace = this.namespace(this.describeSettings(), entry.settingsNs)
       const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, entry.settingsPath))
-      const caps = capabilityOf(entry, profile)
+      const caps = capabilityOf(entry, profile, this.oauthFlowAvailable(entry.provider))
       if (!caps.keys) throw new Error(caps.reason ?? `Provider "${provider}" does not accept API keys`)
     }
     const input = validateKeyInput(alias, value)
