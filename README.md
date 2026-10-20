@@ -26,15 +26,21 @@ manager.
 
 ### Extra providers
 
-`src/providers.ts` contains a curated catalog of 34 extra providers (21 from
-the original catalog plus 13 added in this release, for example SiliconFlow,
-Zhipu coding plan, Cline Pass, Ollama Cloud, and Alibaba Token Plan (CN)),
-derived from
+`src/providers.ts` contains a curated catalog of 35 extra providers (21 from
+the original catalog, 13 added in the previous release, and CoreWeave
+Serverless Inference added now — SiliconFlow, Zhipu coding plan, Cline Pass,
+Ollama Cloud, and Alibaba Token Plan (CN) are examples), derived from
 [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
 An extra id is added only when the shipped DSH catalog does not already
 declare that route id (for example, `meta` and `typesafe` are not
 duplicated); same-endpoint providers with distinct credential identities
 are kept by design.
+
+CoreWeave Serverless Inference needs `COREWEAVE_PROJECT=<team>/<project>` in
+the DSH process environment **before** the provider is added: the value is
+read once and stored as a static `OpenAI-Project` request header on the route
+profile, so a missing variable refuses the add, and changing the project
+means restarting DSH with the new value and re-adding the provider.
 
 ## Quick start
 

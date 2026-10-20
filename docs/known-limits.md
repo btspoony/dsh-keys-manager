@@ -4,8 +4,12 @@
 
 Current design boundaries of the Keys Manager plugin:
 
-- CoreWeave provider support is deferred to a later release; it is tracked in
-  [issue #11](https://github.com/btspoony/dsh-keys-manager/issues/11).
+- CoreWeave Serverless Inference resolves `COREWEAVE_PROJECT` (the
+  `<team>/<project>` pair) from the DSH process environment at add time and
+  stores it as a static `OpenAI-Project` header on the route profile, so
+  requests keep sending the project that was set when the provider was added;
+  changing the project means restarting DSH with the new value and
+  re-adding the provider.
 - OAuth2 account pools ship as increment 1 for seven pi-ai-backed providers;
   see the OAuth accounts limits below. Anthropic key pools still manage a
   plain `ANTHROPIC_API_KEY` — its OAuth/federation token paths are separate
