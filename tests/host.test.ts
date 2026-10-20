@@ -3762,20 +3762,38 @@ test('a foreign grant written before the queued harvest runs is never compensati
     // The attempt's own grant is the projection when the seam settles.
     h.credentials.records.set(GRANT_KEY, grantPayload())
     const view = await h.service.beginAccountLogin('anthropic')
-    // Park a release in the mutation queue, then settle: the harvest is
-    // queued behind the release, so its mutation runs AFTER any foreign
-    // write that lands meanwhile.
+    // Park the release inside its queued mutation (its durability flush),
+    // then settle: the harvest is queued behind the release, so its mutation
+    // runs AFTER any foreign write that lands meanwhile. A bare timer used
+    // to leave this to event-loop luck — the harvest could win the race and
+    // compensation would then delete its own projection, making the test
+    // flaky. The parked flush makes the interleaving deterministic.
+    let releaseFlush!: () => void
+    const flushGate = new Promise<void>(resolve => { releaseFlush = resolve })
+    let parkedResolve!: () => void
+    const parked = new Promise<void>(resolve => { parkedResolve = resolve })
+    let firstFlush = true
+    const realFlush = h.store.flush.bind(h.store)
+    h.store.flush = async () => {
+      if (firstFlush) {
+        firstFlush = false
+        parkedResolve()
+        await flushGate
+      }
+      return realFlush()
+    }
     const release = h.service.releaseProvider('anthropic')
     h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
     h.authorization.pending!.resolve({ status: 'authorized' })
-    // Let the settlement-time provenance capture (not queued) resolve, then
-    // let a foreign native sign-in replace the projection while the release
-    // still holds the queue.
-    await new Promise(resolve => setTimeout(resolve, 0))
+    // The settlement-time provenance capture (not queued) has resolved by
+    // now; a foreign native sign-in replaces the projection while the
+    // release still holds the queue.
+    await parked
     h.credentials.records.set(GRANT_KEY, {
       kind: 'grant',
       payload: { type: 'oauth', refresh: 'rt-foreign-grant', access: 'at-foreign', expires: 1_800_000_000_000 },
     })
+    releaseFlush()
     await release
     await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
     // Compensation compares the live foreign payload with THIS attempt's
@@ -4372,6 +4390,106 @@ test('a rotated refresh token re-associates its row and syncs the rotated payloa
     const warnings = (h.service as unknown as { warnings: string[] }).warnings.join('\n')
     assert.equal(warnings.includes('managed natively outside'), false)
     assert.equal(warnings.includes('unrecognized payload'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * C6-1 test hook: defer the plugin-scope write for one key until released,
+ * so a removal can be requested while the rotated-record write is in
+ * flight. Everything else about the fake store is unchanged.
+ */
+function holdRotationWrite(h: Harness, key: string): {
+  started: Promise<void>
+  finished: Promise<void>
+  release: () => void
+} {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let markStarted!: () => void
+  const started = new Promise<void>(resolve => { markStarted = resolve })
+  let markFinished!: () => void
+  const finished = new Promise<void>(resolve => { markFinished = resolve })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  raw.modifyRecord = async (k: string, mutate: (current: any) => Promise<any>) => {
+    if (k === key) {
+      markStarted()
+      await gate
+    }
+    const result = await realModify(k, mutate)
+    if (k === key) markFinished()
+    return result
+  }
+  return { started, finished, release }
+}
+
+// C6-1 (P1): the reconciliation captures its owning row, then awaits a
+// rotated-record write. A removeAccount / releaseProvider that lands in that
+// window used to let the write recreate the record for a gone row — an
+// orphaned refresh/access-token record nothing owns. The reconciliation now
+// revalidates the row before and after the write, compensating with a delete
+// when the account was removed. The normal rotation path (no race) is pinned
+// by the W1 test above.
+
+test('a rotation write racing removeAccount leaves no orphan record (C6-1)', async () => {
+  const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-raced-token').digest('hex').slice(0, 12))
+    const held = holdRotationWrite(h, rotatedRef)
+    // pi-ai rotates the grant; the echo's sync-back write is the deferred one.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-raced-token', access: 'at-raced' }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await held.started
+    // The removal COMPLETES while that write is still in flight: the row and
+    // its stored grant are already gone when the write finally lands.
+    await h.service.removeAccount('anthropic', rowId)
+    assert.equal(h.credentials.records.has(rotatedRef), false)
+    held.release()
+    await held.finished
+    // Let the reconciliation's continuation run: on fixed code it detects
+    // the detached row and compensates; on unfixed code the write simply
+    // lands and the record survives.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(h.credentials.records.has(rotatedRef), false)
+    // The removed account leaves no record behind — neither the rotated
+    // generation nor its superseded seed, and not the projection.
+    assert.equal(h.credentials.records.has(seededRef), false)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    // Never resurrect the removed row.
+    const providerRecord = h.store.provider('anthropic')!
+    assert.equal(providerRecord.keys.some(key => key.id === rowId), false)
+    assert.equal(providerRecord.keys.filter(key => key.kind === 'oauth').length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a rotation write racing releaseProvider leaves no orphan record (C6-1)', async () => {
+  const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-raced-release').digest('hex').slice(0, 12))
+    const held = holdRotationWrite(h, rotatedRef)
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-raced-release', access: 'at-raced-release' }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await held.started
+    // Release the whole provider while that write is still in flight; the
+    // release completes before the write lands.
+    await h.service.releaseProvider('anthropic')
+    assert.equal(h.store.provider('anthropic'), undefined)
+    assert.equal(h.credentials.records.has(rotatedRef), false)
+    held.release()
+    await held.finished
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(h.credentials.records.has(rotatedRef), false)
+    assert.equal(h.credentials.records.has(seededRef), false)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(h.store.provider('anthropic'), undefined)
+    // No secret-bearing record outlives the released route.
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
   } finally {
     await h.close()
   }

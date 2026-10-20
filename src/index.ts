@@ -1398,10 +1398,35 @@ export class KeysManagerService {
    * syncs back into the owning row; anything else the manager did not write
    * is native management of the route and surfaces as a warning instead of
    * being adopted silently.
+   *
+   * C6-1: reconciliation writes a plugin-scope record for the rotated
+   * generation and then mutates the owning row. removeAccount /
+   * releaseProvider mutate the same row but cannot be serialized against
+   * that write — the credential seam offers only a per-record lock
+   * (`modifyRecord`), never a transaction across the record write and the
+   * pool row. So {@link reconcileGrantRecord} revalidates the row immediately
+   * before AND after the awaited write and compensates by deleting the record
+   * it just wrote. An orphan record must never outlive a removed account.
    */
   private onGrantRecordUpdated(key: string): void {
     if (!key.startsWith(`${OAUTH_GRANT_RECORD_SCOPE}/`)) return
     const provider = key.slice(OAUTH_GRANT_RECORD_SCOPE.length + 1)
+    if (this.store.provider(provider) === undefined) return
+    // Fire-and-forget: the seam event is synchronous and carries no
+    // completion channel, so failures are logged like any async work.
+    void this.reconcileGrantRecord(provider, key).catch(error => {
+      this.warn(`grant reconciliation failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /**
+   * The body of {@link onGrantRecordUpdated}. Pool state is read live, and
+   * every awaited step around the write is guarded by revalidation: a
+   * removal is allowed to complete while the write is in flight.
+   */
+  private async reconcileGrantRecord(provider: string, key: string): Promise<void> {
+    const records = this.credentialRecords()
+    if (records === undefined) return
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return
     const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
@@ -1410,116 +1435,144 @@ export class KeysManagerService {
     const active = activeId === undefined
       ? undefined
       : accounts.find(candidate => candidate.id === activeId)
-    void (async () => {
-      const records = this.credentialRecords()
-      if (records === undefined) return
-      // F1 (I-000081): the owner claim below must not overwrite a claim an
-      // activation or login lands while this awaited re-read is in flight —
-      // the same generation guard load-time hydration applies.
-      const generation = this.ownershipGenerations.get(provider) ?? 0
-      const record = await records.readRecord(key)
-      if (record === undefined) {
-        // This manager's own demotion marked the removal just before
-        // deleting; while the marker is inside its TTL window the echo is
-        // ours — consume the one-shot marker and stay silent. An expired
-        // marker no longer masks anything (and is dropped for hygiene).
-        const markedAt = this.intentionalProjectionRemovals.get(provider)
-        if (markedAt !== undefined && Date.now() - markedAt <= INTENTIONAL_REMOVAL_TTL_MS) {
-          this.intentionalProjectionRemovals.delete(provider)
-          return
-        }
-        if (markedAt !== undefined) this.intentionalProjectionRemovals.delete(provider)
-        if (active !== undefined) {
-          // Not our deletion: someone removed the projection, so the route
-          // silently serves the key pool while the account row looks
-          // healthy. Mark, warn, and drop the stale owner entry (round-2
-          // review, step 1): nothing owns the projection anymore.
-          active.valueMissing = true
-          this.activeAccounts.delete(provider)
-          this.store.touch()
-          this.pushWarning(`The ${provider} OAuth grant was removed outside Keys Manager; the route now resolves through its API-key pool.`)
-        }
+    // F1 (I-000081): the owner claim below must not overwrite a claim an
+    // activation or login lands while this awaited re-read is in flight —
+    // the same generation guard load-time hydration applies.
+    const generation = this.ownershipGenerations.get(provider) ?? 0
+    const record = await records.readRecord(key)
+    if (record === undefined) {
+      // This manager's own demotion marked the removal just before
+      // deleting; while the marker is inside its TTL window the echo is
+      // ours — consume the one-shot marker and stay silent. An expired
+      // marker no longer masks anything (and is dropped for hygiene).
+      const markedAt = this.intentionalProjectionRemovals.get(provider)
+      if (markedAt !== undefined && Date.now() - markedAt <= INTENTIONAL_REMOVAL_TTL_MS) {
+        this.intentionalProjectionRemovals.delete(provider)
         return
       }
-      if (record.kind === 'api-key') {
-        // Native api-key management took the route over: the manager no
-        // longer owns any projection here.
+      if (markedAt !== undefined) this.intentionalProjectionRemovals.delete(provider)
+      if (active !== undefined) {
+        // Not our deletion: someone removed the projection, so the route
+        // silently serves the key pool while the account row looks
+        // healthy. Mark, warn, and drop the stale owner entry (round-2
+        // review, step 1): nothing owns the projection anymore.
+        active.valueMissing = true
         this.activeAccounts.delete(provider)
-        this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
-        return
+        this.store.touch()
+        this.pushWarning(`The ${provider} OAuth grant was removed outside Keys Manager; the route now resolves through its API-key pool.`)
       }
-      if (!isOAuthGrantPayload(record.payload)) {
-        // An unrecognized payload is not ours to interpret: drop the stale
-        // owner entry so failure attribution and demotion never fire on it.
-        this.activeAccounts.delete(provider)
-        this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
-        return
+      return
+    }
+    if (record.kind === 'api-key') {
+      // Native api-key management took the route over: the manager no
+      // longer owns any projection here.
+      this.activeAccounts.delete(provider)
+      this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
+      return
+    }
+    if (!isOAuthGrantPayload(record.payload)) {
+      // An unrecognized payload is not ours to interpret: drop the stale
+      // owner entry so failure attribution and demotion never fire on it.
+      this.activeAccounts.delete(provider)
+      this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
+      return
+    }
+    const payload = record.payload
+    const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
+    const rotatedRef = accountRef(provider, hash)
+    // Owner resolution runs through the shared matcher (refresh digest
+    // first, then identity metadata) — the same rule load-time hydration
+    // applies, so a restarted process and the live reconciler agree.
+    const owner = matchOwningAccount(provider, accounts, payload)
+    if (owner === undefined) {
+      // A foreign account's grant serves the route: no pool row owns the
+      // projection, so the previous owner entry must not survive it.
+      this.activeAccounts.delete(provider)
+      this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
+      return
+    }
+    // C6-1 pre-write revalidation: removeAccount / releaseProvider run on
+    // the mutation queue and delete the row (and its grant record) while
+    // this reconciliation is still resolving its owner. Writing the rotated
+    // generation for an account removed in that window would recreate a
+    // secret-bearing record nothing owns, so the write is skipped entirely.
+    if (!this.accountRowStillCurrent(provider, owner)) return
+    // F1 (I-000081): the matched grant IS the live projection, so this row
+    // owns it from now on — even when no in-process login or activation
+    // ran (the post-restart echo-rotation case: a hydrated row, no owner
+    // entry). Claiming here is what makes request attribution
+    // (oauthOwnerFor), cooling, and demotion act on the serving account.
+    // The guard above keeps unrecognized and foreign payloads on the
+    // warn-and-clear path; ownership is never adopted for them. A newer
+    // activation/login that claimed while the read was in flight wins:
+    // the stale echo claim is discarded exactly like a stale hydration
+    // read (the rotation write-back below still lands — row data sync is
+    // independent of who owns the projection).
+    if ((this.ownershipGenerations.get(provider) ?? 0) === generation) {
+      this.claimProjectionOwner(provider, owner.id)
+    }
+    // Rotation sync: the rotated payload is authoritative (the plan's
+    // single-writer contract — "sync them back to the owning plugin-scope
+    // record on record-updated"), so write it back to the row's grant
+    // record instead of trusting that refresh tokens never rotate. The
+    // plugin-scope record is written FIRST; the row's grantRef commits
+    // only after that write resolves, so a failed write leaves the row
+    // pointing at the old, still-present record and Remove keeps working
+    // against the live grant (round-2 review, step 5). This write cannot
+    // re-enter this handler: it is keys-manager/-scope, and the handler
+    // above only reconciles llm-pi-ai/-scope keys.
+    const previousRef = owner.oauth!.grantRef
+    await records.modifyRecord(rotatedRef, () =>
+      Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+    // C6-1 post-write revalidation: a removal that landed while the write
+    // was in flight already deleted its own record, so the generation just
+    // written must be compensated or it outlives the account. The removed
+    // row object is detached, so the mutation below would be invisible
+    // anyway; it is skipped, and a stale owner claim is withdrawn.
+    if (!this.accountRowStillCurrent(provider, owner)) {
+      if (this.activeAccounts.get(provider) === owner.id) this.activeAccounts.delete(provider)
+      try {
+        await records.deleteRecord(rotatedRef)
+      } catch (error) {
+        this.warn(`cancelled rotation record cleanup failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
       }
-      const payload = record.payload
-      const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
-      const rotatedRef = accountRef(provider, hash)
-      // Owner resolution runs through the shared matcher (refresh digest
-      // first, then identity metadata) — the same rule load-time hydration
-      // applies, so a restarted process and the live reconciler agree.
-      const owner = matchOwningAccount(provider, accounts, payload)
-      if (owner === undefined) {
-        // A foreign account's grant serves the route: no pool row owns the
-        // projection, so the previous owner entry must not survive it.
-        this.activeAccounts.delete(provider)
-        this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
-        return
+      return
+    }
+    // SF2: once the new payload persists and the row points at it, delete
+    // the superseded generation's plugin-scope record — harvest parity. A
+    // rotated refresh token must not strand its secret-bearing record
+    // outside manager state; cleanup is best-effort with a warning,
+    // exactly like the harvest-time cleanup.
+    if (previousRef !== rotatedRef) {
+      owner.oauth = { ...owner.oauth!, grantRef: rotatedRef }
+      try {
+        await records.deleteRecord(previousRef)
+      } catch (error) {
+        this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
       }
-      // F1 (I-000081): the matched grant IS the live projection, so this row
-      // owns it from now on — even when no in-process login or activation
-      // ran (the post-restart echo-rotation case: a hydrated row, no owner
-      // entry). Claiming here is what makes request attribution
-      // (oauthOwnerFor), cooling, and demotion act on the serving account.
-      // The guard above keeps unrecognized and foreign payloads on the
-      // warn-and-clear path; ownership is never adopted for them. A newer
-      // activation/login that claimed while the read was in flight wins:
-      // the stale echo claim is discarded exactly like a stale hydration
-      // read (the rotation write-back below still lands — row data sync is
-      // independent of who owns the projection).
-      if ((this.ownershipGenerations.get(provider) ?? 0) === generation) {
-        this.claimProjectionOwner(provider, owner.id)
-      }
-      // Rotation sync: the rotated payload is authoritative (the plan's
-      // single-writer contract — "sync them back to the owning plugin-scope
-      // record on record-updated"), so write it back to the row's grant
-      // record instead of trusting that refresh tokens never rotate. The
-      // plugin-scope record is written FIRST; the row's grantRef commits
-      // only after that write resolves, so a failed write leaves the row
-      // pointing at the old, still-present record and Remove keeps working
-      // against the live grant (round-2 review, step 5). This write cannot
-      // re-enter this handler: it is keys-manager/-scope, and the handler
-      // above only reconciles llm-pi-ai/-scope keys.
-      const previousRef = owner.oauth!.grantRef
-      await records.modifyRecord(rotatedRef, () =>
-        Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
-      // SF2: once the new payload persists and the row points at it, delete
-      // the superseded generation's plugin-scope record — harvest parity. A
-      // rotated refresh token must not strand its secret-bearing record
-      // outside manager state; cleanup is best-effort with a warning,
-      // exactly like the harvest-time cleanup.
-      if (previousRef !== rotatedRef) {
-        owner.oauth = { ...owner.oauth!, grantRef: rotatedRef }
-        try {
-          await records.deleteRecord(previousRef)
-        } catch (error) {
-          this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-      // Refresh-derived identity fields are informational and update in place.
-      owner.oauth = {
-        ...owner.oauth!,
-        ...(payload.email === undefined ? {} : { email: payload.email }),
-        ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
-        ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
-      }
-      this.store.touch()
-    })().catch(error => {
-      this.warn(`grant reconciliation failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
-    })
+    }
+    // Refresh-derived identity fields are informational and update in place.
+    owner.oauth = {
+      ...owner.oauth!,
+      ...(payload.email === undefined ? {} : { email: payload.email }),
+      ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
+      ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
+    }
+    this.store.touch()
+  }
+
+  /**
+   * C6-1 revalidation: the row captured before an awaited credential write
+   * must still be the provider's live row — same object identity, still an
+   * OAuth account. A remove/release landing in between detaches the row
+   * object; object identity is what tells "this account is still there"
+   * apart from "some same-id row was recreated".
+   */
+  private accountRowStillCurrent(provider: string, owner: KeyRecord): boolean {
+    const providerRecord = this.store.provider(provider)
+    if (providerRecord === undefined) return false
+    if (owner.kind !== 'oauth' || owner.oauth === null) return false
+    return providerRecord.keys.some(candidate => candidate === owner)
   }
 
   /**
