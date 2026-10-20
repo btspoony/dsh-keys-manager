@@ -90,10 +90,16 @@ export interface OmpAssistantMessage {
   readonly usage: OmpUsage
   readonly stopReason: string
   readonly model: string
-  /** Present on outbound history; the transport requires it to replay thinking. */
-  readonly api?: 'cursor-agent'
+  /**
+   * Provider identity of the turn that produced this message (outbound history).
+   *
+   * The transport replays reasoning only when `api`/`provider`/`model` name the
+   * Cursor target (`canReplayCursorThinking`), so a turn from another route
+   * keeps its real provider here instead of the Cursor identity.
+   */
+  readonly api?: string
   /** Present on outbound history; see {@link api}. */
-  readonly provider?: 'cursor'
+  readonly provider?: string
   readonly timestamp?: number
   readonly errorMessage?: string
   /** HTTP status the transport classified the failure to. */

@@ -199,8 +199,8 @@ export function projectRequest(
  */
 function resolveWireModelId(row: CursorModelRow, effort: string | undefined): string | undefined {
   if (effort === undefined) return undefined
-  const routed = row.thinking?.effortRouting?.[effort]
-  if (routed !== undefined) return routed
+  const routing = row.thinking?.effortRouting
+  if (routing !== undefined && Object.hasOwn(routing, effort)) return routing[effort]
   if (row.thinking?.efforts.includes(effort) === true) return undefined
   throw new LlmError(
     `llm-omp: cursor model "${row.id}" does not advertise reasoning effort "${effort}"`,
@@ -243,21 +243,30 @@ function plainContent(content: readonly ContentBlock[], role: 'user' | 'develope
 /**
  * Map one DSH assistant message to an omp history step.
  *
- * The model id stays the one that produced the message so the transport can
- * decide whether its reasoning is replayable; the transport identity is this
- * route's, because the omp history builder only knows one transport.
+ * The model id and the transport identity stay the ones that produced the
+ * message. The transport's K3 checks (`canReplayCursorThinking`,
+ * `assertCursorKimiK3HistoryReplayable`) trust `api`/`provider`/`model`, so a
+ * turn from another route keeps its real provider: claiming the Cursor identity
+ * for it would let foreign reasoning be replayed as native thinking. Only
+ * history this route produced carries the Cursor identity.
+ *
+ * Reasoning from another provider is dropped rather than forwarded: it is not
+ * Cursor-signed, the transport replays reasoning only for such history, and for
+ * a K3 target the mismatched identity makes it refuse the history outright.
  */
 function historyAssistant(message: DshAssistantMessage): OmpAssistantMessage {
+  const source = message.source
+  const cursorSourced = source.provider === CURSOR_PROVIDER
   return {
     role: 'assistant',
-    content: message.content.map(block => {
-      if (block.type === 'text') return { type: 'text', text: block.text }
-      if (block.type === 'reasoning') return { type: 'thinking', thinking: block.text }
+    content: message.content.flatMap((block): OmpContentBlock[] => {
+      if (block.type === 'text') return [{ type: 'text', text: block.text }]
+      if (block.type === 'reasoning') return cursorSourced ? [{ type: 'thinking', thinking: block.text }] : []
       throw unsupportedContent(block.type, 'assistant')
     }),
-    model: message.source.model,
-    api: CURSOR_API,
-    provider: CURSOR_PROVIDER,
+    model: source.model,
+    api: cursorSourced ? CURSOR_API : source.provider,
+    provider: cursorSourced ? CURSOR_PROVIDER : source.provider,
     usage: EMPTY_USAGE,
     stopReason: 'stop',
     timestamp: 0,
@@ -377,6 +386,14 @@ function errorFinish(
     return finishOf('error', failureOf(text, CONTEXT_WINDOW_EXCEEDED_CODE, message.errorStatus))
   }
   return finishOf('error', failureOf(text, classifyFailure(text, message.errorStatus), message.errorStatus))
+}
+
+/**
+ * The terminal chunk for a turn the caller cancelled before it reached the
+ * transport; the adapter yields it instead of resolving a credential.
+ */
+export function abortedFinish(): StreamChunk {
+  return finishOf('aborted', failureOf('llm-omp: request aborted before it was sent', ABORTED_CODE, undefined))
 }
 
 /** Build one terminal finish chunk. */

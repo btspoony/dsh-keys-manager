@@ -25,7 +25,7 @@ import type {
 } from '@deepseek-ai/dsh-llm'
 
 import { CURSOR_MODELS } from './catalog/cursor.js'
-import { projectEvents, projectRequest } from './projection.js'
+import { abortedFinish, projectEvents, projectRequest } from './projection.js'
 import type { CursorModelRow, OmpCursorOptions, OmpCursorTransport } from './omp.js'
 
 /** The provider route this adapter owns. */
@@ -120,6 +120,14 @@ export class OmpCursorAdapter extends LlmAdapter {
   }
 
   private async *call(options: GenerateOptions): AsyncGenerator<StreamChunk> {
+    // Read the live signal each time: it can abort while the credential is read.
+    const aborted = (): boolean => options.signal?.aborted === true
+    // An already-cancelled turn must not pay a credential read (nor, once the
+    // resolver refreshes, a CAS write) or open a stream.
+    if (aborted()) {
+      yield abortedFinish()
+      return
+    }
     const row = rowFor(options.model)
     // Validate and project before touching the credential: a refused request
     // must not pay a credential read (nor, once the resolver refreshes, a CAS
@@ -127,6 +135,10 @@ export class OmpCursorAdapter extends LlmAdapter {
     // its token into the transport options.
     const request = projectRequest(row, options)
     const accessKey = assertUsableApiKey(await this.config.access(), 'llm-omp', CREDENTIAL_REF)
+    if (aborted()) {
+      yield abortedFinish()
+      return
+    }
     const transportOptions: OmpCursorOptions = { ...request.options, apiKey: accessKey }
     yield* projectEvents(this.config.transport(request.model, request.context, transportOptions), options.signal)
   }

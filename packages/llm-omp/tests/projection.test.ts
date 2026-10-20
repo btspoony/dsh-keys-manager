@@ -40,6 +40,9 @@ if (UNROUTED === undefined) throw new Error('the generated catalog lost gpt-5.2'
 if (UNROUTED.thinking?.effortRouting !== undefined) {
   throw new Error('gpt-5.2 gained effort routing; pick another unrouted row for the fallback case')
 }
+/** A routed K3 row: the family whose thinking the transport replays. */
+const K3 = CURSOR_MODELS.find(row => row.id === 'kimi-k3-high')
+if (K3 === undefined) throw new Error('the generated catalog lost kimi-k3-high')
 
 const IMAGE = {
   type: 'image' as const,
@@ -130,6 +133,37 @@ describe('projectRequest', () => {
     })
   })
 
+  it('keeps a foreign provider identity and drops its reasoning on same-id K3 history', () => {
+    // `canReplayCursorThinking` keys on `api`/`provider`/`model`, and the
+    // transport refuses a K3 target whose history names another model. A turn
+    // produced by another route that happens to share the id must therefore
+    // keep its own provider, and its reasoning must not be forwarded as
+    // Cursor-native thinking.
+    const projected = projectRequest(
+      K3,
+      request([
+        createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: [
+            { type: 'reasoning', text: 'foreign chain of thought' },
+            { type: 'text', text: 'Hi there' },
+          ],
+          source: { provider: 'openai', model: 'kimi-k3-high' },
+        }),
+      ]),
+      'token',
+    )
+
+    const assistant = projected.context.messages[1] as OmpAssistantMessage
+    expect(assistant).toMatchObject({
+      role: 'assistant',
+      api: 'openai',
+      provider: 'openai',
+      model: 'kimi-k3-high',
+      content: [{ type: 'text', text: 'Hi there' }],
+    })
+  })
+
   it('routes a reasoning effort to its wire model id', () => {
     const routed = projectRequest(SONNET, request([], { reasoningEffort: 'high' as never }), 'token')
     expect(routed.options.wireModelId).toBe('claude-4.5-sonnet-thinking')
@@ -156,6 +190,14 @@ describe('projectRequest', () => {
     expect(() => projectRequest(PLAIN, request([], { reasoningEffort: 'high' as never }), 'token')).toThrowError(
       expect.objectContaining({ code: UNSUPPORTED_REASONING_EFFORT }),
     )
+  })
+
+  it('refuses an inherited object key as a reasoning effort', () => {
+    // `effortRouting` is a plain object: without an own-property check,
+    // `toString` would be accepted as a wire model id.
+    expect(() =>
+      projectRequest(SONNET, request([], { reasoningEffort: 'toString' as never }), 'token'),
+    ).toThrowError(expect.objectContaining({ code: UNSUPPORTED_REASONING_EFFORT }))
   })
 
   it('sends no wire model override when no effort is selected', () => {

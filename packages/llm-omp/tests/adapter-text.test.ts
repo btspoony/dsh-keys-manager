@@ -120,6 +120,58 @@ describe('OmpCursorAdapter text streaming', () => {
     expect(issued).toBe(2)
   })
 
+  it('cancels an already-aborted turn without a credential read or transport call', async () => {
+    const { transport, calls } = scriptedTransport('cursor-text.jsonl')
+    let reads = 0
+    const adapter = new OmpCursorAdapter({
+      access: async () => {
+        reads += 1
+        return 'test-token'
+      },
+      transport,
+    })
+    const controller = new AbortController()
+    controller.abort()
+
+    const chunks = await collect(adapter.stream(request({ signal: controller.signal })))
+
+    expect(chunks).toEqual([
+      {
+        type: 'finish',
+        reason: {
+          kind: 'aborted',
+          failure: { message: 'llm-omp: request aborted before it was sent', code: 'ABORTED' },
+        },
+      },
+    ])
+    expect(reads).toBe(0)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('cancels a turn whose signal aborts while the credential is read', async () => {
+    const { transport, calls } = scriptedTransport('cursor-text.jsonl')
+    const controller = new AbortController()
+    let reads = 0
+    const adapter = new OmpCursorAdapter({
+      access: async () => {
+        reads += 1
+        // The race the second check owns: abort lands during the read.
+        controller.abort()
+        return 'test-token'
+      },
+      transport,
+    })
+
+    const chunks = await collect(adapter.stream(request({ signal: controller.signal })))
+
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'aborted', failure: { code: 'ABORTED' } },
+    })
+    expect(reads).toBe(1)
+    expect(calls).toHaveLength(0)
+  })
+
   it('refuses a blank credential before touching the transport', async () => {
     const { transport, calls } = scriptedTransport('cursor-text.jsonl')
     const adapter = new OmpCursorAdapter({ access: async () => '   ', transport })
