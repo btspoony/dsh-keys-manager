@@ -33,6 +33,7 @@
     }
   },
   "scripts": {
+    "generate:catalog": "node scripts/generate-catalog.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "node scripts/build-omp.mjs && tsc -p tsconfig.build.json",
     "test": "vitest run"
