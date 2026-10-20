@@ -7796,3 +7796,197 @@ test('an unreadable settings snapshot is distinguished from a missing model', as
     await h.close()
   }
 })
+
+// QC fix wave 2 (B3 follow-up): the watchdog released the provider's slot
+// without putting back what the abandoned test had borrowed, so ordinary
+// traffic resumed against the tested account's grant. These four cases pin the
+// abandon-safe window: the cleanup, the isolation ordering, the fence and the
+// late settlement.
+
+/** The refresh token the live anthropic projection carries, if any. */
+function liveProjectionRefresh(h: Harness): string | undefined {
+  const record = h.credentials.records.get(GRANT_KEY)
+  return (record?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined
+}
+
+test('an abandoned oauth test does not leave the borrowed grant serving ordinary requests', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    const ordinaryStarted: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      const projection = h.credentials.records.get(GRANT_KEY)
+      const refresh = (projection?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined
+      if (options.maxTokens === 1) {
+        testEntered()
+        // The test request itself never settles: the seam offers no
+        // cancellation, so the watchdog is the only thing that ends the window.
+        await testGate
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      ordinaryStarted.push(refresh)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    // The window is open: the tested account's grant IS the live projection.
+    assert.equal(liveProjectionRefresh(h), 'rt-first')
+    // The abandoned window puts the borrowed projection back on its own…
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
+    // …so the ordinary request is served by the user's account, never by the
+    // credential the abandoned test borrowed.
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
+    assert.deepEqual(ordinaryStarted, ['rt-second'])
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('an abandoned oauth test restores the binding it released', async () => {
+  const h = await harness()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-first', email: 'first@example.com', refresh: 'rt-first' })
+    // The key pool serves this route, so an oauth row test releases the broker
+    // reference for its window (QC B1).
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef)
+
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+
+    testRun = h.service.testKey('anthropic', account.rowId)
+    await entered
+    // The window released the binding and borrowed the account's grant.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, undefined)
+    assert.equal(liveProjectionRefresh(h), 'rt-first')
+    // The abandoned window must hand the route back exactly as it found it.
+    await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef))
+    assert.equal(liveProjectionRefresh(h), undefined)
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('a late-settling abandoned test does not restore a stale projection', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    assert.equal(liveProjectionRefresh(h), 'rt-first')
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
+    // A writer lands a newer generation of the tested account's grant after the
+    // window was abandoned but before the wedged request settles.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-first-rotated',
+      access: 'at-rotated',
+      accountId: 'acc-first',
+      email: 'first@example.com',
+    }))
+    releaseTest?.()
+    const result = await testRun!
+    // The abandoned test must not write its stale pre-test snapshot over the
+    // newer projection…
+    assert.equal(liveProjectionRefresh(h), 'rt-first-rotated')
+    // …and it may not report the pass the wedged request eventually produced.
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /abandoned/)
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('a new test is refused while a previous window is being cleaned up', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let stallCleanup = false
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 50
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    // From here the cleanup cannot read the projection at all: it needs the
+    // same untimed seam the wedged test is parked in.
+    stallCleanup = true
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (stallCleanup && key === GRANT_KEY) await new Promise<never>(() => {})
+      return realRead(key)
+    }
+    await new Promise(resolve => setTimeout(resolve, 300))
+
+    // The provider is still fenced: the aborted window never got its
+    // projection back, so a second test must not borrow the route.
+    const refusal = await Promise.race([
+      h.service.testKey('anthropic', second.rowId),
+      new Promise<KeyTestResult>(resolve => setTimeout(() => resolve({ ok: true, latencyMs: 0, error: 'the second test was not refused' }), 300)),
+    ])
+    assert.equal(refusal.ok, false)
+    assert.match(String(refusal.error), /still being cleaned up/)
+
+    // Ordinary traffic is refused too: the borrowed grant may still be live,
+    // so waiting a bounded time and then serving the request would cross-use
+    // the tested account's credential.
+    await assert.rejects(
+      () => consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 })),
+      /still being cleaned up/,
+    )
+  } finally {
+    stallCleanup = false
+    h.credentials.raw.readRecord = realRead
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

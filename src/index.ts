@@ -133,6 +133,15 @@ const KEY_TEST_TIMEOUT_LABEL = `${KEY_TEST_TIMEOUT_MS / 1000}s`
  * test whose provider call used its whole budget.
  */
 const KEY_TEST_ISOLATION_WAIT_MS = KEY_TEST_TIMEOUT_MS + 5_000
+/**
+ * Hard bound on one abandoned test window's cleanup (QC fix wave 2). The
+ * borrowed projection must be put back before ordinary traffic may resume on
+ * the provider, but the cleanup runs through the same credential seam the
+ * wedged test is parked in, so it cannot be trusted to return. Past this bound
+ * the provider stays isolated and fenced instead of being released on an
+ * unreconciled credential surface.
+ */
+const KEY_TEST_CLEANUP_DEADLINE_MS = 2_000
 
 /** The error-like `name` of an unknown thrown value, if it carries one. */
 function errorNameOf(value: unknown): string | undefined {
@@ -622,6 +631,49 @@ interface RequestScope {
   test: boolean
 }
 
+/**
+ * One row test's borrowed-credential window (QC fix wave 2).
+ *
+ * An OAuth row test borrows the route's projection — and, on a broker-bound
+ * profile, its credential binding — for the duration of one request. The
+ * watchdog that abandons a wedged test must be able to put the route back
+ * exactly as the test's own `finally` would, so the window records the borrow
+ * facts as they become known instead of leaving them inside the abandoned
+ * promise's scope.
+ */
+interface RowTestWindow {
+  provider: string
+  row: KeyRecord
+  /** Whether this window releases the profile's broker reference. */
+  borrowBinding: boolean
+  /**
+   * Set before the release is attempted: the attempt may land partially, so a
+   * cleanup must re-sync the binding it touched.
+   */
+  releasedBinding: boolean
+  /**
+   * The projection borrow, recorded before the write lands so an abandoned
+   * window can restore a borrow that landed after the watchdog looked.
+   * {@link KeysManagerService.restoreProjection} decides by payload, so having
+   * the facts early is safe whether or not the write landed.
+   */
+  facts?: {
+    records: CredentialRecordsLike
+    key: string
+    previous: CredentialRecordLike | undefined
+    borrowed: OAuthGrantPayload
+  }
+  /** The guarded test promise, for the identity-checked isolation release. */
+  test?: Promise<KeyTestResult>
+  /**
+   * The abandonment fence: set by the watchdog before its first cleanup await.
+   * Everything the test does afterwards observes it — it never starts a
+   * borrow, its `finally` never restores from its own stale snapshot, and a
+   * new test is refused until the window's cleanup completed.
+   */
+  cleaned: boolean
+}
+
 /** Original credential provider methods captured before wrapping. */
 interface CredentialOriginals {
   resolve: CredentialsLike['resolve']
@@ -749,6 +801,15 @@ export class KeysManagerService {
    * (QC B3). Injectable so tests can exercise the bound quickly.
    */
   private isolationWaitMs = KEY_TEST_ISOLATION_WAIT_MS
+  /**
+   * Providers whose abandoned test window is still being cleaned up (QC fix
+   * wave 2). The fence stays until a cleanup completed: a new test would
+   * borrow a projection that is not back yet, and an ordinary request must not
+   * be served by a borrowed grant or an unbound route.
+   */
+  private readonly cleaningTests = new Set<string>()
+  /** Hard bound on one abandoned window's cleanup. Injectable for tests. */
+  private testCleanupDeadlineMs = KEY_TEST_CLEANUP_DEADLINE_MS
   /** Providers whose isolation-deadline warning already fired (warn once). */
   private readonly isolationWaitWarned = new Set<string>()
   /** Interactive sign-in attempts, by attempt id. */
@@ -2538,6 +2599,13 @@ export class KeysManagerService {
     if (record === undefined) return { ok: false, latencyMs: 0, error: `Provider "${provider}" is not managed` }
     const row = record.keys.find(candidate => candidate.id === keyId)
     if (row === undefined) return { ok: false, latencyMs: 0, error: `Key "${keyId}" not found on ${provider}` }
+    // QC fix wave 2: an abandoned window owns this provider until its cleanup
+    // completed. Refused before the running-test check below, because the
+    // abandoned test keeps that entry on purpose: the route's projection is
+    // still unreconciled, so a second test would borrow it twice.
+    if (this.cleaningTests.has(provider)) {
+      return { ok: false, latencyMs: 0, error: 'A previous test is still being cleaned up' }
+    }
     // Concurrent tests would race the projection save/restore; one at a time
     // per provider is enough for a per-row action and keeps the restore exact
     // (QC N7: the lock covers both row kinds, the isolation guard only the
@@ -2548,20 +2616,22 @@ export class KeysManagerService {
     // Everything that awaits — the ownership readiness wait (QC B6) and the
     // request — belongs to the guarded promise, so a second call cannot slip
     // past the lock during the wait.
-    const test = this.runRowTest(record, row)
+    const window: RowTestWindow = { provider, row, borrowBinding: false, releasedBinding: false, cleaned: false }
+    const test = this.runRowTest(record, row, window)
+    window.test = test
     this.testsActive.set(provider, test)
     // The guard holds the whole test as a promise, not just a membership
     // flag: `streamListener` awaits it so no ordinary request is served by —
     // or attributed to — the grant an OAuth row test has borrowed. An api-key
     // test borrows nothing, so it never isolates ordinary traffic (QC N7).
     if (row.kind === 'oauth') this.testsInFlight.set(provider, test)
-    // QC B3: the in-flight entry is cleared by this watchdog, not only by the
-    // finally below, so a test wedged in an untimed seam call cannot pin the
-    // provider's slot for the rest of the session.
+    // QC B3 + QC fix wave 2: this watchdog, not only the finally below, ends a
+    // test wedged in an untimed seam call — and it ends the window the way the
+    // test itself would, because releasing the provider without putting the
+    // borrowed projection and binding back hands ordinary traffic the tested
+    // account's credential.
     const watchdog = setTimeout(() => {
-      if (this.testsActive.get(provider) === test) this.testsActive.delete(provider)
-      if (this.testsInFlight.get(provider) === test) this.testsInFlight.delete(provider)
-      this.warn(`connection test for ${provider} did not settle within ${this.isolationWaitMs}ms; its provider slot is released`)
+      this.abandonTestWindow(window)
     }, this.isolationWaitMs)
     watchdog.unref?.()
     try {
@@ -2574,11 +2644,124 @@ export class KeysManagerService {
   }
 
   /**
+   * Take over a test window that did not settle within the isolation deadline
+   * (QC fix wave 2).
+   *
+   * The fence is set synchronously, before the first cleanup await: the wedged
+   * test may resume at any await from here, and it must observe the
+   * abandonment before it starts a borrow or restores from its own stale
+   * snapshot. The provider keeps its isolation entry until the cleanup
+   * completed — see {@link settleAbandonedWindow}.
+   */
+  private abandonTestWindow(window: RowTestWindow): void {
+    window.cleaned = true
+    this.cleaningTests.add(window.provider)
+    void this.settleAbandonedWindow(window)
+  }
+
+  /**
+   * Clean up one abandoned window and release its provider only on success.
+   *
+   * A cleanup that cannot finish needs the same untimed seam the wedged test is
+   * parked in, so it fails exactly like the test did. Releasing the provider
+   * then would serve ordinary traffic from the borrowed grant (or, on a
+   * broker-bound profile, from a route whose binding was released and never
+   * restored), so the isolation entry and the fence both stay and the
+   * abandoned promise's settlement is the one event that can make the seam
+   * answerable again: the retry rides on it.
+   */
+  private async settleAbandonedWindow(window: RowTestWindow): Promise<void> {
+    const failure = await this.attemptAbandonedCleanup(window)
+    if (failure === undefined) {
+      this.warn(`connection test for ${window.provider} did not settle within ${this.isolationWaitMs}ms; its borrowed credential was put back and the provider slot is released`)
+      return
+    }
+    this.warn(`connection test for ${window.provider} did not settle within ${this.isolationWaitMs}ms and its cleanup did not complete (${failure}); the provider stays isolated`)
+    const pending = window.test
+    if (pending === undefined) return
+    const retry = (): void => { void this.retryAbandonedWindow(window) }
+    void pending.then(retry, retry)
+  }
+
+  /** One later cleanup attempt for an abandoned window, once the seam answers again. */
+  private async retryAbandonedWindow(window: RowTestWindow): Promise<void> {
+    if (!this.cleaningTests.has(window.provider)) return
+    const failure = await this.attemptAbandonedCleanup(window)
+    if (failure === undefined) {
+      this.warn(`the abandoned connection test for ${window.provider} settled; its borrowed credential was put back and the provider slot is released`)
+    }
+  }
+
+  /**
+   * Run the window's cleanup under its hard deadline and drop the provider's
+   * isolation only when it completed. Returns the reason it could not finish.
+   */
+  private async attemptAbandonedCleanup(window: RowTestWindow): Promise<string | undefined> {
+    this.cleaningTests.add(window.provider)
+    const failure = await this.withinCleanupDeadline(() => this.cleanupTestWindow(window))
+    if (failure !== undefined) return failure
+    if (this.testsActive.get(window.provider) === window.test) this.testsActive.delete(window.provider)
+    if (this.testsInFlight.get(window.provider) === window.test) this.testsInFlight.delete(window.provider)
+    this.cleaningTests.delete(window.provider)
+    return undefined
+  }
+
+  /**
+   * Put the route back the way the window found it: the projection first
+   * (compare-by-payload and rotation-aware, so nothing a writer stored
+   * meanwhile is overwritten), then the binding — the original finally's order,
+   * because the binding decision reads the restored owner map — then the
+   * borrow marker. Returns the reason the cleanup could not complete.
+   */
+  private async cleanupTestWindow(window: RowTestWindow): Promise<string | undefined> {
+    const facts = window.facts
+    if (facts !== undefined) {
+      const restored = await this.restoreProjection(facts.records, window.provider, window.row, facts.key, facts.previous, facts.borrowed)
+      if (restored !== undefined) return restored
+    }
+    if (window.releasedBinding) {
+      // QC B4: one sync at window end, after the owner map and the projection
+      // are back, so the persisted binding matches the state the route
+      // actually restored to.
+      const rebound = await this.syncBrokerBinding(window.provider, { borrow: true })
+      if (!rebound) {
+        return 'The route credential binding could not be restored after the test; repair it in Models before relying on this route.'
+      }
+    }
+    this.testBindingBorrows.delete(window.provider)
+    return undefined
+  }
+
+  /**
+   * Run one cleanup under its hard deadline. The work is not cancelled — the
+   * credential seam offers no cancellation — it is only stopped from holding
+   * the provider past the bound; a late result is ignored.
+   */
+  private async withinCleanupDeadline(work: () => Promise<string | undefined>): Promise<string | undefined> {
+    // The bound never rejects: a seam failure is a cleanup result, not a
+    // control-flow error.
+    const running = work().then(
+      failure => failure,
+      (error: unknown) => `the credential store refused the cleanup: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<string>(resolve => {
+      timer = setTimeout(() => resolve('the credential store did not answer before the cleanup deadline'), this.testCleanupDeadlineMs)
+      timer.unref?.()
+    })
+    try {
+      return await Promise.race([running, deadline])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+
+  /**
    * Decide the route's serving shape and run one row test. Separate from
    * {@link testKey} so the concurrency lock is registered before the first
    * await.
    */
-  private async runRowTest(record: ProviderRecord, row: KeyRecord): Promise<KeyTestResult> {
+  private async runRowTest(record: ProviderRecord, row: KeyRecord, window: RowTestWindow): Promise<KeyTestResult> {
     const provider = record.provider
     // QC B6: the serving source is decided from projection ownership, which a
     // restarted process hydrates asynchronously. Until that read lands the
@@ -2638,9 +2821,11 @@ export class KeysManagerService {
     // so the binding is released for the test window through the one authority
     // and restored at window end (see runOAuthRowTest).
     const borrowBinding = row.kind === 'oauth' && bound
-    return row.kind === 'oauth'
-      ? this.runOAuthRowTest(provider, row, model, borrowBinding)
-      : this.runApiKeyRowTest(provider, row, model)
+    if (row.kind !== 'oauth') return await this.runApiKeyRowTest(provider, row, model)
+    // The window records what this test borrows, so the watchdog can put the
+    // route back exactly as the test's own finally would (QC fix wave 2).
+    window.borrowBinding = borrowBinding
+    return await this.runOAuthRowTest(provider, row, model, window)
   }
 
   /**
@@ -2690,7 +2875,7 @@ export class KeysManagerService {
     provider: string,
     row: KeyRecord,
     model: string,
-    borrowBinding: boolean,
+    window: RowTestWindow,
   ): Promise<KeyTestResult> {
     const grant = row.oauth
     if (grant === null) return { ok: false, latencyMs: 0, error: `Key "${row.id}" is not an OAuth account` }
@@ -2703,6 +2888,13 @@ export class KeysManagerService {
     // temporary projection between them.
     await this.scheduleGrantReconciliation(provider, async () => {
       const stored = await records.readRecord(grant.grantRef)
+      if (window.cleaned) {
+        // QC fix wave 2: the watchdog abandoned this window while the read was
+        // in flight. Starting (or resuming) the borrow now would land it after
+        // the cleanup that already ran, so the test stops here.
+        result = this.abandonedTestResult()
+        return
+      }
       if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
         result = {
           ok: false,
@@ -2713,6 +2905,15 @@ export class KeysManagerService {
       }
       const borrowed = structuredClone(stored.payload)
       const previous = await records.readRecord(projectionKey)
+      if (window.cleaned) {
+        result = this.abandonedTestResult()
+        return
+      }
+      // QC fix wave 2: record the borrow before the write, so an abandoned
+      // window can restore a borrow whose write lands after the watchdog
+      // looked. The restore decides by payload, so the facts are safe to hold
+      // whether or not the write landed.
+      window.facts = { records, key: projectionKey, previous, borrowed }
       try {
         await records.modifyRecord(projectionKey, () => Promise.resolve({ kind: 'grant', payload: structuredClone(borrowed) }))
       } catch (error) {
@@ -2729,14 +2930,34 @@ export class KeysManagerService {
       // binding decision derived from it. The test's own writes pass
       // `borrow: true`; the window-end sync below writes the restored state.
       this.testBindingBorrows.add(provider)
+      if (window.cleaned) {
+        // QC fix wave 2: the window was conceded while this write was in
+        // flight, so the watchdog's cleanup may have read the projection
+        // before it landed. Undo the borrow through the same compare-by-payload
+        // restore (not the stale snapshot) and keep the fence if that fails.
+        await this.attemptAbandonedCleanup(window)
+        result = this.abandonedTestResult()
+        return
+      }
       let restoreFailure: string | undefined
       try {
-        if (borrowBinding) {
+        if (window.borrowBinding) {
           // QC B1: a broker-bound profile hands pi-ai the broker reference, so
           // the projection would be inert for the request. Release it for the
           // window through the single binding authority (a failed release
           // refuses the test instead of borrowing a second writer).
+          // QC fix wave 2: the attempt is recorded before it is awaited — it
+          // may land partially, and a cleanup must re-sync what it touched.
+          window.releasedBinding = true
           const released = await this.syncBrokerBinding(provider, { borrow: true })
+          if (window.cleaned) {
+            // The abandonment landed while this release was in flight, so the
+            // watchdog's re-sync may have run before the release did and left
+            // the profile unbound. Re-sync now that the release is complete.
+            await this.attemptAbandonedCleanup(window)
+            result = this.abandonedTestResult()
+            return
+          }
           if (!released) {
             restoreFailure = 'The route is served by its API-key pool and its credential binding could not be released for the test; the account was not tested.'
           }
@@ -2752,29 +2973,32 @@ export class KeysManagerService {
           })
         }
       } finally {
-        // Compare-by-payload restore: a rotation the request caused is
-        // written back to the tested row, a payload another writer stored
-        // survives untouched, and anything that could not be reconciled must
-        // fail the test instead of reporting a pass on a route left on the
-        // tested grant.
-        const restored = await this.restoreProjection(records, provider, row, projectionKey, previous, borrowed)
-        if (restoreFailure === undefined) restoreFailure = restored
-        if (borrowBinding) {
-          // QC B4: one sync at window end, after the owner map and the
-          // projection are back, so the persisted binding matches the state
-          // the route actually restored to.
-          const rebound = await this.syncBrokerBinding(provider, { borrow: true })
-          if (!rebound && restoreFailure === undefined) {
-            restoreFailure = 'The route credential binding could not be restored after the test; repair it in Models before relying on this route.'
-          }
+        if (window.cleaned) {
+          // QC fix wave 2: this window was abandoned and its cleanup already
+          // ran (or is running) under the watchdog. Restoring from this
+          // promise's own pre-test snapshot now would race whatever state the
+          // route carries by then, so the late settlement writes nothing and
+          // reports the failure its own result cannot claim.
+          restoreFailure = this.abandonedTestResult().error
+        } else {
+          const restored = await this.cleanupTestWindow(window)
+          if (restoreFailure === undefined) restoreFailure = restored
         }
-        this.testBindingBorrows.delete(provider)
       }
       if (restoreFailure !== undefined) {
         result = { ok: false, latencyMs: result.latencyMs, error: restoreFailure }
       }
     })
     return result
+  }
+
+  /** The refusal an abandoned test reports instead of a stale success. */
+  private abandonedTestResult(): KeyTestResult {
+    return {
+      ok: false,
+      latencyMs: 0,
+      error: `The connection test was abandoned after ${this.isolationWaitMs}ms and its borrowed credential was cleaned up; run the test again.`,
+    }
   }
 
   /**
@@ -4711,29 +4935,49 @@ export class KeysManagerService {
    * own request timeout: the awaited promise also covers untimed
    * credential-store reads, so without this an ordinary request could park
    * here forever. A failed or timed-out test never fails the waiting request.
+   *
+   * QC fix wave 2: the one exception is a provider whose abandoned window is
+   * still fenced. The wait is over, but the route's credential surface has not
+   * been reconciled, so serving the request would answer it with the borrowed
+   * grant (or, after a released binding, with no bound route at all). Such a
+   * request is refused instead — the fence is what keeps cross-use impossible
+   * until the cleanup completes.
    */
   private async settleProviderTest(providerId: string): Promise<void> {
     const pending = this.testsInFlight.get(providerId)
-    if (pending === undefined) return
-    await new Promise<void>(resolve => {
+    if (pending === undefined) {
+      // A fenced provider may already have lost its in-flight entry (the
+      // abandoned test settled while its cleanup is still pending); it is
+      // still not servable.
+      if (this.cleaningTests.has(providerId)) throw this.testCleanupRefusal(providerId)
+      return
+    }
+    const settled = await new Promise<boolean>(resolve => {
       let done = false
       let timer: ReturnType<typeof setTimeout> | undefined
-      const finish = (): void => {
+      const finish = (value: boolean): void => {
         if (done) return
         done = true
         if (timer !== undefined) clearTimeout(timer)
-        resolve()
+        resolve(value)
       }
       timer = setTimeout(() => {
         if (!this.isolationWaitWarned.has(providerId)) {
           this.isolationWaitWarned.add(providerId)
           this.warn(`connection test for ${providerId} did not settle within ${this.isolationWaitMs}ms; the waiting request proceeds without it`)
         }
-        finish()
+        finish(false)
       }, this.isolationWaitMs)
       timer.unref?.()
-      void pending.then(finish, finish)
+      void pending.then(() => finish(true), () => finish(true))
     })
+    if (settled) return
+    if (this.cleaningTests.has(providerId)) throw this.testCleanupRefusal(providerId)
+  }
+
+  /** The refusal an ordinary request gets while its route is still unreconciled. */
+  private testCleanupRefusal(providerId: string): Error {
+    return new Error(`The connection test for ${providerId} is still being cleaned up; this request was not sent.`)
   }
 
   /**
