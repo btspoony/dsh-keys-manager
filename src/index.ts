@@ -412,6 +412,87 @@ function discoveredModel(model: DiscoveredModel): ModelRecord | undefined {
   })
 }
 
+/** Credential-bearing header names the carrier must never persist as plain settings. */
+const CREDENTIAL_HEADER_NAMES = new Set(['authorization', 'proxy-authorization', 'cookie', 'api-key', 'apikey', 'x-api-key'])
+
+/** Carrier headers are non-secret metadata; a credential-bearing name is refused. */
+function isCredentialHeader(header: string): boolean {
+  const name = header.toLowerCase()
+  return CREDENTIAL_HEADER_NAMES.has(name) || name.endsWith('-api-key')
+}
+
+/**
+ * Resolve one extra provider's declared static request headers from the
+ * environment. Every value must be non-blank and legal for Fetch; a missing or
+ * unusable value refuses the add before any credential or settings write,
+ * because a blank header would only surface later as an opaque
+ * profile-resolution error.
+ */
+function resolveHeaderEnv(extra: ExtraProvider): Record<string, string> | undefined {
+  if (extra.headerEnv === undefined) return undefined
+  const headers: Record<string, string> = {}
+  for (const [header, envName] of Object.entries(extra.headerEnv)) {
+    if (isCredentialHeader(header)) {
+      throw new Error(`${extra.id} declares the credential header ${header}; only non-secret metadata headers can be carried`)
+    }
+    const value = process.env[envName]?.trim()
+    if (value === undefined || value.length === 0) {
+      throw new Error(`${extra.id} requires the ${envName} environment variable (${header} header)`)
+    }
+    // The settings seam materializes the profile through Fetch, which rejects
+    // names and values a header cannot carry; refuse them by name here.
+    try {
+      new Headers([[header, value]])
+    } catch {
+      throw new Error(`${extra.id} cannot carry the ${envName} value as the ${header} header: it is not a valid Fetch header value`)
+    }
+    headers[header] = value
+  }
+  return headers
+}
+
+/** Read a stored profile header map, keeping only the string values a header can carry. */
+function staticHeaders(value: unknown): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (value === null || typeof value !== 'object') return headers
+  for (const [header, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') headers[header] = entry
+  }
+  return headers
+}
+
+/** Stored header key matching a declared name; Fetch field names are case-insensitive. */
+function storedHeaderKey(stored: Record<string, string>, header: string): string | undefined {
+  const wanted = header.toLowerCase()
+  for (const key of Object.keys(stored)) {
+    if (key.toLowerCase() === wanted) return key
+  }
+  return undefined
+}
+
+/** Resolve the declared header values the environment currently supplies. */
+function environmentHeaders(extra: ExtraProvider | undefined): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (extra?.headerEnv === undefined) return headers
+  for (const [header, envName] of Object.entries(extra.headerEnv)) {
+    const value = process.env[envName]?.trim()
+    if (value !== undefined && value.length > 0) headers[header] = value
+  }
+  return headers
+}
+
+/** Declared headers the stored map does not carry yet; a stored value always wins. */
+function missingHeaders(declared: Record<string, string> | undefined, stored: Record<string, string>): Record<string, string> {
+  const missing: Record<string, string> = {}
+  if (declared === undefined) return missing
+  for (const [header, value] of Object.entries(declared)) {
+    // A stored variant in any case counts as the same Fetch field, so no
+    // second case variant is ever added.
+    if (storedHeaderKey(stored, header) === undefined) missing[header] = value
+  }
+  return missing
+}
+
 /** Public, secret-free key row. */
 function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null): KeyView {
   return {
@@ -1103,6 +1184,22 @@ export class KeysManagerService {
     const warnings = this.warnings
     this.warnings = []
     return warnings
+  }
+
+  /**
+   * Report declared headers whose stored value no longer matches what the
+   * environment supplies. The stored value is never replaced — the user may
+   * have set it deliberately — but the divergence must be visible, because
+   * otherwise the route keeps sending the stale value forever.
+   */
+  private warnHeaderDrift(extra: ExtraProvider, declared: Record<string, string> | undefined, stored: Record<string, string>): void {
+    if (declared === undefined) return
+    for (const [header, value] of Object.entries(declared)) {
+      const storedKey = storedHeaderKey(stored, header)
+      if (storedKey === undefined || stored[storedKey] === value) continue
+      const envName = extra.headerEnv?.[header] ?? header
+      this.pushWarning(`The stored ${storedKey} header on the ${extra.id} route differs from the value ${envName} now supplies; the stored value was kept.`)
+    }
   }
 
   /** Current settings service, if the composition mounted one. */
@@ -3165,8 +3262,15 @@ export class KeysManagerService {
     })
   }
 
-  /** Discover models for a new extra provider, falling back to the seed catalog. */
+  /**
+   * Discover models for a new extra provider, falling back to the seed catalog.
+   * A route that declares a static header installs the seed catalog directly:
+   * the discovery request has no header slot, so probing such an endpoint can
+   * only fail (and would hold the serialized mutation queue for the probe's
+   * whole timeout).
+   */
   private async discoverModels(extra: ExtraProvider, value: string): Promise<{ models: ModelRecord[]; failure?: string }> {
+    if (extra.headerEnv !== undefined) return { models: normalizeModels(extra.models) }
     let discovered: DiscoveredModel[] = []
     let failure: string | undefined
     try {
@@ -3198,9 +3302,18 @@ export class KeysManagerService {
       const input = validateKeyInput(alias, value)
       const extra = EXTRA_PROVIDER_MAP.get(extraId)
       if (extra === undefined) throw new Error(`Unknown extra provider "${extraId}"`)
-      if (this.store.provider(extraId) !== undefined) {
+      // Resolved before the first credential/settings write on every add path,
+      // so a missing variable refuses the add without leaving a key or a
+      // partial profile.
+      const headers = resolveHeaderEnv(extra)
+      const managed = this.store.provider(extraId)
+      if (managed !== undefined) {
         this.pushWarning('Provider is already managed; the key was added instead.')
-        await this.addKeyLocked(extraId, input.alias, input.value)
+        // The shared managed-key path repairs the declared headers, so every
+        // add-key flow restores them and the repair keeps one implementation.
+        // Hand it the value resolved above: the entry refusal stays the single
+        // decision for this surface, and the environment is read once per add.
+        await this.addKeyLocked(extraId, input.alias, input.value, headers)
         this.store.touch()
         return this.buildState()
       }
@@ -3230,8 +3343,17 @@ export class KeysManagerService {
           keys: [],
         }
         const key = await this.createKeyRecord(extraId, input.alias, input.value)
+        const ops: SettingsPathOp[] = [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }]
+        // Fill the declared headers the stored profile does not carry; a value
+        // the profile already sets for the same header is never overwritten.
+        const storedHeaders = staticHeaders(existing.headers)
+        this.warnHeaderDrift(extra, headers, storedHeaders)
+        const missing = missingHeaders(headers, storedHeaders)
+        if (Object.keys(missing).length > 0) {
+          ops.push({ op: 'set', path: ['providers', extraId, 'headers'], value: { ...storedHeaders, ...missing } })
+        }
         try {
-          await this.mutateSettings('llm-pi-ai', [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }])
+          await this.mutateSettings('llm-pi-ai', ops)
         } catch (error) {
           try {
             await this.unsetOriginal(key.ref)
@@ -3256,6 +3378,7 @@ export class KeysManagerService {
         api: extra.api,
         baseURL: extra.baseURL,
         apiKeyEnv: brokerRef,
+        ...(headers === undefined ? {} : { headers }),
         models,
       }
       const key = await this.createKeyRecord(extraId, input.alias, input.value)
@@ -3295,8 +3418,68 @@ export class KeysManagerService {
     })
   }
 
+  /**
+   * Restore a managed extra route's declared static headers.
+   *
+   * A managed profile can lose its declared headers through a Models edit;
+   * every managed add-key flow repairs them instead of leaving a route whose
+   * required header is silently absent. Only a live profile with a healthy
+   * binding is ours to repair: a deleted profile would gain a header-only
+   * half-profile, and a replaced one is the state release refuses to touch. A
+   * stored value for the same header always wins. The caller may pass the
+   * headers it already resolved at its own entry (where a missing variable can
+   * still refuse the add before any write); otherwise this method resolves
+   * them. Either way a failure only warns, because the key has already been
+   * added: a route whose headers cannot be resolved, and a settings write that
+   * cannot be performed, both leave the repair pending for the next add so a
+   * half-applied add is never turned into a rejected one.
+   */
+  private async repairDeclaredHeaders(record: ProviderRecord, declared?: Record<string, string>): Promise<void> {
+    const extra = record.extraId === null ? undefined : EXTRA_PROVIDER_MAP.get(record.extraId)
+    if (extra?.headerEnv === undefined) return
+    let headers = declared
+    if (headers === undefined) {
+      try {
+        headers = resolveHeaderEnv(extra)
+      } catch (error) {
+        this.pushWarning(
+          `Did not restore the declared headers on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        return
+      }
+    }
+    if (headers === undefined) return
+    const liveProfile = this.profileAt(record.settingsNs, record.settingsPath)
+    if (liveProfile === undefined || this.bindingState(record) === 'mismatch') {
+      this.pushWarning(
+        `Did not restore the ${Object.keys(headers).join(', ')} header on the ${extra.id} route: ${
+          liveProfile === undefined ? 'its Models profile no longer exists' : 'its Models profile was replaced'
+        }.`,
+      )
+      return
+    }
+    const stored = staticHeaders(liveProfile.headers)
+    this.warnHeaderDrift(extra, headers, stored)
+    const missing = missingHeaders(headers, stored)
+    if (Object.keys(missing).length === 0) return
+    try {
+      await this.mutateSettings(record.settingsNs, [
+        { op: 'set', path: [...record.settingsPath, 'headers'], value: { ...stored, ...missing } },
+      ])
+    } catch (error) {
+      // The key and its credential are already written; a failing settings
+      // write must not reject the add. The repair stays pending, so the next
+      // add-key flow retries it.
+      this.pushWarning(
+        `Did not restore the ${Object.keys(missing).join(', ')} header on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return
+    }
+    this.pushWarning(`Restored the missing ${Object.keys(missing).join(', ')} header on the managed profile.`)
+  }
+
   /** Add one key; caller already owns the mutation queue. */
-  private async addKeyLocked(provider: string, alias: string, value: string): Promise<void> {
+  private async addKeyLocked(provider: string, alias: string, value: string, declaredHeaders?: Record<string, string>): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
     // MF1: the key-pool restriction lives on the key entry path. A route
@@ -3312,6 +3495,9 @@ export class KeysManagerService {
     if (record.keys.length >= KEY_LIMIT) throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
     const key = await this.createKeyRecord(provider, input.alias, input.value)
     record.keys.push(key)
+    // After the key add: a refused key (capability or capacity) must leave the
+    // settings document untouched, so the repair never runs ahead of it.
+    await this.repairDeclaredHeaders(record, declaredHeaders)
   }
 
   /** Remote: add one key to a managed provider. */
@@ -3367,7 +3553,7 @@ export class KeysManagerService {
     })
   }
 
-  /** Read one live profile for release-time cleanup decisions. */
+  /** Read one live profile for repair and release-time cleanup decisions. */
   private profileAt(ns: string, path: readonly string[]): ProfileShape | undefined {
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, ns)
@@ -3449,14 +3635,46 @@ export class KeysManagerService {
         await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
         profileMutated = true
       } else {
-        // Native and pre-existing extra routes own only apiKeyEnv. Leave every
-        // other profile field (baseURL, models, hand edits) exactly as it is.
+        // Native and pre-existing extra routes own only the values this plugin
+        // wrote: apiKeyEnv, plus the declared static headers it injected into
+        // an adopted profile. Leave every other profile field (baseURL,
+        // models, hand edits) exactly as it is.
         const path = [...record.settingsPath, 'apiKeyEnv']
-        await this.mutateSettings(record.settingsNs, [
+        const ops: SettingsPathOp[] = [
           record.originalApiKeyEnv !== null
             ? { op: 'set', path, value: record.originalApiKeyEnv }
             : { op: 'unset', path },
-        ])
+        ]
+        // An injected header is identified by the environment value the add
+        // wrote into it, so no extra record field has to remember the write.
+        // Anything else stays, and release says so instead of guessing.
+        const storedHeaders = staticHeaders(liveProfile?.headers)
+        const extra = record.extraId === null ? undefined : EXTRA_PROVIDER_MAP.get(record.extraId)
+        const envHeaders = environmentHeaders(extra)
+        const injected: string[] = []
+        for (const [header, envName] of Object.entries(extra?.headerEnv ?? {})) {
+          // Fetch field names are case-insensitive: attribute the stored
+          // variant whatever its case, and unset that same stored key.
+          const storedKey = storedHeaderKey(storedHeaders, header)
+          if (storedKey === undefined) continue
+          const envValue = envHeaders[header]
+          if (envValue === undefined) {
+            this.pushWarning(`Release left the ${storedKey} header in the ${provider} profile: ${envName} is no longer set, so an injected value cannot be identified.`)
+          } else if (storedHeaders[storedKey] === envValue) {
+            injected.push(storedKey)
+          } else {
+            this.pushWarning(`Release left the ${storedKey} header in the ${provider} profile: it is not the value ${envName} currently supplies.`)
+          }
+        }
+        if (injected.length > 0) {
+          const remaining = Object.keys(storedHeaders).filter(header => !injected.includes(header))
+          if (remaining.length === 0) {
+            ops.push({ op: 'unset', path: [...record.settingsPath, 'headers'] })
+          } else {
+            for (const header of injected) ops.push({ op: 'unset', path: [...record.settingsPath, 'headers', header] })
+          }
+        }
+        await this.mutateSettings(record.settingsNs, ops)
         profileMutated = true
         // Remove an auto-created profile only when it is still empty after
         // clearing apiKeyEnv; a profile with later user edits stays.
