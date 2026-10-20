@@ -4,7 +4,7 @@
 
 Keys Manager 插件当前的设计边界：
 
-- CoreWeave Serverless Inference 在添加时从 DSH 进程环境读取 `COREWEAVE_PROJECT`（即 `<team>/<project>`），并作为静态 `OpenAI-Project` 头写进路由档案，因此请求始终发送添加时设定的项目；更改项目需要以新值重启 DSH 并重新添加该提供商。
+- CoreWeave Serverless Inference 在添加时从 DSH 进程环境读取 `COREWEAVE_PROJECT`（即 `<team>/<project>`），并作为静态 `OpenAI-Project` 头写进路由档案，因此请求始终发送添加时设定的项目。要更改项目，请先在 Keys Manager 中释放（停止接管）该提供商，让路由档案被移除并在下次添加时重新创建，再以新值重启 DSH 并再次添加该提供商；在 Models 页面手动编辑过的 `headers` 区块不会被覆盖，需先删除。
 - OAuth2 账号池已作为增量 1 落地，覆盖七家 pi-ai 支持的提供商；详见下方"OAuth 账户"限制。Anthropic key 池仍管理普通的 `ANTHROPIC_API_KEY`——其 OAuth/联邦令牌路径是独立的账户行，不属于 key 池成员。
 - Cloudflare AI Gateway 与 Workers AI 除 API key 外还需要 Cloudflare 账号 ID（AI Gateway 还需网关 ID）。它们被上报为不支持的 key 池，应在 Models 中原生配置。
 - 提供商原生云凭据链（例如 Bedrock 路由使用的 AWS profile）不会拆分成单 key 行；这些提供商除非还提供 API key 变量，否则会显示说明性原因。

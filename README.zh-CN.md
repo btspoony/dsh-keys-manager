@@ -22,9 +22,9 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ### 额外提供商
 
-`src/providers.ts` 收录 35 个精选提供商（原有 21 个、上一版本新增 13 个，以及本次新增的 CoreWeave Serverless Inference——例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud、Alibaba Token Plan (CN)），目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
+`src/providers.ts` 收录 35 个精选提供商（原有 21 个、上一版本新增 13 个，以及本次新增的 CoreWeave Serverless Inference）；例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud、Alibaba Token Plan (CN)。目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
 
-CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中：该值在添加时读取一次，并作为静态 `OpenAI-Project` 请求头写进路由档案。缺少该变量会拒绝添加；更改项目需要以新值重启 DSH 并重新添加该提供商。
+CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中：该值在添加时读取一次，并作为静态 `OpenAI-Project` 请求头写进路由档案。缺少该变量会拒绝添加。要更改项目值，请先在 Keys Manager 中**释放（停止接管）该提供商**，让路由档案被移除并在下次添加时重新创建，再以新的 `COREWEAVE_PROJECT` 值重启 DSH，然后再次添加该提供商。如果你在 Models 页面手动编辑过路由档案的 `headers` 区块，请先删除该区块——插件不会覆盖已有的 header 区块。
 
 ## 快速开始
 
