@@ -3436,10 +3436,22 @@ export class KeysManagerService {
     // the new projection, and leaving the old stamp would let a later
     // harvest clear a window the new projection earned.
     const generation = this.ownershipGenerations.get(providerId) ?? 0
+    // D1/D2 pool arbitration: when the OAuth grant itself failed (the pinned
+    // pi-ai `ModelsError("oauth", …)` code), the account cools down AND the
+    // cascade demotes to the key pool by deleting the projection record.
+    const oauthDemotion = key.kind === 'oauth' && classifyOAuthFailure(failure) === 'oauth'
     if (key.cooldownUntil > now && now - key.lastFailureAt < 10_000) {
       // Dedupe skips only the cooldown EXTENSION; the attribution stamp
       // always follows the live projection.
       this.cooldownGenerations.set(key.id, generation)
+      // R14-M1: the demotion is not part of the extension this dedupe
+      // suppresses. The first attempt may have thrown on its delete (or a
+      // native write re-projected the grant inside the window), leaving the
+      // route on a grant whose row already cooled while C1's await pointed
+      // at that settled attempt. Re-running the idempotent demotion repairs
+      // exactly that; skipping it made C1's awaited demotion pointless for
+      // every deduped failure.
+      if (oauthDemotion) this.demoteProjection(providerId, key.id)
       return
     }
     const result = applyFailureCooldown(key, this.store.settings, now, failure)
@@ -3447,10 +3459,7 @@ export class KeysManagerService {
     // read at failure time — never derived later from a cooldown timestamp —
     // so a harvest can clear only a window an older projection earned.
     this.cooldownGenerations.set(key.id, generation)
-    // D1/D2 pool arbitration: when the OAuth grant itself failed (the pinned
-    // pi-ai `ModelsError("oauth", …)` code), the account cools down AND the
-    // cascade demotes to the key pool by deleting the projection record.
-    if (key.kind === 'oauth' && classifyOAuthFailure(failure) === 'oauth') {
+    if (oauthDemotion) {
       this.warn(`oauth account ${key.id} on ${providerId} failed (${failure.code}); demoting to the key pool for ${Math.round(result.cooldownMs / 1000)}s`)
       // Persist the applied cooldown on this path too: the deferred
       // fallbackToKeys touch never runs when its deleteRecord throws, and
@@ -3463,17 +3472,29 @@ export class KeysManagerService {
       // failure belongs to the account that served the request, not to
       // whichever account is active when the queue drains — a "Set active"
       // landing in between must keep its healthy projection.
-      const demotion = this.fallbackToKeys(providerId, key.id).catch(error => {
-        this.warn(`key-pool fallback failed for ${providerId}: ${error instanceof Error ? error.message : String(error)}`)
-      })
-      this.projectionDemotions.set(providerId, demotion)
-      void demotion.then(() => {
-        if (this.projectionDemotions.get(providerId) === demotion) this.projectionDemotions.delete(providerId)
-      })
+      this.demoteProjection(providerId, key.id)
       return
     }
     this.warn(`key ${key.id} on ${providerId} cooled for ${Math.round(result.cooldownMs / 1000)}s`)
     this.store.touch()
+  }
+
+  /**
+   * Queue one projection demotion for a failed account and publish its
+   * promise so the request-error handler can wait for the projection to be
+   * gone (round-5 finding C1). `keyId` is the failing row (R7-MF), so the
+   * queued body deletes only a projection that still belongs to it. R14-M1:
+   * both the cooldown-extension branch and the dedupe branch start the
+   * demotion; it is idempotent when the projection is already gone.
+   */
+  private demoteProjection(providerId: string, keyId: string): void {
+    const demotion = this.fallbackToKeys(providerId, keyId).catch(error => {
+      this.warn(`key-pool fallback failed for ${providerId}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    this.projectionDemotions.set(providerId, demotion)
+    void demotion.then(() => {
+      if (this.projectionDemotions.get(providerId) === demotion) this.projectionDemotions.delete(providerId)
+    })
   }
 
   /**

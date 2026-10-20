@@ -4260,6 +4260,50 @@ test('a deduped failure still stamps the new projection generation (R7-SF1)', as
   }
 })
 
+// Round-14 review (R14-M1): the 10s dedupe returned BEFORE the OAuth
+// demotion branch, so a duplicate oauth failure neither extended the window
+// nor re-ran the demotion. When the first demotion's delete threw, the
+// projection stayed live while C1's await was attached to that already
+// settled attempt; the duplicate must retry the idempotent demotion.
+
+test('a deduped oauth failure still demotes the projection (R14-M1)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const internals = h.service as unknown as {
+      markFailure: (p: string, k: string, f: unknown) => void
+      settleProjectionDemotion: (p: string) => Promise<void>
+    }
+    const failure = { code: 'oauth', message: 'OAuth refresh failed for anthropic' }
+    // First failure: the cooldown lands and the demotion runs, but its
+    // projection delete throws, so the grant keeps serving.
+    h.credentials.raw.failDeleteRecord = true
+    internals.markFailure('anthropic', rowId, failure)
+    assert.ok(row.cooldownUntil > Date.now())
+    const window = row.cooldownUntil
+    await internals.settleProjectionDemotion('anthropic')
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    assert.equal(row.valueMissing, false)
+
+    // A duplicate failure inside the dedupe window would previously return
+    // before the demotion branch.
+    h.credentials.raw.failDeleteRecord = false
+    internals.markFailure('anthropic', rowId, failure)
+    // The dedupe still suppresses the cooldown extension...
+    assert.equal(row.cooldownUntil, window)
+    // ...but the demotion is not part of that extension: it re-runs and
+    // removes the projection the failed attempt left behind.
+    await internals.settleProjectionDemotion('anthropic')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(row.valueMissing, true)
+    assert.equal(row.cooldownUntil, window)
+  } finally {
+    h.credentials.raw.failDeleteRecord = false
+    await h.close()
+  }
+})
+
 test('activating a cooling account clears its stale cooldown (M1)', async () => {
   // Round-5 finding M1: re-authentication clears the stale cooldown, but the
   // manual "Set active" recovery did not, so the re-projected grant kept
