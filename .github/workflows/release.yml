@@ -157,8 +157,6 @@ jobs:
           fi
 
       - name: Publish dsh-llm-omp-transports to npm
-        env:
-          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
           # The transport package versions independently of dsh-keys-manager:
@@ -173,9 +171,11 @@ jobs:
           fi
           # npm publish runs the package's own prepack (pnpm run build), which
           # needs the workspace devDependencies installed by the step above.
+          # The "./" prefix is required: a bare path is read as a GitHub
+          # shorthand (owner/repo), not a folder.
           # shortcut: formal versions only publish on the default latest tag; a
           # transport prerelease needs the root step's dist-tag rule.
-          npm publish "$PKG_DIR" --provenance --access public
+          npm publish "./${PKG_DIR}" --provenance --access public
 
       - name: Publish to npm
         if: steps.npm-version.outputs.exists != 'true'
