@@ -149,7 +149,7 @@ export class OmpCursorAdapter extends LlmAdapter {
 function rowFor(model: string): CursorModelRow {
   const row = MODELS_BY_ID.get(model)
   if (row === undefined) {
-    throw new LlmError(`llm-omp: the cursor route has no model "${model}"`, UNKNOWN_MODEL)
+    throw new LlmError(`llm-omp-transports: the cursor route has no model "${model}"`, UNKNOWN_MODEL)
   }
   return row
 }
@@ -157,7 +157,7 @@ function rowFor(model: string): CursorModelRow {
 /** Refuse routes this adapter does not own instead of describing another provider's models. */
 function assertRoute(provider: string): void {
   if (provider !== CURSOR_ROUTE) {
-    throw new LlmError(`llm-omp: the cursor adapter does not serve provider "${provider}"`, UNKNOWN_PROVIDER)
+    throw new LlmError(`llm-omp-transports: the cursor adapter does not serve provider "${provider}"`, UNKNOWN_PROVIDER)
   }
 }
 

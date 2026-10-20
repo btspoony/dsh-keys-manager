@@ -18,7 +18,11 @@
  * exec channel, so the transport runs in external-executor mode: an unhandled
  * MCP call is emitted as an unresolved tool call and answered with a handoff,
  * then DSH's loop runs the tool and the next request replays the result from
- * `toolHistory`/`tool` messages. The adapter never executes a tool itself.
+ * `toolHistory`/`tool` messages. The adapter never executes a tool itself, and
+ * it never hands off a call the transport already answered: a native exec frame
+ * (read/shell/write/delete/grep/ls/diagnostics/todo, ...) is synthesized as a
+ * tool call the transport has settled, so it is filtered out of the stream —
+ * otherwise DSH would run it a second time or fail it as an unknown tool.
  *
  * Scope: this plan's Task 1 carries text, reasoning, tool calls and tool
  * results. Images and files are refused with a typed `LlmError` instead of
@@ -249,7 +253,7 @@ function resolveWireModelId(row: CursorModelRow, effort: string | undefined): st
   if (routing !== undefined && Object.hasOwn(routing, effort)) return routing[effort]
   if (row.thinking?.efforts.includes(effort) === true) return undefined
   throw new LlmError(
-    `llm-omp: cursor model "${row.id}" does not advertise reasoning effort "${effort}"`,
+    `llm-omp-transports: cursor model "${row.id}" does not advertise reasoning effort "${effort}"`,
     UNSUPPORTED_REASONING_EFFORT,
   )
 }
@@ -265,7 +269,7 @@ function resolveWireModelId(row: CursorModelRow, effort: string | undefined): st
  */
 function misplacedSystem(): LlmError {
   return new LlmError(
-    'llm-omp: a system message after a non-system message cannot be projected; the cursor transport carries system text only ahead of the conversation',
+    'llm-omp-transports: a system message after a non-system message cannot be projected; the cursor transport carries system text only ahead of the conversation',
     CONTENT_UNSUPPORTED,
   )
 }
@@ -371,12 +375,12 @@ function toolArguments(block: ToolCallBlock): Readonly<Record<string, unknown>> 
 }
 
 function invalidToolArguments(detail: string): LlmError {
-  return new LlmError(`llm-omp: ${detail}`, TOOL_ARGUMENTS_INVALID)
+  return new LlmError(`llm-omp-transports: ${detail}`, TOOL_ARGUMENTS_INVALID)
 }
 
 function unsupportedContent(kind: string, role: string): LlmError {
   return new LlmError(
-    `llm-omp: the cursor route carries text, reasoning and tool calls only; ${role} message content block "${kind}" is not supported`,
+    `llm-omp-transports: the cursor route carries text, reasoning and tool calls only; ${role} message content block "${kind}" is not supported`,
     CONTENT_UNSUPPORTED,
   )
 }
@@ -425,12 +429,14 @@ export async function* projectEvents(
       case 'toolcall_start': {
         // Resolve the call now: DSH needs its id on every following delta, and a
         // start without a block would leave a block that can never be closed.
-        toolCallOf(event.contentIndex, event.partial)
+        const call = toolCallOf(event.contentIndex, event.partial)
+        if (isTransportResolved(call)) break
         yield { type: 'block-start', index: event.contentIndex, blockType: 'tool-call' }
         break
       }
       case 'toolcall_delta': {
         const call = toolCallOf(event.contentIndex, event.partial)
+        if (isTransportResolved(call)) break
         yield {
           type: 'tool-call-delta',
           index: event.contentIndex,
@@ -442,6 +448,7 @@ export async function* projectEvents(
       }
       case 'toolcall_end': {
         const call = event.toolCall ?? toolCallOf(event.contentIndex, event.partial)
+        if (isTransportResolved(call)) break
         yield {
           type: 'block-end',
           index: event.contentIndex,
@@ -466,11 +473,35 @@ export async function* projectEvents(
         return
       default: {
         const kind = (event as { type?: unknown }).type
-        throw new LlmError(`llm-omp: unrecognized cursor event "${String(kind)}"`, UNKNOWN_EVENT)
+        throw new LlmError(`llm-omp-transports: unrecognized cursor event "${String(kind)}"`, UNKNOWN_EVENT)
       }
     }
   }
-  throw new LlmError('llm-omp: cursor event stream ended without done/error', STREAM_CLOSED)
+  throw new LlmError('llm-omp-transports: cursor event stream ended without done/error', STREAM_CLOSED)
+}
+
+/**
+ * The mark the pinned transport leaves on a call it answered itself.
+ *
+ * `@oh-my-pi/pi-ai@18.12.3` tags every block it settles internally — the
+ * synthesized tool calls for Cursor's own exec frames (`read`, `shell`,
+ * `write`, `edit`, `delete`, `grep`, `ls`, `diagnostics`, plus `todo`,
+ * `web_fetch` and `connect_scm`) and its streamed edit display — with the
+ * private symbol `provider.block.cursorExecResolved` (`src/utils/block-symbols.ts`).
+ * It exports neither the symbol nor a name list, so the marker is matched by
+ * its description, which the transport never changes without changing what it
+ * means. An MCP call awaiting an external executor carries no marker: that one
+ * is the handoff. `tests/projection.test.ts` pins the marker and
+ * `tests/adapter-wire.test.ts` proves the bundled artifact still sets it.
+ */
+const CURSOR_EXEC_RESOLVED_MARKER = 'provider.block.cursorExecResolved'
+
+/** Whether the transport already answered this tool call, so DSH must not run it. */
+function isTransportResolved(block: OmpContentBlock | undefined): boolean {
+  return (
+    block !== undefined &&
+    Object.getOwnPropertySymbols(block).some(symbol => symbol.description === CURSOR_EXEC_RESOLVED_MARKER)
+  )
 }
 
 /**
@@ -485,7 +516,7 @@ function toolCallOf(contentIndex: number, partial: OmpAssistantMessage | undefin
   const block = partial?.content[contentIndex]
   if (block?.type !== 'toolCall' || typeof block.id !== 'string' || typeof block.name !== 'string') {
     throw new LlmError(
-      `llm-omp: cursor tool-call event at index ${contentIndex} carries no call block`,
+      `llm-omp-transports: cursor tool-call event at index ${contentIndex} carries no call block`,
       MALFORMED_TOOL_CALL,
     )
   }
@@ -497,7 +528,10 @@ function toolCallOf(contentIndex: number, partial: OmpAssistantMessage | undefin
  *
  * The transport leaves `stopReason` at its default `stop` for an external
  * handoff — the agent loop, not the provider, decides the turn ends on a tool
- * call — so the assembled content is what identifies a tool-call finish.
+ * call — so the assembled content is what identifies a tool-call finish. Calls
+ * the transport answered itself were never streamed to DSH, so they cannot be
+ * what makes the turn a tool-call turn; a turn whose only content is such calls
+ * still happened, so it finishes `stop` instead of the empty-response error.
  * @param message - the assembled assistant message.
  * @param reason - the terminal event's own reason.
  * @returns the mapped finish chunk.
@@ -507,16 +541,19 @@ function doneFinish(message: OmpAssistantMessage, reason: 'stop' | 'length' | 't
   if (reason === 'toolUse') return finishOf('tool-calls')
   if (reason === 'length') return finishOf('max-tokens')
   if (reason === 'stop') {
-    if (message.content.some(block => block.type === 'toolCall')) return finishOf('tool-calls')
-    if (message.content.length === 0) {
+    // Calls the transport answered itself were never streamed to DSH, so they
+    // do not make this a tool-call turn.
+    const visible = message.content.filter(block => block.type !== 'toolCall' || !isTransportResolved(block))
+    if (visible.some(block => block.type === 'toolCall')) return finishOf('tool-calls')
+    if (visible.length === 0 && message.content.length === 0) {
       return finishOf('error', {
-        message: `llm-omp: cursor model "${message.model}" completed the turn with no content`,
+        message: `llm-omp-transports: cursor model "${message.model}" completed the turn with no content`,
         code: EMPTY_RESPONSE_CODE,
       })
     }
     return finishOf('stop')
   }
-  throw new LlmError(`llm-omp: unrecognized cursor stop reason "${String(reason)}"`, UNKNOWN_FINISH)
+  throw new LlmError(`llm-omp-transports: unrecognized cursor stop reason "${String(reason)}"`, UNKNOWN_FINISH)
 }
 
 /**
@@ -545,7 +582,7 @@ function errorFinish(
  * transport; the adapter yields it instead of resolving a credential.
  */
 export function abortedFinish(): StreamChunk {
-  return finishOf('aborted', failureOf('llm-omp: request aborted before it was sent', ABORTED_CODE, undefined))
+  return finishOf('aborted', failureOf('llm-omp-transports: request aborted before it was sent', ABORTED_CODE, undefined))
 }
 
 /** Build one terminal finish chunk. */
@@ -553,7 +590,7 @@ function finishOf(kind: 'stop' | 'max-tokens' | 'tool-calls'): FinishChunk
 function finishOf(kind: 'error' | 'aborted', failure: LlmFailure): FinishChunk
 function finishOf(kind: 'stop' | 'max-tokens' | 'tool-calls' | 'error' | 'aborted', failure?: LlmFailure): FinishChunk {
   if (kind === 'error' || kind === 'aborted') {
-    if (failure === undefined) throw new Error('llm-omp: an error finish requires a failure')
+    if (failure === undefined) throw new Error('llm-omp-transports: an error finish requires a failure')
     return { type: 'finish', reason: { kind, failure } }
   }
   return { type: 'finish', reason: { kind } }

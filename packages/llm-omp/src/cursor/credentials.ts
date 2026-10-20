@@ -112,7 +112,7 @@ export function createCursorAccess(
     const grant = readCursorGrant(await credentials.readRecord(CURSOR_CREDENTIAL_KEY))
     if (grant === undefined) {
       throw new LlmError(
-        `llm-omp: no Cursor sign-in is stored at ${CURSOR_CREDENTIAL_KEY}; run the Cursor authorization flow`,
+        `llm-omp-transports: no Cursor sign-in is stored at ${CURSOR_CREDENTIAL_KEY}; run the Cursor authorization flow`,
         'MISSING_CREDENTIAL',
       )
     }
@@ -127,7 +127,7 @@ export function createCursorAccess(
         if (live.expires - now() > CURSOR_REFRESH_WINDOW_MS) return undefined
         if (live.refresh === undefined) {
           throw new LlmError(
-            `llm-omp: the Cursor grant stored at ${CURSOR_CREDENTIAL_KEY} has no refresh token; sign in again`,
+            `llm-omp-transports: the Cursor grant stored at ${CURSOR_CREDENTIAL_KEY} has no refresh token; sign in again`,
             'REAUTH_REQUIRED',
           )
         }
@@ -142,7 +142,7 @@ export function createCursorAccess(
     const resolved = readCursorGrant(stored)
     if (resolved === undefined) {
       throw new LlmError(
-        `llm-omp: the Cursor sign-in stored at ${CURSOR_CREDENTIAL_KEY} disappeared while it was refreshed; sign in again`,
+        `llm-omp-transports: the Cursor sign-in stored at ${CURSOR_CREDENTIAL_KEY} disappeared while it was refreshed; sign in again`,
         'MISSING_CREDENTIAL',
       )
     }
@@ -158,7 +158,7 @@ async function withCredentialErrors<T>(write: () => Promise<T>): Promise<T> {
     if (cause instanceof LlmError) throw cause
     if (cause instanceof CursorAuthError) {
       throw new LlmError(
-        `llm-omp: Cursor sign-in failed — ${cause.message}`,
+        `llm-omp-transports: Cursor sign-in failed — ${cause.message}`,
         cause.failure === 'reauth' ? 'REAUTH_REQUIRED' : 'AUTH_FAILED',
         { cause },
       )

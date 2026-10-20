@@ -185,8 +185,10 @@ async function main() {
 
   const piAiRoot = packageRootOf('@oh-my-pi/pi-ai')
   const piCatalogRoot = packageRootOf('@oh-my-pi/pi-catalog')
+  const piUtilsRoot = packageRootOf('@oh-my-pi/pi-utils')
   const piAiVersion = JSON.parse(readFileSync(join(piAiRoot, 'package.json'), 'utf8')).version
   const piCatalogVersion = JSON.parse(readFileSync(join(piCatalogRoot, 'package.json'), 'utf8')).version
+  const piUtilsVersion = JSON.parse(readFileSync(join(piUtilsRoot, 'package.json'), 'utf8')).version
 
   const tracked = {
     '@oh-my-pi/pi-ai/src/providers/cursor.ts': join(piAiRoot, 'src/providers/cursor.ts'),
@@ -215,6 +217,9 @@ async function main() {
   const manifest = {
     ompVersion: piAiVersion,
     piCatalogVersion,
+    // The shim re-exports this package's real JSON algorithms, so its pin is a
+    // devDependency of its own rather than a transitive accident.
+    piUtilsVersion,
     esbuildVersion: esbuildVersion(),
     entry: relative(packageRoot, OUT).split('\\').join('/'),
     moduleCount: Object.keys(result.metafile.inputs).length,

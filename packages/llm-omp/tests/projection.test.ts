@@ -20,7 +20,7 @@ import type { GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-
 import { describe, expect, it } from 'vitest'
 
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
-import type { OmpAssistantMessage, OmpAssistantMessageEvent, OmpUsage } from '../src/omp.js'
+import type { OmpAssistantMessage, OmpAssistantMessageEvent, OmpToolCallBlock, OmpUsage } from '../src/omp.js'
 import {
   CONTENT_UNSUPPORTED,
   MALFORMED_TOOL_CALL,
@@ -638,6 +638,62 @@ describe('projectEvents', () => {
       { type: 'usage', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } },
       { type: 'finish', reason: { kind: 'tool-calls' } },
     ])
+  })
+
+  it('leaves a call the transport settled itself out of the DSH tool loop', async () => {
+    // Native exec frames (read/shell/write/... and the streamed edit display)
+    // are answered by the transport and only replayed for display. Handing one
+    // to DSH would run the tool again, or fail it as an unknown tool.
+    const resolved: OmpToolCallBlock = { type: 'toolCall', id: 'call-native', name: 'read', arguments: { path: 'a.ts' } }
+    Object.defineProperty(resolved, Symbol('provider.block.cursorExecResolved'), { value: true })
+    const partial: OmpAssistantMessage = {
+      role: 'assistant',
+      model: 'claude-4.5-sonnet',
+      content: [resolved],
+      usage: usage(),
+      stopReason: 'stop',
+    }
+    const withText: OmpAssistantMessage = {
+      ...partial,
+      content: [resolved, { type: 'text', text: 'read it' }],
+    }
+
+    const chunks = await collect([
+      { type: 'toolcall_start', contentIndex: 0, partial },
+      { type: 'toolcall_end', contentIndex: 0, toolCall: resolved },
+      { type: 'text_start', contentIndex: 1 },
+      { type: 'text_delta', contentIndex: 1, delta: 'read it' },
+      { type: 'text_end', contentIndex: 1, content: 'read it' },
+      { type: 'done', reason: 'stop', message: withText },
+    ])
+
+    expect(chunks.some(chunk => 'block' in chunk && chunk.block.type === 'tool-call')).toBe(false)
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+
+    // A turn whose whole content was such a call still happened: it is a stop,
+    // not the empty-response error.
+    const onlyNative = await collect([
+      { type: 'toolcall_start', contentIndex: 0, partial },
+      { type: 'toolcall_end', contentIndex: 0, toolCall: resolved },
+      { type: 'done', reason: 'stop', message: partial },
+    ])
+    expect(onlyNative.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+
+    // The marker, not the name, decides: an MCP call that happens to be named
+    // `read` (a DSH tool name) is still the handoff DSH must run.
+    const mcpCall: OmpToolCallBlock = { type: 'toolCall', id: 'call-mcp', name: 'read', arguments: { path: 'a.ts' } }
+    const mcpPartial: OmpAssistantMessage = { ...partial, content: [mcpCall] }
+    const handedOff = await collect([
+      { type: 'toolcall_start', contentIndex: 0, partial: mcpPartial },
+      { type: 'toolcall_end', contentIndex: 0, toolCall: mcpCall },
+      { type: 'done', reason: 'stop', message: mcpPartial },
+    ])
+    expect(handedOff).toContainEqual({
+      type: 'block-end',
+      index: 0,
+      block: { type: 'tool-call', id: ToolCallId('call-mcp'), name: 'read', arguments: '{"path":"a.ts"}' },
+    })
+    expect(handedOff.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
   })
 
   it('refuses a tool-call event that carries no call block', async () => {

@@ -1,6 +1,7 @@
 {
   "ompVersion": "18.12.3",
   "piCatalogVersion": "18.12.3",
+  "piUtilsVersion": "18.12.3",
   "esbuildVersion": "0.28.2",
   "entry": "lib/omp/cursor.mjs",
   "moduleCount": 133,

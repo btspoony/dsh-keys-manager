@@ -60,6 +60,7 @@
     "@deepseek-ai/schemastery": "~3.18.5",
     "@oh-my-pi/pi-ai": "18.12.3",
     "@oh-my-pi/pi-catalog": "18.12.3",
+    "@oh-my-pi/pi-utils": "18.12.3",
     "esbuild": "^0.28.2"
   }
 }

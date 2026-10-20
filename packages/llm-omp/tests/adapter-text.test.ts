@@ -141,7 +141,7 @@ describe('OmpCursorAdapter text streaming', () => {
     const { transport, calls } = scriptedTransport('cursor-text.jsonl')
     const adapter = new OmpCursorAdapter({
       access: async () => {
-        throw new LlmError('llm-omp: Cursor ended this session; sign in again', 'REAUTH_REQUIRED')
+        throw new LlmError('llm-omp-transports: Cursor ended this session; sign in again', 'REAUTH_REQUIRED')
       },
       transport,
     })
@@ -170,7 +170,7 @@ describe('OmpCursorAdapter text streaming', () => {
         type: 'finish',
         reason: {
           kind: 'aborted',
-          failure: { message: 'llm-omp: request aborted before it was sent', code: 'ABORTED' },
+          failure: { message: 'llm-omp-transports: request aborted before it was sent', code: 'ABORTED' },
         },
       },
     ])

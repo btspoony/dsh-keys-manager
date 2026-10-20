@@ -51,6 +51,9 @@ importers:
       '@oh-my-pi/pi-catalog':
         specifier: 18.12.3
         version: 18.12.3
+      '@oh-my-pi/pi-utils':
+        specifier: 18.12.3
+        version: 18.12.3
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2

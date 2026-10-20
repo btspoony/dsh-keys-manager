@@ -25,12 +25,14 @@ import {
   ExecServerMessageSchema,
   InteractionUpdateSchema,
   McpArgsSchema,
+  ReadArgsSchema,
   RequestContextArgsSchema,
   TextDeltaUpdateSchema,
   TurnEndedUpdateSchema,
 } from '@oh-my-pi/pi-catalog/discovery/cursor-proto'
 import type { AgentClientMessage, AgentServerMessage, McpResult } from '@oh-my-pi/pi-catalog/discovery/cursor-proto'
 import { create, encodeJsonValue, fromBinary, toBinary } from '@oh-my-pi/pi-catalog/discovery/protobuf'
+import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // The installed protobuf runtime imports only `isRecord` from pi-utils, but that
@@ -42,6 +44,7 @@ vi.mock('@oh-my-pi/pi-utils', () => ({
 
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
 import type { OmpAssistantMessageEvent, OmpCursorContext, OmpCursorModel, OmpCursorOptions } from '../src/omp.js'
+import { projectEvents } from '../src/projection.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -75,6 +78,8 @@ type WireLine =
     }
   | {
       kind: 'exec'
+      /** Which exec frame to send; `mcp` is Cursor's call for an advertised tool. */
+      frame?: 'mcp' | 'read'
       name: string
       toolName: string
       toolCallId: string
@@ -137,6 +142,21 @@ function frameFor(line: WireLine): Buffer {
       )
     }
     case 'exec': {
+      // A native read frame: the server asks the client to read a file, which
+      // this transport answers itself instead of handing it to DSH.
+      if (line.frame === 'read') {
+        const exec = create(ExecServerMessageSchema, {
+          id: 1,
+          execId: 'exec-frame-1',
+          message: {
+            case: 'readArgs',
+            value: create(ReadArgsSchema, { path: String(line.args.path ?? ''), toolCallId: line.toolCallId }),
+          },
+        })
+        return serverFrame(
+          create(AgentServerMessageSchema, { message: { case: 'execServerMessage', value: exec } }),
+        )
+      }
       const args = Object.fromEntries(
         Object.entries(line.args).map(([key, value]) => [key, encodeJsonValue(value)]),
       )
@@ -369,5 +389,39 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(success.content).toHaveLength(1)
     expect(success.content[0].content.case).toBe('text')
     expect(success.content[0].content.value?.text).toBe(HANDOFF_TEXT)
+  })
+
+  it('answers a native read frame itself and leaves no unresolved call for DSH', async () => {
+    const { events, wire } = await run(
+      'cursor-wire-native-read.jsonl',
+      { externalToolExecutor: true },
+      { tools: [{ name: 'lookup_doc', description: 'Look up a document', parameters: { type: 'object' } }] },
+    )
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({ type: 'toolCall', name: 'read', arguments: { path: 'README.md' } })
+    // The pinned transport tags a call it already settled; the projection keys
+    // the handoff on that mark, so an omp bump that drops it fails here.
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    // The exec reply is the transport's own (rejected) read result, not the MCP
+    // handoff the external executor would answer with.
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('readResult')
+
+    // Through the projection, DSH gets no tool call to run.
+    const chunks: StreamChunk[] = []
+    for await (const chunk of projectEvents(
+      (async function* () {
+        yield* events
+      })(),
+    )) {
+      chunks.push(chunk)
+    }
+    expect(chunks.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')).toBe(false)
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
   })
 })

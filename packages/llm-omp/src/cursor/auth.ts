@@ -42,6 +42,12 @@ export const CURSOR_AUTH = {
 
 /** How long one profile read may take before the login gives up on naming the account. */
 const PROFILE_TIMEOUT_MS = 3_000
+/**
+ * Deadline for one refresh exchange. The adapter refreshes under the
+ * credentials lock, so an unresponsive `api2.cursor.sh` must not hold that lock
+ * (and every other request on the route) indefinitely.
+ */
+const REFRESH_TIMEOUT_MS = 15_000
 /** Token expiry is read from the JWT with this skew, matching omp. */
 const TOKEN_SKEW_MS = 5 * 60 * 1000
 /** Expiry assumed for a token that is not a readable JWT. */
@@ -212,6 +218,8 @@ export async function pollCursorAuth(
 export interface CursorRefreshOptions {
   readonly fetch?: CursorFetch
   readonly signal?: AbortSignal
+  /** Deadline for the exchange itself; defaults to {@link REFRESH_TIMEOUT_MS}. */
+  readonly timeoutMs?: number
 }
 
 /**
@@ -221,23 +229,37 @@ export interface CursorRefreshOptions {
  * Cursor rarely rotates the refresh token, so the stored one is kept unless a
  * new one is returned. A `200` carrying `shouldLogout: true` is Cursor ending
  * the session: the grant is dead, not retryable, and the caller must sign in
- * again — that distinction is the `reauth` failure kind.
+ * again — that distinction is the `reauth` failure kind. The exchange is
+ * bounded by {@link REFRESH_TIMEOUT_MS}, because the caller runs it under the
+ * credentials lock; a deadline the caller did not set is a `refresh` failure.
  */
 export async function refreshCursorToken(
   refreshToken: string,
   options: CursorRefreshOptions = {},
 ): Promise<CursorGrant> {
   const fetchImpl = options.fetch ?? fetch
-  const response = await fetchImpl(CURSOR_AUTH.refreshUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      grant_type: 'refresh_token',
-      client_id: CURSOR_AUTH.clientId,
-      refresh_token: refreshToken,
-    }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-  })
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? REFRESH_TIMEOUT_MS)
+  const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
+  let response: Response
+  try {
+    response = await fetchImpl(CURSOR_AUTH.refreshUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        client_id: CURSOR_AUTH.clientId,
+        refresh_token: refreshToken,
+      }),
+      signal,
+    })
+  } catch (cause) {
+    // The caller's own abort keeps its cause; the deadline is this module's.
+    if (options.signal?.aborted === true) throw cause
+    if (timeout.aborted) {
+      throw new CursorAuthError('Cursor token refresh timed out; retry the request', 'refresh')
+    }
+    throw cause
+  }
 
   if (!response.ok) {
     throw new CursorAuthError(

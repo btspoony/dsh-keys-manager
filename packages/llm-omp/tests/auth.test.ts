@@ -230,7 +230,40 @@ describe('cursor token refresh', () => {
     const { fetch, calls } = stubFetch(() => json({ access_token: AUTH_TOKEN }))
 
     await refreshCursorToken('refresh-1', { fetch, signal: controller.signal })
-    expect(calls[0].init?.signal).toBe(controller.signal)
+    // The exchange runs under a composed signal (caller + deadline), so identity
+    // is not the contract; following the caller is.
+    expect(calls[0].init?.signal?.aborted).toBe(false)
+    controller.abort()
+    expect(calls[0].init?.signal?.aborted).toBe(true)
+  })
+
+  it('bounds an unanswered exchange as a retryable refresh failure', async () => {
+    // The adapter refreshes under the credentials lock, so an unresponsive
+    // api2.cursor.sh must not hold every request on the route.
+    const fetch: CursorFetch = (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      })
+
+    await expect(refreshCursorToken('refresh-1', { fetch, timeoutMs: 20 })).rejects.toMatchObject({
+      name: 'CursorAuthError',
+      failure: 'refresh',
+      message: expect.stringContaining('timed out'),
+    })
+  })
+
+  it('lets the caller abort a pending exchange instead of waiting for the deadline', async () => {
+    const controller = new AbortController()
+    const fetch: CursorFetch = (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      })
+
+    const pending = refreshCursorToken('refresh-1', { fetch, signal: controller.signal, timeoutMs: 10_000 })
+    controller.abort(new DOMException('withdrawn', 'AbortError'))
+    // The caller's own abort keeps its cause; only this module's deadline is
+    // reclassified as a refresh failure.
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
   })
 })
 
@@ -319,6 +352,42 @@ describe('cursor sign-in flow', () => {
       expires: 2_000_000_000_000 - 5 * 60 * 1000,
       accountId: 'acct-9',
     })
+  })
+
+  it('commits a grant that names neither an email nor an account', async () => {
+    // The seam validates a committed payload as a JSON value, so an absent
+    // identity field must be absent rather than `undefined` — otherwise a
+    // browser-completed sign-in fails at commit time.
+    const access = 'opaque-access-token'
+    const { fetch } = stubFetch(url => {
+      if (url.startsWith(CURSOR_AUTH.pollUrl)) return json({ accessToken: access, refreshToken: 'refresh-1' })
+      // The profile read fails, and a non-JWT token names no account.
+      return new Response('boom', { status: 500 })
+    })
+    const committed: { kind: string; payload: Record<string, unknown> }[] = []
+    const session = {
+      method: 'oauth',
+      signal: new AbortController().signal,
+      notify: () => {},
+      commit: async (record: { kind: 'grant'; payload: unknown }) => {
+        const payload = record.payload as Record<string, unknown>
+        for (const [field, value] of Object.entries(payload)) {
+          if (value === undefined) throw new Error(`the record validator rejects undefined (${field})`)
+        }
+        committed.push({ kind: record.kind, payload })
+      },
+    }
+
+    await cursorAuthorizationFlow({ fetch, sleep: noSleep }).run(session)
+
+    expect(committed).toHaveLength(1)
+    expect(committed[0]!.payload).toEqual({
+      access,
+      refresh: 'refresh-1',
+      expires: expect.any(Number),
+    })
+    expect(Object.keys(committed[0]!.payload)).not.toContain('email')
+    expect(Object.keys(committed[0]!.payload)).not.toContain('accountId')
   })
 
   it('stops when the caller withdraws during the profile read', async () => {
@@ -456,7 +525,10 @@ describe('cursor access resolver', () => {
     const controller = new AbortController()
 
     await createCursorAccess(store.credentials, { fetch, now: () => now })(controller.signal)
-    expect(calls[0].init?.signal).toBe(controller.signal)
+    // The refresh exchange runs under a composed (caller + deadline) signal.
+    expect(calls[0].init?.signal?.aborted).toBe(false)
+    controller.abort()
+    expect(calls[0].init?.signal?.aborted).toBe(true)
   })
 })
 

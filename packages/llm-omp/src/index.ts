@@ -140,8 +140,10 @@ export function cursorAuthorizationFlow(options: CursorFlowOptions = {}): Cursor
           access: grant.access,
           refresh: grant.refresh,
           expires: grant.expires,
-          email: grant.email,
-          accountId: grant.accountId,
+          // The seam validates the payload as a JSON value, so an absent
+          // identity field must be absent, not `undefined`.
+          ...(grant.email === undefined ? {} : { email: grant.email }),
+          ...(grant.accountId === undefined ? {} : { accountId: grant.accountId }),
         },
       })
     },
@@ -187,7 +189,7 @@ function bundledCursorTransport(): OmpCursorTransport {
         streamCursor = artifact.streamCursor
       } catch (cause) {
         throw new LlmError(
-          'llm-omp: the bundled Cursor transport is unavailable; run `pnpm build` in the transports package',
+          'llm-omp-transports: the bundled Cursor transport is unavailable; run `pnpm build` in the transports package',
           TRANSPORT_UNAVAILABLE,
           { cause },
         )

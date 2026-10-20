@@ -57,6 +57,7 @@ const MAX_BUNDLE_BYTES = 2_000_000
 interface OmpManifest {
   ompVersion: string
   piCatalogVersion: string
+  piUtilsVersion: string
   esbuildVersion: string
   entry: string
   moduleCount: number
@@ -220,6 +221,9 @@ describe('omp drift gate', () => {
   it('pins the installed omp packages', () => {
     expect(installedVersion('@oh-my-pi/pi-ai')).toBe(manifest.ompVersion)
     expect(installedVersion('@oh-my-pi/pi-catalog')).toBe(manifest.piCatalogVersion)
+    // The shim re-exports this package's JSON parser, and the build declares it
+    // directly: an install that resolves a different patch changes the manifest.
+    expect(installedVersion('@oh-my-pi/pi-utils')).toBe(manifest.piUtilsVersion)
   })
 
   it('records the esbuild that decides the artifact bytes', () => {
