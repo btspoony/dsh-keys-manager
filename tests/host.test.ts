@@ -3224,6 +3224,48 @@ test('a repeated login refreshes the existing account row instead of duplicating
   }
 })
 
+// Round-9 review (I-000110, must-fix): the harvest's row lookup still ran the
+// pre-fix array-order matcher — one `find` ORing grantRef, exact accountId and
+// the guarded email. With an earlier email-only row and a later row carrying
+// the same email plus an accountId, signing in the later account adopted the
+// earlier row: it was repointed at the new grant and its own (superseded)
+// record was then deleted, losing another account's credential. The harvest
+// must apply the same ordered ownership matcher as the rotation reconciler:
+// ref → exact accountId → guarded email.
+test('a login harvest adopts the exact-accountId row, not an earlier email-only row (I-000110)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const emailOnly = seedOAuthAccount(h, 'anthropic', { email: 'shared@example.com', refresh: 'rt-email-only' })
+    const exact = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-later', email: 'shared@example.com', refresh: 'rt-later-row' })
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-later-login', accountId: 'acc-later', email: 'shared@example.com' }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+
+    // The row the payload's accountId names owns the harvested grant.
+    assert.equal(h.service.getAccountAttempt(view.id)!.accountId, exact.rowId)
+    const rows = h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth')
+    const adopted = rows.find(key => key.id === exact.rowId)!
+    const untouched = rows.find(key => key.id === emailOnly.rowId)!
+    assert.equal(adopted.oauth!.accountId, 'acc-later')
+    assert.equal(adopted.oauth!.email, 'shared@example.com')
+    assert.notEqual(adopted.oauth!.grantRef, exact.grantRef)
+    // The earlier email-only row keeps its grant, its ref and its identity.
+    assert.equal(untouched.oauth!.grantRef, emailOnly.grantRef)
+    assert.equal(untouched.oauth!.accountId, undefined)
+    assert.equal(untouched.oauth!.email, 'shared@example.com')
+    // No other account's credential record was deleted as "superseded": the
+    // email-only row's record survives, and only the adopted row's previous
+    // generation was replaced.
+    assert.equal(h.credentials.records.has(emailOnly.grantRef), true)
+    assert.equal(h.credentials.records.has(exact.grantRef), false)
+    assert.equal(h.credentials.records.has(adopted.oauth!.grantRef), true)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a failed or cancelled login marks the attempt with a reason', async () => {
   const h = await harnessWithManagedAnthropic()
   try {

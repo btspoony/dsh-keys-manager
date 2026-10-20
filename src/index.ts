@@ -1300,11 +1300,16 @@ export class KeysManagerService {
         // cannot exist must not strand the persisted grant.
         const providerRecord = this.store.provider(attempt.provider)
         if (providerRecord === undefined) throw new Error(`Provider "${attempt.provider}" is no longer managed`)
-        const existing = providerRecord.keys.find(candidate =>
-          candidate.kind === 'oauth' && candidate.oauth !== null
-          && (candidate.oauth.grantRef === grantRef
-            || (payload.accountId !== undefined && candidate.oauth.accountId === payload.accountId)
-            || (payload.email !== undefined && candidate.oauth.email === payload.email && candidate.oauth.accountId === undefined)))
+        // Round-9 finding I-000110: reuse the ordered ownership matcher the
+        // rotation reconciler and hydration apply. The previous single `find`
+        // ORing grantRef / accountId / email evaluated the email fallback in
+        // ARRAY order, so an earlier email-only row adopted a later account's
+        // grant when both carried the same address; the harvest then deleted
+        // that earlier row's prior record as "superseded" — another account's
+        // credential. Ref first, then the exact accountId, then the guarded
+        // email fallback.
+        const oauthRows = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
+        const existing = matchOwningAccount(attempt.provider, oauthRows, payload)
           // Re-authentication target binding (round-3 finding 6): when the
           // payload matches nothing — a rotated token with no identity
           // metadata — the validated target row from beginAccountLogin
