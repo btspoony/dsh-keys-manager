@@ -940,6 +940,26 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
   const onCloseRef = React.useRef(onClose)
   onCloseRef.current = onClose
 
+  const prompt = attempt?.prompt
+  // Round-9 finding P2: a select is a closed choice, so its answer must start
+  // on one of the rendered options. The empty initial answer matched no
+  // option, which kept the submit button disabled unless the user touched the
+  // control — and a one-option prompt could never be answered at all. The
+  // signature changes only when the parked prompt does, so a fresh prompt
+  // (re)seeds the answer while polling refreshes of the same prompt keep the
+  // user's choice.
+  const promptKey = prompt === undefined
+    ? ''
+    : `${prompt.kind}\u0000${prompt.message}\u0000${(prompt.options ?? []).map(option => option.id).join('\u0000')}`
+  React.useEffect(() => {
+    const options = prompt !== undefined && prompt.kind === 'select' ? prompt.options : undefined
+    if (options !== undefined && options.length > 0) {
+      setAnswer(current => options.some(option => option.id === current) ? current : options[0]!.id)
+      return
+    }
+    setAnswer('')
+  }, [promptKey])
+
   React.useEffect(() => {
     let stopped = false
     let timer: ReturnType<typeof setInterval> | undefined
@@ -1035,7 +1055,6 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
 
   const lastNotice = attempt !== null && attempt.notices.length > 0 ? attempt.notices[attempt.notices.length - 1]! : null
   const safeUrl = attempt !== null ? attempt.notices.map(notice => safeNoticeUrl(notice.url)).reverse().find(url => url !== null) ?? null : null
-  const prompt = attempt?.prompt
   const answerable = prompt !== undefined && !answering && answer.trim().length > 0
 
   let body: React.ReactNode

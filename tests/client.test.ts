@@ -807,6 +807,11 @@ function makeReadyAttemptView(): AccountAttemptView {
   return { ...makeAttemptView(), status: 'ready', prompt: undefined, accountId: 'k_oauth9', updatedAt: 3 }
 }
 
+/** A parked select prompt: a closed choice the dialog must start on. */
+function makeSelectAttemptView(options: Array<{ id: string; label: string }>): AccountAttemptView {
+  return { ...makeAttemptView(), prompt: { kind: 'select', message: 'Choose the account to continue with', options } }
+}
+
 describe('account ui', () => {
   beforeAll(() => {
     // The node test environment has no DOM; modal effects only need the
@@ -1314,6 +1319,90 @@ describe('account ui', () => {
     // ready: snapshot refresh, then the dialog closes itself.
     expect(findByClass(view.nodes, 'km-modal')).toHaveLength(0)
     expect(getStateCalls).toBeGreaterThanOrEqual(2)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  // Round-9 finding P2: a select is a closed choice whose answer starts empty,
+  // and the empty string matched no rendered option — the submit button stayed
+  // disabled until the user touched the control, so a one-option prompt could
+  // not be answered at all. The dialog now seeds the answer from the first
+  // option whenever the parked prompt arrives or changes.
+
+  test('a select prompt starts on its first option so submit is enabled without a manual change (P2)', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const selectAttempt = makeSelectAttemptView([
+      { id: 'personal', label: 'Personal account' },
+      { id: 'work', label: 'Work account' },
+    ])
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: selectAttempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: selectAttempt }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form).toBeDefined()
+    const select = descendants(view.nodes, form!).find(node => node.type === 'select')
+    expect(select).toBeDefined()
+    // Seeded from the first option, matching a rendered option exactly.
+    expect(select!.props!.value).toBe('personal')
+    const submit = findButtons(view.nodes, 'loginPromptSubmit')[0]
+    expect(submit).toBeDefined()
+    expect(submit!.props!.disabled).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a one-option select prompt can be submitted and sends that option (P2)', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const selectAttempt = makeSelectAttemptView([{ id: 'only', label: 'Only account' }])
+    const answers: Array<{ args: { attemptId: string; value: string } }> = []
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: selectAttempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: selectAttempt }
+      if (endpoint === 'keysManager/answerAccountPrompt') {
+        answers.push(payload as { args: { attemptId: string; value: string } })
+        return { ok: true, value: null }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const addAccount = findButtons(view.nodes, 'addAccount')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    const submit = findButtons(view.nodes, 'loginPromptSubmit')[0]
+    expect(submit).toBeDefined()
+    expect(submit!.props!.disabled).toBe(false)
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form).toBeDefined()
+    ;(form!.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+    await view.flush()
+    // No manual selection: the first (and only) option is what gets sent.
+    expect(answers).toEqual([{ args: { attemptId: 'la_1_ab', value: 'only' } }])
     view.unmount()
     setRuntimeContext(null)
   })
