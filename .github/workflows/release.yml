@@ -162,20 +162,50 @@ jobs:
           # The transport package versions independently of dsh-keys-manager:
           # publish its own package.json version and skip when that exact
           # version is already on npm, so a release re-run (or a root release
-          # that does not bump the transport) stays idempotent.
+          # that does not bump the transport) stays idempotent. The skip is the
+          # same ownership test the root step applies: the published version
+          # must have come from the commit checked out here, so a version
+          # squatted by a foreign publisher is refused instead of tagged.
           PKG_DIR="packages/llm-omp"
           PKG_VERSION="$(node -p "require('./${PKG_DIR}/package.json').version")"
           if npm view "dsh-llm-omp-transports@${PKG_VERSION}" version >/dev/null 2>&1; then
-            echo "dsh-llm-omp-transports@${PKG_VERSION} is already published; skipping."
+            PUBLISHED_SHA="$(npm view "dsh-llm-omp-transports@${PKG_VERSION}" gitHead 2>/dev/null || true)"
+            LOCAL_SHA="$(git rev-parse HEAD)"
+            if [ -z "$PUBLISHED_SHA" ]; then
+              echo "::error::dsh-llm-omp-transports@${PKG_VERSION} is already published without a gitHead; refusing to tag a possibly different commit."
+              exit 1
+            fi
+            if [ "$PUBLISHED_SHA" != "$LOCAL_SHA" ]; then
+              echo "::error::dsh-llm-omp-transports@${PKG_VERSION} was published from ${PUBLISHED_SHA}, not ${LOCAL_SHA}."
+              exit 1
+            fi
+            echo "dsh-llm-omp-transports@${PKG_VERSION} is already published from this commit; skipping."
             exit 0
           fi
           # npm publish runs the package's own prepack (pnpm run build), which
           # needs the workspace devDependencies installed by the step above.
           # The "./" prefix is required: a bare path is read as a GitHub
           # shorthand (owner/repo), not a folder.
-          # shortcut: formal versions only publish on the default latest tag; a
-          # transport prerelease needs the root step's dist-tag rule.
-          npm publish "./${PKG_DIR}" --provenance --access public
+          #
+          # Prerelease dist-tag: the root step's rule — a version containing
+          # '-' publishes to the prerelease-prefix tag (text between the first
+          # '-' and the first '.' after it -> "alpha") instead of the default
+          # `latest`, so a transport prerelease cannot overwrite `latest` and
+          # consumers opting into the tag can install it. Formal X.Y.Z versions
+          # publish without --tag.
+          if [[ "${PKG_VERSION}" == *-* ]]; then
+            PRETAG="${PKG_VERSION#*-}"
+            PRETAG="${PRETAG%%.*}"
+            # Same guard as the root step: a hand-edited package.json version
+            # must not be able to move `latest`.
+            if [[ "$PRETAG" == "latest" || ! "$PRETAG" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "::error::Invalid prerelease dist-tag '${PRETAG}' for dsh-llm-omp-transports@${PKG_VERSION}."
+              exit 1
+            fi
+            npm publish "./${PKG_DIR}" --provenance --access public --tag "$PRETAG"
+          else
+            npm publish "./${PKG_DIR}" --provenance --access public
+          fi
 
       - name: Publish to npm
         if: steps.npm-version.outputs.exists != 'true'
