@@ -3479,6 +3479,45 @@ test('re-authenticating a demoted account clears the missing flag', async () => 
   }
 })
 
+test('re-authenticating a cooling account clears the stale cooldown (C3)', async () => {
+  // Round-5 finding C3: the re-auth recovery cleared valueMissing but left the
+  // old cooldown timer, so the freshly projected grant still reported cooling
+  // and stayed out of the healthy counts until that timer expired.
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // The demotion path cools the account AND removes the projection.
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'oauth', message: 'OAuth refresh failed for anthropic' })
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.ok(row.cooldownUntil > Date.now())
+    const escalation = { failureLevel: row.failureLevel, consecutiveFailures: row.consecutiveFailures }
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.find(key => key.id === rowId)!.status, 'missing')
+
+    // Re-authentication commits the same account's grant again.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    assert.equal(h.service.getAccountAttempt(view.id)!.accountId, rowId)
+
+    // The current window is over: no cooling state, included in the healthy
+    // counts. Escalation history survives, so a later failure still escalates
+    // per the grace window.
+    assert.equal(row.cooldownUntil, 0)
+    assert.equal(row.failureLevel, escalation.failureLevel)
+    assert.equal(row.consecutiveFailures, escalation.consecutiveFailures)
+    const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(provider.keys.find(key => key.id === rowId)!.status, 'active')
+    assert.equal(provider.healthyKeyCount, provider.keys.filter(key => key.status === 'active').length)
+    assert.ok(provider.keys.some(key => key.id === rowId && key.status === 'active'))
+  } finally {
+    await h.close()
+  }
+})
+
 test('a successful demotion stops naming the row it stopped serving', async () => {
   // Round-3 finding 4: after the manager's own demotion, no row may still
   // be named the live projection — oauthOwnerFor must resolve to null so

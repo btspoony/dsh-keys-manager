@@ -1127,6 +1127,14 @@ export class KeysManagerService {
           // live projection keeps rendering as missing and stays out of the
           // healthy counts. Same reset activateAccount applies.
           existing.valueMissing = false
+          // Round-5 finding C3: a demoted-and-cooling row kept its stale
+          // cooldown timer, so the freshly projected grant still rendered as
+          // cooling and stayed out of the healthy counts until that timer
+          // expired. The current window ends with the new grant; the
+          // escalation history (failureLevel/consecutiveFailures) is
+          // deliberately preserved, so a failure after this recovery still
+          // escalates per the grace window.
+          existing.cooldownUntil = 0
         } else {
           providerRecord.keys.push({
             id: newKeyId(),
