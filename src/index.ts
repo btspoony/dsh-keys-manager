@@ -927,6 +927,16 @@ export class KeysManagerService {
   /** The account row whose grant payload currently IS the projection, per provider. */
   private readonly activeAccounts = new Map<string, string>()
   /**
+   * Providers whose live projection EXISTS but no managed row owns it (PR
+   * review round 3). `activeAccounts` alone cannot tell "no projection" from
+   * "a projection this process does not manage": an orphan or foreign grant
+   * (hydration found no matching row) still serves ahead of any broker
+   * reference, so the route must not be treated as the key pool's. Set by
+   * hydration and by the reconciler when a record is present but unattributed,
+   * cleared when the record is deleted or becomes owned.
+   */
+  private readonly foreignProjections = new Set<string>()
+  /**
    * Account rows committed to removal (C6-1/I1 removal-aware oracle), marked
    * by {@link removeOAuthGrant} before its first awaited delete. A multi-row
    * release deletes every row's credential first and the provider record
@@ -1058,11 +1068,11 @@ export class KeysManagerService {
     this.typertRemote = Object.freeze({ service: this, serviceKey: SERVICE, namespace: NAMESPACE })
     this.rebuildBrokerMap()
     this.projectionHydration = this.hydrateProjectionOwnership()
-    // Startup self-heal: once ownership hydration has settled (a persisted
-    // projection decides whether the key pool serves), repair every managed
-    // provider whose persisted binding the serving credential no longer
-    // justifies — the state an older build left on an OAuth-only route.
-    void this.projectionHydration.then(() => this.repairBrokerBindings()).catch(error => {
+    // Startup self-heal: repair every managed provider whose persisted binding
+    // the serving credential no longer justifies. The pass waits per provider
+    // for its own ownership read (see {@link repairBrokerBindings}), so a
+    // wedged OAuth read cannot starve an api-key-only route.
+    void this.repairBrokerBindings().catch(error => {
       this.warn(`startup broker binding repair failed: ${error instanceof Error ? error.message : String(error)}`)
     })
     this.settledDisposer = this.watchAuthorizationSettled()
@@ -1121,6 +1131,12 @@ export class KeysManagerService {
             // in flight: never resurrect an owner entry for a row that is gone.
             if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
               this.activeAccounts.set(provider, owner.id)
+              this.foreignProjections.delete(provider)
+            } else {
+              // Present but unowned (PR review round 3): the projection still
+              // serves, so the pool is not the route's credential source and
+              // the startup repair must not bind it.
+              this.foreignProjections.add(provider)
             }
           } finally {
             // This provider's own read is over (owner or not): its requests are
@@ -1234,13 +1250,7 @@ export class KeysManagerService {
    * is confined to the requested provider's own unresolved read.
    */
   private async awaitProjectionOwnership(providerId: string): Promise<boolean> {
-    const provider = this.store.provider(providerId)
-    if (provider === undefined) return true
-    const hasOauthRows = provider.keys.some(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
-    if (!hasOauthRows) return true
-    // This provider's own read already landed (or a newer claim already owns
-    // it, or the whole read is over): nothing can arrive later, so no wait.
-    if (this.hydrationSettled || this.hydratedProviders.has(providerId) || this.activeAccounts.has(providerId)) return true
+    if (this.projectionOwnershipKnown(providerId)) return true
     const landed = await this.waitForProviderHydration(providerId, this.hydrationWaitMs)
     if (landed) return true
     if (!this.hydrationWaitWarned.has(providerId)) {
@@ -1248,6 +1258,21 @@ export class KeysManagerService {
       this.warn(`projection ownership hydration did not settle within ${this.hydrationWaitMs}ms for ${providerId}; requests proceed without an attributed account until it does`)
     }
     return false
+  }
+
+  /**
+   * Whether this provider's projection ownership can already be decided
+   * without waiting (round-10 SF1, made the single readiness rule by PR review
+   * round 3). A provider without OAuth rows can never own a projection and is
+   * ready at once; an OAuth provider is ready once its own read landed, a
+   * claim already owns it, or the whole read is over.
+   */
+  private projectionOwnershipKnown(providerId: string): boolean {
+    const provider = this.store.provider(providerId)
+    if (provider === undefined) return true
+    const hasOauthRows = provider.keys.some(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
+    if (!hasOauthRows) return true
+    return this.hydrationSettled || this.hydratedProviders.has(providerId) || this.activeAccounts.has(providerId)
   }
 
   /**
@@ -1276,6 +1301,7 @@ export class KeysManagerService {
    */
   private claimProjectionOwner(provider: string, accountId: string): void {
     this.activeAccounts.set(provider, accountId)
+    this.foreignProjections.delete(provider)
     this.noteProjectionCommitted(provider)
   }
 
@@ -1398,11 +1424,12 @@ export class KeysManagerService {
   attachSettings(settings: SettingsLike): void {
     this.settings = settings
     // The repair decides from projection ownership, which the constructor
-    // hydrates asynchronously: running it now would read a persisted
-    // projection from an empty owner map as key-pool-served and bind the
-    // route to the broker (PR review round 2). The constructor's own pass
-    // waits for the same promise.
-    void this.projectionHydration.then(() => this.repairBrokerBindings()).catch(error => {
+    // hydrates asynchronously: a persisted projection read from an empty owner
+    // map would make the route look key-pool-served and bind it to the broker
+    // (PR review round 2). The pass therefore waits per provider for its own
+    // read — never for the process-wide promise, which one wedged OAuth read
+    // can hold forever (PR review round 3).
+    void this.repairBrokerBindings().catch(error => {
       this.warn(`broker binding repair after the settings mount failed: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
@@ -2452,6 +2479,9 @@ export class KeysManagerService {
     const generation = this.ownershipGenerations.get(provider) ?? 0
     const record = await records.readRecord(key)
     if (record === undefined) {
+      // The projection is gone, so nothing foreign serves this route any more
+      // (PR review round 3).
+      this.foreignProjections.delete(provider)
       // This manager's own demotion marked the removal just before
       // deleting; while the marker is inside its TTL window the echo is
       // ours — consume the one-shot marker and stay silent. An expired
@@ -2476,11 +2506,14 @@ export class KeysManagerService {
         this.activeAccounts.delete(provider)
         this.store.touch()
         this.pushWarning(`The ${provider} OAuth grant was removed outside Keys Manager; the route now resolves through its API-key pool.`)
-        // The row is demoted and nothing projects the route, so the binding
-        // must name the key pool now — an unbound profile here read as a
-        // mismatch (Codex P1).
-        await this.rebindAfterRemoval(provider)
       }
+      // The row is demoted (or was never the owner) and nothing projects the
+      // route, so the binding must name the key pool now — an unbound profile
+      // here read as a mismatch. This runs for EVERY confirmed deletion, not
+      // only an owned one (PR review round 3): a native writer can replace the
+      // managed projection first and delete it later, leaving the pool to
+      // serve an unbound profile.
+      await this.rebindAfterRemoval(provider)
       return
     }
     // I-000125 marker hygiene: the removal branch above is the marker's ONLY
@@ -2494,6 +2527,9 @@ export class KeysManagerService {
       // Native api-key management took the route over: the manager no
       // longer owns any projection here.
       this.activeAccounts.delete(provider)
+      // A live record Keys Manager does not own still serves ahead of the
+      // broker reference, so the pool is not the route's source (round 3).
+      this.foreignProjections.add(provider)
       this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
       return
     }
@@ -2501,6 +2537,7 @@ export class KeysManagerService {
       // An unrecognized payload is not ours to interpret: drop the stale
       // owner entry so failure attribution and demotion never fire on it.
       this.activeAccounts.delete(provider)
+      this.foreignProjections.add(provider)
       this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
       return
     }
@@ -2513,8 +2550,10 @@ export class KeysManagerService {
     const owner = matchOwningAccount(provider, accounts, payload)
     if (owner === undefined) {
       // A foreign account's grant serves the route: no pool row owns the
-      // projection, so the previous owner entry must not survive it.
+      // projection, so the previous owner entry must not survive it — and the
+      // live record keeps the pool from claiming the route (round 3).
       this.activeAccounts.delete(provider)
+      this.foreignProjections.add(provider)
       this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
       return
     }
@@ -3009,9 +3048,12 @@ export class KeysManagerService {
     await this.awaitWindowMutations(window)
     const facts = window.facts
     if (facts !== undefined) {
-      const restored = await this.restoreProjection(facts.records, window.provider, window.row, facts.key, facts.previous, facts.borrowed)
+      const restored = await this.restoreProjection(facts.records, window.provider, window.row, facts.key, facts.previous, facts.borrowed, stillCurrent)
       if (restored !== undefined) return restored
     }
+    // PR review round 3: a superseded attempt may not persist a binding
+    // decision derived from a world a newer window now owns.
+    if (stillCurrent !== undefined && !stillCurrent()) return 'a newer cleanup attempt took over this provider'
     // QC B4: one sync at window end, after the owner map and the projection
     // are back, so the persisted binding matches the state the route actually
     // restored to.
@@ -3379,6 +3421,7 @@ export class KeysManagerService {
     key: string,
     previous: CredentialRecordLike | undefined,
     borrowed: OAuthGrantPayload,
+    stillCurrent?: () => boolean,
   ): Promise<string | undefined> {
     let live: CredentialRecordLike | undefined
     try {
@@ -3388,6 +3431,15 @@ export class KeysManagerService {
       this.pushWarning(message)
       return message
     }
+    // PR review round 3: a cleanup that outlived its deadline can be
+    // superseded by a newer window that borrowed the SAME account meanwhile,
+    // so the compare by payload below still matches a state this attempt no
+    // longer owns. `stillCurrent` is that attempt identity; only an abandoned
+    // attempt has one. Every write decision — the projection, the owner map
+    // and the binding sync — is gated on it.
+    const superseded = (): boolean => stillCurrent !== undefined && !stillCurrent()
+    const takeover = 'a newer cleanup attempt took over this provider'
+    if (superseded()) return takeover
     const liveGrant = live !== undefined && live.kind === 'grant' && isOAuthGrantPayload(live.payload)
       ? live.payload
       : undefined
@@ -3452,6 +3504,8 @@ export class KeysManagerService {
         // that writer's projection instead of being deleted as a leftover.
         let decidedAgainst: string | undefined = undefined
         await records.modifyRecord(key, async current => {
+          // A superseded attempt leaves the record exactly as it found it.
+          if (superseded()) return undefined
           if (current === undefined) return undefined
           const currentGrant = current.kind === 'grant' && isOAuthGrantPayload(current.payload)
             ? current.payload
@@ -3462,6 +3516,7 @@ export class KeysManagerService {
           if (testLeft) decidedAgainst = JSON.stringify(current.payload)
           return undefined
         })
+        if (superseded()) return takeover
         if (decidedAgainst === undefined || !await this.projectionStillMatches(records, key, decidedAgainst)) {
           const liveAfter = await records.readRecord(key)
           const liveAfterGrant = liveAfter !== undefined && liveAfter.kind === 'grant' && isOAuthGrantPayload(liveAfter.payload)
@@ -3477,6 +3532,8 @@ export class KeysManagerService {
           this.pushWarning(message)
           return message
         }
+        // The projection this test borrowed may already be a newer window's.
+        if (superseded()) return takeover
         await records.deleteRecord(key)
       } else {
         // QC N2: the compare travels with the write, so a foreign payload
@@ -3485,6 +3542,8 @@ export class KeysManagerService {
         // (the borrowed grant, or a rotation of the tested row) is replaced.
         const snapshot = structuredClone(previous)
         await records.modifyRecord(key, current => {
+          // A superseded attempt leaves the record exactly as it found it.
+          if (superseded()) return Promise.resolve(current)
           const currentGrant = current !== undefined && current.kind === 'grant' && isOAuthGrantPayload(current.payload)
             ? current.payload
             : undefined
@@ -3493,15 +3552,17 @@ export class KeysManagerService {
             || matchOwningAccount(provider, rows, currentGrant)?.id === row.id)
           return Promise.resolve(testLeft ? snapshot : current)
         })
+        if (superseded()) return takeover
       }
     } catch (error) {
       // The store still holds what the re-read saw: keep the owner map on
       // that payload rather than claiming the pre-test account (I2).
-      this.reconcileProjectionOwner(provider, liveGrant)
+      if (!superseded()) this.reconcileProjectionOwner(provider, liveGrant)
       const message = `The credential projection at ${key} could not be restored after the test: ${error instanceof Error ? error.message : String(error)}`
       this.pushWarning(message)
       return message
     }
+    if (superseded()) return takeover
     this.reconcileProjectionOwner(provider, previousGrant)
     return undefined
   }
@@ -3510,8 +3571,11 @@ export class KeysManagerService {
   private reconcileProjectionOwner(provider: string, payload: OAuthGrantPayload | undefined): void {
     const rows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
     const owner = payload === undefined ? undefined : matchOwningAccount(provider, rows, payload)
-    if (owner === undefined) this.activeAccounts.delete(provider)
-    else this.claimProjectionOwner(provider, owner.id)
+    if (owner === undefined) {
+      this.activeAccounts.delete(provider)
+      // A live payload no row owns is still a projection (round 3).
+      if (payload !== undefined) this.foreignProjections.add(provider)
+    } else this.claimProjectionOwner(provider, owner.id)
   }
 
   /**
@@ -3792,6 +3856,7 @@ export class KeysManagerService {
       // the missing pill and leaves "Set active" disabled — the documented
       // re-activation path unreachable until a restart or a new sign-in.
       this.activeAccounts.delete(provider)
+      this.foreignProjections.delete(provider)
       for (const row of providerRecord.keys) {
         if (row.kind === 'oauth') row.valueMissing = true
       }
@@ -3799,6 +3864,8 @@ export class KeysManagerService {
       // The projection is not ours anymore (native replacement): keep the
       // stale owner entry from routing attribution or demotion at this row.
       this.activeAccounts.delete(provider)
+      // …and the replacement still serves ahead of the pool (round 3).
+      this.foreignProjections.add(provider)
     }
     // The projection row is gone: a surviving key pool is the serving source
     // again, and a route with no API-key row stays unbound.
@@ -4238,6 +4305,10 @@ export class KeysManagerService {
    */
   private keyPoolServes(record: ProviderRecord): boolean {
     return this.oauthOwnerFor(record.provider) === null
+      // A projection no managed row owns still serves ahead of the broker
+      // reference: binding the pool here would take the foreign account out of
+      // service (PR review round 3).
+      && !this.foreignProjections.has(record.provider)
       && record.keys.some(key => key.kind === 'api-key' && key.valueMissing !== true)
   }
 
@@ -4375,7 +4446,20 @@ export class KeysManagerService {
    * instead of waiting for the next start.
    */
   private async repairBrokerBindings(): Promise<void> {
-    for (const provider of Object.keys(this.store.providers)) {
+    const providers = Object.keys(this.store.providers)
+    // A provider whose ownership is already known repairs first (PR review
+    // round 3): one wedged OAuth read must not delay a pure key-pool route,
+    // whose shape can never depend on a projection read.
+    for (const provider of providers) {
+      if (!this.projectionOwnershipKnown(provider)) continue
+      await this.syncBrokerBinding(provider, { write: false })
+    }
+    for (const provider of providers) {
+      if (this.projectionOwnershipKnown(provider)) continue
+      // An OAuth provider whose own read has not landed is never repaired
+      // from a guessed shape; the read is bounded, so a provider that never
+      // answers only skips itself.
+      if (!await this.awaitProjectionOwnership(provider)) continue
       await this.syncBrokerBinding(provider, { write: false })
     }
   }
@@ -4939,6 +5023,7 @@ export class KeysManagerService {
         this.store.touch()
       }
       this.activeAccounts.delete(record.provider)
+      this.foreignProjections.delete(record.provider)
       // Every projection row is gone and every key is marked missing. This is
       // also releaseLocked's binding step: its profile already carries the
       // captured original, so only a lingering broker reference of our own is
