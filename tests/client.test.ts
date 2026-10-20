@@ -988,6 +988,40 @@ describe('account ui', () => {
     setRuntimeContext(null)
   })
 
+  test('a managed flow-less route states the unsupported verdict instead of inviting a key (C6-2/M1)', async () => {
+    // M1: C6-2 makes a managed route with nativeAuth.oauth but no enumerable
+    // flow reachable. Neither capability exists there, so the empty body must
+    // not invite a key beside the disabled Add key — it states the truthful
+    // unsupported verdict (the same copy the adopt headline uses).
+    const reason = 'This provider has no OAuth sign-in flow registered in this Harness build'
+    const state = makeState()
+    state.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: false,
+      reason,
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'empty',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const empty = findByClass(view.nodes, 'km-empty-keys')[0]
+    expect(empty).toBeDefined()
+    expect(empty!.text).toBe('暂不支持密钥池')
+    expect(empty!.text).not.toBe('还没有密钥。添加一个后即可使用该 Provider。')
+    expect(findButtons(view.nodes, 'addKey')[0]!.props!.disabled).toBe(true)
+    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(0)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
   test('a managed keyless provider renders the empty-state pill, not the unmanaged label', async () => {
     // Round-3 finding 7: adopting an OAuth-only route sits at
     // managed + zero keys until the first sign-in; the pill must read as

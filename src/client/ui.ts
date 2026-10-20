@@ -857,10 +857,13 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
           // Round-4 finding 4 (I-000085): the empty body must name an action
           // this route actually offers. Add key is disabled without key
           // capability, so an account-only route invites a sign-in instead
-          // of telling the user to "add one".
+          // of telling the user to "add one". A managed route with neither
+          // capability (C6-2: nativeAuth.oauth without an enumerable flow)
+          // offers no action at all, so it states the unsupported verdict
+          // rather than inviting a key the toolbar refuses.
           ? h('div', { className: 'km-empty-keys' }, provider.supported
               ? t('noKeys')
-              : oauthCapable(provider) ? t('noKeysAccount') : t('noKeys'))
+              : oauthCapable(provider) ? t('noKeysAccount') : t('unsupported'))
           : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
               ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) })
               : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
