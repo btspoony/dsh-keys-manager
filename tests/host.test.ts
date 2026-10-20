@@ -6310,6 +6310,69 @@ test('a provider without OAuth rows is not delayed by another provider\'s stalle
 })
 
 
+// Round-10 review (should-fix SF1): hydration writes owners progressively,
+// one provider's read at a time, but the bounded wait raced the SINGLE global
+// hydration promise. When provider B's read stalled, provider A's already
+// confirmed owner was discarded on the timeout: A lost attribution entirely
+// (OAuth failures stopped cooling/demoting it). Readiness is decided per
+// provider: a provider whose own read has landed needs no wait, and the
+// "unknown" fallback applies only while its own read has not landed.
+
+test('a hydrated provider keeps its owner while another provider\'s read stalls (R10 SF1)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    // Provider B is adopted after A, so hydration reads A first and then
+    // stalls on B. Both providers own a persisted projection.
+    await h.service.adoptProvider('xai')
+    const b = seedOAuthAccount(h, 'xai', { accountId: 'acc-x', email: 'x@example.com', refresh: 'rt-xai-row' })
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const bGrantKey = 'llm-pi-ai/xai'
+    h.credentials.records.set(bGrantKey, grantPayload({ refresh: 'rt-xai-row', access: 'at-xai-row', accountId: 'acc-x', email: 'x@example.com' }))
+    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === bGrantKey) return new Promise<FakeCredentialRecord | undefined>(() => {})
+      return realRead(key)
+    }
+    try {
+      const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+      ;(restarted as unknown as { hydrationWaitMs: number }).hydrationWaitMs = 20
+      // Let A's own read land while B's stays pending.
+      await new Promise(resolve => setTimeout(resolve, 20))
+      // A's OAuth failure is attributed to its hydrated owner: it cools and
+      // the stale projection is demoted, exactly as before B stalled.
+      await consume(restarted.streamListener(
+        { provider: 'anthropic', model: 'model', sessionId: 'session-a', messages: [] },
+        async function* () {
+          yield { type: 'finish', reason: { kind: 'error', failure: { code: 'oauth', message: 'OAuth refresh failed for anthropic' } } }
+        } as any,
+      ))
+      const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+      assert.ok(row.cooldownUntil > Date.now(), 'the hydrated account is cooled while B stalls')
+      await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+      // B's own read has not landed: its request stays unowned and mutates
+      // nothing — the I-000108 guard for a provider whose readiness is unknown.
+      const providerB = h.store.provider('xai')!
+      const rowB = providerB.keys.find(key => key.id === b.rowId)!
+      const rowBBefore = structuredClone(rowB)
+      const cursorBefore = providerB.cursor
+      await consume(restarted.streamListener(
+        { provider: 'xai', model: 'model', sessionId: 'session-b', messages: [] },
+        async function* () {
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        } as any,
+      ))
+      assert.deepEqual(rowB, rowBBefore)
+      assert.equal(providerB.cursor, cursorBefore)
+      assert.equal(h.store.binding('session-b', 'xai'), undefined)
+      assert.equal(h.credentials.records.has(bGrantKey), true)
+    } finally {
+      h.credentials.raw.readRecord = realRead
+    }
+  } finally {
+    await h.close()
+  }
+})
+
 test('a restarted service does not adopt an orphan projection and still warns on its updates', async () => {
   const h = await harness()
   try {

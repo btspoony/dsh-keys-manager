@@ -783,6 +783,22 @@ export class KeysManagerService {
    * Injectable so tests can exercise the bound quickly.
    */
   private hydrationWaitMs = HYDRATION_WAIT_MS
+  /**
+   * Providers whose hydration read has landed — owner found or not
+   * (round-10 should-fix SF1). Hydration walks the providers serially and
+   * writes each owner as it goes, so one stalled read must not make an
+   * already-read provider look unknown: a provider whose own read landed is
+   * ready immediately, and the bounded wait's "unknown" fallback is confined
+   * to the requested provider's own unresolved read.
+   */
+  private readonly hydratedProviders = new Set<string>()
+  /**
+   * True once the load-time hydration read is over (round-10 SF1). From then
+   * on no provider's read can land, so attribution is known for every provider
+   * — including one adopted after the read, whose OAuth rows did not exist
+   * when the projection was looked for.
+   */
+  private hydrationSettled = false
   /** Providers whose bounded-wait warning already fired (warn once). */
   private readonly hydrationWaitWarned = new Set<string>()
   /** Channels whose lost-subscription warning already fired (warn once). */
@@ -822,40 +838,66 @@ export class KeysManagerService {
    */
   private hydrateProjectionOwnership(): Promise<void> {
     return (async () => {
-      const records = this.credentialRecords()
-      if (records === undefined) {
-        this.warnSubscriptionLost('credentials record access')
-        return
-      }
-      for (const providerRecord of Object.values(this.store.providers)) {
-        const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
-        if (accounts.length === 0) continue
-        const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${providerRecord.provider}`
-        // Generation tag (round-3 finding 3): the read below is awaited, and
-        // an activation or login landing while it is in flight must win —
-        // the hydrated write only lands while the generation still matches.
-        const generation = this.ownershipGenerations.get(providerRecord.provider) ?? 0
-        let record: Awaited<ReturnType<typeof records.readRecord>>
-        try {
-          record = await records.readRecord(grantKey)
-        } catch (error) {
-          this.warn(`projection ownership hydration could not read ${grantKey}: ${error instanceof Error ? error.message : String(error)}`)
-          continue
+      try {
+        const records = this.credentialRecords()
+        if (records === undefined) {
+          this.warnSubscriptionLost('credentials record access')
+          return
         }
-        if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) continue
-        const owner = matchOwningAccount(providerRecord.provider, accounts, record.payload)
-        // A newer activation/login claimed the owner while this read was in
-        // flight: the stale read is discarded, never written over it.
-        if ((this.ownershipGenerations.get(providerRecord.provider) ?? 0) !== generation) continue
-        // A concurrent removal may have dropped the row while this read was
-        // in flight: never resurrect an owner entry for a row that is gone.
-        if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
-          this.activeAccounts.set(providerRecord.provider, owner.id)
+        for (const providerRecord of Object.values(this.store.providers)) {
+          const provider = providerRecord.provider
+          const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
+          if (accounts.length === 0) continue
+          try {
+            const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+            // Generation tag (round-3 finding 3): the read below is awaited, and
+            // an activation or login landing while it is in flight must win —
+            // the hydrated write only lands while the generation still matches.
+            const generation = this.ownershipGenerations.get(provider) ?? 0
+            let record: Awaited<ReturnType<typeof records.readRecord>>
+            try {
+              record = await records.readRecord(grantKey)
+            } catch (error) {
+              this.warn(`projection ownership hydration could not read ${grantKey}: ${error instanceof Error ? error.message : String(error)}`)
+              continue
+            }
+            if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) continue
+            const owner = matchOwningAccount(provider, accounts, record.payload)
+            // A newer activation/login claimed the owner while this read was in
+            // flight: the stale read is discarded, never written over it.
+            if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) continue
+            // A concurrent removal may have dropped the row while this read was
+            // in flight: never resurrect an owner entry for a row that is gone.
+            if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
+              this.activeAccounts.set(provider, owner.id)
+            }
+          } finally {
+            // This provider's own read is over (owner or not): its requests are
+            // attributable now and must not wait behind another provider's
+            // stalled read (round-10 should-fix SF1).
+            this.noteProviderHydrated(provider)
+          }
         }
+      } finally {
+        // The read is over (completed or abandoned): from now on no result can
+        // land, so every provider is ready — including one whose OAuth rows
+        // appear later, which this read could not have projected.
+        this.hydrationSettled = true
+        this.settleHydrationWaits()
       }
     })().catch(error => {
       this.warn(`projection ownership hydration failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+  }
+
+  /** Record that one provider's hydration read is over — owner or not (SF1). */
+  private noteProviderHydrated(provider: string): void {
+    this.hydratedProviders.add(provider)
+  }
+
+  /** Release every provider's readiness wait when hydration cannot proceed. */
+  private settleHydrationWaits(): void {
+    for (const provider of Object.keys(this.store.providers)) this.noteProviderHydrated(provider)
   }
 
   /**
@@ -873,14 +915,27 @@ export class KeysManagerService {
    * repeat the I-000108 corruption. The hydration promise is not cancelled,
    * so a late result still lands under the generation guard and later
    * requests are attributed normally.
+   *
+   * Readiness is decided PER PROVIDER (round-10 should-fix SF1). Hydration
+   * writes owners progressively, so racing the one global promise would
+   * discard an owner this provider already confirmed just because another
+   * provider's read stalled. A provider whose own read has landed — with an
+   * owner or with none — is ready without waiting, and the "unknown" fallback
+   * is confined to the requested provider's own unresolved read.
    */
   private async awaitProjectionOwnership(providerId: string): Promise<boolean> {
     const provider = this.store.provider(providerId)
     if (provider === undefined) return true
     const hasOauthRows = provider.keys.some(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
     if (!hasOauthRows) return true
+    // This provider's own read already landed (or a newer claim already owns
+    // it, or the whole read is over): nothing can arrive later, so no wait.
+    if (this.hydrationSettled || this.hydratedProviders.has(providerId) || this.activeAccounts.has(providerId)) return true
     const outcome = await raceTimeout(this.projectionHydration, this.hydrationWaitMs)
     if (outcome.settled) return true
+    // The global wait elapsed, but this provider's own read may have landed in
+    // the meantime: its attribution is then known ("no owner"), not unknown.
+    if (this.hydratedProviders.has(providerId)) return true
     if (!this.hydrationWaitWarned.has(providerId)) {
       this.hydrationWaitWarned.add(providerId)
       this.warn(`projection ownership hydration did not settle within ${this.hydrationWaitMs}ms for ${providerId}; requests proceed without an attributed account until it does`)
