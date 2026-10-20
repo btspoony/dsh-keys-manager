@@ -275,6 +275,22 @@ jobs:
           git tag -a -m "Release ${TAG}" "$TAG"
           git push origin "$TAG"
 
+      - name: Create + push dsh-llm-omp-transports tag
+        run: |
+          set -euo pipefail
+          # The transports package versions independently of dsh-keys-manager,
+          # so tag the exact version this release publishes (or already had on
+          # npm) under the package name. The version comes from the release
+          # commit's package.json — the same file the publish step read.
+          PKG_VERSION="$(node -p "require('./packages/llm-omp/package.json').version")"
+          TAG="dsh-llm-omp-transports@${PKG_VERSION}"
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; skipping tag creation."
+            exit 0
+          fi
+          git tag -a -m "Release ${TAG}" "$TAG"
+          git push origin "$TAG"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:

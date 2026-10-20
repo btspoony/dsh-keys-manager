@@ -1,24 +1,36 @@
 #!/usr/bin/env node
 /**
- * Release-prep version helper (plan dsh-keys-manager-ci-release, task 2 + 4):
+ * Release-prep version helper (plans dsh-keys-manager-ci-release, task 2 + 4;
+ * omp-transport-cursor-tools, task 5):
  * resolves the target version — explicit `X.Y.Z` / `X.Y.Z-prerelease`
  * argument (e.g. 0.1.1-alpha.1) or an auto patch bump from package.json —
  * refuses already-released versions (existing `v<version>` git tag), aborts
  * when there are no commits since the previous release tag (nothing to
  * release), bumps package.json, inserts the `## [<version>]` section into
- * CHANGELOG.md (from the same git-log notes the workflows use; keeps
- * existing sections, no-op when already present), and prints
- * `VERSION=<version>` for the workflow to capture. Node built-ins only, no
- * new dependencies.
+ * CHANGELOG.md (root only — the transports package has no generated
+ * changelog), and prints the root and transports versions and tags for the
+ * workflow to capture. Node built-ins only, no new dependencies.
+ *
+ * The workspace package `packages/llm-omp` (`dsh-llm-omp-transports`) versions
+ * independently: a run patches its patch line by default, `--transport X.Y.Z`
+ * pins a version, and `--skip-transport` leaves it untouched. A bumped
+ * transport version is checked against the `dsh-llm-omp-transports@<version>`
+ * tag the Release workflow creates after publishing, and the version written
+ * here is exactly the one `release.yml` publishes (that workflow skips an
+ * already-published version). Transport prereleases are refused because the
+ * workflow publishes the package on npm's default `latest` tag.
  *
  * Usage:
- *   node scripts/prepare-release.mjs            # auto patch bump
- *   node scripts/prepare-release.mjs 0.2.0      # explicit version
- *   node scripts/prepare-release.mjs 0.1.1-alpha.1  # explicit prerelease
+ *   node scripts/prepare-release.mjs                  # auto bump root + transport
+ *   node scripts/prepare-release.mjs 0.2.0            # explicit root version
+ *   node scripts/prepare-release.mjs --skip-transport # root only
+ *   node scripts/prepare-release.mjs --transport 0.1.2
+ *   node scripts/prepare-release.mjs --dry-run        # validate + print, write nothing
  *
- * Exit codes: 0 = bumped and printed VERSION; 1 = rejected (unparseable
- * version, existing tag, no commits since the previous release tag,
- * unparseable current package.json version, or CHANGELOG.md write error).
+ * Exit codes: 0 = bumped (or dry-run resolved) and printed versions; 1 =
+ * rejected (unparseable version, existing tag, no commits since the previous
+ * release tag, unparseable current package.json version, transport prerelease,
+ * or CHANGELOG.md write error).
  */
 
 import { execFileSync } from 'node:child_process'
@@ -28,6 +40,8 @@ import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PKG_PATH = join(REPO_ROOT, 'package.json')
+const TRANSPORTS_PKG_PATH = join(REPO_ROOT, 'packages/llm-omp/package.json')
+const TRANSPORT_PACKAGE = 'dsh-llm-omp-transports'
 const CHANGELOG_PATH = join(REPO_ROOT, 'CHANGELOG.md')
 const CHANGELOG_HEADER =
   '# Changelog\n\nAll notable changes to dsh-keys-manager are documented here. Generated from git log by the release-prep workflow.\n'
@@ -54,57 +68,12 @@ function parseVersion(value) {
 }
 
 const pkg = JSON.parse(readFileSync(PKG_PATH, 'utf8'))
+const transportsPkg = JSON.parse(readFileSync(TRANSPORTS_PKG_PATH, 'utf8'))
 
-let target
-if (process.argv[2] !== undefined) {
-  target = parseVersion(process.argv[2])
-  if (target === null) {
-    console.error(`Error: invalid version "${process.argv[2]}". Expected X.Y.Z or X.Y.Z-prerelease (e.g. 0.2.0, 0.1.1-alpha.1).`)
-    process.exit(1)
-  }
-} else {
-  // Auto patch bump (mirrors sibling dsh-llm-fallbacks autoBumpPatch): parse
-  // the current version as X.Y.Z or X.Y.Z-pre, then:
-  //  - formal version X.Y.Z            -> X.Y.(Z+1)       (0.1.2 -> 0.1.3)
-  //  - prerelease with numeric tail    -> bump only the tail, staying on the
-  //    prerelease line (0.1.3-alpha.3 -> 0.1.3-alpha.4)
-  //  - prerelease with non-numeric tail (e.g. 0.1.0-alpha) -> cannot auto
-  //    bump; require an explicit version argument.
-  // The looser regex is deliberate: parseVersion (explicit args) requires a
-  // digit in the suffix, so it cannot tell "alpha" from a malformed version;
-  // this path needs the raw suffix to reject non-numeric tails with the
-  // explicit-version hint.
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(pkg.version)
-  if (!m) {
-    console.error(`Error: cannot parse current package.json version "${pkg.version}".`)
-    process.exit(1)
-  }
-  const [, major, minor, patch, pre] = m
-  if (pre === undefined) {
-    target = { major: Number(major), minor: Number(minor), patch: Number(patch) + 1 }
-  } else {
-    const tail = pre.split('.').at(-1)
-    if (tail === undefined || !/^\d+$/.test(tail)) {
-      console.error(
-        `Error: cannot auto-bump "${pkg.version}": prerelease tail "${pre}" is not numeric. ` +
-          'Pass an explicit version instead (e.g. `node scripts/prepare-release.mjs 0.1.1-alpha.1`).',
-      )
-      process.exit(1)
-    }
-    const prefix = pre.slice(0, pre.length - tail.length) // "alpha." for "alpha.1"
-    target = {
-      major: Number(major),
-      minor: Number(minor),
-      patch: Number(patch),
-      prerelease: `${prefix}${Number(tail) + 1}`,
-    }
-  }
-}
+const { versionArg, transportArg, skipTransport, dryRun } = parseArgs(process.argv.slice(2))
 
-const version =
-  target.prerelease === undefined
-    ? `${target.major}.${target.minor}.${target.patch}`
-    : `${target.major}.${target.minor}.${target.patch}-${target.prerelease}`
+const target = resolveTarget(versionArg, pkg.version, 'package.json')
+const version = formatVersion(target)
 
 // Validate the npm dist-tag derived by the release workflow. A prerelease
 // identifier like "latest" would move the stable tag, and a numeric one like
@@ -120,15 +89,141 @@ if (target.prerelease !== undefined) {
   }
 }
 
-// Reject already-released versions: `git rev-parse v<version>` succeeds iff
-// the tag exists. Works unchanged for prerelease tags (v0.1.1-alpha.1 is a
-// plain tag name). Run from REPO_ROOT so the check is cwd-independent.
-try {
-  execFileSync('git', ['rev-parse', `v${version}`], { cwd: REPO_ROOT, stdio: 'ignore' })
+// The transports package versions independently of the root package. By
+// default a run bumps its patch line; `--skip-transport` opts out, and
+// `--transport X.Y.Z` pins an explicit version.
+let transportTarget
+let transportVersion = transportsPkg.version
+if (!skipTransport) {
+  transportTarget = resolveTarget(transportArg, transportsPkg.version, 'packages/llm-omp/package.json')
+  transportVersion = formatVersion(transportTarget)
+  // release.yml publishes this package without a --tag, so a prerelease would
+  // move npm's `latest` tag. Keep it on formal versions until the workflow
+  // grows the same dist-tag rule as the root publish step.
+  if (transportTarget.prerelease !== undefined) {
+    console.error(
+      `Error: ${TRANSPORT_PACKAGE} publishes formal versions only; "${transportVersion}" is a prerelease ` +
+        'and release.yml would publish it on the `latest` dist-tag.',
+    )
+    process.exit(1)
+  }
+}
+const transportTag = transportTarget === undefined ? undefined : `${TRANSPORT_PACKAGE}@${transportVersion}`
+
+/**
+ * Parse CLI flags. The first non-flag argument is the root target version;
+ * `--transport` consumes the next argument, so the option order is free.
+ */
+function parseArgs(argv) {
+  const parsed = { versionArg: undefined, transportArg: undefined, skipTransport: false, dryRun: false }
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]
+    if (arg === '--dry-run') parsed.dryRun = true
+    else if (arg === '--skip-transport') parsed.skipTransport = true
+    else if (arg === '--transport') {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith('--')) usage('--transport needs an X.Y.Z value')
+      parsed.transportArg = value
+      i += 1
+    } else if (arg.startsWith('--')) usage(`unknown option "${arg}"`)
+    else if (parsed.versionArg === undefined) parsed.versionArg = arg
+    else usage(`unexpected extra argument "${arg}"`)
+  }
+  if (parsed.skipTransport && parsed.transportArg !== undefined) {
+    usage('--skip-transport and --transport are mutually exclusive')
+  }
+  return parsed
+}
+
+function usage(message) {
+  console.error(`Error: ${message}.`)
+  console.error(
+    'Usage: node scripts/prepare-release.mjs [X.Y.Z[-prerelease]] [--transport X.Y.Z | --skip-transport] [--dry-run]',
+  )
+  process.exit(1)
+}
+
+/**
+ * Resolve an explicit target version, or auto-bump the current one.
+ *
+ * Auto bump (mirrors sibling dsh-llm-fallbacks autoBumpPatch): parse the
+ * current version as X.Y.Z or X.Y.Z-pre, then:
+ *  - formal version X.Y.Z            -> X.Y.(Z+1)       (0.1.2 -> 0.1.3)
+ *  - prerelease with numeric tail    -> bump only the tail, staying on the
+ *    prerelease line (0.1.3-alpha.3 -> 0.1.3-alpha.4)
+ *  - prerelease with non-numeric tail (e.g. 0.1.0-alpha) -> cannot auto
+ *    bump; require an explicit version argument.
+ * The looser regex is deliberate: parseVersion (explicit args) requires a
+ * digit in the suffix, so it cannot tell "alpha" from a malformed version;
+ * this path needs the raw suffix to reject non-numeric tails with the
+ * explicit-version hint.
+ */
+function resolveTarget(explicit, current, label) {
+  if (explicit !== undefined) {
+    const target = parseVersion(explicit)
+    if (target === null) {
+      console.error(
+        `Error: invalid version "${explicit}". Expected X.Y.Z or X.Y.Z-prerelease (e.g. 0.2.0, 0.1.1-alpha.1).`,
+      )
+      process.exit(1)
+    }
+    return target
+  }
+  const m = /^(\d+)\.(\d+)\.(\d+)(?:-(.+))?$/.exec(current)
+  if (!m) {
+    console.error(`Error: cannot parse current ${label} version "${current}".`)
+    process.exit(1)
+  }
+  const [, major, minor, patch, pre] = m
+  if (pre === undefined) {
+    return { major: Number(major), minor: Number(minor), patch: Number(patch) + 1 }
+  }
+  const tail = pre.split('.').at(-1)
+  if (tail === undefined || !/^\d+$/.test(tail)) {
+    console.error(
+      `Error: cannot auto-bump "${current}": prerelease tail "${pre}" is not numeric. ` +
+        'Pass an explicit version instead (e.g. `node scripts/prepare-release.mjs 0.1.1-alpha.1`).',
+    )
+    process.exit(1)
+  }
+  const prefix = pre.slice(0, pre.length - tail.length) // "alpha." for "alpha.1"
+  return {
+    major: Number(major),
+    minor: Number(minor),
+    patch: Number(patch),
+    prerelease: `${prefix}${Number(tail) + 1}`,
+  }
+}
+
+function formatVersion(target) {
+  return target.prerelease === undefined
+    ? `${target.major}.${target.minor}.${target.patch}`
+    : `${target.major}.${target.minor}.${target.patch}-${target.prerelease}`
+}
+
+/** Whether an exact tag ref exists. */
+function tagExists(tag) {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `refs/tags/${tag}`], {
+      cwd: REPO_ROOT,
+      stdio: 'ignore',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Reject already-released versions: the tag exists iff the version was
+// released. Works unchanged for prerelease tags (v0.1.1-alpha.1 is a plain
+// tag name). Run from REPO_ROOT so the check is cwd-independent.
+if (tagExists(`v${version}`)) {
   console.error(`Error: tag v${version} already exists — this version is already released.`)
   process.exit(1)
-} catch {
-  // Tag absent → OK to prepare.
+}
+if (transportTag !== undefined && tagExists(transportTag)) {
+  console.error(`Error: tag ${transportTag} already exists — this transport version is already released.`)
+  process.exit(1)
 }
 
 // Fail fast on a no-change release: an empty notes range means no commits
@@ -144,11 +239,19 @@ if (notes === '') {
   process.exit(1)
 }
 
-pkg.version = version
-// Preserve repo formatting: 2-space indent + trailing newline. The version
-// line must be the only diff (verified by `git diff package.json` in the
-// dry-run validation).
-writeFileSync(PKG_PATH, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8')
+// Write only outside a dry run: a dry run validates and prints the resolved
+// versions exactly like a real run, then leaves the working tree untouched.
+if (!dryRun) {
+  pkg.version = version
+  // Preserve repo formatting: 2-space indent + trailing newline. Bumping only
+  // the version keeps `git diff package.json` to that one line.
+  writeFileSync(PKG_PATH, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8')
+
+  if (transportTarget !== undefined) {
+    transportsPkg.version = transportVersion
+    writeFileSync(TRANSPORTS_PKG_PATH, `${JSON.stringify(transportsPkg, null, 2)}\n`, 'utf8')
+  }
+}
 
 /**
  * Resolve the previous release tag (nearest ancestor tag of HEAD; empty
@@ -238,6 +341,13 @@ function updateChangelog(version, notes) {
   }
 }
 
-updateChangelog(version, notes)
+// Root changelog only: the transports package has no generated changelog.
+if (!dryRun) updateChangelog(version, notes)
 
+// The workflow captures VERSION; the remaining lines are informational and
+// let a dry run show both derived tags without touching the tree.
+if (dryRun) console.log('DRY_RUN=1')
 console.log(`VERSION=${version}`)
+console.log(`TAG=v${version}`)
+console.log(`TRANSPORT_VERSION=${transportVersion}`)
+console.log(`TRANSPORT_TAG=${transportTag ?? 'none'}`)

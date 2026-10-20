@@ -15,6 +15,10 @@ on:
         description: "Target version (e.g. 0.2.0, or 0.1.1-alpha.1 for a prerelease). Leave empty for auto patch bump."
         required: false
         type: string
+      transport_version:
+        description: "dsh-llm-omp-transports version (X.Y.Z). Leave empty to auto patch bump it; pass 'skip' to leave the transport package unchanged."
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -75,16 +79,35 @@ jobs:
 
       - name: Bump version
         id: ver
+        env:
+          # Pass the free-form input through the environment: interpolating it
+          # into the script would allow shell injection from the dispatch form.
+          TRANSPORT_INPUT: ${{ inputs.transport_version }}
         run: |
           set -euo pipefail
           V="${{ steps.want.outputs.version }}"
+          T="$TRANSPORT_INPUT"
+          # The transport package versions independently: empty bumps its patch
+          # line, "skip" leaves it untouched, anything else is passed through
+          # and validated by the script (which also rejects prereleases).
+          ARGS=()
+          case "$T" in
+            "") ;;
+            skip) ARGS+=(--skip-transport) ;;
+            *) ARGS+=(--transport "$T") ;;
+          esac
           if [ "$V" = "auto" ]; then
-            OUT="$(node scripts/prepare-release.mjs)"
+            OUT="$(node scripts/prepare-release.mjs "${ARGS[@]}")"
           else
-            OUT="$(node scripts/prepare-release.mjs "$V")"
+            OUT="$(node scripts/prepare-release.mjs "${ARGS[@]}" "$V")"
           fi
           echo "$OUT"
-          echo "version=${OUT#VERSION=}" >> "$GITHUB_OUTPUT"
+          # The script prints one KEY=value line per fact; capture each line
+          # whole instead of stripping a prefix from the multi-line output.
+          VERSION="$(printf '%s\n' "$OUT" | sed -n 's/^VERSION=//p')"
+          TRANSPORT_VERSION="$(printf '%s\n' "$OUT" | sed -n 's/^TRANSPORT_VERSION=//p')"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "transport_version=${TRANSPORT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Sync lockfile
         run: pnpm install --lockfile-only
@@ -164,6 +187,7 @@ jobs:
           # pull-requests/issues write for GITHUB_TOKEN.
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
+          TRANSPORT_VERSION: ${{ steps.ver.outputs.transport_version }}
         run: |
           set -euo pipefail
           BRANCH="release/v${VERSION}"
@@ -172,6 +196,9 @@ jobs:
             cat /tmp/notes.md
             echo
             echo "Merging this PR tags v${VERSION} and publishes dsh-keys-manager@${VERSION} via the Release workflow."
+            if [ -n "${TRANSPORT_VERSION}" ]; then
+              echo "It also publishes dsh-llm-omp-transports@${TRANSPORT_VERSION} when that version is not already on npm, and tags dsh-llm-omp-transports@${TRANSPORT_VERSION}."
+            fi
           } > /tmp/pr-body.md
           if gh pr view "$BRANCH" >/dev/null 2>&1; then
             STATE="$(gh pr view "$BRANCH" --json state --jq .state)"

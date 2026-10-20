@@ -8,15 +8,20 @@
  * any Cursor network behavior.
  *
  * Skips when `pnpm` or `dsh` is missing. The run needs no registry access: both
- * tarballs are packed locally, the root's `^0.1.0` transports dependency is
+ * tarballs are packed locally, the root's transports dependency range is
  * overridden to the local tarball, and DSH peers are not auto-installed.
  */
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
+/** The transport versions independently; the packed range must follow it. */
+const transportsVersion = JSON.parse(
+  readFileSync(join(repoRoot, 'packages/llm-omp/package.json'), 'utf8'),
+).version as string
 const missing = ['pnpm', 'dsh'].filter(
   command => spawnSync(command, ['--version'], { stdio: 'ignore' }).status !== 0,
 )
@@ -36,7 +41,7 @@ describe.skipIf(!canInstall)('install/load integration (packed profile)', () => 
     expect(run.status, report).toBe(0)
 
     // 1. `pnpm pack` rewrote the workspace dependency to a registry range.
-    expect(report).toContain('install-proof: packed dependency dsh-llm-omp-transports -> ^0.1.0')
+    expect(report).toContain(`install-proof: packed dependency dsh-llm-omp-transports -> ^${transportsVersion}`)
 
     // 2. The profile's dependency tree has both packages.
     expect(report).toContain('install-proof: both components installed: dsh-keys-manager@')

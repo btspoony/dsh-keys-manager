@@ -50,12 +50,10 @@ describe('bundle composition', () => {
     const manifestPath = createRequire(import.meta.url).resolve('dsh-llm-omp-transports/package.json')
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
       name?: string
-      version?: string
       private?: boolean
       publishConfig?: { access?: string }
     }
     expect(manifest.name).toBe('dsh-llm-omp-transports')
-    expect(manifest.version).toBe('0.1.0')
     expect(manifest.private).toBeUndefined()
     expect(manifest.publishConfig).toEqual({ access: 'public' })
   })
