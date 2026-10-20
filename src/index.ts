@@ -694,6 +694,13 @@ export class KeysManagerService {
    * write-back settles, and the bodies run read → write → commit. Arrival
    * order is preserved so the older observation can never commit after the
    * newer one and leave the row on a stale generation.
+   *
+   * Round-8 finding I-000106: activation joins the same chain. The only
+   * writer of `row.oauth.grantRef` is {@link reconcileGrantRecord}, which runs
+   * outside the mutation queue, so activation's record read and its projection
+   * write must be mutually exclusive with that writer — otherwise a rotation
+   * landing between them leaves the projection on a generation the row no
+   * longer names.
    */
   private readonly grantReconciliations = new Map<string, Promise<void>>()
   /**
@@ -1782,17 +1789,31 @@ export class KeysManagerService {
     // body is appended to the provider's chain, preserving arrival order
     // (round-9 P1); the chain itself never rejects, so a failed
     // reconciliation does not stop the next echo.
+    const next = this.scheduleGrantReconciliation(provider, () => this.reconcileGrantRecord(provider, key))
+    void next.catch(error => {
+      this.warn(`grant reconciliation failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  /**
+   * Append one body to the provider's per-route grant chain and return it.
+   *
+   * The chain is the single serialization point for every operation that can
+   * repoint `row.oauth.grantRef` or reproject the route: the echo reconciler
+   * (round-9 P1 ordering) and, since round-8 finding I-000106, activation.
+   * The stored tail never rejects, so one failed body cannot stop the chain;
+   * callers that must observe the failure await the returned promise (the
+   * fire-and-forget echo caller attaches its own catch).
+   */
+  private scheduleGrantReconciliation(provider: string, body: () => Promise<void>): Promise<void> {
     const previous = this.grantReconciliations.get(provider) ?? Promise.resolve()
-    const reconcile = (): Promise<void> => this.reconcileGrantRecord(provider, key)
-    const next = previous.then(reconcile, reconcile)
+    const next = previous.then(body, body)
     const tail = next.then(() => undefined, () => undefined)
     this.grantReconciliations.set(provider, tail)
     void tail.then(() => {
       if (this.grantReconciliations.get(provider) === tail) this.grantReconciliations.delete(provider)
     })
-    void next.catch(error => {
-      this.warn(`grant reconciliation failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
-    })
+    return next
   }
 
   /**
@@ -2112,12 +2133,24 @@ export class KeysManagerService {
 
   /**
    * Make one account's grant payload the route's stored credential
-   * (D1 activation projection). The decide snapshot is read from the
-   * account's own `grantRef` before the write, outside the seam's lock;
-   * the seam's per-provider lock then serializes the read-decide-replace
-   * steps of `modifyRecord` (credentials/src/index.ts:236-250) so that
-   * concurrent writers cannot interleave. The account whose payload lands
-   * becomes the pool's active account and is cascade-selectable again.
+   * (D1 activation projection).
+   *
+   * Round-8 finding I-000106 (must-fix): the decide snapshot used to be read
+   * before the seam's lock, and `reconcileGrantRecord` runs OUTSIDE the
+   * mutation queue — so a rotation echo could repoint `row.oauth.grantRef` and
+   * delete the record being projected between the read and the write, leaving
+   * the route on an older generation than the row names. The whole
+   * read → project → claim section therefore runs on the provider's grant
+   * chain ({@link scheduleGrantReconciliation}) — the same chain the
+   * reconciler bodies use. A rotation committed before this body is observed
+   * in `row.oauth.grantRef`; one that arrives while the body runs is queued
+   * behind it and reconciles the generation this body projected. Either way
+   * the projection holds exactly the generation the row names.
+   *
+   * The seam's per-key lock still serializes the read-decide-replace steps of
+   * `modifyRecord` (credentials/src/index.ts:236-250) against other writers.
+   * The account whose payload lands becomes the pool's active account and is
+   * cascade-selectable again.
    */
   activateAccount(provider: string, accountId: string): Promise<StateView> {
     return this.run(async () => {
@@ -2128,14 +2161,19 @@ export class KeysManagerService {
       if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account`)
       const records = this.credentialRecords()
       if (records === undefined) throw new Error('The credential store does not support records')
-      const stored = await records.readRecord(row.oauth.grantRef)
-      if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
-        throw new Error(`The grant payload at ${row.oauth.grantRef} is missing or unusable; sign in to this account again`)
-      }
-      this.intentionalProjectionRemovals.delete(provider)
-      await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, () =>
-        Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
-      this.claimProjectionOwner(provider, row.id)
+      await this.scheduleGrantReconciliation(provider, async () => {
+        // Re-read the generation under the chain: a rotation that committed
+        // before this body claimed its slot is already reflected here.
+        const grantRef = row.oauth!.grantRef
+        const stored = await records.readRecord(grantRef)
+        if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+          throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
+        }
+        this.intentionalProjectionRemovals.delete(provider)
+        await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, () =>
+          Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
+        this.claimProjectionOwner(provider, row.id)
+      })
       row.valueMissing = false
       // Round-5 finding M1: manual recovery ends the cooling window too, the
       // same reset a successful re-authentication applies. A demoted account

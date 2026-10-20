@@ -3767,6 +3767,92 @@ test('activateAccount projects the grant payload into the llm-pi-ai record', asy
   }
 })
 
+// Round-8 review (I-000106, must-fix): the activation record read and its
+// projection write used to sit outside the per-provider reconciliation chain,
+// so a rotation echo landing between them could repoint `row.oauth.grantRef`
+// and delete the record activation was about to project. The invariant pinned
+// here: at the instant the projection write lands, the row must not already
+// name another generation, and the record that generation names must survive.
+
+test('activation projects the generation the row still names when a rotation echo lands mid-read (I-000106)', async () => {
+  const { h, rowId, grantRef: generation1 } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  try {
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    // The persisted projection is the row's own generation.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-seed-value', access: 'at-seed-value' }))
+    let releaseRead: (() => void) | undefined
+    const readReleased = new Promise<void>(resolve => { releaseRead = resolve })
+    let readDeferred = false
+    raw.readRecord = async (key: string) => {
+      if (key === generation1 && !readDeferred) {
+        readDeferred = true
+        // Snapshot the generation activation is about to project, then park
+        // the read so a rotation echo can land before the write.
+        const snapshot = structuredClone(h.credentials.records.get(generation1))
+        await readReleased
+        return snapshot
+      }
+      return realRead(key)
+    }
+    // Capture the row's grantRef at the instant activation's projection write
+    // returns — before any echo of that write can reconcile.
+    let rowRefAtProjection: string | undefined
+    let projectedRefresh: string | undefined
+    let captureProjection = false
+    raw.modifyRecord = async (key: string, mutate: any) => {
+      const result = await realModify(key, mutate)
+      if (captureProjection && key === GRANT_KEY) {
+        captureProjection = false
+        rowRefAtProjection = row.oauth!.grantRef
+        projectedRefresh = ((result as FakeCredentialRecord | undefined)?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined
+      }
+      return result
+    }
+    const activating = h.service.activateAccount('anthropic', rowId)
+    await eventually(() => assert.equal(readDeferred, true))
+    captureProjection = true
+    // An external rotation echo lands while the read is parked: pi-ai wrote a
+    // newer generation (the pre-fix reconciler runs outside the mutation queue
+    // and adopts it into the row immediately).
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-rotated', access: 'at-rotated', expires: 1_960_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    // Time for the unchained reconciler to repoint the row on the pre-fix
+    // tree; on the fixed tree the echo is queued behind the activation body.
+    await new Promise(resolve => setTimeout(resolve, 30))
+    releaseRead!()
+    await activating
+    // Every queued reconciliation body has settled.
+    await eventually(() => assert.equal(
+      (h.service as unknown as { grantReconciliations: Map<string, Promise<void>> }).grantReconciliations.get('anthropic'),
+      undefined,
+    ))
+    // The projection write named the generation the row still pointed at.
+    assert.equal(rowRefAtProjection, generation1)
+    assert.equal(projectedRefresh, 'rt-seed-value')
+    const projectedRecord = h.credentials.records.get(rowRefAtProjection!)
+    assert.ok(projectedRecord, 'the projected generation still has its record')
+    assert.equal((projectedRecord.payload as Record<string, unknown>).refresh, projectedRefresh)
+    // Settled: the projection, the row and the one surviving plugin-scope
+    // record all agree on the same generation.
+    const projection = h.credentials.records.get(GRANT_KEY)!
+    const rowRecord = h.credentials.records.get(row.oauth!.grantRef)!
+    assert.ok(rowRecord, 'the row names a live grant record')
+    assert.deepEqual(projection.payload, rowRecord.payload)
+    const pluginRecords = [...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/anthropic-'))
+    assert.deepEqual(pluginRecords, [row.oauth!.grantRef])
+  } finally {
+    raw.readRecord = realRead
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
 // Round-2 review step 6: the projection owner is surfaced through the
 // state view — the provider names the owning row, and exactly one account
 // row is badged as the projected one.
