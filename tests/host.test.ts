@@ -4017,6 +4017,86 @@ test('a failure landing inside the harvest write keeps the cooldown it earned (R
   }
 })
 
+// Round-6 review (R6-SF1): the R5-SF3 boundary was the plugin-copy write's
+// start time, which sits too late. The harvest also waits behind the mutation
+// queue and the settlement-time projection read, and the freshly committed
+// grant is already projected and serving during those waits. A failure it
+// produces there belongs to the NEW projection generation and must keep its
+// window instead of being cleared as the previous grant's.
+
+test('a failure landing while the harvest still waits for the projection keeps its cooldown (R6-SF1)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    // Park the settlement-time projection read: the harvest cannot start its
+    // plugin-copy write until this read resolves, while pi-ai has already
+    // committed the grant the seam reported at the settlement broadcast.
+    h.credentials.raw.readRecordDelayMs = 80
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    // Still in the projection wait: the attempt has not reached ready.
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    // The freshly committed grant already failed while the harvest waits.
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'server_error', message: 'upstream 500' })
+    const earned = row.cooldownUntil
+    assert.ok(earned > Date.now(), 'the fresh failure cools the row')
+    h.credentials.raw.readRecordDelayMs = 0
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    // The window belongs to the projection the harvest just adopted, so the
+    // harvest must not wipe it.
+    assert.equal(row.cooldownUntil, earned)
+    const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(provider.keys.find(key => key.id === rowId)!.status, 'cooling')
+    assert.equal(provider.healthyKeyCount, provider.keys.filter(key => key.status === 'active').length)
+  } finally {
+    h.credentials.raw.readRecordDelayMs = 0
+    await h.close()
+  }
+})
+
+// Round-6 review (R6-SF1), second half: the old strict "<" comparison kept a
+// stale cooldown cooling when the old failure's stamp equalled the harvest
+// write's millisecond. Attribution by projection generation does not depend on
+// timestamps at all, so recovery must not stall on an equal instant.
+
+test('a stale cooldown stamped in the same millisecond still recovers (R6-SF1)', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  try {
+    const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+    try {
+      // Freeze the clock so the old failure and the harvest's write land in
+      // exactly the same millisecond.
+      const frozen = Date.now()
+      const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+      ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+        .markFailure('anthropic', rowId, { code: 'server_error', message: 'upstream 500' })
+      assert.equal(row.lastFailureAt, frozen)
+      assert.ok(row.cooldownUntil > frozen)
+
+      // Re-authentication re-projects the same account's grant.
+      h.credentials.records.set(GRANT_KEY, grantPayload())
+      const view = await h.service.beginAccountLogin('anthropic')
+      h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+      h.authorization.pending!.resolve({ status: 'authorized' })
+      await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+      // The window was the old grant's: recovery must not stall on the equal
+      // millisecond.
+      assert.equal(row.cooldownUntil, 0)
+      const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
+      assert.equal(provider.keys.find(key => key.id === rowId)!.status, 'active')
+      assert.ok(provider.healthyKeyCount >= 1)
+    } finally {
+      await h.close()
+    }
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
 test('activating a cooling account clears its stale cooldown (M1)', async () => {
   // Round-5 finding M1: re-authentication clears the stale cooldown, but the
   // manual "Set active" recovery did not, so the re-projected grant kept

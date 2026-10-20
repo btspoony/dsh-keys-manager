@@ -668,12 +668,26 @@ export class KeysManagerService {
    */
   private readonly retiringAccounts = new WeakSet<KeyRecord>()
   /**
-   * Per-provider write counter for {@link activeAccounts} claims (round-3
-   * finding 3): activation and harvest claims bump it, and a hydration
-   * result whose generation no longer matches is discarded instead of
-   * overwriting a newer activation with a stale read.
+   * Per-provider projection generation — the write counter for
+   * {@link activeAccounts} claims (round-3 finding 3) and the attribution
+   * identity of a projected grant (round-6 finding SF1). It is bumped exactly
+   * when a grant becomes the provider's projection (a manager-side
+   * re-projection or the seam's committed grant at the settlement broadcast),
+   * never at a later bookkeeping step. A hydration result whose generation no
+   * longer matches is discarded instead of overwriting a newer projection
+   * with a stale read.
    */
   private readonly ownershipGenerations = new Map<string, number>()
+  /**
+   * Per-account-row projection generation in effect when the row's CURRENT
+   * cooldown was earned (round-6 finding SF1). `applyFailureCooldown` stamps
+   * it at failure time, so a harvest can tell the previous grant's window
+   * from one the freshly projected grant earned while the harvest was still
+   * queued. A row with no entry carries a window that predates any observed
+   * attribution (one loaded from disk, for example); the next projection
+   * treats it as the older generation's.
+   */
+  private readonly cooldownGenerations = new Map<string, number>()
   /**
    * Per-provider chain of pending grant reconciliations (round-9 finding
    * P1): two refresh echoes for the same route can arrive before the first
@@ -767,13 +781,32 @@ export class KeysManagerService {
   }
 
   /**
+   * Record that a newly committed grant became the provider's projection and
+   * return that projection's generation (round-6 finding SF1).
+   *
+   * The bump happens at the moment the projection is observable — pi-ai's
+   * committed grant at the settlement broadcast, or a manager-side
+   * re-projection (activation, rotation reconcile, harvest claim) — so every
+   * failure stamped afterwards belongs to that projection. It must never be
+   * deferred to a later bookkeeping step: the harvest waits behind the
+   * mutation queue and the projection read while the new grant already
+   * serves, and a failure landing there must not be mistaken for the
+   * previous grant's.
+   */
+  private noteProjectionCommitted(provider: string): number {
+    const generation = (this.ownershipGenerations.get(provider) ?? 0) + 1
+    this.ownershipGenerations.set(provider, generation)
+    return generation
+  }
+
+  /**
    * Claim the projection owner for one account row, bumping the provider's
    * ownership generation so an in-flight hydration read of an older state
    * is discarded instead of overwriting the claim (round-3 finding 3).
    */
   private claimProjectionOwner(provider: string, accountId: string): void {
     this.activeAccounts.set(provider, accountId)
-    this.ownershipGenerations.set(provider, (this.ownershipGenerations.get(provider) ?? 0) + 1)
+    this.noteProjectionCommitted(provider)
   }
 
   /**
@@ -973,7 +1006,13 @@ export class KeysManagerService {
       // runs. The capture starts here, outside the mutation queue, so a
       // release parked ahead of the harvest cannot let a foreign writer
       // become this attempt's provenance.
-      void this.harvestLogin(attempt, this.captureSettledProjection(attempt))
+      //
+      // R6-SF1: the committed grant is already the provider's projection at
+      // this broadcast, so this is also the generation boundary for cooldown
+      // attribution. Everything the harvest does afterwards (queue and
+      // projection-read waits included) runs against this generation.
+      const projectionGeneration = this.noteProjectionCommitted(provider)
+      void this.harvestLogin(attempt, this.captureSettledProjection(attempt), projectionGeneration)
       return
     }
     if (settlement === 'cancelled') this.finishLoginAttempt(attempt, 'cancelled')
@@ -1180,8 +1219,17 @@ export class KeysManagerService {
    * exactly that payload and compensation may only revert exactly that
    * payload, so a foreign grant cannot become this attempt's authority just
    * because it landed before the queued mutation ran.
+   *
+   * `projectionGeneration` is the generation {@link noteProjectionCommitted}
+   * recorded at that same broadcast (R6-SF1): it names the projection whose
+   * failures own a cooldown, so the stale-window reset below clears only a
+   * window attributed to an OLDER projection.
    */
-  private async harvestLogin(attempt: LoginAttempt, committed: Promise<OAuthGrantPayload | undefined>): Promise<void> {
+  private async harvestLogin(
+    attempt: LoginAttempt,
+    committed: Promise<OAuthGrantPayload | undefined>,
+    projectionGeneration: number,
+  ): Promise<void> {
     // A revoke (provider release) may have finalized this attempt before
     // the seam's authorized settlement arrives: never resurrect rows for a
     // settled login (round-2 review, step 4).
@@ -1245,8 +1293,16 @@ export class KeysManagerService {
         // pi-ai writes it, so the freshly committed grant can already be
         // serving requests while this write is awaited; a failure landing in
         // that window belongs to the new generation and must keep cooling.
-        // The instant this write starts is the boundary between the two.
-        const writeStartedAt = Date.now()
+        //
+        // R6-SF1: the boundary is the projection generation, not the instant
+        // this plugin-copy write starts. That instant sits too late — the
+        // harvest also waited behind the mutation queue and the projection
+        // read, and a failure of the already-projected grant landing there
+        // used to look older than the write. Attribution is stamped onto the
+        // row's window at failure time instead: only a window belonging to a
+        // generation older than the one projected here is the previous
+        // grant's. Timestamps play no part, so a same-millisecond recovery no
+        // longer stalls.
         await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
         facts.wroteRef = true
         const now = Date.now()
@@ -1307,11 +1363,17 @@ export class KeysManagerService {
           // recovery grace window does not apply to a zeroed cooldown. The
           // leftover `failureLevel`/`consecutiveFailures` fields do not
           // escalate anything.
-          // Round-5 finding SF3: only a cooldown that PREDATES this harvest's
-          // write is the old grant's. `applyFailureCooldown` always stamps
-          // `lastFailureAt`, so a failure recorded after the write started
-          // belongs to the freshly committed grant and its window stands.
-          if (existing.lastFailureAt < writeStartedAt) existing.cooldownUntil = 0
+          // Round-5 finding SF3: only a cooldown the OLD grant earned may be
+          // cleared. R6-SF1: attribution is the projection generation stamped
+          // on the window at failure time, not a timestamp taken here — a
+          // failure of the freshly projected grant landing while this harvest
+          // waited (queue, projection read) keeps its window, and an older
+          // window clears even when its stamp shares this millisecond.
+          const earnedGeneration = this.cooldownGenerations.get(existing.id)
+          if (earnedGeneration === undefined || earnedGeneration < projectionGeneration) {
+            existing.cooldownUntil = 0
+            this.cooldownGenerations.delete(existing.id)
+          }
         } else {
           const rowId = newKeyId()
           addedId = rowId
@@ -3304,6 +3366,10 @@ export class KeysManagerService {
     const now = Date.now()
     if (key.cooldownUntil > now && now - key.lastFailureAt < 10_000) return
     const result = applyFailureCooldown(key, this.store.settings, now, failure)
+    // R6-SF1: stamp which projection earned this window. The generation is
+    // read at failure time — never derived later from a cooldown timestamp —
+    // so a harvest can clear only a window an older projection earned.
+    this.cooldownGenerations.set(key.id, this.ownershipGenerations.get(providerId) ?? 0)
     // D1/D2 pool arbitration: when the OAuth grant itself failed (the pinned
     // pi-ai `ModelsError("oauth", …)` code), the account cools down AND the
     // cascade demotes to the key pool by deleting the projection record.
