@@ -642,29 +642,6 @@ function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OA
     candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined)
 }
 
-/** Outcome of {@link raceTimeout}: the promise settled, or the bound elapsed. */
-type TimeoutResult<T> = { settled: true; value: T } | { settled: false }
-
-/**
- * Resolve with `promise`'s completion, or with `{ settled: false }` once `ms`
- * elapses — whichever comes first. The input promise keeps running: a timeout
- * never cancels the work behind it (round-9 should-fix: the hydration read
- * must still land, only this wait is bounded). The timer is always cleared, so
- * a fast settlement leaves nothing pending.
- */
-function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<TimeoutResult<T>> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<TimeoutResult<T>>(resolve => {
-    timer = setTimeout(() => resolve({ settled: false }), ms)
-  })
-  return Promise.race([
-    promise.then(value => ({ settled: true as const, value })),
-    timeout,
-  ]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer)
-  })
-}
-
 export class KeysManagerService {
   readonly ctx: HostContext
   readonly store: KeysManagerStore
@@ -766,18 +743,21 @@ export class KeysManagerService {
   /**
    * MF3 load-time hydration result (round-8 finding I-000108). The
    * constructor starts the ownership read, but a restarted process can serve
-   * a stream before it settles. Until it does, {@link activeAccounts} is
-   * empty, so `wrapStream` would select and mutate a key (cursor,
-   * `lastUsedAt`, sticky binding) even though pi-ai serves the persisted
-   * grant, and an OAuth failure would be classified as externally
-   * authenticated instead of cooling the account. The promise never rejects
-   * (hydration catches and warns per provider, then falls back to "no
-   * owner"), so awaiting it cannot throw; the wait is bounded separately by
-   * {@link hydrationWaitMs} because it can still stay pending forever.
+   * a stream before it settles. Until this provider's read lands,
+   * {@link activeAccounts} may not know the owner, so `wrapStream` would
+   * select and mutate a key (cursor, `lastUsedAt`, sticky binding) even though
+   * pi-ai serves the persisted grant, and an OAuth failure would be classified
+   * as externally authenticated instead of cooling the account.
+   *
+   * The promise never rejects (hydration catches and warns per provider), but
+   * it can stay pending forever. Requests therefore never subscribe to it
+   * (round-10 should-fix SF2: a per-call `then`/`await` would be retained on a
+   * promise that never settles); they wait per provider through
+   * {@link hydratedProviders} and {@link hydrationWaiters} instead.
    */
   private projectionHydration: Promise<void> = Promise.resolve()
   /**
-   * Upper bound on one stream's wait for {@link projectionHydration}
+   * Upper bound on one stream's wait for its provider's hydration read
    * (round-9 should-fix). The hydration read has no timeout of its own, so
    * without a bound one stalled `readRecord` would gate every managed stream.
    * Injectable so tests can exercise the bound quickly.
@@ -792,6 +772,15 @@ export class KeysManagerService {
    * to the requested provider's own unresolved read.
    */
   private readonly hydratedProviders = new Set<string>()
+  /**
+   * One resolver set per provider still being waited on (round-10 should-fix
+   * SF2). A wait registers exactly one entry here and removes it when the wait
+   * ends — on timeout or on the late landing — so a read that never settles
+   * cannot retain anything per request. {@link noteProviderHydrated} is the
+   * only notification channel; the shared hydration promise is never
+   * subscribed to.
+   */
+  private readonly hydrationWaiters = new Map<string, Set<() => void>>()
   /**
    * True once the load-time hydration read is over (round-10 SF1). From then
    * on no provider's read can land, so attribution is known for every provider
@@ -831,10 +820,11 @@ export class KeysManagerService {
    * does not own, and out-of-band updates keep surfacing the native-
    * management warning.
    *
-   * Returns its own completion (round-8 finding I-000108): `wrapStream` awaits
-   * it before deciding request attribution, and the returned promise is
-   * already caught, so a failed hydration degrades to "no owner" instead of
-   * wedging every request.
+   * Returns its own completion (round-8 finding I-000108), and the returned
+   * promise is already caught, so a failed hydration degrades to "no owner"
+   * instead of wedging every request. Request attribution does not subscribe
+   * to that promise (round-10 should-fix SF2 — it may stay pending forever);
+   * each request waits on its own provider's landing instead.
    */
   private hydrateProjectionOwnership(): Promise<void> {
     return (async () => {
@@ -890,14 +880,73 @@ export class KeysManagerService {
     })
   }
 
-  /** Record that one provider's hydration read is over — owner or not (SF1). */
+  /**
+   * Record that one provider's hydration read is over — owner or not (SF1) —
+   * and wake the requests waiting on that provider alone (SF2).
+   */
   private noteProviderHydrated(provider: string): void {
     this.hydratedProviders.add(provider)
+    const waiters = this.hydrationWaiters.get(provider)
+    if (waiters === undefined) return
+    this.hydrationWaiters.delete(provider)
+    for (const wake of [...waiters]) wake()
   }
 
   /** Release every provider's readiness wait when hydration cannot proceed. */
   private settleHydrationWaits(): void {
     for (const provider of Object.keys(this.store.providers)) this.noteProviderHydrated(provider)
+  }
+
+  /**
+   * Wait for one provider's own hydration read to land, at most `ms`, and
+   * report whether it landed.
+   *
+   * Registers exactly one waiter entry for this wait and removes it when the
+   * wait ends either way (round-10 should-fix SF2): nothing is attached to the
+   * shared hydration promise, so a read that never settles cannot retain one
+   * reaction per request. A late landing still wakes the wait through
+   * {@link noteProviderHydrated}, and the generation guard in
+   * {@link hydrateProjectionOwnership} still decides whether its result lands
+   * (I-000108).
+   */
+  private waitForProviderHydration(provider: string, ms: number): Promise<boolean> {
+    if (this.hydrationSettled || this.hydratedProviders.has(provider)) return Promise.resolve(true)
+    return new Promise<boolean>(resolve => {
+      let waiters = this.hydrationWaiters.get(provider)
+      if (waiters === undefined) {
+        waiters = new Set<() => void>()
+        this.hydrationWaiters.set(provider, waiters)
+      }
+      const live = waiters
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const wake = (landed: boolean): void => {
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+        live.delete(onLanded)
+        if (live.size === 0 && this.hydrationWaiters.get(provider) === live) this.hydrationWaiters.delete(provider)
+        resolve(landed)
+      }
+      const onLanded = (): void => {
+        wake(true)
+      }
+      timer = setTimeout(() => {
+        wake(false)
+      }, ms)
+      live.add(onLanded)
+    })
+  }
+
+  /**
+   * Live per-provider waiter entries. A documented internal counter for the
+   * round-10 SF2 invariant: a wait that ended must leave no entry behind, so
+   * this never grows with the number of timed-out requests.
+   */
+  private hydrationWaiterCount(): number {
+    let total = 0
+    for (const waiters of this.hydrationWaiters.values()) total += waiters.size
+    return total
   }
 
   /**
@@ -931,11 +980,8 @@ export class KeysManagerService {
     // This provider's own read already landed (or a newer claim already owns
     // it, or the whole read is over): nothing can arrive later, so no wait.
     if (this.hydrationSettled || this.hydratedProviders.has(providerId) || this.activeAccounts.has(providerId)) return true
-    const outcome = await raceTimeout(this.projectionHydration, this.hydrationWaitMs)
-    if (outcome.settled) return true
-    // The global wait elapsed, but this provider's own read may have landed in
-    // the meantime: its attribution is then known ("no owner"), not unknown.
-    if (this.hydratedProviders.has(providerId)) return true
+    const landed = await this.waitForProviderHydration(providerId, this.hydrationWaitMs)
+    if (landed) return true
     if (!this.hydrationWaitWarned.has(providerId)) {
       this.hydrationWaitWarned.add(providerId)
       this.warn(`projection ownership hydration did not settle within ${this.hydrationWaitMs}ms for ${providerId}; requests proceed without an attributed account until it does`)

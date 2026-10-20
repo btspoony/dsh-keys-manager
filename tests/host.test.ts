@@ -6373,6 +6373,65 @@ test('a hydrated provider keeps its owner while another provider\'s read stalls 
   }
 })
 
+// Round-10 review (should-fix SF2): `raceTimeout` attached one reaction
+// (`promise.then`) to the shared hydration promise PER REQUEST and the timeout
+// path only cleared its timer, so every timed-out wait left a reaction behind
+// on a read that never settles — retained for the life of the process. The
+// wait now registers one waiter entry per provider that removes itself when it
+// ends (timeout or late landing), and the hydration promise itself is never
+// subscribed to per request.
+
+test('a timed-out hydration wait retains nothing per request (R10 SF2)', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) return new Promise<FakeCredentialRecord | undefined>(() => {})
+      return realRead(key)
+    }
+    try {
+      const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+      const seam = restarted as unknown as {
+        hydrationWaitMs: number
+        projectionHydration: unknown
+        hydrationWaiterCount?: () => number
+      }
+      seam.hydrationWaitMs = 15
+      // Count reactions attached to the shared hydration promise: the pre-fix
+      // wait called `then` once per request on a promise that never settles.
+      let reactions = 0
+      seam.projectionHydration = {
+        then: () => {
+          reactions += 1
+          return new Promise(() => {})
+        },
+      }
+      const waits = 5
+      const retainedEntries: number[] = []
+      for (let attempt = 0; attempt < waits; attempt += 1) {
+        const startedAt = Date.now()
+        await consume(restarted.streamListener(
+          { provider: 'anthropic', model: 'model', sessionId: `session-leak-${attempt}`, messages: [] },
+          async function* () {
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          } as any,
+        ))
+        // Proves the wait was bounded (the stalled read itself never settles).
+        assert.ok(Date.now() - startedAt < 2000, 'the wait was bounded, not the stalled read')
+        const counter = (restarted as unknown as { hydrationWaiterCount?: () => number }).hydrationWaiterCount
+        retainedEntries.push(typeof counter === 'function' ? counter.call(restarted) : -1)
+      }
+      assert.equal(reactions, 0, 'no reaction is attached to the shared hydration promise')
+      assert.deepEqual(retainedEntries, new Array<number>(waits).fill(0), 'no waiter entry survives its wait')
+    } finally {
+      h.credentials.raw.readRecord = realRead
+    }
+  } finally {
+    await h.close()
+  }
+})
+
 test('a restarted service does not adopt an orphan projection and still warns on its updates', async () => {
   const h = await harness()
   try {
