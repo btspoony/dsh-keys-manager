@@ -252,6 +252,26 @@ describe('cursor token refresh', () => {
     })
   })
 
+  it('bounds a stalled response body as a retryable refresh failure', async () => {
+    // Headers arrive, the body never finishes: the deadline still fires on the
+    // composed signal, so the body read must classify like an unanswered one.
+    const fetch: CursorFetch = async (_url, init) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), { once: true })
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+
+    await expect(refreshCursorToken('refresh-1', { fetch, timeoutMs: 20 })).rejects.toMatchObject({
+      name: 'CursorAuthError',
+      failure: 'refresh',
+      message: expect.stringContaining('timed out'),
+    })
+  })
+
   it('lets the caller abort a pending exchange instead of waiting for the deadline', async () => {
     const controller = new AbortController()
     const fetch: CursorFetch = (_url, init) =>

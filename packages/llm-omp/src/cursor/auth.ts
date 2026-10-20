@@ -240,9 +240,8 @@ export async function refreshCursorToken(
   const fetchImpl = options.fetch ?? fetch
   const timeout = AbortSignal.timeout(options.timeoutMs ?? REFRESH_TIMEOUT_MS)
   const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
-  let response: Response
   try {
-    response = await fetchImpl(CURSOR_AUTH.refreshUrl, {
+    const response = await fetchImpl(CURSOR_AUTH.refreshUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -252,6 +251,34 @@ export async function refreshCursorToken(
       }),
       signal,
     })
+
+    if (!response.ok) {
+      throw new CursorAuthError(
+        `Cursor token refresh failed: HTTP ${response.status} ${await response.text()}`,
+        'refresh',
+        response.status,
+      )
+    }
+
+    // The body read runs under the same composed signal: an endpoint that sends
+    // headers and then stalls must classify like an unanswered exchange.
+    const data = (await response.json()) as {
+      access_token?: unknown
+      refresh_token?: unknown
+      shouldLogout?: unknown
+    }
+    if (data.shouldLogout === true) {
+      throw new CursorAuthError('Cursor ended this session; sign in again', 'reauth')
+    }
+    if (typeof data.access_token !== 'string' || data.access_token === '') {
+      throw new CursorAuthError('Cursor token refresh returned no access token', 'refresh')
+    }
+
+    return {
+      access: data.access_token,
+      refresh: typeof data.refresh_token === 'string' && data.refresh_token !== '' ? data.refresh_token : refreshToken,
+      expires: cursorTokenExpiry(data.access_token),
+    }
   } catch (cause) {
     // The caller's own abort keeps its cause; the deadline is this module's.
     if (options.signal?.aborted === true) throw cause
@@ -259,32 +286,6 @@ export async function refreshCursorToken(
       throw new CursorAuthError('Cursor token refresh timed out; retry the request', 'refresh')
     }
     throw cause
-  }
-
-  if (!response.ok) {
-    throw new CursorAuthError(
-      `Cursor token refresh failed: HTTP ${response.status} ${await response.text()}`,
-      'refresh',
-      response.status,
-    )
-  }
-
-  const data = (await response.json()) as {
-    access_token?: unknown
-    refresh_token?: unknown
-    shouldLogout?: unknown
-  }
-  if (data.shouldLogout === true) {
-    throw new CursorAuthError('Cursor ended this session; sign in again', 'reauth')
-  }
-  if (typeof data.access_token !== 'string' || data.access_token === '') {
-    throw new CursorAuthError('Cursor token refresh returned no access token', 'refresh')
-  }
-
-  return {
-    access: data.access_token,
-    refresh: typeof data.refresh_token === 'string' && data.refresh_token !== '' ? data.refresh_token : refreshToken,
-    expires: cursorTokenExpiry(data.access_token),
   }
 }
 
