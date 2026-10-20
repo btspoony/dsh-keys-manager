@@ -728,6 +728,19 @@ export class KeysManagerService {
    * reached. The request-error listener awaits this entry before deciding.
    */
   private readonly projectionDemotions = new Map<string, Promise<void>>()
+  /**
+   * MF3 load-time hydration result (round-8 finding I-000108). The
+   * constructor starts the ownership read, but a restarted process can serve
+   * a stream before it settles. Until it does, {@link activeAccounts} is
+   * empty, so `wrapStream` would select and mutate a key (cursor,
+   * `lastUsedAt`, sticky binding) even though pi-ai serves the persisted
+   * grant, and an OAuth failure would be classified as externally
+   * authenticated instead of cooling the account. The promise never rejects
+   * (hydration catches and warns per provider, then falls back to "no
+   * owner"), so awaiting it cannot wedge requests; once resolved, later
+   * requests only pay a microtask.
+   */
+  private projectionHydration: Promise<void> = Promise.resolve()
   /** Channels whose lost-subscription warning already fired (warn once). */
   private readonly subscriptionLostWarnings = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
@@ -741,7 +754,7 @@ export class KeysManagerService {
     this.store = store
     this.typertRemote = Object.freeze({ service: this, serviceKey: SERVICE, namespace: NAMESPACE })
     this.rebuildBrokerMap()
-    this.hydrateProjectionOwnership()
+    this.projectionHydration = this.hydrateProjectionOwnership()
     this.settledDisposer = this.watchAuthorizationSettled()
     this.recordUpdatedDisposer = this.watchGrantRecordUpdated()
   }
@@ -757,9 +770,14 @@ export class KeysManagerService {
    * or stale grant — is left untouched: the manager never adopts a grant it
    * does not own, and out-of-band updates keep surfacing the native-
    * management warning.
+   *
+   * Returns its own completion (round-8 finding I-000108): `wrapStream` awaits
+   * it before deciding request attribution, and the returned promise is
+   * already caught, so a failed hydration degrades to "no owner" instead of
+   * wedging every request.
    */
-  private hydrateProjectionOwnership(): void {
-    void (async () => {
+  private hydrateProjectionOwnership(): Promise<void> {
+    return (async () => {
       const records = this.credentialRecords()
       if (records === undefined) {
         this.warnSubscriptionLost('credentials record access')
@@ -3680,6 +3698,15 @@ export class KeysManagerService {
           async next(): Promise<IteratorResult<StreamChunkLike>> {
             if (!started) {
               started = true
+              // Round-8 finding I-000108: a restarted process serves the
+              // persisted projection before the ownership hydration settles.
+              // Attribution must wait for it — otherwise this request selects
+              // and mutates a key cursor even though pi-ai serves the stored
+              // grant, and an OAuth failure is classified as externally
+              // authenticated. The promise never rejects (see
+              // `projectionHydration`), and later requests only pay a
+              // microtask once it is resolved.
+              await service.projectionHydration
               // Round-5 finding C4: while a projection exists, pi-ai serves
               // the stored grant and never consults the broker, so selecting
               // a key here would only mutate unused key state (cursor,

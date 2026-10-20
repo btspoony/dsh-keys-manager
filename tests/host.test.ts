@@ -6129,6 +6129,48 @@ test('a hydration read superseded by a newer activation is discarded', async () 
   }
 })
 
+// Round-8 review (I-000108, high): a restarted process serves a projection
+// that outlived the previous run, but the ownership hydration is async. A
+// stream running before it settles sees an empty `activeAccounts`, so it
+// selects and mutates a key even though pi-ai serves the stored grant, and an
+// OAuth failure is attributed as externally authenticated (no cooling, no
+// demotion). The first request must await the hydration result.
+
+test('a stream waits for projection hydration before attributing the request (I-000108)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    // An API-key row makes a premature selection observable.
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    // The projection persisted by the previous run.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.credentials.raw.readRecordDelayMs = 40
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const provider = h.store.provider('anthropic')!
+    const apiKeyRow = provider.keys.find(key => key.kind === 'api-key')!
+    const cursorBefore = provider.cursor
+    const usedBefore = apiKeyRow.lastUsedAt
+    await consume(restarted.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-hydration', messages: [] },
+      async function* () {
+        yield { type: 'finish', reason: { kind: 'error', failure: { code: 'oauth', message: 'OAuth refresh failed for anthropic' } } }
+      } as any,
+    ))
+    h.credentials.raw.readRecordDelayMs = 0
+    // pi-ai served the stored grant: no key cursor, usage or binding moved.
+    assert.equal(provider.cursor, cursorBefore)
+    assert.equal(apiKeyRow.lastUsedAt, usedBefore)
+    assert.equal(h.store.binding('session-hydration', 'anthropic'), undefined)
+    // The failure belongs to the hydrated account: it cools and the stale
+    // projection is demoted.
+    const row = provider.keys.find(key => key.id === rowId)!
+    assert.ok(row.cooldownUntil > Date.now(), 'the hydrated account is cooled')
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+  } finally {
+    h.credentials.raw.readRecordDelayMs = 0
+    await h.close()
+  }
+})
+
 test('a restarted service does not adopt an orphan projection and still warns on its updates', async () => {
   const h = await harness()
   try {
