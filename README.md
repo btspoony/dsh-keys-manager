@@ -23,6 +23,8 @@ manager.
 - Extra built-in providers installed as ordinary `llm-pi-ai` routes.
 - OAuth account sign-in for seven pi-ai-backed providers, stored beside
   the API keys.
+- A companion transport component for providers the vendored pi-ai cannot
+  speak — Cursor (`cursor`) today — installed with the plugin.
 
 ### Extra providers
 
@@ -54,6 +56,12 @@ Harness page afterwards so the browser half is fetched.
 ```sh
 dsh plugin --profile web add dsh-keys-manager
 ```
+
+Installing `dsh-keys-manager` installs two bundle components. The published
+package depends on `dsh-llm-omp-transports`, so one install resolves both npm
+packages, and the plugin page lists both `dsh-keys-manager` and
+`llm-omp-transports`. Enable both: the manager owns credentials and routing,
+the transport component owns the Cursor wire protocol.
 
 ### Install — local checkout
 
@@ -123,6 +131,25 @@ Adding an account stores only the provider-issued grant in the Harness
 credential store, behind the account's `grantRef`; the manager state keeps
 the reference plus non-sensitive metadata (email, account id, expiry) — the
 same secret-free layout as API keys.
+
+### Cursor transport
+
+Cursor is served by the companion `dsh-llm-omp-transports` component on its
+own `cursor` route. It does not run through the pi-ai key pool: the route
+keeps exactly one grant at `llm-omp-transports/cursor`, refreshed
+automatically on the credential seam.
+
+- Models come from the pinned `@oh-my-pi/pi-catalog@18.12.3` table (123 rows),
+  generated into the transport at build time. The route streams text and
+  reasoning, and hands tool calls to DSH's tool loop.
+- Sign in from the **Transport accounts** section of the Keys Manager page: a
+  browser page plus a poll. The row shows identity, expiry and status; after an
+  expired or rejected grant, re-login is manual.
+- Images are not forwarded yet. The route advertises text-only input and
+  refuses image blocks with a typed error instead of dropping them.
+- The client is unofficial and presents Cursor's vendor-internal OAuth
+  identity. Read the [transports package docs](packages/llm-omp/README.md)
+  before relying on it; the risks and limits are listed there.
 
 ### Selection and failure policy
 
@@ -195,6 +222,19 @@ also support OAuth (Anthropic, GitHub Copilot, Kimi Coding, OpenAI Codex,
 OpenRouter, Radius, xAI) remain manageable through their API-key path, and
 their OAuth sign-in is available as [OAuth accounts](#oauth-accounts).
 
+## Repository layout
+
+This repository is a pnpm workspace with two published packages:
+
+| Path | npm package | Role |
+|---|---|---|
+| root | `dsh-keys-manager` | Host plugin, Keys Manager Web client, bundle patch |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor (and future) transport component |
+
+The root package declares the transports package as a dependency, so the
+published Keys Manager tarball pulls the transport in rather than vendoring
+it. The transport versions independently; see [Release](docs/release.md).
+
 ## Documentation
 
 | Doc | Content |
@@ -202,6 +242,7 @@ their OAuth sign-in is available as [OAuth accounts](#oauth-accounts).
 | [Development](docs/development.md) | build and dev workflow, repository layout |
 | [Release](docs/release.md) | CI checks and the npm release flow |
 | [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
+| [Transports package](packages/llm-omp/README.md) | Cursor transport: support status, risks, build/test, release |
 
 Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
 files in `docs/` — [开发](docs/development.zh-CN.md) ·
