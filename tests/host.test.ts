@@ -4433,6 +4433,35 @@ function holdRotationWrite(h: Harness, key: string): {
 // when the account was removed. The normal rotation path (no race) is pinned
 // by the W1 test above.
 
+/**
+ * C6-1/I1 test hook: park the seam delete of one record until released, so a
+ * multi-row release can be frozen between row X's grant delete and the
+ * provider-record delete that ends the release.
+ */
+function holdDeleteRecord(h: Harness, key: string): {
+  started: Promise<void>
+  finished: Promise<void>
+  release: () => void
+} {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let markStarted!: () => void
+  const started = new Promise<void>(resolve => { markStarted = resolve })
+  let markFinished!: () => void
+  const finished = new Promise<void>(resolve => { markFinished = resolve })
+  const raw = h.credentials.raw
+  const realDelete = raw.deleteRecord.bind(raw)
+  raw.deleteRecord = async (k: string) => {
+    if (k === key) {
+      markStarted()
+      await gate
+    }
+    await realDelete(k)
+    if (k === key) markFinished()
+  }
+  return { started, finished, release }
+}
+
 test('a rotation write racing removeAccount leaves no orphan record (C6-1)', async () => {
   const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   try {
@@ -4489,6 +4518,64 @@ test('a rotation write racing releaseProvider leaves no orphan record (C6-1)', a
     assert.equal(h.credentials.records.has(GRANT_KEY), false)
     assert.equal(h.store.provider('anthropic'), undefined)
     // No secret-bearing record outlives the released route.
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+// C6-1/I1: the release of a provider with more than one key is not atomic.
+// `releaseLocked` deletes every row's credential first and the provider
+// record last, and it never splices the rows, so while it awaits a later row
+// the provider record and row X both still look live — even though row X's
+// grant is already gone. A rotation write landing in that window used to pass
+// the row-identity revalidation, commit `owner.oauth.grantRef = rotatedRef`
+// and be orphaned by the release's final provider deletion (no crash needed;
+// normal FIFO ordering reaches it). The revalidation is removal-aware now:
+// a row is marked before its removal's first awaited delete and a row already
+// flagged `valueMissing` is rejected.
+
+test('a rotation write landing mid-release leaves no orphan record (C6-1/I1)', async () => {
+  const { h, rowId: rowA, grantRef: seededA } = await harnessWithSeededAccount({
+    accountId: 'acc-a', email: 'a@example.com', refresh: 'rt-seed-a',
+  })
+  try {
+    // A second account keeps the release running past row A: the release
+    // reaches row B's grant only after row A is fully processed.
+    const rowB = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-seed-b' })
+    await h.service.activateAccount('anthropic', rowA)
+    const rowAObject = h.store.provider('anthropic')!.keys.find(key => key.id === rowA)!
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-mid-release').digest('hex').slice(0, 12))
+    const heldWrite = holdRotationWrite(h, rotatedRef)
+    // pi-ai rotates account A's grant; the echo's sync-back write is parked.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-mid-release', access: 'at-mid-release', accountId: 'acc-a', email: 'a@example.com' }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await heldWrite.started
+
+    // Park the release on row B's grant delete. By then row A's projection
+    // and grant are deleted and row A is flagged, while the provider record
+    // (deleted last) still exists — the exact mid-release window.
+    const heldDelete = holdDeleteRecord(h, rowB.grantRef)
+    const release = h.service.releaseProvider('anthropic')
+    await heldDelete.started
+    assert.notEqual(h.store.provider('anthropic'), undefined)
+    assert.equal(h.credentials.records.has(seededA), false)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+
+    // The parked rotation write now lands inside that window.
+    heldWrite.release()
+    await heldWrite.finished
+    // Removal-aware revalidation: the write must not be committed, and the
+    // record it wrote must be compensated. The row is never resurrected.
+    await eventually(() => assert.equal(h.credentials.records.has(rotatedRef), false))
+    assert.equal(rowAObject.oauth!.grantRef, seededA)
+
+    // Finish the release; the route and every manager record are gone.
+    heldDelete.release()
+    await heldDelete.finished
+    await release
+    assert.equal(h.store.provider('anthropic'), undefined)
+    assert.equal(h.credentials.records.has(rotatedRef), false)
     assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
   } finally {
     await h.close()

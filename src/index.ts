@@ -598,6 +598,19 @@ export class KeysManagerService {
   /** The account row whose grant payload currently IS the projection, per provider. */
   private readonly activeAccounts = new Map<string, string>()
   /**
+   * Account rows committed to removal (C6-1/I1 removal-aware oracle), marked
+   * by {@link removeOAuthGrant} before its first awaited delete. A multi-row
+   * release deletes every row's credential first and the provider record
+   * last, and it never splices its rows, so while it runs the provider record
+   * and the row object both still look live even though the row's grant is
+   * already gone. Object identity alone therefore cannot tell "still serving"
+   * from "mid-removal"; this mark can. It is never cleared: the row it names
+   * is either spliced out (removeAccount/deleteKey) or left flagged
+   * `valueMissing` (release). It marks the live object, so a row object
+   * recreated under the same id is unaffected.
+   */
+  private readonly retiringAccounts = new WeakSet<KeyRecord>()
+  /**
    * Per-provider write counter for {@link activeAccounts} claims (round-3
    * finding 3): activation and harvest claims bump it, and a hydration
    * result whose generation no longer matches is discarded instead of
@@ -1567,8 +1580,23 @@ export class KeysManagerService {
    * OAuth account. A remove/release landing in between detaches the row
    * object; object identity is what tells "this account is still there"
    * apart from "some same-id row was recreated".
+   *
+   * C6-1/I1: a removal that is still IN PROGRESS is not visible through
+   * identity alone. A multi-row release deletes each row's grant first and
+   * the provider record last, and it never splices its rows, so after row X's
+   * grant is deleted the provider record and row X both still look live while
+   * the release awaits later rows. Syncing a rotation into that window would
+   * commit `grantRef = rotatedRef` on a row nothing will serve, and the
+   * release's final provider deletion leaves that record orphaned. Two
+   * removal-aware checks close it: {@link retiringAccounts} is set before the
+   * removal's first awaited delete, and `valueMissing` marks every row whose
+   * credential is already gone (release) or whose route was demoted. Either
+   * means the row is no longer serving, so the write is skipped (or, after
+   * the write, compensated).
    */
   private accountRowStillCurrent(provider: string, owner: KeyRecord): boolean {
+    if (this.retiringAccounts.has(owner)) return false
+    if (owner.valueMissing === true) return false
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return false
     if (owner.kind !== 'oauth' || owner.oauth === null) return false
@@ -1780,6 +1808,12 @@ export class KeysManagerService {
    */
   private async removeOAuthGrant(provider: string, row: KeyRecord): Promise<void> {
     if (row.kind !== 'oauth' || row.oauth === null) return
+    // C6-1/I1: mark the row BEFORE the first awaited delete. A release
+    // deletes every row's credential before it deletes the provider record
+    // and never splices the rows, so from the first delete onward the row
+    // object is no longer a truthful "still serving" signal; the reconciler
+    // consults this mark instead (see accountRowStillCurrent).
+    this.retiringAccounts.add(row)
     await this.fallbackToKeysUnqueued(provider, row)
     const records = this.credentialRecords()
     if (records !== undefined) await records.deleteRecord(row.oauth.grantRef)
