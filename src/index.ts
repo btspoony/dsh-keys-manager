@@ -1907,18 +1907,20 @@ export class KeysManagerService {
    * "removed outside Keys Manager" warning is pushed — even though that
    * row and its plugin-scope grant are untouched.
    *
-   * The marker only silences that echo. It does NOT make the manager's state
-   * truthful: after the delete the route has no stored projection while
-   * {@link activeAccounts} still names the account that served it, so
-   * `oauthOwnerFor` keeps rendering `projected: true` and oauth failures stay
-   * attributed to a row pi-ai no longer resolves. The transition is therefore
-   * written explicitly here, by {@link restorePreviousProjection}, once the
-   * removal succeeded (I-000125, truthfulness half).
+   * The marker only silences that echo; the route's state is corrected
+   * explicitly. The removal leaves the route with no stored projection, so the
+   * provider's owner claim — whatever it named before this attempt's grant
+   * replaced the record — is untruthful: {@link oauthOwnerFor} keeps naming a
+   * row pi-ai no longer resolves, `wrapStream` skips key-pool selection, oauth
+   * failures are attributed to that row, and the client keeps "Set active"
+   * disabled — the account cannot be re-activated. The claim is therefore
+   * invalidated (I-000125), and ONLY the claim: the surviving row keeps its
+   * `grantRef` and its `valueMissing: false`, so it stays managed and
+   * re-activatable while the route falls back to its API-key pool.
    *
-   * Known bound: while the marker is set and the removal's echo never arrives
-   * (the handler returns early for a provider no longer managed), a genuine
-   * out-of-band removal inside the TTL window is masked. The TTL bounds that
-   * window; this second producer does not widen it beyond the demotion path.
+   * The marker is armed only while the provider is still managed: a released
+   * provider has no echo consumer, and a marker nothing consumes would stay
+   * armed for its whole TTL and mask a genuine out-of-band removal.
    */
   private async revertHarvestProjection(
     attempt: LoginAttempt,
@@ -1926,10 +1928,6 @@ export class KeysManagerService {
   ): Promise<{ ok: true } | { ok: false; failure: string }> {
     const records = this.credentialRecords()
     if (records === undefined) return { ok: true }
-    // The account that owned the projection before this attempt's grant
-    // replaced it. Captured before the delete because the delete is what
-    // makes the retained claim untruthful; restored explicitly afterwards.
-    const previousOwner = this.activeAccounts.get(attempt.provider)
     try {
       const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
       // Same atomic decide-and-delete as the demotion path (round-3
@@ -1951,13 +1949,24 @@ export class KeysManagerService {
         return undefined
       })
       if (owns && await this.projectionStillMatches(records, projectionKey, decidedAgainst)) {
+        // The claim this removal makes untruthful, captured before the awaited
+        // delete. A newer activation or login claiming the route while the
+        // delete is in flight wins: its generation moves, and its claim names
+        // whatever that writer actually put in place.
+        const ownerBeforeRemoval = this.activeAccounts.get(attempt.provider)
+        const generation = this.ownershipGenerations.get(attempt.provider) ?? 0
         // Mark BEFORE the delete, same one-shot bookkeeping the demotion
         // path uses: the deletion's echo handler reads this marker across
         // its own awaited record re-read, so the removal stays silent for
         // this manager's own demotion instead of demoting the active
         // account.
         const markedAt = Date.now()
-        this.intentionalProjectionRemovals.set(attempt.provider, markedAt)
+        // Only arm the marker where an echo can reach its consumer: the
+        // dispatcher drops record-updates for an unmanaged provider, and a
+        // marker nothing consumes would mask a genuine out-of-band removal for
+        // its whole TTL.
+        const providerManaged = this.store.provider(attempt.provider) !== undefined
+        if (providerManaged) this.intentionalProjectionRemovals.set(attempt.provider, markedAt)
         try {
           await records.deleteRecord(projectionKey)
         } catch (error) {
@@ -1967,14 +1976,21 @@ export class KeysManagerService {
           // removal as the manager's own for the whole TTL, hiding the
           // warning, the missing mark, and the stale owner cleanup. The
           // identity check keeps a newer marker untouched.
-          if (this.intentionalProjectionRemovals.get(attempt.provider) === markedAt) {
+          if (providerManaged && this.intentionalProjectionRemovals.get(attempt.provider) === markedAt) {
             this.intentionalProjectionRemovals.delete(attempt.provider)
           }
           throw error
         }
-        // The removal succeeded: the route lost the projection this attempt
-        // committed, so the manager must now say what actually serves it.
-        await this.restorePreviousProjection(attempt.provider, previousOwner, attempt.accountId, harvest.payload)
+        // The removal succeeded: the projection the rows were claimed against
+        // is gone, so the provider's owner claim must go with it. The row is
+        // deliberately left untouched — same `grantRef`, still `valueMissing:
+        // false` — because it is still managed and its grant is still live;
+        // re-activating it re-projects the route.
+        if (ownerBeforeRemoval !== undefined
+          && (this.ownershipGenerations.get(attempt.provider) ?? 0) === generation) {
+          this.activeAccounts.delete(attempt.provider)
+          this.store.touch()
+        }
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
@@ -1984,106 +2000,6 @@ export class KeysManagerService {
       this.warn(failure)
       return { ok: false, failure }
     }
-  }
-
-  /**
-   * Write the projection state the manager can actually stand behind after
-   * this manager removed the attempt's committed grant.
-   *
-   * The `llm-pi-ai/<provider>` record belongs to the ROUTE, not to the failed
-   * attempt: before the sign-in it held `previousOwner`'s grant, and that
-   * owner's plugin-scope record is still live (the abort path never wrote it;
-   * the flush rollback restored it). Rewriting it through the same
-   * read → project → claim sequence {@link activateAccount} uses keeps the
-   * route serving the account it served before, so `oauthOwnerFor`,
-   * `projected` and oauth failure attribution name the row pi-ai really
-   * resolves. That is the truthful end state — a marker alone would leave the
-   * row claiming a projection that no longer exists.
-   *
-   * When the surviving owner cannot be re-projected — its plugin-scope record
-   * is gone or unusable, the row was removed meanwhile, or the attempt itself
-   * owned the row — the row is demoted with the cause the manager actually
-   * knows (the sign-in failed or was cancelled), never the "removed outside
-   * Keys Manager" wording that describes an external writer.
-   *
-   * No previous owner — a first-ever login for the route — keeps the silent
-   * delete: there is no claim to correct and no row to demote.
-   */
-  private async restorePreviousProjection(
-    provider: string,
-    previousOwner: string | undefined,
-    attemptAccountId: string | undefined,
-    attemptPayload: OAuthGrantPayload,
-  ): Promise<void> {
-    if (previousOwner === undefined) return
-    const providerRecord = this.store.provider(provider)
-    if (providerRecord === undefined) return
-    const row = providerRecord.keys.find(candidate =>
-      candidate.id === previousOwner && candidate.kind === 'oauth' && candidate.oauth !== null)
-    if (row === undefined || row.oauth === null) {
-      // The row that used to serve this route is gone (its removal path owns
-      // the claim) — there is nothing left to re-project or demote.
-      if (this.activeAccounts.get(provider) === previousOwner) {
-        this.activeAccounts.delete(provider)
-        this.store.touch()
-      }
-      return
-    }
-    if (this.activeAccounts.get(provider) !== previousOwner) {
-      // A newer activation or login already claimed the route and wrote its
-      // own projection; this attempt's stale observation must not overrule it.
-      return
-    }
-    const records = this.credentialRecords()
-    if (records !== undefined && previousOwner !== attemptAccountId) {
-      const grantRef = row.oauth.grantRef
-      let stored: CredentialRecordLike | undefined
-      try {
-        stored = await records.readRecord(grantRef)
-      } catch (error) {
-        this.warn(`the ${provider} projection could not be restored after the failed sign-in: reading ${grantRef} failed: ${error instanceof Error ? error.message : String(error)}`)
-      }
-      // The rollback that restores a re-authentication's superseded generation
-      // is best-effort. When it did not land, this record still holds the
-      // failed attempt's own payload — projecting that would present the
-      // failed sign-in's credential as the previous account's grant.
-      if (stored !== undefined && stored.payload !== undefined
-        && JSON.stringify(stored.payload) === JSON.stringify(attemptPayload)) {
-        this.warn(`the ${provider} projection was not restored: ${grantRef} still holds the failed sign-in's payload`)
-      } else if (stored !== undefined && stored.kind === 'grant' && isOAuthGrantPayload(stored.payload)) {
-        const generation = this.ownershipGenerations.get(provider) ?? 0
-        let wrote = false
-        try {
-          await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, async current => {
-            // Fill only the slot this removal just freed: a native writer that
-            // already put a grant back owns the projection now, and its echo
-            // reconciles the ownership; overwriting it would destroy a record
-            // this manager never captured.
-            if (current !== undefined) return undefined
-            wrote = true
-            return { kind: 'grant', payload: structuredClone(stored!.payload) }
-          })
-        } catch (error) {
-          this.warn(`the ${provider} projection could not be restored after the failed sign-in: ${error instanceof Error ? error.message : String(error)}`)
-        }
-        if (wrote) {
-          // The previous account serves the route again: keep its claim (and
-          // its generation) so attribution follows the live projection. A
-          // newer claim landing during the write wins, exactly like a stale
-          // hydration or echo adoption.
-          if ((this.ownershipGenerations.get(provider) ?? 0) === generation) this.claimProjectionOwner(provider, row.id)
-          return
-        }
-      }
-    }
-    if (this.activeAccounts.get(provider) !== previousOwner) return
-    // Re-projection is not available: demote the surviving row with the real
-    // cause. The projection is already gone, so the route resolves through its
-    // API-key pool and the row must say so.
-    row.valueMissing = true
-    this.activeAccounts.delete(provider)
-    this.store.touch()
-    this.pushWarning(`The ${provider} sign-in failed or was cancelled; Keys Manager removed its pending projection, so the route now resolves through its API-key pool. Re-activate the account or sign in again to restore it.`)
   }
 
   /** Expire wedged sign-ins and drop long-settled attempt records. */
@@ -2213,7 +2129,6 @@ export class KeysManagerService {
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return
     const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
-    if (accounts.length === 0) return
     const activeId = this.activeAccounts.get(provider)
     const active = activeId === undefined
       ? undefined
@@ -2246,6 +2161,13 @@ export class KeysManagerService {
       }
       return
     }
+    // I-000125 marker hygiene: the removal branch above is the marker's ONLY
+    // consumer, so it must run before this early return. A provider that holds
+    // no OAuth row cannot be demoted (nothing to mark and nobody to warn), but
+    // its own removal echo still lands here — returning first would leave the
+    // marker armed for its whole TTL and mask a genuine out-of-band removal of
+    // the projection that serves a row added inside that window.
+    if (accounts.length === 0) return
     if (record.kind === 'api-key') {
       // Native api-key management took the route over: the manager no
       // longer owns any projection here.
