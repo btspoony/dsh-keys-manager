@@ -4739,11 +4739,13 @@ test('a rotated refresh token re-associates its row and syncs the rotated payloa
  * so a removal can be requested while the rotated-record write is in
  * flight. Everything else about the fake store is unchanged.
  */
-function holdRotationWrite(h: Harness, key: string): {
+function holdRotationWrite(h: Harness, key: string, options: { times?: number } = {}): {
   started: Promise<void>
   finished: Promise<void>
   release: () => void
 } {
+  const limit = options.times ?? Number.POSITIVE_INFINITY
+  let held = 0
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
   let markStarted!: () => void
@@ -4753,12 +4755,17 @@ function holdRotationWrite(h: Harness, key: string): {
   const raw = h.credentials.raw
   const realModify = raw.modifyRecord.bind(raw)
   raw.modifyRecord = async (k: string, mutate: (current: any) => Promise<any>) => {
-    if (k === key) {
-      markStarted()
+    const park = k === key && held < limit
+    const first = park && held === 0
+    if (park) {
+      // R5-MF1: a limit of 1 parks exactly the caller's write, so a second
+      // writer of the same key (the settled harvest) lands first on purpose.
+      held += 1
+      if (first) markStarted()
       await gate
     }
     const result = await realModify(k, mutate)
-    if (k === key) markFinished()
+    if (park && first) markFinished()
     return result
   }
   return { started, finished, release }
@@ -5020,6 +5027,69 @@ test('sequential rotation echoes still sync each generation in order (P1)', asyn
     )
     const stored = h.credentials.records.get(refTwo)!
     assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-seq-two')
+  } finally {
+    await h.close()
+  }
+})
+
+// Round-5 review (R5-MF1): the P1 superseded-commit cleanup deletes the
+// generation the reconciliation itself wrote. A settled harvest can adopt that
+// very generation into the row while the cleanup's staleness probe is in
+// flight — the harvest re-authenticates the same account and its committed
+// refresh token hashes to the parked ref, so the row's `grantRef` moves onto
+// the record the reconciler is about to delete. Deleting it destroys the
+// account's own live grant: the row names a record nothing serves and Remove
+// can no longer reach it. The cleanup therefore keeps a ref that a live row
+// still references.
+
+test('the superseded cleanup keeps a grant the settled harvest adopted (R5-MF1)', async () => {
+  const { h, rowId, grantRef: seededRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const adoptedRef = accountRef('anthropic', createHash('sha256').update('rt-adopted-generation').digest('hex').slice(0, 12))
+    // Only the reconciler's write is parked (times: 1): the harvest's write of
+    // the same generation must land so it can adopt the ref first.
+    const held = holdRotationWrite(h, adoptedRef, { times: 1 })
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-adopted-generation',
+      access: 'at-adopted-generation',
+      accountId: 'acc-9',
+      email: 'dev@example.com',
+    }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await held.started
+    // The settled harvest for the same account commits the same generation,
+    // adopts it into the row and claims a newer ownership generation.
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    assert.equal(row.oauth!.grantRef, adoptedRef)
+    // The reconciler now resumes and sees its observed generation superseded.
+    // Await its per-provider chain so the branch taken is observed, not a
+    // timer hop away.
+    const chain = (h.service as unknown as { grantReconciliations: Map<string, Promise<void>> })
+      .grantReconciliations.get('anthropic')
+    held.release()
+    await held.finished
+    if (chain !== undefined) await chain
+    // The cleanup must keep the record the row serves.
+    assert.equal(row.oauth!.grantRef, adoptedRef)
+    assert.equal(h.credentials.records.has(adoptedRef), true)
+    const stored = h.credentials.records.get(adoptedRef)!
+    assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-adopted-generation')
+    assert.equal((stored.payload as Record<string, unknown>).access, 'at-adopted-generation')
+    // No unreachable record: the harvest-cleaned seed is gone, and the adopted
+    // generation is the only plugin-scope record left.
+    assert.equal(h.credentials.records.has(seededRef), false)
+    assert.deepEqual(
+      [...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')),
+      [adoptedRef],
+    )
+    // Removal reaches the record the row names — nothing was stranded.
+    await h.service.removeAccount('anthropic', rowId)
+    assert.equal(h.credentials.records.has(adoptedRef), false)
   } finally {
     await h.close()
   }

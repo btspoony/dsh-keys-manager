@@ -1853,11 +1853,12 @@ export class KeysManagerService {
     const stillCurrent = await this.rotationStillCurrent(records, provider, key, rotatedRef, claimedGeneration)
     if (!stillCurrent) {
       if (rotatedRef !== previousRef) {
-        try {
-          await records.deleteRecord(rotatedRef)
-        } catch (error) {
-          this.warn(`cleanup of the superseded rotation record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
-        }
+        // R5-MF1: the staleness probe is awaited, and a settled harvest can
+        // adopt this very generation into a live row while it is in flight
+        // (same account, same committed refresh token). Removing the record
+        // then would delete the row's own grant — keep anything a live row
+        // still serves.
+        await this.discardRotationRecord(records, provider, rotatedRef, 'cleanup of the superseded rotation record failed for')
       }
       return
     }
@@ -1911,6 +1912,44 @@ export class KeysManagerService {
     if (providerRecord === undefined) return false
     if (owner.kind !== 'oauth' || owner.oauth === null) return false
     return providerRecord.keys.some(candidate => candidate === owner)
+  }
+
+  /**
+   * Round-5 review (R5-MF1): whether a live account row of `provider` still
+   * names `ref` as its grant. The settled harvest can adopt the generation a
+   * reconciliation just wrote while that reconciliation is still awaiting its
+   * staleness probe — the row's `grantRef` then IS the record the cleanup
+   * would delete, so deleting it destroys the account's own live grant.
+   * A row already marked for removal does not count: its removal deletes the
+   * refs it names, so keeping the record would strand it instead.
+   */
+  private grantRefServed(provider: string, ref: string): boolean {
+    const providerRecord = this.store.provider(provider)
+    if (providerRecord === undefined) return false
+    return providerRecord.keys.some(candidate =>
+      candidate.kind === 'oauth'
+      && candidate.oauth !== null
+      && candidate.oauth.grantRef === ref
+      && !this.retiringAccounts.has(candidate))
+  }
+
+  /**
+   * Delete a rotation record a reconciliation wrote but must not keep, unless
+   * a live row already serves it (R5-MF1). Cleanup is best-effort with a
+   * warning, exactly like the harvest-time superseded-record cleanup.
+   */
+  private async discardRotationRecord(
+    records: CredentialRecordsLike,
+    provider: string,
+    ref: string,
+    failure: string,
+  ): Promise<void> {
+    if (this.grantRefServed(provider, ref)) return
+    try {
+      await records.deleteRecord(ref)
+    } catch (error) {
+      this.warn(`${failure} ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /**
