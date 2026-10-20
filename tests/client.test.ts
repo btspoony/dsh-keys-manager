@@ -140,9 +140,11 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     failures: '失败 {n} 次',
     // R7 nit: the account-row status pill is asserted through the resolved
     // copy, so the whole visible status set is resolved — never the stub's
-    // key-name echo.
+    // key-name echo. I-000105: `keyStatusPaused` joins the set so a paused
+    // row can never fall back to rendering its key name.
     keyStatusActive: '正常',
     keyStatusCooling: '冷却中',
+    keyStatusPaused: '已暂停',
     keyStatusMissing: '凭证缺失',
     keyStatusEmpty: '暂无密钥',
     keyStatusUnmanaged: '未接管',
@@ -1243,6 +1245,51 @@ describe('account ui', () => {
     const pills = findByClass(descendants(view.nodes, row), 'km-status')
     expect(pills).toHaveLength(1)
     expect(pills[0]!.text).toBe('凭证缺失')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a cooling account row resolves the cooling status copy', async () => {
+    // I-000105: the cooling arm is rendered and asserted by its resolved
+    // copy, so the dictionary entry is exercised rather than dead fixture.
+    const state = makeState()
+    state.providers[0] = {
+      ...makeOauthProvider(),
+      keys: [{ ...makeOauthKey(), status: 'cooling', cooldownUntil: Date.now() + 60_000 }],
+    }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const pills = findByClass(descendants(view.nodes, row), 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('冷却中')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a paused account row resolves the paused status copy', async () => {
+    // I-000105: `statusKey` maps 'paused' to `keyStatusPaused`; the fixture
+    // must carry the resolved copy, or the row would render the bare key.
+    const state = makeState()
+    state.providers[0] = { ...makeOauthProvider(), keys: [{ ...makeOauthKey(), status: 'paused' }] }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const pills = findByClass(descendants(view.nodes, row), 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('已暂停')
     view.unmount()
     setRuntimeContext(null)
   })
