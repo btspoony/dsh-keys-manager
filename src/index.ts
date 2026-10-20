@@ -2171,6 +2171,13 @@ export class KeysManagerService {
    * projection that still belongs to THAT row: activating another account
    * while the failing request is in flight must not lose the new account's
    * healthy projection.
+   *
+   * R14-M3: the targetless form (omitted `accountId`) is TEST-ONLY. It
+   * resolves the provider's active account when the queued body runs — the
+   * same execution-time race R7-MF removed from the failure path — so it is
+   * kept only because the tests drive the demotion without a failure event.
+   * Production callers must name the row; the failure path always passes
+   * `key.id`.
    */
   fallbackToKeys(provider: string, accountId?: string): Promise<void> {
     return this.run(() => this.fallbackToKeysUnqueued(provider, accountId))
