@@ -2252,6 +2252,10 @@ export class KeysManagerService {
       // manager's own for the whole TTL, hiding the warning, the missing
       // mark, and the stale owner cleanup. The identity check keeps a newer
       // marker (there is none on the serialized mutation queue) untouched.
+      // R14-SF2: seam assumption — the throwing delete may have removed the
+      // record before throwing; the later echo is then read as external
+      // (warning + stale-owner drop), the conservative direction over
+      // masking a genuine out-of-band removal.
       if (this.intentionalProjectionRemovals.get(provider) === markedAt) {
         this.intentionalProjectionRemovals.delete(provider)
       }
