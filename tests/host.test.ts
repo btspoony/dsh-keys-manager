@@ -2728,6 +2728,87 @@ test('an oauth demotion marker survives a restart while an api-key read flag doe
   }
 })
 
+/**
+ * R10 closure: persisting the marker is only half the contract — it must
+ * clear through a RECOVERY action and nowhere else. `valueMissing` is the
+ * sole durable evidence that a demoted row stopped serving (its projection is
+ * gone), so a reload that dropped it, or a process that cleared it on its
+ * own, would re-advertise a dead account as active. This pins both product
+ * recovery paths (manual re-activation and a re-authentication harvest) and,
+ * by asserting the marker still reads true immediately after each reload,
+ * that the reload itself is not the thing that clears it.
+ */
+test('the oauth demotion marker clears only through the recovery path and stays cleared', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const accountOf = (store: KeysManagerStore): KeyRecord =>
+    store.provider('anthropic')!.keys.find(row => row.id === rowId)!
+  // Reload the durable document the way a restarted process would, and run
+  // the checks against exactly what landed on disk.
+  const reload = async (check: (row: KeyRecord) => void): Promise<void> => {
+    const store = new KeysManagerStore(join(h.dir, 'state.json'))
+    try {
+      check(accountOf(store))
+    } finally {
+      await store.close()
+    }
+  }
+  try {
+    // Setup: the account owns the live projection, so the demotion below runs
+    // through the product path a rotation failure takes rather than mutating
+    // a flag by hand.
+    await h.service.activateAccount('anthropic', rowId)
+    assert.equal(statusOfKey(accountOf(h.store), Date.now()), 'active')
+
+    // Demote: the projection is deleted and the row is marked missing.
+    await h.service.fallbackToKeys('anthropic')
+    assert.equal(accountOf(h.store).valueMissing, true)
+    assert.equal(statusOfKey(accountOf(h.store), Date.now()), 'missing')
+
+    // Durability boundary 1: the marker survives a restart, and so does the
+    // status it renders. Recovery is manual, so a reload must NOT clear it.
+    await h.store.flush()
+    await reload(row => {
+      assert.equal(row.valueMissing, true)
+      assert.equal(statusOfKey(row, Date.now()), 'missing')
+    })
+    // Reading the durable document is not a recovery for the live instance
+    // either: the unmarshal path is not a reset path.
+    assert.equal(accountOf(h.store).valueMissing, true)
+
+    // Recovery path 1: manual re-activation clears the marker, and the
+    // cleared state is what the next restart loads.
+    await h.service.activateAccount('anthropic', rowId)
+    assert.equal(accountOf(h.store).valueMissing, false)
+    assert.equal(statusOfKey(accountOf(h.store), Date.now()), 'active')
+    await h.store.flush()
+    await reload(row => {
+      assert.equal(row.valueMissing, false)
+      assert.equal(statusOfKey(row, Date.now()), 'active')
+    })
+
+    // Recovery path 2: a re-authentication harvest for the same row resets
+    // the demotion marker the same way (the second product recovery path).
+    await h.service.fallbackToKeys('anthropic')
+    assert.equal(accountOf(h.store).valueMissing, true)
+    await h.store.flush()
+    await reload(row => assert.equal(row.valueMissing, true))
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-recovered-value', access: 'at-recovered-value' }))
+    const view = await h.service.beginAccountLogin('anthropic', undefined, rowId)
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    assert.equal(accountOf(h.store).valueMissing, false)
+    assert.equal(statusOfKey(accountOf(h.store), Date.now()), 'active')
+    await h.store.flush()
+    await reload(row => {
+      assert.equal(row.valueMissing, false)
+      assert.equal(statusOfKey(row, Date.now()), 'active')
+    })
+  } finally {
+    await h.close()
+  }
+})
+
 test('the persisted state document serializes without oauth token payloads', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'keys-manager-oauth-secret-'))
   try {
