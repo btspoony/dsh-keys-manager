@@ -9862,3 +9862,108 @@ test('a persisted native api-key record keeps a mixed route unbound after startu
     await h.close()
   }
 })
+
+// PR #26 review round 5 (I-000168): pass 2 re-derived readiness instead of
+// carrying pass 1's skipped set, so a provider whose hydration landed while
+// pass 1 was syncing another provider was processed by neither pass and kept
+// its stale binding for the whole session.
+
+test('a provider hydrated during the first repair pass is repaired in the same call', async () => {
+  const h = await harness()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  try {
+    // Provider A: a mixed route whose projection read will land late. Its
+    // profile starts unbound, so the repair under test is what binds it.
+    await h.service.adoptProvider('anthropic')
+    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-9', email: 'dev@example.com' })
+    const record = h.store.provider('anthropic')!
+    h.settings.valueOf('llm-pi-ai').providers.anthropic = { models: [{ id: 'claude-test-model' }] }
+    // Provider B: a pure key-pool route pass 1 repairs while A's read is held.
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'] = {}
+
+    let releaseRead: (() => void) | undefined
+    h.credentials.raw.readRecord = (key: string) => {
+      if (key !== GRANT_KEY) return realRead(key)
+      return new Promise(resolve => { releaseRead = () => resolve(undefined) })
+    }
+    // Park pass 1 inside B's write, then land A's read before releasing it: at
+    // that moment A is known, which is exactly what the old pass 2 re-read.
+    let releaseWrite: (() => void) | undefined
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve })
+    const realMutate = h.settings.mutate.bind(h.settings)
+    let firstWrite = true
+    h.settings.mutate = async (ns: string, ops: any[], revision?: number) => {
+      if (firstWrite) {
+        firstWrite = false
+        await writeGate
+      }
+      return realMutate(ns, ops, revision)
+    }
+
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    releaseRead!()
+    await eventually(() => assert.equal(
+      (restarted as unknown as { hydratedProviders: Set<string> }).hydratedProviders.has('anthropic'),
+      true,
+    ))
+    releaseWrite!()
+
+    await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv,
+      record.brokerRef, 'the provider hydrated during pass 1 was not repaired by the same call'))
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+// PR #26 review round 5 (I-000167): the foreign marker set at hydration was
+// only ever retired by a claim or by the deletion echo's own cleanup. The
+// reconcile that observes a confirmed absence kept it, and `keyPoolServes`
+// then held the surviving pool unbound for good. The public deletion flow is
+// already pinned above ('a projection deletion after a foreign replacement
+// rebinds the surviving pool'); this pins the reconcile contract itself, which
+// is the seam a restore reaches when it observes the record already gone.
+
+test('a confirmed projection absence clears the foreign marker and rebinds the pool (I-000167)', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    const record = h.store.provider('anthropic')!
+    const poolValues = record.keys
+      .filter(key => key.kind === 'api-key')
+      .map(key => h.credentials.refs.get(key.ref))
+    h.settings.valueOf('llm-pi-ai').providers.anthropic = { models: [{ id: 'claude-test-model' }] }
+    // A native api-key record takes the route over: the echo marks it foreign.
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native' })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, undefined,
+      'the foreign record is not a projection this pool owns')
+
+    // The projection is gone (a sign-out the store did not broadcast) and the
+    // owner map reconciles without a payload.
+    h.credentials.records.delete(GRANT_KEY)
+    const internals = h.service as unknown as {
+      reconcileProjectionOwner: (provider: string, payload: undefined) => void
+      foreignProjections: Set<string>
+    }
+    internals.reconcileProjectionOwner('anthropic', undefined)
+    assert.equal(internals.foreignProjections.has('anthropic'), false, 'the foreign marker survived a confirmed absence')
+
+    // The next repair pass binds the surviving pool.
+    h.service.attachSettings(h.settings)
+    await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv,
+      record.brokerRef, 'the surviving pool was never bound after the marker stayed set'))
+
+    const resolved: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      resolved.push((await h.credentials.raw.resolve(record.brokerRef))?.value)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
+    assert.ok(poolValues.includes(resolved[0]), `the request resolved ${String(resolved[0])}, not a pool key`)
+  } finally {
+    await h.close()
+  }
+})

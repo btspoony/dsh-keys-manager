@@ -3582,7 +3582,16 @@ export class KeysManagerService {
     return undefined
   }
 
-  /** Point the owner map at the OAuth row the stored payload identifies. */
+  /**
+   * Point the owner map at the OAuth row the stored payload identifies.
+   *
+   * An undefined payload means the projection is gone — a confirmed removal —
+   * so the foreign marker must clear with the owner, or `keyPoolServes` keeps
+   * the surviving pool unbound forever (I-000167). Callers that reconcile a
+   * live record this pool cannot interpret (a native api-key re-read during a
+   * test's restore) already cleared the marker on the borrow's claim, so the
+   * clear only ever follows a real absence there.
+   */
   private reconcileProjectionOwner(provider: string, payload: OAuthGrantPayload | undefined): void {
     const rows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
     const owner = payload === undefined ? undefined : matchOwningAccount(provider, rows, payload)
@@ -3590,6 +3599,7 @@ export class KeysManagerService {
       this.activeAccounts.delete(provider)
       // A live payload no row owns is still a projection (round 3).
       if (payload !== undefined) this.foreignProjections.add(provider)
+      else this.foreignProjections.delete(provider)
     } else this.claimProjectionOwner(provider, owner.id)
   }
 
@@ -4462,15 +4472,21 @@ export class KeysManagerService {
    */
   private async repairBrokerBindings(): Promise<void> {
     const providers = Object.keys(this.store.providers)
+    const deferred: string[] = []
     // A provider whose ownership is already known repairs first (PR review
     // round 3): one wedged OAuth read must not delay a pure key-pool route,
-    // whose shape can never depend on a projection read.
+    // whose shape can never depend on a projection read. The skipped set is
+    // carried to the second pass (PR review round 5): re-deriving readiness
+    // there would drop a provider whose read landed while pass 1 awaited
+    // another provider.
     for (const provider of providers) {
-      if (!this.projectionOwnershipKnown(provider)) continue
+      if (!this.projectionOwnershipKnown(provider)) {
+        deferred.push(provider)
+        continue
+      }
       await this.syncBrokerBinding(provider, { write: false })
     }
-    for (const provider of providers) {
-      if (this.projectionOwnershipKnown(provider)) continue
+    for (const provider of deferred) {
       // An OAuth provider whose own read has not landed is never repaired
       // from a guessed shape; the read is bounded, so a provider that never
       // answers only skips itself.
