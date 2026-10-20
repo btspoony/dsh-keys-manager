@@ -26,17 +26,43 @@ manager.
 
 ### Extra providers
 
-`src/providers.ts` contains a curated catalog of 34 extra providers (21 from
-the original catalog plus 13 added in this release, for example SiliconFlow,
-Zhipu coding plan, Cline Pass, Ollama Cloud, and Alibaba Token Plan (CN)),
-derived from
-[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
+`src/providers.ts` contains a curated catalog of 35 extra providers — 21 from
+the original catalog, 13 added in the previous release, and CoreWeave
+Serverless Inference added now. Examples include SiliconFlow, Zhipu coding
+plan, Cline Pass, Ollama Cloud, and Alibaba Token Plan (CN). The catalog is
+derived from [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider
+catalog (MIT).
 An extra id is added only when the shipped DSH catalog does not already
 declare that route id (for example, `meta` and `typesafe` are not
 duplicated); same-endpoint providers with distinct credential identities
 are kept by design.
 
+CoreWeave Serverless Inference needs `COREWEAVE_PROJECT=<team>/<project>` in
+the DSH process environment **before** the provider is added: the value is
+read once and stored as a static `OpenAI-Project` request header on the route
+profile, so a missing variable refuses the add. To change the project value,
+first **release the provider** from Keys Manager, then restart DSH with the
+new `COREWEAVE_PROJECT` value and add the provider again. Release removes the
+`OpenAI-Project` value this plugin wrote while it still equals the current
+environment value; a value it cannot attribute is kept and reported in the UI
+warnings, and a hand-written header that happens to equal the environment
+value is removed by the same rule. A profile the plugin created is removed
+and recreated on the next add, while an adopted profile is kept and
+re-adopted; in both cases the plugin only fills a declared header the profile
+does not already carry and never overwrites a stored value.
+
 ## Quick start
+
+### Install — DeepSeek Harness Desktop / Web
+
+In the DeepSeek Harness Desktop or Web app, open **Plugins**, click
+**Add plugin**, enter `dsh-keys-manager` in the package field, and click
+**Install**. When the install finishes, choose **Enable now** so the plugin is
+switched on.
+
+Through the wizard, the app installs the same published npm package as the
+CLI path below, already carrying its built bundle. Refresh the DeepSeek
+Harness page afterwards so the browser half is fetched.
 
 ### Install — published package
 
@@ -53,13 +79,13 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-Only the published-package path avoids a local build: `dsh plugin --profile web add dsh-keys-manager` installs the npm
-tarball as-is — package lifecycle scripts (`prepare` / `prepack`) do not run
-for registry installs, and the tarball already ships the built `lib/` and
-the client bundle. The local `dsh plugin --profile web link .` path is
-different — installing a local directory runs `prepare` during `pnpm i`,
-which builds `lib/` and the client bundle, so the clone flow above needs no
-manual build step.
+The two CLI paths differ in where the build output comes from: `dsh plugin
+--profile web add dsh-keys-manager` installs the published npm tarball, which
+ships the built `lib/` and the client bundle. The local
+`dsh plugin --profile web link .` path runs `prepare` during `pnpm i`, which
+builds `lib/` and the client bundle, so the clone flow above includes that
+build step; `prepack` builds the same output when the package is packed or
+published.
 
 Refresh the Web page after installing so the browser half is fetched.
 

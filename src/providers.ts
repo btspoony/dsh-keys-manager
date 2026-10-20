@@ -1235,6 +1235,432 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = deepFreeze([
     ]
   },
   {
+    "id": "coreweave",
+    "name": "CoreWeave Serverless Inference",
+    "api": "openai-completions",
+    "baseURL": "https://api.inference.wandb.ai/v1",
+    "env": [
+      "COREWEAVE_API_KEY"
+    ],
+    "headerEnv": {
+      "OpenAI-Project": "COREWEAVE_PROJECT"
+    },
+    "models": [
+      {
+        "id": "deepseek-ai/DeepSeek-V3.1",
+        "name": "DeepSeek V3.1",
+        "contextWindow": 161000,
+        "maxTokens": 161000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash",
+        "name": "DeepSeek V4 Flash",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
+        "name": "DeepSeek V4 Flash 0731",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro",
+        "name": "DeepSeek V4 Pro",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
+        "name": "DeepSeek V4 Pro 0813",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "name": "DeepSeek V4.1 Flash",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "google/gemma-4-26B-A4B-it",
+        "name": "Gemma 4 26B A4B",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "google/gemma-4-31B-it",
+        "name": "Gemma 4 31B",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "ibm-granite/granite-4.1-8b",
+        "name": "Granite 4.1 8B",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "ibm-granite/granite-4.2-8b",
+        "name": "Granite 4.2 8B",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "JetBrains/Mellum2-12B-A2.5B-Instruct",
+        "name": "Mellum2 12B A2.5B",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "meta-llama/Llama-3.1-70B-Instruct",
+        "name": "Llama 3.1 70B",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "meta-llama/Llama-3.1-8B-Instruct",
+        "name": "Llama 3.1 8B",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "meta-llama/Llama-3.3-70B-Instruct",
+        "name": "Llama 3.3 70B",
+        "contextWindow": 128000,
+        "maxTokens": 128000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+        "name": "Llama 4 Scout 17B 16E Instruct",
+        "contextWindow": 64000,
+        "maxTokens": 64000,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "microsoft/Phi-4-mini-instruct",
+        "name": "Phi 4 Mini 3.8B",
+        "contextWindow": 128000,
+        "maxTokens": 128000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "MiniMaxAI/MiniMax-M2.5",
+        "name": "MiniMax-M2.5",
+        "contextWindow": 196608,
+        "maxTokens": 196608,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "MiniMaxAI/MiniMax-M3",
+        "name": "MiniMax M3",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K2.5",
+        "name": "Kimi-K2.5",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K2.6",
+        "name": "Kimi K2.6",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K2.7-Code",
+        "name": "Kimi K2.7 Code",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "moonshotai/Kimi-K3",
+        "name": "Kimi K3",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
+        "name": "Nemotron 3 Super",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+        "name": "Nemotron 3 Ultra",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B",
+        "name": "Nemotron 3.5 Lightning",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B",
+        "name": "Nemotron 3.5 Super VL",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "openai/gpt-oss-120b",
+        "name": "gpt-oss-120b",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "openai/gpt-oss-20b",
+        "name": "gpt-oss-20b",
+        "contextWindow": 131072,
+        "maxTokens": 131072,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "OpenPipe/Qwen3-14B-Instruct",
+        "name": "Qwen3 14B Instruct",
+        "contextWindow": 32768,
+        "maxTokens": 32768,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3-235B-A22B-Instruct-2507",
+        "name": "Qwen3 235B-A22B Instruct 2507",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3-235B-A22B-Thinking-2507",
+        "name": "Qwen3-235B-A22B-Thinking-2507",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "name": "Qwen3 30B A3B Instruct 2507",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+        "name": "Qwen3-Coder-480B-A35B-Instruct",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3.5-27B",
+        "name": "Qwen3.5 27B",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3.5-35B-A3B",
+        "name": "Qwen3.5 35B-A3B",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3.6-27B",
+        "name": "Qwen3.6 27B",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3.6-35B-A3B",
+        "name": "Qwen3.6 35B A3B",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "Qwen/Qwen3.8-27B",
+        "name": "Qwen3.8 27B",
+        "contextWindow": 262144,
+        "maxTokens": 262144,
+        "input": [
+          "text",
+          "image"
+        ]
+      },
+      {
+        "id": "reflection/Beam-1.0-501B-A23B",
+        "name": "Beam 1.0",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5-FP8",
+        "name": "GLM 5",
+        "contextWindow": 200000,
+        "maxTokens": 200000,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.1",
+        "name": "GLM-5.1",
+        "contextWindow": 202752,
+        "maxTokens": 202752,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.2",
+        "name": "GLM 5.2",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.3",
+        "name": "GLM 5.3",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text"
+        ]
+      },
+      {
+        "id": "zai-org/GLM-5.3-Flash",
+        "name": "GLM 5.3 Flash",
+        "contextWindow": 1048576,
+        "maxTokens": 1048576,
+        "input": [
+          "text",
+          "image"
+        ]
+      }
+    ]
+  },
+  {
     "id": "firepass",
     "name": "Fire Pass",
     "api": "openai-completions",

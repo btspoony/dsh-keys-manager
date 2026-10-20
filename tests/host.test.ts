@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
-import type { KeyRecord, KeyTestResult, ProviderRecord, ProviderView, StateView } from '../src/domain'
+import type { ExtraProvider, KeyRecord, KeyTestResult, ProviderRecord, ProviderView, StateView } from '../src/domain'
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
+import { EXTRA_PROVIDER_MAP } from '../src/providers'
 import { KeysManagerStore } from '../src/store'
 
 const ORIGINAL = Symbol.for('cordis.original')
@@ -1090,6 +1091,562 @@ test('extra provider installation writes a complete pi-ai profile and release re
     assert.equal(h.settings.valueOf('llm-pi-ai').providers.deepinfra, undefined)
     assert.equal(h.credentials.refs.has(keyRef), false)
   } finally {
+    await h.close()
+  }
+})
+
+/** Restore COREWEAVE_PROJECT around one body; `undefined` means "not set". */
+async function withCoreweaveProject<T>(value: string | undefined, body: () => Promise<T>): Promise<T> {
+  const saved = process.env.COREWEAVE_PROJECT
+  if (value === undefined) delete process.env.COREWEAVE_PROJECT
+  else process.env.COREWEAVE_PROJECT = value
+  try {
+    return await body()
+  } finally {
+    if (saved === undefined) delete process.env.COREWEAVE_PROJECT
+    else process.env.COREWEAVE_PROJECT = saved
+  }
+}
+
+test('adding coreweave without COREWEAVE_PROJECT refuses before any write', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject(undefined, async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+        /coreweave requires the COREWEAVE_PROJECT environment variable \(OpenAI-Project header/,
+      )
+    })
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave, undefined)
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')), [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('coreweave writes its env-sourced header into the new profile', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', async () => {
+      const state = await h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave')
+      assert.equal(state.providers.find(entry => entry.provider === 'coreweave')!.managed, true)
+    })
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.deepEqual(profile.headers, { 'OpenAI-Project': 'team/project' })
+    assert.match(profile.apiKeyEnv, /^KEYSMGR_COREWEAVE_/)
+    const keyRef = h.store.provider('coreweave')!.keys[0].ref
+    assert.equal(h.credentials.refs.get(keyRef), 'sk-coreweave')
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting an existing coreweave profile fills only the missing header', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.deepEqual(profile.headers, { 'OpenAI-Project': 'team/project' })
+    assert.equal(profile.baseURL, 'https://proxy.example/v1')
+    assert.deepEqual(profile.models, [{ id: 'preseeded-model' }])
+    assert.match(profile.apiKeyEnv, /^KEYSMGR_COREWEAVE_/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an extra provider without headerEnv writes no headers key', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    const profile = h.settings.valueOf('llm-pi-ai').providers.deepinfra
+    assert.equal('headers' in profile, false)
+    // The whole profile, not just the absent key, keeps its pre-carrier shape.
+    assert.deepEqual(profile, {
+      displayName: 'DeepInfra',
+      api: 'openai-completions',
+      baseURL: 'https://api.deepinfra.com/v1/openai',
+      apiKeyEnv: profile.apiKeyEnv,
+      models: [
+        { id: 'discovered-chat', name: 'Discovered Chat', contextWindow: 128000, maxTokens: 8192, input: ['text'] },
+        { id: 'discovered-vision', name: 'Discovered Vision', input: ['text', 'image'] },
+      ],
+    })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a stored coreweave profile fills only the declared headers it lacks', async () => {
+  const scenarios = [
+    { seed: {}, expected: { 'OpenAI-Project': 'team/project' } },
+    { seed: { 'X-Trace': 'keep-me' }, expected: { 'X-Trace': 'keep-me', 'OpenAI-Project': 'team/project' } },
+    { seed: { 'OpenAI-Project': 'user/own' }, expected: { 'OpenAI-Project': 'user/own' } },
+  ]
+  for (const scenario of scenarios) {
+    const h = await harness()
+    try {
+      const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+      namespace.value.providers.coreweave = {
+        api: 'openai-completions',
+        baseURL: 'https://proxy.example/v1',
+        models: [{ id: 'preseeded-model' }],
+        headers: scenario.seed,
+      }
+      await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+      assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, scenario.expected)
+    } finally {
+      await h.close()
+    }
+  }
+})
+
+test('releasing an adopted coreweave profile removes the injected header and restores apiKeyEnv', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      apiKeyEnv: 'COREWEAVE_API_KEY',
+      models: [{ id: 'preseeded-model' }],
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+    const keyRef = h.store.provider('coreweave')!.keys[0].ref
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    // The block the plugin wrote is gone; the rest of the adopted profile stays.
+    assert.equal('headers' in profile, false)
+    assert.equal(profile.apiKeyEnv, 'COREWEAVE_API_KEY')
+    assert.deepEqual(profile.models, [{ id: 'preseeded-model' }])
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.equal(h.credentials.refs.has(keyRef), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('releasing an adopted coreweave profile keeps headers the plugin did not inject', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'X-Trace': 'keep-me' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, {
+      'X-Trace': 'keep-me',
+      'OpenAI-Project': 'team/project',
+    })
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'X-Trace': 'keep-me' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('releasing an adopted coreweave profile keeps a declared header the user authored', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'OpenAI-Project': 'user/own' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    // Adoption never overwrote the stored value, so release must not delete it.
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again restores a declared header a Models edit dropped', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    await withCoreweaveProject('team/project', async () => {
+      const state = await h.service.addExtraProvider('coreweave', 'main', 'sk-second')
+      // Pinned order: the managed-route notice precedes the repair notice, so a
+      // future reorder of the user-visible warnings cannot pass silently.
+      assert.deepEqual(state.warnings, [
+        'Provider is already managed; the key was added instead.',
+        'Restored the missing OpenAI-Project header on the managed profile.',
+      ])
+    })
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again refuses when COREWEAVE_PROJECT is gone', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    await withCoreweaveProject(undefined, async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-second'),
+        /coreweave requires the COREWEAVE_PROJECT environment variable \(OpenAI-Project header/,
+      )
+    })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 1)
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a key through the managed path restores a declared header a Models edit dropped', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    await withCoreweaveProject('team/project', async () => {
+      const state = await h.service.addKey('coreweave', 'second', 'sk-second')
+      assert.match(state.warnings.join('\n'), /Restored the missing OpenAI-Project header/)
+    })
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failed header repair degrades to a warning and keeps the added key', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    // The repair's settings write fails the way a read-only or conflicting
+    // profile does; the key and its credential are already written by then.
+    h.settings.failMutate = true
+    await withCoreweaveProject('team/project', async () => {
+      const added = await h.service.addKey('coreweave', 'second', 'sk-second')
+      assert.deepEqual(added.warnings, [
+        'Did not restore the OpenAI-Project header on the coreweave route: revision conflict',
+      ])
+      // The managed add-provider surface degrades the same way, with its own
+      // notice still first (M-2 order pin).
+      const managed = await h.service.addExtraProvider('coreweave', 'third', 'sk-third')
+      assert.deepEqual(managed.warnings, [
+        'Provider is already managed; the key was added instead.',
+        'Did not restore the OpenAI-Project header on the coreweave route: revision conflict',
+      ])
+    })
+    assert.equal(h.store.provider('coreweave')!.keys.length, 3)
+    assert.equal([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')).length, 3)
+    // The repair stayed pending: the header is still absent, not half-written.
+    assert.equal('headers' in h.settings.valueOf('llm-pi-ai').providers.coreweave, false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a refused managed key add writes no declared header', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const record = h.store.provider('coreweave')!
+    while (record.keys.length < KEY_LIMIT) {
+      await h.service.addKey('coreweave', `filler ${record.keys.length}`, `sk-filler-${record.keys.length}`)
+    }
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    const refsBefore = [...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE'))
+    assert.equal(refsBefore.length, KEY_LIMIT)
+    await withCoreweaveProject('team/project', async () => {
+      await assert.rejects(
+        () => h.service.addKey('coreweave', 'overflow', 'sk-overflow'),
+        new RegExp(`A provider may have at most ${KEY_LIMIT} keys`),
+      )
+    })
+    assert.equal('headers' in h.settings.valueOf('llm-pi-ai').providers.coreweave, false)
+    // The capacity refusal precedes the credential write too, so a reorder
+    // that minted the credential before the cap check cannot pass silently.
+    assert.deepEqual(
+      [...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')),
+      refsBefore,
+    )
+  } finally {
+    await h.close()
+  }
+})
+
+test('a capability-refused managed key add writes no credential', async () => {
+  const h = await harness()
+  try {
+    // MF1: adoption manages the OAuth-only route for accounts, so it is a
+    // managed provider whose key pool is refused by capability alone.
+    await h.service.adoptProvider('openai-codex')
+    const refsBefore = [...h.credentials.refs.keys()]
+    await assert.rejects(
+      () => h.service.addKey('openai-codex', 'second', 'sk-second'),
+      /OAuth|API key|API-key/,
+    )
+    // The capability refusal precedes createKeyRecord: no credential is
+    // minted for an add that never becomes a key.
+    assert.deepEqual([...h.credentials.refs.keys()], refsBefore)
+    assert.equal(h.store.provider('openai-codex')!.keys.length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a stored coreweave profile without the variable writes nothing', async () => {
+  const h = await harness()
+  try {
+    const seeded = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      apiKeyEnv: 'COREWEAVE_API_KEY',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'X-Trace': 'keep-me' },
+    }
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = structuredClone(seeded)
+    await withCoreweaveProject(undefined, async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+        /coreweave requires the COREWEAVE_PROJECT environment variable \(OpenAI-Project header/,
+      )
+    })
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave, seeded)
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')), [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding coreweave installs the seed catalog without running model discovery', async () => {
+  const h = await harness()
+  try {
+    const discover = vi.spyOn(h.llm, 'discoverModels')
+    const state = await withCoreweaveProject('team/project', () =>
+      h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+    )
+    // Discovery cannot carry the declared header, so the probe would only fail.
+    assert.equal(discover.mock.calls.length, 0)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.equal(profile.models.length, 44)
+    assert.doesNotMatch(state.warnings.join('\n'), /Model discovery failed/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again leaves a deleted Models profile alone', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave
+    const state = await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-second'))
+    // No header-only half-profile is created for a route whose profile is gone.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave, undefined)
+    assert.match(
+      state.warnings.join('\n'),
+      /Did not restore the OpenAI-Project header on the coreweave route: its Models profile no longer exists/,
+    )
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adding a managed coreweave again skips the repair on a replaced profile', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    delete namespace.value.providers.coreweave.headers
+    namespace.value.providers.coreweave.apiKeyEnv = 'HAND_WRITTEN_REF'
+    const state = await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-second'))
+    // A mismatch binding is the state release refuses to touch; repair skips it too.
+    assert.equal('headers' in h.settings.valueOf('llm-pi-ai').providers.coreweave, false)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave.apiKeyEnv, 'HAND_WRITTEN_REF')
+    assert.match(state.warnings.join('\n'), /Did not restore the OpenAI-Project header on the coreweave route: its Models profile was replaced/)
+    assert.equal(h.store.provider('coreweave')!.keys.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a stored declared header that disagrees with the environment is reported and kept', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    const state = await withCoreweaveProject('team/new', () => h.service.addExtraProvider('coreweave', 'second', 'sk-second'))
+    assert.match(
+      state.warnings.join('\n'),
+      /The stored OpenAI-Project header on the coreweave route differs from the value COREWEAVE_PROJECT now supplies; the stored value was kept\./,
+    )
+    // The stored value is never overwritten by drift reporting.
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'team/project' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a profile whose declared header disagrees with the environment reports the drift', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'OpenAI-Project': 'user/own' },
+    }
+    const state = await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'))
+    assert.match(
+      state.warnings.join('\n'),
+      /The stored OpenAI-Project header on the coreweave route differs from the value COREWEAVE_PROJECT now supplies; the stored value was kept\./,
+    )
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('releasing a profile whose declared header cannot be attributed reports it in the state warnings', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'OpenAI-Project': 'user/own' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    // The variable is gone, so the kept header must surface in the UI state.
+    const state = await withCoreweaveProject(undefined, () => h.service.releaseProvider('coreweave'))
+    assert.match(
+      state.warnings.join('\n'),
+      /Release left the OpenAI-Project header in the coreweave profile: COREWEAVE_PROJECT is no longer set, so an injected value cannot be identified\./,
+    )
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'OpenAI-Project': 'user/own' })
+  } finally {
+    await h.close()
+  }
+})
+
+test('header identity is case-insensitive for filling and release attribution', async () => {
+  const h = await harness()
+  try {
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')!
+    namespace.value.providers.coreweave = {
+      api: 'openai-completions',
+      baseURL: 'https://proxy.example/v1',
+      models: [{ id: 'preseeded-model' }],
+      headers: { 'openai-project': 'team/project' },
+    }
+    await withCoreweaveProject('team/project', () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave').then(() => undefined))
+    // A stored lowercase variant is the same Fetch field: no second variant.
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.coreweave.headers, { 'openai-project': 'team/project' })
+    await withCoreweaveProject('team/project', () => h.service.releaseProvider('coreweave').then(() => undefined))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
+    assert.equal('headers' in profile, false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a header value Fetch cannot carry is refused before any write', async () => {
+  const h = await harness()
+  try {
+    await withCoreweaveProject('team\nproject', async () => {
+      await assert.rejects(
+        () => h.service.addExtraProvider('coreweave', 'main', 'sk-coreweave'),
+        /coreweave cannot carry the COREWEAVE_PROJECT value as the OpenAI-Project header: it is not a valid Fetch header value/,
+      )
+    })
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.coreweave, undefined)
+    assert.equal(h.store.provider('coreweave'), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_COREWEAVE')), [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('a catalog entry that declares a credential header is refused', async () => {
+  const h = await harness()
+  const synthetic: ExtraProvider = {
+    id: 'synthetic-secret-header',
+    name: 'Synthetic Secret Header',
+    api: 'openai-completions',
+    baseURL: 'https://synthetic.example/v1',
+    env: ['SYNTHETIC_SECRET'],
+    headerEnv: { Authorization: 'SYNTHETIC_SECRET' },
+    models: [{ id: 'synthetic-model', name: 'Synthetic Model' }],
+  }
+  const catalog = EXTRA_PROVIDER_MAP as Map<string, ExtraProvider>
+  catalog.set(synthetic.id, synthetic)
+  process.env.SYNTHETIC_SECRET = 'sk-synthetic'
+  try {
+    await assert.rejects(
+      () => h.service.addExtraProvider(synthetic.id, 'main', 'sk-synthetic'),
+      /synthetic-secret-header declares the credential header Authorization; only non-secret metadata headers can be carried/,
+    )
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers[synthetic.id], undefined)
+    assert.equal(h.store.provider(synthetic.id), undefined)
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_SYNTHETIC')), [])
+  } finally {
+    delete process.env.SYNTHETIC_SECRET
+    catalog.delete(synthetic.id)
+    await h.close()
+  }
+})
+
+test('a catalog entry that declares a bare api-key header is refused', async () => {
+  const h = await harness()
+  const catalog = EXTRA_PROVIDER_MAP as Map<string, ExtraProvider>
+  process.env.SYNTHETIC_SECRET = 'sk-synthetic'
+  try {
+    for (const header of ['Api-Key', 'ApiKey']) {
+      const id = `synthetic-${header.toLowerCase()}-header`
+      catalog.set(id, {
+        id,
+        name: 'Synthetic Bare Api-Key Header',
+        api: 'openai-completions',
+        baseURL: 'https://synthetic.example/v1',
+        env: ['SYNTHETIC_SECRET'],
+        headerEnv: { [header]: 'SYNTHETIC_SECRET' },
+        models: [{ id: 'synthetic-model', name: 'Synthetic Model' }],
+      })
+      await assert.rejects(
+        () => h.service.addExtraProvider(id, 'main', 'sk-synthetic'),
+        new RegExp(`${id} declares the credential header ${header}; only non-secret metadata headers can be carried`),
+      )
+      assert.equal(h.settings.valueOf('llm-pi-ai').providers[id], undefined)
+      assert.equal(h.store.provider(id), undefined)
+    }
+    assert.deepEqual([...h.credentials.refs.keys()].filter(ref => ref.startsWith('KEYSMGR_SYNTHETIC')), [])
+  } finally {
+    delete process.env.SYNTHETIC_SECRET
+    for (const id of ['synthetic-api-key-header', 'synthetic-apikey-header']) catalog.delete(id)
     await h.close()
   }
 })
@@ -3280,6 +3837,21 @@ async function eventually(check: () => void): Promise<void> {
   check()
 }
 
+/**
+ * Drain one provider's grant-reconciliation chain.
+ *
+ * `onGrantRecordUpdated` is fire-and-forget (the seam event carries no
+ * completion channel), so an assertion about what an echo did or did not
+ * write must wait until the chain is genuinely empty — one mutation-queue
+ * turn is not enough. The chain entry disappears only when its newest body
+ * has settled, so an absent entry proves every echo of the mutations written
+ * so far has been processed.
+ */
+async function drainGrantChain(h: Harness, provider: string): Promise<void> {
+  const chains = (h.service as unknown as { grantReconciliations: Map<string, Promise<void>> }).grantReconciliations
+  await eventually(() => assert.equal(chains.get(provider), undefined))
+}
+
 const GRANT_KEY = 'llm-pi-ai/anthropic'
 
 function grantPayload(overrides: Record<string, unknown> = {}): FakeCredentialRecord {
@@ -3906,13 +4478,16 @@ test('a release that wins the race still lets the revoked login clean its projec
   }
 })
 
-// Codex P2 (PR #17): a release queued AHEAD of the harvest can finalize the
-// attempt and then fail its own preflight (unreadable settings), leaving the
-// provider managed. The authorized settlement arrived while that release body
-// was still parked, so the harvest's pre-queue settled guard passed and its
-// callback ran afterwards — and used to write the grant copy plus the account
-// row while the attempt the user sees stayed failed. The callback must
-// revalidate settlement immediately before its first credential write.
+// Codex P2 (PR #17) + I-000122: a release queued AHEAD of the harvest can
+// finalize the attempt and then fail its own preflight (unreadable settings),
+// leaving the provider managed. The authorized settlement arrived while that
+// release body was still parked, so the harvest's pre-queue settled guard
+// passed and its callback ran afterwards — and used to write the grant copy
+// plus the account row while the attempt the user sees stayed failed. The
+// callback must revalidate settlement immediately before its first credential
+// write, and because the seam already committed this attempt's grant as the
+// provider projection at that broadcast, it must also demote that projection
+// before returning instead of leaving the route on a failed login's grant.
 
 test('a queued harvest never writes credentials for an attempt a failed release already settled (P2)', async () => {
   const h = await harnessWithManagedAnthropic()
@@ -3939,11 +4514,14 @@ test('a queued harvest never writes credentials for an attempt a failed release 
     // so the absence checks below are deterministic rather than a timing bet.
     await h.service.setSettings({})
     // No credential write and no row upsert: the settled attempt keeps the
-    // terminal it already has, and the seam's projection stays untouched
-    // because nothing of this harvest was ever written to compensate.
+    // terminal it already has. The projection the seam committed for this
+    // attempt at the settlement broadcast is demoted through the
+    // ownership-checked compensation (I-000122), so a failed login cannot
+    // keep serving, while the provider itself stays managed.
     assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
     assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
-    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    assert.notEqual(h.store.provider('anthropic'), undefined)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
     const settled = h.service.getAccountAttempt(view.id)!
     assert.equal(settled.status, 'failed')
     assert.equal(settled.accountId, undefined)
@@ -3957,6 +4535,230 @@ test('a queued harvest never writes credentials for an attempt a failed release 
     await eventually(() => assert.equal(h.service.getAccountAttempt(next.id)!.status, 'ready'))
     assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 1)
   } finally {
+    await h.close()
+  }
+})
+
+// Issue #18 (store I-000122), the named release-ahead-of-harvest regression:
+// a release queued ahead of the harvest cancels the sign-in and then refuses
+// its own preflight, so the provider survives while the seam has already
+// committed this attempt's grant as the route's projection. The queued harvest
+// must demote that projection (ownership-checked) instead of leaving the route
+// authenticated against a failed login — and an account that was already
+// managed must keep its row and its plugin-scope grant untouched.
+
+test('a harvest queued behind a failed release demotes the settled projection (release-ahead-of-harvest)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  try {
+    // The seam committed THIS attempt's grant as the provider projection.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // The release queues first and then fails its preflight, so the provider
+    // survives and the harvest queued behind it still runs.
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    // The settlement broadcast arrives while the release body is parked.
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    // The next queued mutation resolves only after the harvest callback ran.
+    await h.service.setSettings({})
+    // The release owns the terminal; the harvest adds nothing to it.
+    const failed = h.service.getAccountAttempt(view.id)!
+    assert.equal(failed.status, 'failed')
+    assert.match(failed.error ?? '', /released during sign-in/)
+    assert.equal(failed.accountId, undefined)
+    // No plugin-scope copy and no row for the settled attempt.
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 1)
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').map(key => key.id).join(','), rowId)
+    // The projection this attempt committed is demoted...
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    // ...while the account that was already managed keeps its grant copy.
+    assert.equal(h.credentials.records.has(grantRef), true)
+  } finally {
+    await h.close()
+  }
+})
+
+// I-000125 (PR #23 review 5586433311): the abort-path compensation deletes the
+// projection, and that deletion must register the same one-shot
+// intentional-removal marker the demotion path sets. When the provider already
+// serves an ACTIVATED managed account, the unmarked echo reconciles as an
+// external deletion — the active row is flagged `valueMissing` and a
+// misleading "removed outside Keys Manager" warning is pushed, although that
+// row and its plugin-scope grant are untouched by the abort.
+//
+// The marker only silences that echo; it does not make the manager's state
+// truthful. The route no longer holds the projection the account rows were
+// claimed against, so the owner claim is invalidated: `projected` turns false,
+// the route falls back to the key pool, and the surviving row keeps its row,
+// its `grantRef` and `valueMissing: false` — exactly the state the "Set active"
+// control needs to re-project the route.
+
+test('a settled abort invalidates the stale projection owner and leaves the account re-activatable (I-000125)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  try {
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    const isProjected = (): boolean => h.service.buildState().providers
+      .find(entry => entry.provider === 'anthropic')!.keys
+      .some(key => key.id === rowId && key.projected === true)
+    await h.service.activateAccount('anthropic', rowId)
+    // Let the activation echo's reconciliation round finish before the
+    // attempt's grant replaces the projection, so nothing below is
+    // attributable to that round.
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(isProjected(), true)
+    assert.equal(warnings().includes('removed outside Keys Manager'), false)
+    // The seam commits THIS attempt's grant as the provider projection at
+    // the settlement broadcast; it belongs to a different account.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // The release queues first and then fails its preflight, so the provider
+    // survives and the harvest queued behind it still runs.
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    // The next queued mutation resolves only after the harvest callback ran.
+    await h.service.setSettings({})
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // The removal's echo is fire-and-forget: drain it before asserting.
+    await drainGrantChain(h, 'anthropic')
+    // Snapshot the warnings before any `buildState()` call — it drains them.
+    const emitted = warnings()
+    // The attempt's grant is gone from the route, and the surviving row is
+    // untouched: same plugin-scope grant, still managed, still not demoted.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row.valueMissing, false, 'the surviving row is not demoted')
+    assert.equal(row.oauth!.grantRef, grantRef)
+    assert.equal(h.credentials.records.has(grantRef), true)
+    // ...but the owner claim it kept is no longer true, so the manager stops
+    // rendering the route as projected (and stops bypassing the key pool).
+    assert.equal(isProjected(), false, 'the stale owner claim is invalidated')
+    assert.equal(emitted.includes('removed outside Keys Manager'), false)
+    // The one-shot marker was consumed by the removal's own echo.
+    assert.equal(markers.has('anthropic'), false)
+    // Re-activation: the surviving row's grant is still live, so "Set active"
+    // re-projects the route and claims it again.
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    const record = h.credentials.records.get(GRANT_KEY)
+    assert.notEqual(record, undefined, 're-activation re-projects the route')
+    assert.equal((record!.payload as Record<string, unknown>).refresh, 'rt-seed-value')
+    assert.equal(isProjected(), true, 'the re-activated account owns the projection again')
+  } finally {
+    await h.close()
+  }
+})
+
+// I-000125 marker hygiene (PR #23 review 5586433311 nit): a provider that holds
+// no OAuth row cannot be demoted, but its own removal echo must still reach the
+// handler's marker consumer. The handler used to return at "no OAuth rows"
+// before reading the marker, so a first-ever login whose abort compensation
+// deleted the projection left the marker armed for its whole TTL — and a
+// genuine out-of-band removal inside that window was silently swallowed.
+
+test('a settled abort on a provider with no OAuth rows spends its removal marker (I-000125)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    // The seam commits THIS attempt's grant as the provider projection; no
+    // OAuth row exists yet, so the compensation's delete cannot demote one.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-settled-attempt', access: 'at-settled-attempt' }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    await h.service.setSettings({})
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // The removal's own echo ran and stayed silent: the projection is gone and
+    // the one-shot marker with it.
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(markers.has('anthropic'), false, 'the no-row removal echo consumed its own marker')
+    // A later sign-in makes a row serve the route; a genuine out-of-band
+    // removal inside the marker's TTL must still warn and demote.
+    h.settings.failDescribe = false
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const next = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(next.id)!.status, 'ready'))
+    await drainGrantChain(h, 'anthropic')
+    const rowId = h.service.getAccountAttempt(next.id)!.accountId!
+    const row = (): KeyRecord => h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.equal(row().valueMissing, false)
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(warnings(), /removed outside Keys Manager/))
+    assert.equal(row().valueMissing, true, 'the externally removed projection demoted its row')
+  } finally {
+    await h.close()
+  }
+})
+
+// I-000122 provenance safety: the settled abort may only demote the projection
+// while it still carries the payload captured for THIS attempt. A newer or
+// native grant that replaced it before the queued harvest ran belongs to
+// someone else and must survive the abort.
+
+test('a settled abort never demotes a projection another writer replaced (I-000122)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  const warnings: string[] = []
+  h.ctx.logger.warn = (message: string) => {
+    warnings.push(message)
+  }
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-settled-attempt', access: 'at-settled-attempt' }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    // The settlement capture reads this attempt's payload; a native writer
+    // replaces the projection immediately afterwards, before the queued
+    // harvest runs.
+    raw.readRecord = async (key: string) => {
+      const record = await realRead(key)
+      if (key === GRANT_KEY) {
+        h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-replacement', access: 'at-native-replacement' }))
+      }
+      return record
+    }
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    await h.service.setSettings({})
+    // The live projection belongs to another writer: untouched.
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.notEqual(live, undefined)
+    assert.equal((live!.payload as Record<string, unknown>).refresh, 'rt-native-replacement')
+    // The refused demotion is observable, not silent.
+    assert.ok(
+      warnings.some(message => message.includes('kept the projection for anthropic')),
+      `expected a compensation skip warning, got: ${warnings.join(' | ')}`,
+    )
+  } finally {
+    raw.readRecord = realRead
     await h.close()
   }
 })
@@ -6283,6 +7085,156 @@ test('a failed projection delete does not mask a later out-of-band removal (R7-S
     assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.some(key => key.projected === true), false)
   } finally {
     h.credentials.raw.failDeleteRecord = false
+    await h.close()
+  }
+})
+
+// I-000125 (second producer of the one-shot marker): `revertHarvestProjection`
+// registers the same marker as `decideAndDeleteProjection` and revokes it —
+// identity-checked — when the delete throws. The shared consumer's one-shot
+// and expiry behaviour is already pinned by the W5 expiry test and the R7-SF2
+// failed-delete test above; this case proves the NEW call site revokes its own
+// marker too, so the abort path cannot mask a later genuine out-of-band
+// removal for the rest of the TTL.
+
+test('a throwing abort-path projection revoke leaves no marker masking a later removal (I-000125)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  try {
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    // `warn()` logs through the host logger; `pushWarning()` rides the state
+    // response. The compensation failure is a log line, the out-of-band
+    // removal is a state warning — capture both.
+    const logged: string[] = []
+    h.ctx.logger.warn = (message: string) => { logged.push(message) }
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The seam commits THIS attempt's grant as the route projection.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    // Fail the compensation's projection delete: the marker is set right
+    // before it and must be revoked before the failure leaves the method.
+    h.credentials.raw.failDeleteRecord = true
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    await h.service.setSettings({})
+    h.credentials.raw.failDeleteRecord = false
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // The failed revoke is observable and left no marker behind.
+    assert.ok(
+      logged.some(message => message.includes('could not revert the projection for anthropic')),
+      `expected a compensation failure log, got: ${logged.join(' | ')}`,
+    )
+    assert.equal(markers.has('anthropic'), false, 'the failed revoke revoked its marker')
+    // The delete threw, so the record is still live; a genuine out-of-band
+    // removal inside the TTL window still surfaces the demotion warning.
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(warnings(), /removed outside Keys Manager/))
+    assert.equal(h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!.valueMissing, true)
+  } finally {
+    h.credentials.raw.failDeleteRecord = false
+    await h.close()
+  }
+})
+
+// I-000125 / PR #23 review (Minor 1): the abort compensation arms its removal
+// marker while the provider is managed, but the echo that consumes that marker
+// is fire-and-forget. A release landing before the echo's body runs makes the
+// provider unmanaged at echo time — the reconciliation is dropped, so nothing
+// spends the marker and it stays armed for its whole TTL. A provider re-adopted
+// inside that window then reads a genuine out-of-band removal as the manager's
+// own: no warning, no `valueMissing`, no stale-owner cleanup.
+//
+// Shape: a failed release (unreadable settings) queues the harvest behind it,
+// so the provider is still managed when the compensation arms. The provider's
+// grant-reconciliation chain is held open, the state an in-flight echo leaves
+// behind, so the removal echo cannot run yet. A successful release then removes
+// the provider — and must drop the marker it can no longer have consumed.
+
+test('a release between arming the removal marker and its echo drops the marker', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-1', email: 'first@example.com' })
+  let unpark: (() => void) | undefined
+  try {
+    const warnings = (): string => (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+    const chains = (h.service as unknown as { grantReconciliations: Map<string, Promise<void>> }).grantReconciliations
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The seam commits THIS attempt's grant as the provider projection at the
+    // settlement broadcast.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-settled-attempt',
+      access: 'at-settled-attempt',
+      accountId: 'acc-2',
+      email: 'second@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // Park the provider's grant chain: the removal echo the abort compensation
+    // is about to schedule stays queued behind this body, exactly as it does
+    // behind an echo whose record read is still in flight.
+    const parked = new Promise<void>(resolve => { unpark = resolve })
+    chains.set('anthropic', parked)
+    // Release-ahead-of-harvest (I-000122 shape): the release cancels the
+    // sign-in and THEN refuses its preflight, leaving the provider managed, so
+    // the harvest queued behind it arms the marker as a managed provider's.
+    h.settings.failDescribe = true
+    const failedRelease = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => failedRelease, /unreadable/)
+    // The next queued mutation resolves only after the harvest callback ran.
+    await h.service.setSettings({})
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed')
+    // The compensation removed the projection and armed its one-shot marker.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(markers.has('anthropic'), true, 'the abort compensation armed its own removal marker')
+    // The release that follows succeeds before the parked echo drains.
+    h.settings.failDescribe = false
+    await h.service.releaseProvider('anthropic')
+    assert.equal(h.store.provider('anthropic'), undefined)
+    // The echo for an unmanaged provider is dropped, so the marker must not
+    // outlive the release.
+    assert.equal(markers.has('anthropic'), false, 'the successful release drops the armed marker')
+    unpark?.()
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(markers.has('anthropic'), false, 'the dropped echo cannot re-arm the marker')
+    // Re-adopt inside the marker's TTL and let a fresh sign-in make a row
+    // serve the route again.
+    await h.service.adoptProvider('anthropic')
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const next = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(next.id)!.status, 'ready'))
+    await drainGrantChain(h, 'anthropic')
+    const accountId = h.service.getAccountAttempt(next.id)!.accountId!
+    const row = (): KeyRecord => h.store.provider('anthropic')!.keys.find(key => key.id === accountId)!
+    assert.equal(row().valueMissing, false)
+    // A genuine out-of-band removal inside the 5 s window is still external:
+    // the row is marked missing and the warning is pushed.
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.match(warnings(), /removed outside Keys Manager/))
+    assert.equal(row().valueMissing, true, 'the externally removed projection demoted its row')
+    assert.equal(
+      h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.some(key => key.projected === true),
+      false,
+      'the stale owner claim was dropped with it',
+    )
+  } finally {
+    unpark?.()
     await h.close()
   }
 })

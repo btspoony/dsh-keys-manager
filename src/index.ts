@@ -459,6 +459,87 @@ function discoveredModel(model: DiscoveredModel): ModelRecord | undefined {
   })
 }
 
+/** Credential-bearing header names the carrier must never persist as plain settings. */
+const CREDENTIAL_HEADER_NAMES = new Set(['authorization', 'proxy-authorization', 'cookie', 'api-key', 'apikey', 'x-api-key'])
+
+/** Carrier headers are non-secret metadata; a credential-bearing name is refused. */
+function isCredentialHeader(header: string): boolean {
+  const name = header.toLowerCase()
+  return CREDENTIAL_HEADER_NAMES.has(name) || name.endsWith('-api-key')
+}
+
+/**
+ * Resolve one extra provider's declared static request headers from the
+ * environment. Every value must be non-blank and legal for Fetch; a missing or
+ * unusable value refuses the add before any credential or settings write,
+ * because a blank header would only surface later as an opaque
+ * profile-resolution error.
+ */
+function resolveHeaderEnv(extra: ExtraProvider): Record<string, string> | undefined {
+  if (extra.headerEnv === undefined) return undefined
+  const headers: Record<string, string> = {}
+  for (const [header, envName] of Object.entries(extra.headerEnv)) {
+    if (isCredentialHeader(header)) {
+      throw new Error(`${extra.id} declares the credential header ${header}; only non-secret metadata headers can be carried`)
+    }
+    const value = process.env[envName]?.trim()
+    if (value === undefined || value.length === 0) {
+      throw new Error(`${extra.id} requires the ${envName} environment variable (${header} header)`)
+    }
+    // The settings seam materializes the profile through Fetch, which rejects
+    // names and values a header cannot carry; refuse them by name here.
+    try {
+      new Headers([[header, value]])
+    } catch {
+      throw new Error(`${extra.id} cannot carry the ${envName} value as the ${header} header: it is not a valid Fetch header value`)
+    }
+    headers[header] = value
+  }
+  return headers
+}
+
+/** Read a stored profile header map, keeping only the string values a header can carry. */
+function staticHeaders(value: unknown): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (value === null || typeof value !== 'object') return headers
+  for (const [header, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') headers[header] = entry
+  }
+  return headers
+}
+
+/** Stored header key matching a declared name; Fetch field names are case-insensitive. */
+function storedHeaderKey(stored: Record<string, string>, header: string): string | undefined {
+  const wanted = header.toLowerCase()
+  for (const key of Object.keys(stored)) {
+    if (key.toLowerCase() === wanted) return key
+  }
+  return undefined
+}
+
+/** Resolve the declared header values the environment currently supplies. */
+function environmentHeaders(extra: ExtraProvider | undefined): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (extra?.headerEnv === undefined) return headers
+  for (const [header, envName] of Object.entries(extra.headerEnv)) {
+    const value = process.env[envName]?.trim()
+    if (value !== undefined && value.length > 0) headers[header] = value
+  }
+  return headers
+}
+
+/** Declared headers the stored map does not carry yet; a stored value always wins. */
+function missingHeaders(declared: Record<string, string> | undefined, stored: Record<string, string>): Record<string, string> {
+  const missing: Record<string, string> = {}
+  if (declared === undefined) return missing
+  for (const [header, value] of Object.entries(declared)) {
+    // A stored variant in any case counts as the same Fetch field, so no
+    // second case variant is ever added.
+    if (storedHeaderKey(stored, header) === undefined) missing[header] = value
+  }
+  return missing
+}
+
 /** Public, secret-free key row. */
 function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null): KeyView {
   return {
@@ -1277,6 +1358,22 @@ export class KeysManagerService {
     return warnings
   }
 
+  /**
+   * Report declared headers whose stored value no longer matches what the
+   * environment supplies. The stored value is never replaced — the user may
+   * have set it deliberately — but the divergence must be visible, because
+   * otherwise the route keeps sending the stale value forever.
+   */
+  private warnHeaderDrift(extra: ExtraProvider, declared: Record<string, string> | undefined, stored: Record<string, string>): void {
+    if (declared === undefined) return
+    for (const [header, value] of Object.entries(declared)) {
+      const storedKey = storedHeaderKey(stored, header)
+      if (storedKey === undefined || stored[storedKey] === value) continue
+      const envName = extra.headerEnv?.[header] ?? header
+      this.pushWarning(`The stored ${storedKey} header on the ${extra.id} route differs from the value ${envName} now supplies; the stored value was kept.`)
+    }
+  }
+
   /** Current settings service, if the composition mounted one. */
   private settingsService(): SettingsLike | undefined {
     if (this.settings !== undefined) return this.settings
@@ -1624,6 +1721,11 @@ export class KeysManagerService {
    * recorded at that same broadcast (R6-SF1): it names the projection whose
    * failures own a cooldown, so the stale-window reset below clears only a
    * window attributed to an OLDER projection.
+   *
+   * A harvest that finds the attempt already settled writes neither the
+   * plugin-scope copy nor a row, but the projection the seam committed for
+   * this attempt is still demoted (ownership-checked, I-000122): a
+   * failed/cancelled login must not keep serving through the route.
    */
   private async harvestLogin(
     attempt: LoginAttempt,
@@ -1719,10 +1821,20 @@ export class KeysManagerService {
         // user sees is failed while the harvest would write the grant and
         // the account row. Revalidate settlement immediately before the
         // first credential write: a settled attempt must never grow a grant
-        // copy or a row. Nothing of this harvest is written yet, so the
-        // abort needs no compensation, and the release already published the
-        // terminal it owns.
-        if (attempt.settledAt !== undefined) return
+        // copy or a row.
+        //
+        // I-000122: aborting the write is not enough. The seam committed
+        // THIS attempt's grant as the provider's `llm-pi-ai` projection at
+        // the settlement broadcast, so returning here would leave the route
+        // serving a grant whose login failed/cancelled. Compensate that
+        // projection through the same ownership-checked path the failure
+        // handler uses: only this attempt's captured payload is deleted and
+        // a foreign or newer live grant is never touched. The release
+        // already published the terminal it owns.
+        if (attempt.settledAt !== undefined) {
+          await this.compensateFailedHarvest(attempt, harvest)
+          return
+        }
         await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
         facts.wroteRef = true
         const now = Date.now()
@@ -2076,6 +2188,30 @@ export class KeysManagerService {
    * Resolves `ok: false` only when the compare/delete writes themselves
    * rejected; an ownership mismatch is the guard doing its job (the live
    * record belongs to someone else) and counts as a clean skip.
+   *
+   * Every manager-initiated projection deletion registers the one-shot
+   * {@link intentionalProjectionRemovals} marker before the delete, exactly
+   * as {@link decideAndDeleteProjection} does (I-000125). Unmarked, the
+   * removal's own `credentials/record-updated` echo reconciles as an
+   * external deletion: the route's previously active managed account is
+   * flagged `valueMissing`, its owner claim is dropped and a misleading
+   * "removed outside Keys Manager" warning is pushed — even though that
+   * row and its plugin-scope grant are untouched.
+   *
+   * The marker only silences that echo; the route's state is corrected
+   * explicitly. The removal leaves the route with no stored projection, so the
+   * provider's owner claim — whatever it named before this attempt's grant
+   * replaced the record — is untruthful: {@link oauthOwnerFor} keeps naming a
+   * row pi-ai no longer resolves, `wrapStream` skips key-pool selection, oauth
+   * failures are attributed to that row, and the client keeps "Set active"
+   * disabled — the account cannot be re-activated. The claim is therefore
+   * invalidated (I-000125), and ONLY the claim: the surviving row keeps its
+   * `grantRef` and its `valueMissing: false`, so it stays managed and
+   * re-activatable while the route falls back to its API-key pool.
+   *
+   * The marker is armed only while the provider is still managed: a released
+   * provider has no echo consumer, and a marker nothing consumes would stay
+   * armed for its whole TTL and mask a genuine out-of-band removal.
    */
   private async revertHarvestProjection(
     attempt: LoginAttempt,
@@ -2104,7 +2240,48 @@ export class KeysManagerService {
         return undefined
       })
       if (owns && await this.projectionStillMatches(records, projectionKey, decidedAgainst)) {
-        await records.deleteRecord(projectionKey)
+        // The claim this removal makes untruthful, captured before the awaited
+        // delete. A newer activation or login claiming the route while the
+        // delete is in flight wins: its generation moves, and its claim names
+        // whatever that writer actually put in place.
+        const ownerBeforeRemoval = this.activeAccounts.get(attempt.provider)
+        const generation = this.ownershipGenerations.get(attempt.provider) ?? 0
+        // Mark BEFORE the delete, same one-shot bookkeeping the demotion
+        // path uses: the deletion's echo handler reads this marker across
+        // its own awaited record re-read, so the removal stays silent for
+        // this manager's own demotion instead of demoting the active
+        // account.
+        const markedAt = Date.now()
+        // Only arm the marker where an echo can reach its consumer: the
+        // dispatcher drops record-updates for an unmanaged provider, and a
+        // marker nothing consumes would mask a genuine out-of-band removal for
+        // its whole TTL.
+        const providerManaged = this.store.provider(attempt.provider) !== undefined
+        if (providerManaged) this.intentionalProjectionRemovals.set(attempt.provider, markedAt)
+        try {
+          await records.deleteRecord(projectionKey)
+        } catch (error) {
+          // A delete that threw removed nothing, so no own-removal echo is
+          // coming. Revoke this call's marker before the failure leaves this
+          // method — left in place it would consume a genuine out-of-band
+          // removal as the manager's own for the whole TTL, hiding the
+          // warning, the missing mark, and the stale owner cleanup. The
+          // identity check keeps a newer marker untouched.
+          if (providerManaged && this.intentionalProjectionRemovals.get(attempt.provider) === markedAt) {
+            this.intentionalProjectionRemovals.delete(attempt.provider)
+          }
+          throw error
+        }
+        // The removal succeeded: the projection the rows were claimed against
+        // is gone, so the provider's owner claim must go with it. The row is
+        // deliberately left untouched — same `grantRef`, still `valueMissing:
+        // false` — because it is still managed and its grant is still live;
+        // re-activating it re-projects the route.
+        if (ownerBeforeRemoval !== undefined
+          && (this.ownershipGenerations.get(attempt.provider) ?? 0) === generation) {
+          this.activeAccounts.delete(attempt.provider)
+          this.store.touch()
+        }
       } else if (!owns) {
         this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
@@ -2243,7 +2420,6 @@ export class KeysManagerService {
     const providerRecord = this.store.provider(provider)
     if (providerRecord === undefined) return
     const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
-    if (accounts.length === 0) return
     const activeId = this.activeAccounts.get(provider)
     const active = activeId === undefined
       ? undefined
@@ -2276,6 +2452,13 @@ export class KeysManagerService {
       }
       return
     }
+    // I-000125 marker hygiene: the removal branch above is the marker's ONLY
+    // consumer, so it must run before this early return. A provider that holds
+    // no OAuth row cannot be demoted (nothing to mark and nobody to warn), but
+    // its own removal echo still lands here — returning first would leave the
+    // marker armed for its whole TTL and mask a genuine out-of-band removal of
+    // the projection that serves a row added inside that window.
+    if (accounts.length === 0) return
     if (record.kind === 'api-key') {
       // Native api-key management took the route over: the manager no
       // longer owns any projection here.
@@ -4220,8 +4403,15 @@ export class KeysManagerService {
     })
   }
 
-  /** Discover models for a new extra provider, falling back to the seed catalog. */
+  /**
+   * Discover models for a new extra provider, falling back to the seed catalog.
+   * A route that declares a static header installs the seed catalog directly:
+   * the discovery request has no header slot, so probing such an endpoint can
+   * only fail (and would hold the serialized mutation queue for the probe's
+   * whole timeout).
+   */
   private async discoverModels(extra: ExtraProvider, value: string): Promise<{ models: ModelRecord[]; failure?: string }> {
+    if (extra.headerEnv !== undefined) return { models: normalizeModels(extra.models) }
     let discovered: DiscoveredModel[] = []
     let failure: string | undefined
     try {
@@ -4260,9 +4450,18 @@ export class KeysManagerService {
       const input = validateKeyInput(alias, value)
       const extra = EXTRA_PROVIDER_MAP.get(extraId)
       if (extra === undefined) throw new Error(`Unknown extra provider "${extraId}"`)
-      if (this.store.provider(extraId) !== undefined) {
+      // Resolved before the first credential/settings write on every add path,
+      // so a missing variable refuses the add without leaving a key or a
+      // partial profile.
+      const headers = resolveHeaderEnv(extra)
+      const managed = this.store.provider(extraId)
+      if (managed !== undefined) {
         this.pushWarning('Provider is already managed; the key was added instead.')
-        await this.addKeyLocked(extraId, input.alias, input.value)
+        // The shared managed-key path repairs the declared headers, so every
+        // add-key flow restores them and the repair keeps one implementation.
+        // Hand it the value resolved above: the entry refusal stays the single
+        // decision for this surface, and the environment is read once per add.
+        await this.addKeyLocked(extraId, input.alias, input.value, headers)
         this.store.touch()
         return this.buildState()
       }
@@ -4292,10 +4491,20 @@ export class KeysManagerService {
           keys: [],
         }
         const key = await this.createKeyRecord(extraId, input.alias, input.value)
+        const ops: SettingsPathOp[] = [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }]
+        // Fill the declared headers the stored profile does not carry; a value
+        // the profile already sets for the same header is never overwritten.
+        const storedHeaders = staticHeaders(existing.headers)
+        this.warnHeaderDrift(extra, headers, storedHeaders)
+        const missing = missingHeaders(headers, storedHeaders)
+        if (Object.keys(missing).length > 0) {
+          ops.push({ op: 'set', path: ['providers', extraId, 'headers'], value: { ...storedHeaders, ...missing } })
+        }
         try {
           // First binding of a profile this manager does not own yet, written
-          // together with the key that serves it (see the method comment).
-          await this.mutateSettings('llm-pi-ai', [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }])
+          // together with the key that serves it (see the method comment); the
+          // declared-header repair above travels in the same write.
+          await this.mutateSettings('llm-pi-ai', ops)
         } catch (error) {
           try {
             await this.unsetOriginal(key.ref)
@@ -4320,6 +4529,7 @@ export class KeysManagerService {
         api: extra.api,
         baseURL: extra.baseURL,
         apiKeyEnv: brokerRef,
+        ...(headers === undefined ? {} : { headers }),
         models,
       }
       const key = await this.createKeyRecord(extraId, input.alias, input.value)
@@ -4361,8 +4571,68 @@ export class KeysManagerService {
     })
   }
 
+  /**
+   * Restore a managed extra route's declared static headers.
+   *
+   * A managed profile can lose its declared headers through a Models edit;
+   * every managed add-key flow repairs them instead of leaving a route whose
+   * required header is silently absent. Only a live profile with a healthy
+   * binding is ours to repair: a deleted profile would gain a header-only
+   * half-profile, and a replaced one is the state release refuses to touch. A
+   * stored value for the same header always wins. The caller may pass the
+   * headers it already resolved at its own entry (where a missing variable can
+   * still refuse the add before any write); otherwise this method resolves
+   * them. Either way a failure only warns, because the key has already been
+   * added: a route whose headers cannot be resolved, and a settings write that
+   * cannot be performed, both leave the repair pending for the next add so a
+   * half-applied add is never turned into a rejected one.
+   */
+  private async repairDeclaredHeaders(record: ProviderRecord, declared?: Record<string, string>): Promise<void> {
+    const extra = record.extraId === null ? undefined : EXTRA_PROVIDER_MAP.get(record.extraId)
+    if (extra?.headerEnv === undefined) return
+    let headers = declared
+    if (headers === undefined) {
+      try {
+        headers = resolveHeaderEnv(extra)
+      } catch (error) {
+        this.pushWarning(
+          `Did not restore the declared headers on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
+        )
+        return
+      }
+    }
+    if (headers === undefined) return
+    const liveProfile = this.profileAt(record.settingsNs, record.settingsPath)
+    if (liveProfile === undefined || this.bindingState(record) === 'mismatch') {
+      this.pushWarning(
+        `Did not restore the ${Object.keys(headers).join(', ')} header on the ${extra.id} route: ${
+          liveProfile === undefined ? 'its Models profile no longer exists' : 'its Models profile was replaced'
+        }.`,
+      )
+      return
+    }
+    const stored = staticHeaders(liveProfile.headers)
+    this.warnHeaderDrift(extra, headers, stored)
+    const missing = missingHeaders(headers, stored)
+    if (Object.keys(missing).length === 0) return
+    try {
+      await this.mutateSettings(record.settingsNs, [
+        { op: 'set', path: [...record.settingsPath, 'headers'], value: { ...stored, ...missing } },
+      ])
+    } catch (error) {
+      // The key and its credential are already written; a failing settings
+      // write must not reject the add. The repair stays pending, so the next
+      // add-key flow retries it.
+      this.pushWarning(
+        `Did not restore the ${Object.keys(missing).join(', ')} header on the ${extra.id} route: ${error instanceof Error ? error.message : String(error)}`,
+      )
+      return
+    }
+    this.pushWarning(`Restored the missing ${Object.keys(missing).join(', ')} header on the managed profile.`)
+  }
+
   /** Add one key; caller already owns the mutation queue. */
-  private async addKeyLocked(provider: string, alias: string, value: string): Promise<void> {
+  private async addKeyLocked(provider: string, alias: string, value: string, declaredHeaders?: Record<string, string>): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
     // MF1: the key-pool restriction lives on the key entry path. A route
@@ -4378,9 +4648,15 @@ export class KeysManagerService {
     if (record.keys.length >= KEY_LIMIT) throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
     const key = await this.createKeyRecord(provider, input.alias, input.value)
     record.keys.push(key)
+    // After the key add: a refused key (capability or capacity) must leave the
+    // settings document untouched, so the repair never runs ahead of it.
+    await this.repairDeclaredHeaders(record, declaredHeaders)
     // A route adopted for accounts only, or one whose pool lost its last key,
-    // binds as soon as a usable API-key row exists again.
-    await this.syncBrokerBinding(provider)
+    // binds as soon as a usable API-key row exists again. An extra route's
+    // profile is its whole route, so a deleted one is never re-materialized
+    // from a binding write; a native route keeps its directory defaults and
+    // may adopt the binding as its first profile content.
+    await this.syncBrokerBinding(provider, record.extraId === null ? {} : { write: false })
   }
 
   /** Remote: add one key to a managed provider. */
@@ -4439,7 +4715,7 @@ export class KeysManagerService {
     })
   }
 
-  /** Read one live profile for release-time cleanup decisions. */
+  /** Read one live profile for repair and release-time cleanup decisions. */
   private profileAt(ns: string, path: readonly string[]): ProfileShape | undefined {
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, ns)
@@ -4503,6 +4779,27 @@ export class KeysManagerService {
     }
   }
 
+  /**
+   * Drop any armed intentional-removal marker for a provider being released.
+   *
+   * The marker only exists to silence the record-updated echo of the manager's
+   * own projection removal, and that echo is dropped outright once the provider
+   * is unmanaged: {@link onGrantRecordUpdated} returns at event time and
+   * {@link reconcileGrantRecord} at body time. A release can land between the
+   * arm and that echo — the abort compensation arms inside the mutation queue
+   * while its echo is still chained behind an in-flight body — leaving the
+   * marker armed for its whole TTL with nothing left to consume it. A provider
+   * re-adopted inside that window would then read a genuine out-of-band
+   * removal as the manager's own: no warning, no `valueMissing`, no
+   * stale-owner cleanup.
+   *
+   * Called only on the successful release path: a release that throws leaves
+   * the provider managed, and its echo may still legitimately arrive.
+   */
+  private dropIntentionalRemoval(provider: string): void {
+    this.intentionalProjectionRemovals.delete(provider)
+  }
+
   /** Restore the provider profile and drop management; caller owns the queue. */
   private async releaseLocked(provider: string): Promise<void> {
     const record = this.store.provider(provider)
@@ -4531,6 +4828,7 @@ export class KeysManagerService {
     // overwrite the live profile.
     if (binding === 'mismatch') {
       await this.deleteManagedCredentials(record)
+      this.dropIntentionalRemoval(provider)
       delete this.store.providers[provider]
       this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
       this.rebuildBrokerMap()
@@ -4546,17 +4844,49 @@ export class KeysManagerService {
         await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: ['providers', record.extraId] }])
         profileMutated = true
       } else {
-        // Native and pre-existing extra routes own only apiKeyEnv. Leave every
-        // other profile field (baseURL, models, hand edits) exactly as it is.
+        // Native and pre-existing extra routes own only the values this plugin
+        // wrote: apiKeyEnv, plus the declared static headers it injected into
+        // an adopted profile. Leave every other profile field (baseURL,
+        // models, hand edits) exactly as it is.
         // Exempt from the one-authority rule by design: release restores the
         // pre-adoption document, and the deletion loop that follows is
         // unbind-only ({@link deleteManagedCredentials}).
         const path = [...record.settingsPath, 'apiKeyEnv']
-        await this.mutateSettings(record.settingsNs, [
+        const ops: SettingsPathOp[] = [
           record.originalApiKeyEnv !== null
             ? { op: 'set', path, value: record.originalApiKeyEnv }
             : { op: 'unset', path },
-        ])
+        ]
+        // An injected header is identified by the environment value the add
+        // wrote into it, so no extra record field has to remember the write.
+        // Anything else stays, and release says so instead of guessing.
+        const storedHeaders = staticHeaders(liveProfile?.headers)
+        const extra = record.extraId === null ? undefined : EXTRA_PROVIDER_MAP.get(record.extraId)
+        const envHeaders = environmentHeaders(extra)
+        const injected: string[] = []
+        for (const [header, envName] of Object.entries(extra?.headerEnv ?? {})) {
+          // Fetch field names are case-insensitive: attribute the stored
+          // variant whatever its case, and unset that same stored key.
+          const storedKey = storedHeaderKey(storedHeaders, header)
+          if (storedKey === undefined) continue
+          const envValue = envHeaders[header]
+          if (envValue === undefined) {
+            this.pushWarning(`Release left the ${storedKey} header in the ${provider} profile: ${envName} is no longer set, so an injected value cannot be identified.`)
+          } else if (storedHeaders[storedKey] === envValue) {
+            injected.push(storedKey)
+          } else {
+            this.pushWarning(`Release left the ${storedKey} header in the ${provider} profile: it is not the value ${envName} currently supplies.`)
+          }
+        }
+        if (injected.length > 0) {
+          const remaining = Object.keys(storedHeaders).filter(header => !injected.includes(header))
+          if (remaining.length === 0) {
+            ops.push({ op: 'unset', path: [...record.settingsPath, 'headers'] })
+          } else {
+            for (const header of injected) ops.push({ op: 'unset', path: [...record.settingsPath, 'headers', header] })
+          }
+        }
+        await this.mutateSettings(record.settingsNs, ops)
         profileMutated = true
         // Remove an auto-created profile only when it is still empty after
         // clearing apiKeyEnv; a profile with later user edits stays.
@@ -4580,6 +4910,7 @@ export class KeysManagerService {
       }
       throw error
     }
+    this.dropIntentionalRemoval(provider)
     delete this.store.providers[provider]
     this.store.clearBindings(key => key.endsWith(`\u0000${provider}`))
     this.rebuildBrokerMap()

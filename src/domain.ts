@@ -226,6 +226,14 @@ export interface ExtraProvider {
   api: string
   baseURL: string
   env: string[]
+  /**
+   * Static request headers this route needs. Maps header name → environment
+   * variable name; each value is resolved from the environment at add time.
+   * Only non-secret metadata headers are supported: values are persisted as
+   * plain profile settings, so a credential-bearing name (`authorization`,
+   * `proxy-authorization`, `cookie`, `x-api-key`, `*-api-key`) is refused.
+   */
+  headerEnv?: Record<string, string>
   models: ModelRecord[]
 }
 

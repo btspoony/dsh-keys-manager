@@ -22,9 +22,17 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ### 额外提供商
 
-`src/providers.ts` 收录 34 个精选提供商（原有 21 个加本次发布新增 13 个，例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud、Alibaba Token Plan (CN)），目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
+`src/providers.ts` 收录 35 个精选提供商（原有 21 个、上一版本新增 13 个，以及本次新增的 CoreWeave Serverless Inference）；例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud、Alibaba Token Plan (CN)。目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
+
+CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中：该值在添加时读取一次，并作为静态 `OpenAI-Project` 请求头写进路由档案。缺少该变量会拒绝添加。要更改项目值，请先在 Keys Manager 中**释放（停止接管）该提供商**，再以新的 `COREWEAVE_PROJECT` 值重启 DSH，然后再次添加该提供商。释放时会移除本插件写入、且仍与当前环境变量值相等的 `OpenAI-Project` 值；无法归属的值会保留，并在界面警告中报告；手写的 header 若恰好等于环境变量值，也会按同一规则被移除。插件创建的档案会在下次添加时被移除并重建，接管的档案则保留并重新接管；两种情况都只补齐档案尚未声明的 header，从不覆盖已存储的值。
 
 ## 快速开始
+
+### 安装 —— DeepSeek Harness 桌面版 / Web 版
+
+桌面版或 Web 版打开 **插件** 页面，点击 **添加插件**，在包名输入框中填入 `dsh-keys-manager` 并点击 **安装**；安装完成后选择 **立即启用** 启用插件。
+
+通过向导安装时，应用会下载与下面 CLI 路径相同的已发布 npm 包，包内已包含构建好的产物。安装完成后刷新页面，让插件的浏览器侧代码被加载。
 
 ### 安装 —— 已发布包
 
@@ -41,7 +49,7 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-只有已发布包的安装路径不会在本地执行构建：`dsh plugin --profile web add dsh-keys-manager` 按原样安装 npm tarball——注册表安装不会运行包生命周期脚本（`prepare` / `prepack`），tarball 内已带构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径不同——安装本地目录会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程不需要手动构建步骤。
+两条 CLI 安装路径的区别在于构建产物的来源：`dsh plugin --profile web add dsh-keys-manager` 安装的已发布 npm tarball 中已包含构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程包含这一步构建；`prepack` 则在打包或发布时生成同样的产物。
 
 安装完成后刷新 Web 页面，让浏览器侧代码被取到。
 
