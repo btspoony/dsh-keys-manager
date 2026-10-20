@@ -1525,8 +1525,11 @@ export class KeysManagerService {
    * the delete is therefore visible before the delete runs, and its grant
    * survives. The residual window is the sub-microtask gap between the
    * re-read releasing the lock and the delete's own queue entry; a native
-   * writer landing there is the next writer's grant, which the ownership
-   * oracle re-identifies on its `record-updated` echo.
+   * writer landing there is still deleted, because closing that gap needs a
+   * compare-and-delete primitive the seam does not expose (store issue
+   * I-000090). `tests/host.test.ts` ("a native grant landing after the final
+   * comparison is still lost") pins that exact outcome so the seam fix has a
+   * test to flip.
    *
    * This is the only delete authority: a natively replaced grant — another
    * account signed in, a native api-key record, an unrecognized payload —
@@ -1581,7 +1584,9 @@ export class KeysManagerService {
    * exactly the decided-against payload. Runs inside `modifyRecord`'s
    * per-key lock (the same primitive as the decide), so a native writer
    * that already replaced the record is visible here and the delete is
-   * skipped instead of destroying the foreign grant.
+   * skipped instead of destroying the foreign grant. The lock is released
+   * before the delete, so a writer landing in that final gap is still lost:
+   * closing it needs the seam's compare-and-delete (store issue I-000090).
    */
   private async projectionStillMatches(
     records: CredentialRecordsLike,

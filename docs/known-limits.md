@@ -44,6 +44,16 @@ Current design boundaries of the Keys Manager plugin:
   signed in again. Re-authentication is manual —
   re-login from the account menu.
 - Only one active grant per provider is kept.
+- Conditional delete is a credential-seam capability this plugin does not
+  have: the store offers `deleteRecord(key)` with no compare/version guard,
+  so demoting or compensating the `llm-pi-ai/<provider>` projection is a
+  decide-then-delete pair. A native grant written in the sub-microtask window
+  between the final comparison and the delete's queue entry can therefore be
+  deleted even though it no longer belongs to the account being removed. The
+  manager narrows the window (a compare inside the seam's per-key lock plus a
+  pre-delete re-read) and a regression test pins the residual exactly. The
+  upstream capability request is store issue I-000090 (credential seam:
+  compare-and-delete / versioned delete primitive).
 - Increment 1 keeps the selection model key-centric: the provider's API
   keys form the sticky/round-robin/failover/cooldown ring, and exactly one
   projected OAuth grant serves the provider. Per-account ranking

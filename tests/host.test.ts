@@ -3726,6 +3726,49 @@ test('a native grant landing between the compensation decide and delete survives
   }
 })
 
+/**
+ * F1 (I-000090 residual): land a native grant in the one gap the seam's
+ * primitives cannot close — after the final `projectionStillMatches` re-read
+ * released the per-key lock and as the `deleteRecord` queue entry is taken.
+ * The decision is already made, so the unconditional delete removes the
+ * native grant. This test pins the exact documented outcome; when the seam
+ * gains a compare-and-delete / versioned delete primitive (I-000090), the
+ * assertion must flip to "the native grant survives".
+ */
+function landNativeOnDelete(h: Harness, key: string, refresh: string): { landed: () => boolean } {
+  let landed = false
+  const raw = h.credentials.raw
+  const realDelete = raw.deleteRecord.bind(raw)
+  raw.deleteRecord = async (k: string) => {
+    if (k === key && !landed) {
+      landed = true
+      h.credentials.records.set(key, {
+        kind: 'grant',
+        payload: { type: 'oauth', refresh, access: 'at-native-value', expires: 1_800_000_000_000 },
+      })
+    }
+    return realDelete(k)
+  }
+  return { landed: () => landed }
+}
+
+test('a native grant landing after the final comparison is still lost (I-000090 residual)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const native = landNativeOnDelete(h, GRANT_KEY, 'rt-native-value')
+    await h.service.fallbackToKeys('anthropic')
+    // The injection landed between the final re-read and the delete's own
+    // queue entry: the compare had already passed and the seam offers no
+    // conditional delete, so the native record is removed. Documented in
+    // docs/known-limits.md and tracked as I-000090.
+    assert.ok(native.landed())
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('an oauth failure cools the account down and demotes the cascade to keys', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9' })
   try {
