@@ -2773,8 +2773,29 @@ test('the service resolves the oauth flow for every pi-ai oauth provider', async
 test('every pi-ai OAuth provider this build registers stays account-capable (C6-2)', async () => {
   const h = await harness()
   try {
+    // M2 (r6): the expected set is written out HERE, independently of both
+    // the fixture's flow source (`piAiFlows`) and `OAUTH_PROVIDERS` above.
+    // Deriving the expectation from the same array the fixture serves only
+    // proves the fixture agrees with itself: a shipped flow source that drops,
+    // adds or renames a provider would stay green. This literal list is the
+    // drift detector.
+    const expectedFlowProviders = [
+      'anthropic',
+      'github-copilot',
+      'kimi-coding',
+      'openai-codex',
+      'openrouter',
+      'radius',
+      'xai',
+    ]
+    // The flow set the seam advertises is exactly the pinned set — no extra
+    // OAuth provider silently becomes account-capable.
+    assert.deepEqual(
+      h.authorization.list().map((flow: { key: string }) => flow.key).sort(),
+      expectedFlowProviders.map(provider => `llm-pi-ai/${provider}`).sort(),
+    )
     const state = h.service.buildState()
-    for (const provider of OAUTH_PROVIDERS) {
+    for (const provider of expectedFlowProviders) {
       const view = state.providers.find(entry => entry.provider === provider)
       assert.ok(view !== undefined, `${provider} is missing from the directory`)
       assert.equal(view!.nativeAuth?.oauth, true)
