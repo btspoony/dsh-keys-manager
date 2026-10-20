@@ -1885,6 +1885,16 @@ describe('account ui', () => {
       expect(view.nodes.some(node => node.text === '测试中…')).toBe(false)
       // QC N6: the failure line never renders an empty detail.
       expect(view.nodes.some(node => node.text === '连接失败：测试超时，未收到结果')).toBe(true)
+
+      // PR review SF4: the row deadline releases only the row. The store's
+      // serialized mutation queue is released by its own bound, so a lost
+      // answer cannot pin every later mutation behind it.
+      expect(store.getSnapshot().busy).toBe(null)
+      const followUp = store.call('deleteKey', { provider: 'zai-coding-cn', keyId: 'k_aaaaaaaa' })
+      await Promise.resolve()
+      await Promise.resolve()
+      await followUp
+      expect(harness.calls.some(entry => entry.endpoint === 'keysManager/deleteKey')).toBe(true)
     } finally {
       vi.useRealTimers()
       view.unmount()

@@ -19,6 +19,26 @@ function messageOf(error: unknown): string {
   return String(error)
 }
 
+/**
+ * Bound the row test's request with the same budget as the UI's row deadline
+ * (`client/ui.ts`). A lost answer has no cancellation, but it must not keep
+ * owning the caller's serialized mutation slot (PR review SF4).
+ */
+const TEST_KEY_DEADLINE_MS = 30_000
+
+/** Resolve with `work`'s value, or reject once `ms` passed without it. */
+async function withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} did not answer within ${ms / 1000}s`)), ms)
+  })
+  try {
+    return await Promise.race([work, deadline])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 /** Create the store bound to one connected Client context. */
 export function createStore(ctx: ClientContext): ClientStore {
   let snapshot: ClientSnapshot = {
@@ -60,13 +80,16 @@ export function createStore(ctx: ClientContext): ClientStore {
     method: string,
     args: Record<string, unknown>,
     onSuccess: (value: unknown) => T,
+    /** Bound one request so a lost answer releases the queue (SF4). */
+    deadlineMs?: number,
   ): Promise<T | { ok: false; error: string }> => {
     queuedMutations += 1
     update({ busy: method, error: null })
     const run = async (): Promise<T | { ok: false; error: string }> => {
       ++loadSequence // invalidate a load that started before this mutation
       try {
-        const result = await rpc(method, args)
+        const call = rpc(method, args)
+        const result = deadlineMs === undefined ? await call : await withDeadline(call, deadlineMs, method)
         if (!result.ok) throw new Error(result.error.message)
         const outcome = onSuccess(result.value)
         if (queuedMutations === 1) update({ busy: null })
@@ -163,7 +186,7 @@ export function createStore(ctx: ClientContext): ClientStore {
       return send('removeAccount', { provider, accountId }, stateOutcome)
     },
     testKey(provider: string, keyId: string): Promise<KeyTestOutcome> {
-      return send('testKey', { provider, keyId }, testOutcome)
+      return send('testKey', { provider, keyId }, testOutcome, TEST_KEY_DEADLINE_MS)
     },
     tick() {
       update({ now: Date.now() })

@@ -8128,6 +8128,79 @@ test('an oauth row test removes the borrowed projection when the route had none'
   }
 })
 
+test('a native grant landing during the projection cleanup survives the test', async () => {
+  // PR review MF2: removing the projection this test created is a
+  // compare-and-delete. A native writer's new grant landing between the
+  // restore's re-read and the removal is not the test's leftover, so it must
+  // survive and own the route — and the restore did not complete, so the test
+  // must not report a pass.
+  const h = await harness()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const seeded = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    const native = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-native', email: 'native@example.com', refresh: 'rt-native' })
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    let pinged = false
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) pinged = true
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    // The native sign-in lands right after the restore's re-read returned the
+    // borrowed payload — inside the re-read/delete window of the unfixed code.
+    let landed = false
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      const record = await realRead(key)
+      if (!landed && pinged && key === GRANT_KEY && (record?.payload as Record<string, unknown> | undefined)?.refresh === 'rt-only') {
+        landed = true
+        h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native', accountId: 'acc-native', email: 'native@example.com' }))
+      }
+      return record
+    }
+
+    const result = await h.service.testKey('anthropic', seeded.rowId)
+
+    assert.equal(landed, true)
+    // The native grant survives the cleanup…
+    assert.equal(liveProjectionRefresh(h), 'rt-native')
+    // …and the owner map follows it, not the tested row.
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.find(row => row.id === native.rowId)!.projected, true)
+    assert.notEqual(rows.find(row => row.id === seeded.rowId)!.projected, true)
+    // The borrow could not be removed, so the test reports a failure.
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /changed during the test/)
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+test('an aborted finish fails the row test and a length-limited finish passes it', async () => {
+  // PR review SF3: only a real completion ends the probe as a pass. The ping
+  // asks for one token, so `length` is the expected completion; `aborted`
+  // means the provider stopped the request, not that it answered.
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  try {
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'aborted' } }
+    } as any)
+    const aborted = await h.service.testKey('anthropic', first.rowId)
+    assert.equal(aborted.ok, false)
+    assert.match(String(aborted.error), /aborted/)
+
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'length' } }
+    } as any)
+    const limited = await h.service.testKey('anthropic', first.rowId)
+    assert.equal(limited.ok, true)
+    assert.equal(liveProjectionRefresh(h), 'rt-second')
+  } finally {
+    await h.close()
+  }
+})
+
 // A row test borrows a projection for its provider. These cases pin the
 // isolation and the compare-by-payload restoration: an ordinary request must
 // not be served by (or attributed to) the borrowed grant, a rotation the ping
@@ -8392,16 +8465,17 @@ test('an externally removed projection is not resurrected by an oauth test', asy
 test('a failed restore fails the test and keeps the owner on the live grant', async () => {
   const { h, first, second } = await harnessWithTwoProjectedAccounts()
   try {
+    let failFirstRestore = true
     h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
-      if (options.maxTokens === 1) {
+      if (options.maxTokens === 1 && failFirstRestore) {
         // The projection write that puts the pre-test payload back fails.
+        failFirstRestore = false
         h.credentials.raw.failModifyRecord = true
       }
       yield { type: 'finish', reason: { kind: 'stop' } }
     } as any)
 
     const result = await h.service.testKey('anthropic', first.rowId)
-    h.credentials.raw.failModifyRecord = false
 
     assert.equal(result.ok, false)
     assert.match(String(result.error), /could not be restored/)
@@ -8414,7 +8488,33 @@ test('a failed restore fails the test and keeps the owner on the live grant', as
     assert.equal(rows.find(candidate => candidate.id === first.rowId)!.projected, true)
     assert.notEqual(rows.find(candidate => candidate.id === second.rowId)!.projected, true)
     assert.ok(state.warnings.some(warning => /could not be restored/.test(warning)))
+
+    // PR review MF1: a cleanup that failed on the normal path must leave the
+    // provider fenced and isolated exactly as an abandoned window does. The
+    // borrow marker is still set, so serving this route would use the tested
+    // account's credential.
+    await assert.rejects(
+      () => consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 })),
+      /still being cleaned up/,
+    )
+    // A second test is refused too, instead of borrowing the unreconciled
+    // route again.
+    const refused = await h.service.testKey('anthropic', second.rowId)
+    assert.equal(refused.ok, false)
+    assert.match(String(refused.error), /still being cleaned up/)
+
+    // Once the seam answers again, the recovery the fence relies on
+    // converges: the pre-test projection is back and the route serves again.
+    h.credentials.raw.failModifyRecord = false
+    const retried = await h.service.testKey('anthropic', first.rowId)
+    assert.equal(retried.ok, true)
+    assert.equal(liveProjectionRefresh(h), 'rt-second')
+    const converged = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(converged.find(candidate => candidate.id === second.rowId)!.projected, true)
+    assert.notEqual(converged.find(candidate => candidate.id === first.rowId)!.projected, true)
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
   } finally {
+    h.credentials.raw.failModifyRecord = false
     await h.close()
   }
 })

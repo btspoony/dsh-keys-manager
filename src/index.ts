@@ -2846,13 +2846,18 @@ export class KeysManagerService {
     } finally {
       clearTimeout(watchdog)
       if (this.testsActive.get(provider) === test) this.testsActive.delete(provider)
-      if (this.testsInFlight.get(provider) === test) this.testsInFlight.delete(provider)
+      // PR review MF1: a window whose cleanup could not put the route back
+      // (normal path or watchdog) keeps its isolation entry until a recovery
+      // attempt succeeds, so ordinary traffic is never served by the borrowed
+      // grant while the fence is up.
+      if (this.testsInFlight.get(provider) === test && !this.cleaningTests.has(provider)) this.testsInFlight.delete(provider)
     }
   }
 
   /**
    * Take over a test window that did not settle within the isolation deadline
-   * (QC fix wave 2).
+   * (QC fix wave 2) or whose own cleanup could not restore the route (PR
+   * review MF1).
    *
    * The fence is set synchronously, before the first cleanup await: the wedged
    * test may resume at any await from here, and it must observe the
@@ -2860,11 +2865,15 @@ export class KeysManagerService {
    * snapshot. The provider keeps its isolation entry until the cleanup
    * completed — see {@link settleAbandonedWindow}.
    */
-  private abandonTestWindow(window: RowTestWindow): void {
+  private abandonTestWindow(window: RowTestWindow, origin: 'deadline' | 'cleanup' = 'deadline'): void {
+    // One cleanup owner per window: the watchdog and the normal path can both
+    // observe the same failure, and a second owner would put two cleanups on
+    // one route.
+    if (window.cleaned) return
     window.cleaned = true
     this.cleaningTests.add(window.provider)
     this.abandonedWindows.set(window.provider, window)
-    void this.settleAbandonedWindow(window)
+    void this.settleAbandonedWindow(window, origin)
   }
 
   /**
@@ -2879,13 +2888,16 @@ export class KeysManagerService {
    * attempt ({@link recoverAbandonedWindow}, QC fix wave 3 W-002) — a promise
    * that settles while the seam is still wedged must not be the only path.
    */
-  private async settleAbandonedWindow(window: RowTestWindow): Promise<void> {
+  private async settleAbandonedWindow(window: RowTestWindow, origin: 'deadline' | 'cleanup'): Promise<void> {
     const failure = await this.attemptAbandonedCleanup(window)
+    const cause = origin === 'deadline'
+      ? `did not settle within ${this.isolationWaitMs}ms`
+      : 'could not be cleaned up when it finished'
     if (failure === undefined) {
-      this.warn(`connection test for ${window.provider} did not settle within ${this.isolationWaitMs}ms; its borrowed credential was put back and the provider slot is released`)
+      this.warn(`connection test for ${window.provider} ${cause}; its borrowed credential was put back and the provider slot is released`)
       return
     }
-    this.warn(`connection test for ${window.provider} did not settle within ${this.isolationWaitMs}ms and its cleanup did not complete (${failure}); the provider stays isolated`)
+    this.warn(`connection test for ${window.provider} ${cause} and its cleanup did not complete (${failure}); the provider stays isolated`)
     const pending = window.test
     if (pending === undefined) return
     const retry = (): void => { void this.retryAbandonedWindow(window) }
@@ -3271,6 +3283,14 @@ export class KeysManagerService {
         } else {
           const restored = await this.cleanupTestWindow(window)
           if (restoreFailure === undefined) restoreFailure = restored
+          // PR review MF1: a cleanup that failed on the normal path must enter
+          // the same fenced recovery the watchdog uses. Reporting the failure
+          // alone would strand the borrow marker (every later
+          // `syncBrokerBinding` returns early) and let the borrowed grant keep
+          // serving ordinary requests. `window.cleaned` guards the case where
+          // the watchdog took the window over while this cleanup ran — that
+          // owner is already retrying.
+          if (restored !== undefined && !window.cleaned) this.abandonTestWindow(window, 'cleanup')
         }
       }
       if (restoreFailure !== undefined) {
@@ -3378,6 +3398,40 @@ export class KeysManagerService {
     }
     try {
       if (previous === undefined) {
+        // PR review MF2: the projection was this test's own write, so the
+        // route goes back to having none — but only while the record still
+        // carries what this test left (the borrowed grant, or a rotation of
+        // the tested row). The decision runs inside the seam's per-key lock
+        // and the removal is preceded by {@link projectionStillMatches}, so a
+        // native writer's grant landing after the re-read above survives as
+        // that writer's projection instead of being deleted as a leftover.
+        let decidedAgainst: string | undefined = undefined
+        await records.modifyRecord(key, async current => {
+          if (current === undefined) return undefined
+          const currentGrant = current.kind === 'grant' && isOAuthGrantPayload(current.payload)
+            ? current.payload
+            : undefined
+          const testLeft = currentGrant !== undefined && (
+            JSON.stringify(currentGrant) === JSON.stringify(borrowed)
+            || matchOwningAccount(provider, rows, currentGrant)?.id === row.id)
+          if (testLeft) decidedAgainst = JSON.stringify(current.payload)
+          return undefined
+        })
+        if (decidedAgainst === undefined || !await this.projectionStillMatches(records, key, decidedAgainst)) {
+          const liveAfter = await records.readRecord(key)
+          const liveAfterGrant = liveAfter !== undefined && liveAfter.kind === 'grant' && isOAuthGrantPayload(liveAfter.payload)
+            ? liveAfter.payload
+            : undefined
+          this.reconcileProjectionOwner(provider, liveAfterGrant)
+          // Already gone: the route has no projection, which is the state the
+          // test found. Anything else is a grant this test may not remove —
+          // it stays and owns the route, and the test reports that its own
+          // borrow could not be undone.
+          if (liveAfter === undefined) return undefined
+          const message = `The credential projection at ${key} changed during the test and was left in place; the route serves whichever credential those records hold now.`
+          this.pushWarning(message)
+          return message
+        }
         await records.deleteRecord(key)
       } else {
         // QC N2: the compare travels with the write, so a foreign payload
@@ -3490,9 +3544,18 @@ export class KeysManagerService {
         })
         for await (const chunk of stream) {
           if (chunk.type !== 'finish') continue
-          if (chunk.reason !== undefined && chunk.reason.kind === 'error') {
-            const failure = chunk.reason.failure
+          const kind = chunk.reason?.kind
+          if (kind === 'error') {
+            const failure = chunk.reason?.failure
             return { ok: false, error: failure?.message ?? failure?.code ?? 'The provider reported a failure' }
+          }
+          // PR review SF3: only a real completion is a pass. The ping asks for
+          // one token, so `length` is the expected completion; `aborted` — or
+          // any kind this broker does not know — means the provider did not
+          // answer, so reporting a pass would claim a credential it never
+          // served.
+          if (kind !== undefined && kind !== 'stop' && kind !== 'length' && kind !== 'toolUse') {
+            return { ok: false, error: kind === 'aborted' ? 'The request was aborted' : `The request ended with "${kind}"` }
           }
           return { ok: true }
         }
