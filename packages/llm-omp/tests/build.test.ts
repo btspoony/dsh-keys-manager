@@ -21,12 +21,14 @@
  */
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
+import { jsonAsEsmModule } from '../scripts/build-omp.mjs'
 import { shimImportsOf } from '../scripts/omp-reach.mjs'
 import { Bun as BunGlobal, CryptoHasher, SHA256 } from '../scripts/omp-shim/bun-global'
 
@@ -34,11 +36,15 @@ const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
 
 /**
- * Measured 1,372,181 bytes when the whole model catalog is tree-shaken out of
- * the graph. The ceiling is a loud backstop for a catalog (or another large
- * asset) being pulled back into the shipped bundle on purpose-less drift.
+ * Hard ceiling for the shipped artifact, calibrated against the measurement the
+ * manifest records (`bytes`, ~1.4 MB once the model catalog is tree-shaken out)
+ * rather than a stale snapshot literal: ~1.5x the measurement leaves room for
+ * the transport to grow, while still failing the pre-fix 14.7 MB form — a
+ * catalog (or another large asset) being pulled back into the bundle. Every
+ * build changes `manifest.bytes`, so CI's manifest diff already names a size
+ * change; this bound answers "how big is too big".
  */
-const MAX_BUNDLE_BYTES = 15_500_000
+const MAX_BUNDLE_BYTES = 2_000_000
 
 interface OmpManifest {
   ompVersion: string
@@ -127,6 +133,10 @@ describe('omp cursor bundle', () => {
     const artifact = readFileSync(artifactPath)
     expect(artifact.byteLength).toBe(manifest.bytes)
     expect(artifact.byteLength).toBeLessThanOrEqual(MAX_BUNDLE_BYTES)
+    // Calibration, not a second measurement: the bound must stay near the
+    // measured artifact (well under 2x), so it cannot drift back above the size
+    // it is meant to catch.
+    expect(MAX_BUNDLE_BYTES / manifest.bytes).toBeLessThan(2)
   })
 
   it('imports under plain Node without a Bun global', async () => {
@@ -161,6 +171,38 @@ describe('omp cursor bundle', () => {
   })
 })
 
+describe('omp JSON module generator', () => {
+  it('keeps every key of a mixed-key JSON in the default export', async () => {
+    const emitted = jsonAsEsmModule('{"a":1,"b-c":2,"3d":4}')
+    expect(emitted?.loader).toBe('js')
+    // the emitted module is executed as-is: this asserts the shipped shape, not
+    // a string that happens to contain the keys.
+    const module = (await import(
+      `data:text/javascript;base64,${Buffer.from(emitted?.contents ?? '', 'utf8').toString('base64')}`
+    )) as { default: Record<string, unknown>; a?: unknown }
+    expect(module.default).toEqual({ a: 1, 'b-c': 2, '3d': 4 })
+    expect(module.a).toBe(1)
+    // Only identifier-named keys are bindings; the non-identifier keys live in
+    // the default export instead of being silently dropped.
+    expect(Object.keys(module).sort()).toEqual(['a', 'default'])
+  })
+
+  it('emits one named export per identifier-valid key', () => {
+    const emitted = jsonAsEsmModule('{"openai":{},"anthropic":{}}')
+    expect(emitted?.contents).toContain('export const openai = __key_0;')
+    expect(emitted?.contents).toContain('export const anthropic = __key_1;')
+    // Identifier keys are re-assembled by reference (tree-shake-able).
+    expect(emitted?.contents).toContain('export default { "openai": __key_0, "anthropic": __key_1 };')
+  })
+
+  it('falls back to esbuild JSON handling when no key can be a binding', () => {
+    // A faithful fallback: the loader keeps the file verbatim.
+    expect(jsonAsEsmModule('{"b-c":2}')).toBeUndefined()
+    expect(jsonAsEsmModule('[1,2]')).toBeUndefined()
+    expect(jsonAsEsmModule('not json')).toBeUndefined()
+  })
+})
+
 describe('omp drift gate', () => {
   it('pins the installed omp packages', () => {
     expect(installedVersion('@oh-my-pi/pi-ai')).toBe(manifest.ompVersion)
@@ -191,12 +233,78 @@ describe('omp drift gate', () => {
   })
 
   it('records the shim symbols the bundled graph actually reaches', () => {
+    const reached = shimImportsOf(metafile, { packageRoot, shimPaths }) as Record<string, string[]>
     // A `simplify:` member that becomes reachable changes this set, so the
     // manifest diff names it before the behaviour change ships.
-    expect(shimImportsOf(metafile, { packageRoot, shimPaths })).toEqual(manifest.shimImports)
+    expect(reached).toEqual(manifest.shimImports)
+    // Both sides run the same derivation, so a parser regression would shrink
+    // them together; the real reach must never silently become empty.
+    expect(reached['pi-utils'].length).toBeGreaterThan(0)
+    expect(manifest.shimImports['pi-utils'].length).toBeGreaterThan(0)
     // No module in the graph imports a `bun:*` builtin: the shim exists to fail
     // loudly if one ever does, so its reach must stay empty.
     expect(manifest.shimImports['bun-modules']).toEqual([])
+  })
+})
+
+describe('omp reach derivation', () => {
+  it('derives the reached names from every import form', () => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-reach-'))
+    try {
+      const shim = join(root, 'scripts', 'omp-shim', 'pi-utils.ts')
+      const bunShim = join(root, 'scripts', 'omp-shim', 'bun-global.ts')
+      mkdirSync(dirname(shim), { recursive: true })
+      writeFileSync(shim, 'export const plain = 1\n')
+      writeFileSync(bunShim, 'export const Bun = {}\n')
+      const importer = join(root, 'src', 'importer.ts')
+      mkdirSync(dirname(importer), { recursive: true })
+      writeFileSync(
+        importer,
+        [
+          "import { plain } from '@oh-my-pi/pi-utils'",
+          "import { fromShim as localName } from '@oh-my-pi/pi-utils'",
+          "import { type TypeOnly } from '@oh-my-pi/pi-utils'",
+          "import * as ns from '@oh-my-pi/pi-utils'",
+          "export { reexported } from '@oh-my-pi/pi-utils'",
+          'import {',
+          '  multiOne,',
+          '  multiTwo as multiAlias,',
+          "} from '@oh-my-pi/pi-utils'",
+          '',
+        ].join('\n'),
+      )
+      const reached = shimImportsOf(
+        {
+          inputs: {
+            'src/importer.ts': {
+              imports: [
+                // relative edge, as esbuild keys a normal import
+                { path: 'scripts/omp-shim/pi-utils.ts', original: '@oh-my-pi/pi-utils' },
+                // a plugin-resolved edge keeps an absolute path
+                { path: shim, original: '@oh-my-pi/pi-utils' },
+                // a `..` segment normalizes onto the same shim key
+                { path: 'scripts/omp-shim/../omp-shim/pi-utils.ts', original: '@oh-my-pi/pi-utils' },
+                // the injected `Bun` global has no `original`: the binding is the fact
+                { path: 'scripts/omp-shim/bun-global.ts' },
+              ],
+            },
+          },
+        },
+        {
+          packageRoot: root,
+          shimPaths: {
+            'pi-utils': 'scripts/omp-shim/pi-utils.ts',
+            'bun-global': 'scripts/omp-shim/bun-global.ts',
+          },
+        },
+      ) as Record<string, string[]>
+      // `{ a as b }` reaches `a` (the shim's own export), not the local alias;
+      // `type T` is erased before bundling; a namespace/star import reaches all.
+      expect(reached['pi-utils']).toEqual(['*', 'fromShim', 'multiOne', 'multiTwo', 'plain', 'reexported'])
+      expect(reached['bun-global']).toEqual(['Bun'])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
