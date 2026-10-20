@@ -26,6 +26,12 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ## 快速开始
 
+### 安装 —— DeepSeek Harness 桌面版 / Web 版
+
+桌面版或 Web 版打开 **插件** 页面，点击 **添加插件**，在包名输入框中填入 `dsh-keys-manager` 并点击 **安装**；安装完成后选择 **立即启用** 启用插件。
+
+它与下面的 CLI 安装使用同一个已发布 npm tarball——不会在本地执行构建，也不需要命令行。
+
 ### 安装 —— 已发布包
 
 ```sh

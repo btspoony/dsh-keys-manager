@@ -38,6 +38,16 @@ are kept by design.
 
 ## Quick start
 
+### Install — DeepSeek Harness Desktop / Web
+
+In the DeepSeek Harness Desktop or Web app, open **Plugins**, click
+**Add plugin**, enter `dsh-keys-manager` in the package field, and click
+**Install**. When the install finishes, choose **Enable now** so the plugin is
+switched on.
+
+This installs the same published npm tarball as the CLI path below, so it
+needs no local build and no command line.
+
 ### Install — published package
 
 ```sh
