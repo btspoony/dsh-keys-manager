@@ -139,18 +139,38 @@ export function stringifyJson(value: unknown): string {
   return JSON.stringify(value)
 }
 
-/** Bounded map with least-recently-used eviction (omp keeps conversation state in it). */
+/**
+ * Bounded map with least-recently-used eviction (omp keeps conversation state in it).
+ *
+ * omp constructs it as `new LRUCache({ max })` and relies on the bound: its
+ * per-conversation cache holds serialized history, so an unbounded map would
+ * grow with every conversation a long-lived host ever served. Insertion order is
+ * the recency order — `set` re-inserts, `get` refreshes — so the first key is
+ * always the least recently used one.
+ */
 export class LRUCache<K, V> {
   readonly #entries = new Map<K, V>()
+  readonly #max: number
 
-  constructor(_options?: unknown) {}
+  constructor(options: { max?: number } = {}) {
+    // 0 means "no limit", as in omp's own cache (`positiveInteger(0)` = disabled).
+    this.#max = options.max !== undefined && options.max > 0 ? options.max : Number.POSITIVE_INFINITY
+  }
 
   get(key: K): V | undefined {
-    return this.#entries.get(key)
+    if (!this.#entries.has(key)) return undefined
+    const value = this.#entries.get(key) as V
+    this.#entries.delete(key)
+    this.#entries.set(key, value)
+    return value
   }
 
   set(key: K, value: V): this {
+    this.#entries.delete(key)
     this.#entries.set(key, value)
+    if (this.#entries.size > this.#max) {
+      this.#entries.delete(this.#entries.keys().next().value as K)
+    }
     return this
   }
 

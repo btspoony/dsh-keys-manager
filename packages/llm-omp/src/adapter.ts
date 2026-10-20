@@ -20,6 +20,7 @@ import type {
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  ModelModality,
   StreamChunk,
 } from '@deepseek-ai/dsh-llm'
 
@@ -37,6 +38,17 @@ const CREDENTIAL_REF = 'llm-omp/cursor'
 export const UNKNOWN_MODEL = 'UNKNOWN_MODEL'
 /** Machine code for a provider route this adapter does not serve. */
 export const UNKNOWN_PROVIDER = 'UNKNOWN_PROVIDER'
+
+/**
+ * Input modalities every advertised row carries.
+ *
+ * shortcut: the projection carries text only and refuses every non-text block
+ * with `CONTENT_UNSUPPORTED`, so advertising the catalog row's `input` verbatim
+ * (100 of 123 rows say `image`) would promise a turn this route fails after
+ * DSH's own image→text fallback is skipped. Task 2/3 add image forwarding; that
+ * is when `row.input` becomes advertisable again.
+ */
+const INPUT_MODALITIES: readonly ModelModality[] = ['text']
 
 /** Display names for the catalog's reasoning efforts. */
 const EFFORT_NAMES: Readonly<Record<string, string>> = {
@@ -94,7 +106,7 @@ export class OmpCursorAdapter extends LlmAdapter {
       provider,
       id: row.id,
       name: row.name,
-      inputModalities: [...row.input],
+      inputModalities: [...INPUT_MODALITIES],
     }))
   }
 
@@ -138,7 +150,7 @@ function modelInfo(provider: string, row: CursorModelRow): LlmResolvedModelInfo 
     provider,
     id: row.id,
     name: row.name,
-    inputModalities: [...row.input],
+    inputModalities: [...INPUT_MODALITIES],
     context: { contextWindow: row.contextWindow },
     // No `defaultMaxTokens`. The seam materializes that number into `maxTokens`
     // on every request that omits one, and Cursor's wire has no per-request

@@ -31,6 +31,8 @@ import { describe, expect, it } from 'vitest'
 import { jsonAsEsmModule } from '../scripts/build-omp.mjs'
 import { shimImportsOf } from '../scripts/omp-reach.mjs'
 import { Bun as BunGlobal, CryptoHasher, SHA256 } from '../scripts/omp-shim/bun-global'
+import { LRUCache } from '../scripts/omp-shim/pi-utils'
+import { CURSOR_CATALOG_SOURCE, CURSOR_MODELS } from '../src/catalog/cursor.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -247,6 +249,22 @@ describe('omp drift gate', () => {
   })
 })
 
+describe('generated cursor table freshness', () => {
+  it('describes the installed catalog and the pin the manifest records', () => {
+    // The table carries the claim "this table came from that pin". Without this
+    // comparison a catalog bump refreshes the manifest and leaves the committed
+    // table describing the previous models, and nothing fails.
+    expect(CURSOR_CATALOG_SOURCE.version).toBe(manifest.piCatalogVersion)
+    const modelsPath = installedSourcePath('@oh-my-pi/pi-catalog/src/models.json')
+    expect(CURSOR_CATALOG_SOURCE.sourceHash).toBe(manifest.sourceHashes['@oh-my-pi/pi-catalog/src/models.json'])
+    expect(CURSOR_CATALOG_SOURCE.sourceHash).toBe(sha256(modelsPath))
+    const cursorRows = (JSON.parse(readFileSync(modelsPath, 'utf8')) as { cursor?: Record<string, unknown> }).cursor
+    expect(cursorRows).toBeDefined()
+    expect(CURSOR_CATALOG_SOURCE.rowCount).toBe(Object.keys(cursorRows ?? {}).length)
+    expect(CURSOR_MODELS).toHaveLength(CURSOR_CATALOG_SOURCE.rowCount)
+  })
+})
+
 describe('omp reach derivation', () => {
   it('derives the reached names from every import form', () => {
     const root = mkdtempSync(join(tmpdir(), 'omp-reach-'))
@@ -305,6 +323,34 @@ describe('omp reach derivation', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('omp pi-utils shim contract', () => {
+  it('bounds the cache at `max` and evicts the least recently used entry', () => {
+    const cache = new LRUCache<string, string>({ max: 2 })
+    for (const key of ['a', 'b', 'c', 'd']) cache.set(key, key)
+
+    expect(cache.size).toBe(2)
+    expect(cache.has('a')).toBe(false)
+    expect(cache.has('b')).toBe(false)
+    expect(cache.has('c')).toBe(true)
+    expect(cache.has('d')).toBe(true)
+    // `delete` is the only way to remove an entry ahead of eviction.
+    expect(cache.delete('c')).toBe(true)
+    expect(cache.has('c')).toBe(false)
+  })
+
+  it('refreshes recency on `get`', () => {
+    const cache = new LRUCache<string, string>({ max: 2 })
+    cache.set('a', '1')
+    cache.set('b', '2')
+    expect(cache.get('a')).toBe('1')
+
+    cache.set('c', '3')
+    // `a` was read, so `b` is the oldest entry now.
+    expect(cache.has('a')).toBe(true)
+    expect(cache.has('b')).toBe(false)
   })
 })
 

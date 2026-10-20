@@ -14,7 +14,7 @@ import {
   createSystemMessage,
   createUserMessage,
 } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, GenerateOptions, ModelModality, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 
 import { CURSOR_ROUTE, OmpCursorAdapter, UNKNOWN_MODEL, UNKNOWN_PROVIDER } from '../src/adapter.js'
@@ -139,7 +139,7 @@ describe('OmpCursorAdapter catalog', () => {
       provider: 'cursor',
       id: 'claude-4.5-sonnet',
       name: 'Claude Sonnet 4.5',
-      inputModalities: ['text', 'image'],
+      inputModalities: ['text'],
     })
     expect(models.every(model => model.provider === 'cursor' && model.name.length > 0)).toBe(true)
   })
@@ -151,7 +151,7 @@ describe('OmpCursorAdapter catalog', () => {
       provider: 'cursor',
       id: 'claude-4.5-sonnet',
       name: 'Claude Sonnet 4.5',
-      inputModalities: ['text', 'image'],
+      inputModalities: ['text'],
       context: { contextWindow: SONNET.contextWindow },
       reasoning: {
         efforts: [
@@ -182,6 +182,38 @@ describe('OmpCursorAdapter catalog', () => {
 
     const info = await adapter.resolveModel(CURSOR_ROUTE, plain.id)
     expect(info.reasoning).toBeUndefined()
+  })
+
+  it('advertises only input modalities the projection accepts, on every row', async () => {
+    // DSH forwards an image block to a model whose metadata says `image` and
+    // skips its own image->text fallback, so an advertised modality the
+    // projection refuses turns a user attachment into a hard failure. Whatever
+    // `resolveModel` advertises, `projectRequest` must carry.
+    const { adapter } = adapterFor('cursor-text.jsonl')
+    const blockFor: Record<ModelModality, ContentBlock> = {
+      text: { type: 'text', text: 'Hello' },
+      // The projection dispatches on `block.type` alone; the payload is never read.
+      image: { type: 'image' } as unknown as ContentBlock,
+    }
+    let checked = 0
+
+    for (const row of CURSOR_MODELS) {
+      const info = await adapter.resolveModel(CURSOR_ROUTE, row.id)
+      for (const modality of info.inputModalities ?? []) {
+        const messages = [createUserMessage({ content: [blockFor[modality]], source: { kind: 'user' } })]
+        expect(
+          () => projectRequest(row, request({ model: row.id, messages }), 'token'),
+          `${row.id}/${modality}`,
+        ).not.toThrow()
+        checked += 1
+      }
+    }
+
+    // Keep the filter honest: the catalog does advertise `image` on most rows,
+    // so advertising `row.input` verbatim fails the loop above, and an empty
+    // modality list cannot pass it vacuously.
+    expect(CURSOR_MODELS.some(row => row.input.includes('image'))).toBe(true)
+    expect(checked).toBe(CURSOR_MODELS.length)
   })
 
   it('advertises only reasoning efforts the projection resolves, on every row', async () => {

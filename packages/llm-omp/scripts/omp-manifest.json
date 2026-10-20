@@ -4,7 +4,7 @@
   "esbuildVersion": "0.28.2",
   "entry": "lib/omp/cursor.mjs",
   "moduleCount": 131,
-  "bytes": 1372538,
+  "bytes": 1372931,
   "shimSymbols": {
     "pi-utils": [
       "$env",
