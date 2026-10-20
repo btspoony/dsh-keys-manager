@@ -831,7 +831,13 @@ export class KeysManagerService {
     const attempt = this.loginAttempts.get(attemptId)
     if (attempt === undefined || attempt.settledAt !== undefined) return
     if (settlement === 'authorized') {
-      void this.harvestLogin(attempt)
+      // F2 provenance: capture the projection payload at the settlement
+      // broadcast — the point where the seam reports THIS attempt's commit —
+      // instead of reading whatever is live when the queued harvest finally
+      // runs. The capture starts here, outside the mutation queue, so a
+      // release parked ahead of the harvest cannot let a foreign writer
+      // become this attempt's provenance.
+      void this.harvestLogin(attempt, this.captureSettledProjection(attempt))
       return
     }
     if (settlement === 'cancelled') this.finishLoginAttempt(attempt, 'cancelled')
@@ -1026,35 +1032,38 @@ export class KeysManagerService {
   }
 
   /**
-   * Turn a committed sign-in into pool state: read the grant pi-ai wrote to
-   * `llm-pi-ai/<provider>`, persist the payload under the plugin-scope
-   * account ref, and upsert the `kind: 'oauth'` row. Any failure fails the
-   * attempt loudly — a login whose grant could not be captured must not
-   * look like success.
+   * Turn a committed sign-in into pool state: persist the grant pi-ai wrote
+   * to `llm-pi-ai/<provider>` according to the settlement-time capture,
+   * under the plugin-scope account ref, and upsert the `kind: 'oauth'` row.
+   * Any failure fails the attempt loudly — a login whose grant could not be
+   * captured must not look like success.
+   *
+   * `committed` is the F2 provenance promise started by
+   * {@link captureSettledProjection}: the projection payload observed at the
+   * settlement broadcast, never a later live read. The harvest persists
+   * exactly that payload and compensation may only revert exactly that
+   * payload, so a foreign grant cannot become this attempt's authority just
+   * because it landed before the queued mutation ran.
    */
-  private async harvestLogin(attempt: LoginAttempt): Promise<void> {
+  private async harvestLogin(attempt: LoginAttempt, committed: Promise<OAuthGrantPayload | undefined>): Promise<void> {
     // A revoke (provider release) may have finalized this attempt before
     // the seam's authorized settlement arrives: never resurrect rows for a
     // settled login (round-2 review, step 4).
     if (attempt.settledAt !== undefined) return
     // Records this login's grant identity for the failure-path
-    // compensation below: `wroteRef` says the plugin-scope copy exists,
-    // and the projection is reverted only while it still carries this
-    // login's refresh token.
+    // compensation below: `wroteRef` says the plugin-scope copy exists, and
+    // the projection is reverted only while it still carries exactly this
+    // login's committed payload.
     let harvest: { payload: OAuthGrantPayload; grantRef: string; wroteRef: boolean } | undefined
     try {
       await this.run(async () => {
         const records = this.credentialRecords()
         if (records === undefined) throw new Error('The credential store does not support records')
         const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
-        const record = await records.readRecord(grantKey)
-        if (record === undefined || record.kind !== 'grant') {
-          throw new Error(`No grant record was committed to ${grantKey}`)
+        const payload = await committed
+        if (payload === undefined) {
+          throw new Error(`No pi-ai OAuth credential was committed to ${grantKey}`)
         }
-        if (!isOAuthGrantPayload(record.payload)) {
-          throw new Error(`The record at ${grantKey} does not hold a pi-ai OAuth credential`)
-        }
-        const payload = record.payload
         // The refresh token is the stable per-grant secret; its digest —
         // never the token — names the account's plugin-scope record.
         const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
@@ -1174,18 +1183,57 @@ export class KeysManagerService {
   }
 
   /**
+   * Capture this attempt's committed projection payload (F2 provenance).
+   *
+   * The seam reports `authorized` only after the flow's commit is observed
+   * and still present, so a read STARTED at that broadcast observes the
+   * record this attempt wrote. The read is deliberately not queued on
+   * `run`: a release parked ahead of the harvest must not delay provenance
+   * long enough for a foreign writer to become this attempt's authority.
+   *
+   * The seam offers no writer identity or record version, so this capture is
+   * the closest provenance the manager can obtain: `undefined` means the
+   * committed payload is unknown, and compensation then refuses to touch the
+   * projection instead of guessing. See I-000090 for the seam capability
+   * (compare-and-delete / versioned records) that would make it exact.
+   */
+  private captureSettledProjection(attempt: LoginAttempt): Promise<OAuthGrantPayload | undefined> {
+    const records = this.credentialRecords()
+    if (records === undefined) return Promise.resolve(undefined)
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
+    return records.readRecord(projectionKey).then(
+      record => record !== undefined && record.kind === 'grant' && isOAuthGrantPayload(record.payload)
+        ? structuredClone(record.payload)
+        : undefined,
+      error => {
+        this.warn(`could not capture the committed grant for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)
+        return undefined
+      },
+    )
+  }
+
+  /**
    * Roll a failed harvest back to a clean credential surface: the
    * plugin-scope grant copy is deleted when it was written; the
-   * `llm-pi-ai` projection is deleted only while it still carries this
-   * login's refresh token, so compensation can never delete a grant
-   * another account owns.
+   * `llm-pi-ai` projection is deleted only while it still carries EXACTLY
+   * this login's settlement-time committed payload, so compensation can
+   * never delete a grant another account owns.
+   *
+   * Provenance unknown (the settlement-time capture found no usable record)
+   * refuses both deletions with a warning: without the committed payload
+   * there is no proof of ownership, and deleting "whatever is live" is the
+   * round-4 defect (I-000083).
    */
   private async compensateFailedHarvest(
     attempt: LoginAttempt,
     harvest: { payload: OAuthGrantPayload; grantRef: string; wroteRef: boolean } | undefined,
   ): Promise<void> {
     const records = this.credentialRecords()
-    if (records === undefined || harvest === undefined) return
+    if (records === undefined) return
+    if (harvest === undefined) {
+      this.warn(`harvest compensation refused for ${attempt.provider}: this attempt's committed grant payload is unknown, so the projection was left untouched`)
+      return
+    }
     if (harvest.wroteRef) {
       try {
         await records.deleteRecord(harvest.grantRef)
@@ -1196,22 +1244,27 @@ export class KeysManagerService {
     try {
       const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${attempt.provider}`
       // Same atomic decide-and-delete as the demotion path (round-3
-      // finding 1): the refresh compare runs inside `modifyRecord`'s per-key
-      // lock, so a native writer that replaced the projection before the
-      // lock is never matched, and the delete runs only on a locked-in
-      // match (no delete-inside-modify primitive exists on the seam; see
-      // decideAndDeleteProjection for the exact primitive).
+      // finding 1): the compare runs inside `modifyRecord`'s per-key lock
+      // against the FULL settlement-time payload (not merely its refresh
+      // token), so a native writer that replaced the projection — even by a
+      // payload that reused our refresh token — is never matched, and the
+      // delete runs only on a locked-in exact match (no delete-inside-modify
+      // primitive exists on the seam; see decideAndDeleteProjection and
+      // I-000090).
+      const provenance = JSON.stringify(harvest.payload)
       let owns = false
       let decidedAgainst: string | undefined
       await records.modifyRecord(projectionKey, async current => {
         owns = current !== undefined && current.kind === 'grant'
-          && isOAuthGrantPayload(current.payload) && current.payload.refresh === harvest.payload.refresh
+          && isOAuthGrantPayload(current.payload) && JSON.stringify(current.payload) === provenance
         // F2 pre-delete re-read snapshot, identical to the demotion path.
-        if (owns && current !== undefined) decidedAgainst = JSON.stringify(current.payload)
+        if (owns && current !== undefined) decidedAgainst = provenance
         return undefined
       })
       if (owns && await this.projectionStillMatches(records, projectionKey, decidedAgainst)) {
         await records.deleteRecord(projectionKey)
+      } else if (!owns) {
+        this.warn(`harvest compensation kept the projection for ${attempt.provider}: the live grant no longer matches this attempt's committed payload`)
       }
     } catch (error) {
       this.warn(`harvest compensation could not revert the projection for ${attempt.provider}: ${error instanceof Error ? error.message : String(error)}`)

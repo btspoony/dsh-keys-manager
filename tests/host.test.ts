@@ -3523,7 +3523,7 @@ test('a native sign-in landing between the ownership check and the delete keeps 
 test('a native replacement landing inside the harvest compensation window keeps its record', async () => {
   const h = await harnessWithManagedAnthropic()
   try {
-    // Fill the pool so the harvest fails after reading the projection.
+    // Fill the pool so the harvest fails after the settlement-time capture.
     const record = h.store.provider('anthropic')!
     while (record.keys.length < KEY_LIMIT) {
       record.keys.push({
@@ -3552,12 +3552,69 @@ test('a native replacement landing inside the harvest compensation window keeps 
     h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
     h.authorization.pending!.resolve({ status: 'authorized' })
     await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
-    // The compensation's compare ran inside the seam lock against the
-    // native payload (a different refresh), so the delete was skipped and
-    // the native record survived the failed harvest.
+    // ROUND-4 F2 (I-000083): provenance is the payload captured at the
+    // settlement broadcast, not the harvest's live read. The native grant
+    // landed after that capture, so the compensation's compare sees a
+    // different payload and skips the delete even though the projection is
+    // the record the native writer owns.
     assert.ok(native.landed())
     assert.equal(h.credentials.records.has(GRANT_KEY), true)
     assert.equal((h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh, 'rt-native-value')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a foreign grant written before the queued harvest runs is never compensation-deleted (F2)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const warnings: string[] = []
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = message => warnings.push(message)
+    // The attempt's own grant is the projection when the seam settles.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    // Park a release in the mutation queue, then settle: the harvest is
+    // queued behind the release, so its mutation runs AFTER any foreign
+    // write that lands meanwhile.
+    const release = h.service.releaseProvider('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    // Let the settlement-time provenance capture (not queued) resolve, then
+    // let a foreign native sign-in replace the projection while the release
+    // still holds the queue.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-foreign-grant', access: 'at-foreign', expires: 1_800_000_000_000 },
+    })
+    await release
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    // Compensation compares the live foreign payload with THIS attempt's
+    // committed payload: mismatch → no delete, the foreign grant survives.
+    await eventually(() => assert.ok(warnings.some(message => /harvest compensation kept the projection/.test(message))))
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    assert.equal((h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh, 'rt-foreign-grant')
+  } finally {
+    await h.close()
+  }
+})
+
+test('compensation refuses to touch the projection when provenance is unknown (F2)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const warnings: string[] = []
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = message => warnings.push(message)
+    // The seam settled "authorized" but the projection holds no OAuth grant:
+    // there is no payload this attempt can prove it committed.
+    h.credentials.records.set(GRANT_KEY, { kind: 'grant', payload: { type: 'unknown-shape' } })
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    // Unknown provenance: no compensation delete, and the refusal is loud.
+    await eventually(() => assert.ok(warnings.some(message => /harvest compensation refused/.test(message))))
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    assert.ok(warnings.some(message => /harvest compensation refused/.test(message)))
   } finally {
     await h.close()
   }
