@@ -1517,6 +1517,21 @@ export class KeysManagerService {
         // generation older than the one projected here is the previous
         // grant's. Timestamps play no part, so a same-millisecond recovery no
         // longer stalls.
+        //
+        // Codex P2 (PR #17): the settled guard at the top of this method
+        // cannot see a settlement that lands AFTER this callback was queued
+        // but BEFORE it runs. A release queued ahead does exactly that — the
+        // settlement broadcast arrives while the release body is still
+        // parked, so the pre-queue check passes — and when the release then
+        // fails its own preflight (unreadable settings) the provider stays
+        // managed, so this callback still runs against it. The attempt the
+        // user sees is failed while the harvest would write the grant and
+        // the account row. Revalidate settlement immediately before the
+        // first credential write: a settled attempt must never grow a grant
+        // copy or a row. Nothing of this harvest is written yet, so the
+        // abort needs no compensation, and the release already published the
+        // terminal it owns.
+        if (attempt.settledAt !== undefined) return
         await records.modifyRecord(grantRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
         facts.wroteRef = true
         const now = Date.now()

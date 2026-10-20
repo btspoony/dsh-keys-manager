@@ -3668,6 +3668,61 @@ test('a release that wins the race still lets the revoked login clean its projec
   }
 })
 
+// Codex P2 (PR #17): a release queued AHEAD of the harvest can finalize the
+// attempt and then fail its own preflight (unreadable settings), leaving the
+// provider managed. The authorized settlement arrived while that release body
+// was still parked, so the harvest's pre-queue settled guard passed and its
+// callback ran afterwards — and used to write the grant copy plus the account
+// row while the attempt the user sees stayed failed. The callback must
+// revalidate settlement immediately before its first credential write.
+
+test('a queued harvest never writes credentials for an attempt a failed release already settled (P2)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    // pi-ai has already committed this login's grant to the projection key.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const view = await h.service.beginAccountLogin('anthropic')
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
+    // The release cancels the sign-in and THEN refuses its preflight, so the
+    // provider survives and the queued harvest still runs against it.
+    h.settings.failDescribe = true
+    const release = h.service.releaseProvider('anthropic')
+    // The authorized settlement arrives while the release body is still
+    // parked: the harvest passes its pre-queue settled guard and lands behind
+    // the release in the mutation queue.
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await assert.rejects(() => release, /unreadable/)
+    assert.notEqual(h.store.provider('anthropic'), undefined)
+    const failed = h.service.getAccountAttempt(view.id)!
+    assert.equal(failed.status, 'failed')
+    assert.match(failed.error ?? '', /released during sign-in/)
+    // The next queued mutation resolves only after the harvest callback ran,
+    // so the absence checks below are deterministic rather than a timing bet.
+    await h.service.setSettings({})
+    // No credential write and no row upsert: the settled attempt keeps the
+    // terminal it already has, and the seam's projection stays untouched
+    // because nothing of this harvest was ever written to compensate.
+    assert.equal([...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')).length, 0)
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    const settled = h.service.getAccountAttempt(view.id)!
+    assert.equal(settled.status, 'failed')
+    assert.equal(settled.accountId, undefined)
+    // The normal settlement path is unchanged: a fresh sign-in for the
+    // still-managed provider harvests its grant and row exactly as before.
+    h.settings.failDescribe = false
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const next = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(next.id)!.status, 'ready'))
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a capacity-exceeded harvest fails loudly and leaves no orphan grant records', async () => {
   const h = await harnessWithManagedAnthropic()
   try {
