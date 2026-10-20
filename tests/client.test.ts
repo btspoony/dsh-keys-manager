@@ -120,6 +120,10 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     accountIdentity: '账户',
     accountProjected: '服务中',
     adoptAccountTitle: '使用 OAuth 账户登录后即可使用该 Provider。',
+    // Round-4 finding 4 (I-000085): both empty bodies resolve real copy so
+    // the capability branch is asserted by value.
+    noKeys: '还没有密钥。添加一个后即可使用该 Provider。',
+    noKeysAccount: '还没有账户。添加一个账户后即可使用该 Provider。',
     uses: '使用 {n} 次',
     failures: '失败 {n} 次',
     keyStatusEmpty: '暂无密钥',
@@ -233,6 +237,7 @@ describe('client registration', () => {
       'deleteAccountTitle',
       'deleteAccountBody',
       'deleteAccountBodyNoKeys',
+      'noKeysAccount',
     ]
     const harness = makeContext()
     apply(harness.ctx)
@@ -944,6 +949,42 @@ describe('account ui', () => {
     expect(deepInfraText).toContain('未接管')
     expect(deepInfraText).not.toContain('暂无密钥')
     unmanagedView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('an OAuth-only keyless route invites a sign-in instead of telling the user to add a key (I-000085)', async () => {
+    // Round-4 finding 4: on a managed route with no key capability, Add key
+    // is disabled, so the empty body must invite the only available action
+    // (Add account) rather than "Add one".
+    const state = makeState()
+    state.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: true,
+      reason: 'Uses ChatGPT OAuth sign-in only; no API-key credential',
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'empty',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const empty = findByClass(view.nodes, 'km-empty-keys')[0]
+    expect(empty).toBeDefined()
+    // The sign-in invitation, resolved from the dictionary — never the
+    // key-capable "Add one" copy, and never the raw key name.
+    expect(empty!.text).toBe('还没有账户。添加一个账户后即可使用该 Provider。')
+    expect(empty!.text).not.toBe('还没有密钥。添加一个后即可使用该 Provider。')
+    expect(empty!.text).not.toContain('noKeys')
+    // The viable action is present beside the copy; Add key stays gated.
+    expect(findButtons(view.nodes, 'addAccount')).toHaveLength(1)
+    expect(findButtons(view.nodes, 'addKey')[0]!.props!.disabled).toBe(true)
+    view.unmount()
     setRuntimeContext(null)
   })
 

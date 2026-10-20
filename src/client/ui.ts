@@ -845,7 +845,13 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         ),
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
         provider.keys.length === 0
-          ? h('div', { className: 'km-empty-keys' }, t('noKeys'))
+          // Round-4 finding 4 (I-000085): the empty body must name an action
+          // this route actually offers. Add key is disabled without key
+          // capability, so an account-only route invites a sign-in instead
+          // of telling the user to "add one".
+          ? h('div', { className: 'km-empty-keys' }, provider.supported
+              ? t('noKeys')
+              : oauthCapable(provider) ? t('noKeysAccount') : t('noKeys'))
           : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
               ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) })
               : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
