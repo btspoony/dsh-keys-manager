@@ -128,6 +128,14 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // the capability branch is asserted by value.
     noKeys: '还没有密钥。添加一个后即可使用该 Provider。',
     noKeysAccount: '还没有账户。添加一个账户后即可使用该 Provider。',
+    // R5-N2: the whole login status set resolves real copy, so the dialog
+    // assertions locate terminal/pending states by their values instead of
+    // the stub's key-name echo.
+    loginBrowserOpen: '在浏览器中打开',
+    loginFlowEnded: '本次登录流程已结束，请关闭窗口后重新开始。',
+    loginReady: '登录成功。',
+    loginPending: '等待授权…',
+    loginFailed: '登录失败',
     uses: '使用 {n} 次',
     failures: '失败 {n} 次',
     keyStatusEmpty: '暂无密钥',
@@ -1308,7 +1316,7 @@ describe('account ui', () => {
     expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
     const link = hostNodes(view.nodes).find(node => node.type === 'a')
     expect(link?.props?.href).toBe('https://example.com/authorize')
-    expect(link?.text).toContain('loginBrowserOpen')
+    expect(link?.text).toContain('在浏览器中打开')
     expect(findButtons(view.nodes, 'loginPromptSubmit')).toHaveLength(1)
     expect(view.nodes.some(node => node.text === 'Paste the verification code')).toBe(true)
 
@@ -1471,8 +1479,8 @@ describe('account ui', () => {
 
     // null means the flow is gone: a neutral ended state, not success.
     expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
-    expect(view.nodes.some(node => node.text === 'loginFlowEnded')).toBe(true)
-    expect(view.nodes.some(node => node.text === 'loginReady')).toBe(false)
+    expect(view.nodes.some(node => node.text === '本次登录流程已结束，请关闭窗口后重新开始。')).toBe(true)
+    expect(view.nodes.some(node => node.text === '登录成功。')).toBe(false)
     const pollsAtEnd = accountAttemptCalls
     await view.flush()
     await view.flush()
@@ -1516,7 +1524,7 @@ describe('account ui', () => {
       // The failure notice renders with the RPC error instead of an endless
       // "Waiting for authorization…".
       expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
-      expect(view.nodes.some(node => node.text === 'loginFailed')).toBe(true)
+      expect(view.nodes.some(node => node.text === '登录失败')).toBe(true)
       expect(view.nodes.some(node => node.text.includes('host restarted under the dialog'))).toBe(true)
       // Polling stopped: further time adds no calls.
       await vi.advanceTimersByTimeAsync(5000)
@@ -1584,14 +1592,14 @@ describe('account ui', () => {
       ;(submitted!.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
       await view.flush()
       expect(accountAttemptCalls).toBe(3)
-      expect(view.nodes.some(node => node.text === 'loginFailed')).toBe(true)
+      expect(view.nodes.some(node => node.text === '登录失败')).toBe(true)
       expect(view.nodes.some(node => node.text.includes('sign-in rejected'))).toBe(true)
 
       // The earlier pending response resolves late: it must not reopen the flow.
       deferred[0]!({ ok: true, value: olderPending })
       await view.flush()
-      expect(view.nodes.some(node => node.text === 'loginFailed')).toBe(true)
-      expect(view.nodes.some(node => node.text === 'loginPending')).toBe(false)
+      expect(view.nodes.some(node => node.text === '登录失败')).toBe(true)
+      expect(view.nodes.some(node => node.text === '等待授权…')).toBe(false)
       expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
       // Terminal state sticks and polling has stopped.
       await vi.advanceTimersByTimeAsync(5000)
