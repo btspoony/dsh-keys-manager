@@ -7132,7 +7132,11 @@ test('a concurrent test on the same provider is refused with a clear message', a
     } as any)
 
     const first = h.service.testKey('zai-coding-cn', target.id)
-    await assert.rejects(() => h.service.testKey('zai-coding-cn', target.id), /already running/)
+    // M2: every expected refusal is a structured result, so the row's inline
+    // line is the only failure surface (no thrown RPC error / page banner).
+    const refusal = await h.service.testKey('zai-coding-cn', target.id)
+    assert.equal(refusal.ok, false)
+    assert.match(String(refusal.error), /already running/)
     release!()
     assert.equal((await first).ok, true)
   } finally {
@@ -7161,6 +7165,231 @@ test('an oauth row test removes the borrowed projection when the route had none'
     assert.equal(h.credentials.records.has(GRANT_KEY), false)
     const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
     assert.notEqual(rows.find(row => row.id === seeded.rowId)!.projected, true)
+  } finally {
+    await h.close()
+  }
+})
+
+// A row test borrows a projection for its provider. These cases pin the
+// isolation and the compare-by-payload restoration: an ordinary request must
+// not be served by (or attributed to) the borrowed grant, a rotation the ping
+// caused must reach the tested row, a foreign payload must survive, and a
+// restoration that did not land must fail the test.
+
+/**
+ * Two seeded anthropic accounts with the second one projected — the setup
+ * every OAuth-row test case needs: an account to test and a user projection
+ * to restore.
+ */
+async function harnessWithTwoProjectedAccounts() {
+  const h = await harness()
+  h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+  await h.service.adoptProvider('anthropic')
+  const first = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-first', email: 'first@example.com', refresh: 'rt-first' })
+  const second = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-second', email: 'second@example.com', refresh: 'rt-second' })
+  h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-second', accountId: 'acc-second', email: 'second@example.com' }))
+  await h.service.activateAccount('anthropic', second.rowId)
+  return { h, first, second }
+}
+
+// C1 is rejected on installed-package evidence (resolve.js:16-22 takes an
+// explicit api-key override ahead of a stored grant). This case pins the
+// precedence: an api-key row test carries the key under test even while the
+// provider has a projected account, so re-routing it through projection
+// borrowing would have to break this test.
+test('an api-key test still uses its own literal when the provider has a projected account', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-first', email: 'first@example.com', refresh: 'rt-first' })
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-first', accountId: 'acc-first', email: 'first@example.com' }))
+    await h.service.activateAccount('anthropic', account.rowId)
+    const provider = h.store.provider('anthropic')!
+    const keyRow = provider.keys.find(row => row.kind === 'api-key')!
+    const literal = h.credentials.refs.get(keyRow.ref)!
+    const resolved: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      resolved.push((await h.credentials.raw.resolve(provider.brokerRef))?.value)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', keyRow.id)
+
+    assert.equal(result.ok, true)
+    // The pinned literal — not the projected account's grant — is what the
+    // request carried.
+    assert.deepEqual(resolved, [literal])
+    // An api-key test leaves the account projection untouched.
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-first')
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.find(row => row.id === account.rowId)!.projected, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('an oauth test keeps the borrowed projection away from ordinary requests', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  try {
+    const provider = h.store.provider('anthropic')!
+    let releaseTest!: () => void
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let enterTest!: () => void
+    const testEntered = new Promise<void>(resolve => { enterTest = resolve })
+    const projections: Array<string | undefined> = []
+    const ordinaryStarted: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      const projection = h.credentials.records.get(GRANT_KEY)
+      const refresh = (projection?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined
+      if (options.maxTokens === 1) {
+        projections.push(refresh)
+        enterTest()
+        await testGate
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      ordinaryStarted.push(refresh)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const testRun = h.service.testKey('anthropic', first.rowId)
+    await testEntered
+    // The test window is open: the borrowed grant is the live projection.
+    assert.deepEqual(projections, ['rt-first'])
+
+    const ordinary = h.llm.stream({
+      provider: 'anthropic',
+      model: 'claude-test-model',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      maxTokens: 64,
+    })
+    const iterator = ordinary[Symbol.asyncIterator]()
+    const ordinaryNext = iterator.next()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    // The ordinary request waits for the test; it is not served by the
+    // borrowed grant.
+    assert.deepEqual(ordinaryStarted, [])
+    assert.deepEqual(projections, ['rt-first'])
+
+    releaseTest()
+    assert.equal((await testRun).ok, true)
+    await ordinaryNext
+    // After the restore it runs on the user's own projection…
+    assert.deepEqual(ordinaryStarted, ['rt-second'])
+    // …and its outcome is not attributed to the tested account.
+    const rows = h.store.provider('anthropic')!.keys
+    assert.equal(rows.find(row => row.id === first.rowId)!.totalUses, 0)
+    assert.equal(rows.find(row => row.id === second.rowId)!.totalUses, 1)
+    assert.ok(provider.keys.find(row => row.id === second.rowId)!.lastUsedAt > 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a rotation during an oauth test is written back before the projection is restored', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  try {
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        // pi-ai refreshes the borrowed grant during the ping and commits the
+        // rotated payload to the projection.
+        h.credentials.records.set(GRANT_KEY, grantPayload({
+          refresh: 'rt-first-rotated',
+          access: 'at-rotated',
+          accountId: 'acc-first',
+          email: 'first@example.com',
+        }))
+        h.emitEvent('credentials/record-updated', GRANT_KEY)
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(result.ok, true)
+    // The rotation reached the tested row before the previous projection
+    // returned: its grant reference follows the rotated payload…
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-first-rotated').digest('hex').slice(0, 12))
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === first.rowId)!
+    assert.equal(row.oauth!.grantRef, rotatedRef)
+    const stored = h.credentials.records.get(rotatedRef)!
+    assert.equal(stored.kind, 'grant')
+    assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-first-rotated')
+    // …the superseded pre-test generation is gone…
+    assert.equal(h.credentials.records.has(first.grantRef), false)
+    // …and the user's projection is back on their account.
+    const restored = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((restored.payload as Record<string, unknown>).refresh, 'rt-second')
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.find(candidate => candidate.id === second.rowId)!.projected, true)
+    assert.notEqual(rows.find(candidate => candidate.id === first.rowId)!.projected, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a foreign projection written during the test window is not overwritten', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  try {
+    const other = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-other', email: 'other@example.com', refresh: 'rt-other' })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        // A native writer (another sign-in) replaces the projection while the
+        // test request runs.
+        h.credentials.records.set(GRANT_KEY, grantPayload({
+          refresh: 'rt-other',
+          access: 'at-other',
+          accountId: 'acc-other',
+          email: 'other@example.com',
+        }))
+        h.emitEvent('credentials/record-updated', GRANT_KEY)
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(result.ok, true)
+    // The foreign payload survives untouched…
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal(live.kind, 'grant')
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-other')
+    // …and the owner follows what is actually stored.
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.find(candidate => candidate.id === other.rowId)!.projected, true)
+    assert.notEqual(rows.find(candidate => candidate.id === first.rowId)!.projected, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failed restore fails the test and keeps the owner on the live grant', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  try {
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        // The projection write that puts the pre-test payload back fails.
+        h.credentials.raw.failModifyRecord = true
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+    h.credentials.raw.failModifyRecord = false
+
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /could not be restored/)
+    // The store still holds the borrowed grant: the owner must name that row,
+    // not the pre-test account.
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-first')
+    const state = h.service.getState()
+    const rows = state.providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.find(candidate => candidate.id === first.rowId)!.projected, true)
+    assert.notEqual(rows.find(candidate => candidate.id === second.rowId)!.projected, true)
+    assert.ok(state.warnings.some(warning => /could not be restored/.test(warning)))
   } finally {
     await h.close()
   }

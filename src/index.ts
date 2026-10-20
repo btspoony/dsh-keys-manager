@@ -123,6 +123,26 @@ const HYDRATION_WAIT_MS = 500
 /** Upper bound on one per-row connection test: a stalled provider must not hold the row busy forever. */
 const KEY_TEST_TIMEOUT_MS = 20_000
 
+/** The error-like `name` of an unknown thrown value, if it carries one. */
+function errorNameOf(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const name = (value as { name?: unknown }).name
+  return typeof name === 'string' ? name : undefined
+}
+
+/**
+ * Whether the 20 s test timeout caused the caught failure. The abort signal
+ * is a whole-request fact, so an error that merely races the timer keeps its
+ * own message (M1): only the timeout's own reason, or the abort the timeout
+ * caused, maps to the timeout copy.
+ */
+function isTestTimeoutAbort(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted) return false
+  if (error === signal.reason) return true
+  if (errorNameOf(signal.reason) !== 'TimeoutError') return false
+  return errorNameOf(error) === 'AbortError'
+}
+
 /**
  * Stable failure code for a harvest whose state flush rejected AND whose
  * credential-side rollback then failed to write.
@@ -687,8 +707,13 @@ export class KeysManagerService {
   private readonly selectionQueues = new Map<string, Promise<unknown>>()
   private queue: Promise<unknown> = Promise.resolve()
   private closing = false
-  /** Providers with a per-row connection test in flight (serialization). */
-  private readonly testsInFlight = new Set<string>()
+  /**
+   * Providers with a per-row connection test in flight, mapped to that
+   * test's own promise. The promise is the isolation seam: an ordinary
+   * request for the provider waits on it before resolving a credential, and
+   * reports its own outcome if the test fails.
+   */
+  private readonly testsInFlight = new Map<string, Promise<KeyTestResult>>()
   /** Interactive sign-in attempts, by attempt id. */
   private readonly loginAttempts = new Map<string, LoginAttempt>()
   /** The provider → attempt id index for the single-attempt rule. */
@@ -2479,24 +2504,34 @@ export class KeysManagerService {
    * projection (and the in-memory owner) that served the route before is
    * restored even when the request fails, so a test never changes which
    * account the route is on.
+   *
+   * Every expected refusal is a structured `{ ok: false, error }` result
+   * (M2): the inline row line is the only failure surface, so a refusal must
+   * not also raise the page-level banner a thrown RPC error produces.
    */
   async testKey(provider: string, keyId: string): Promise<KeyTestResult> {
     const record = this.store.provider(provider)
-    if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
+    if (record === undefined) return { ok: false, latencyMs: 0, error: `Provider "${provider}" is not managed` }
     const row = record.keys.find(candidate => candidate.id === keyId)
-    if (row === undefined) throw new Error(`Key "${keyId}" not found on ${provider}`)
+    if (row === undefined) return { ok: false, latencyMs: 0, error: `Key "${keyId}" not found on ${provider}` }
     // Concurrent tests would race the projection save/restore; one at a time
     // per provider is enough for a per-row action and keeps the restore exact.
-    if (this.testsInFlight.has(provider)) throw new Error('A test for this provider is already running')
-    this.testsInFlight.add(provider)
+    if (this.testsInFlight.has(provider)) {
+      return { ok: false, latencyMs: 0, error: 'A test for this provider is already running' }
+    }
+    const model = this.testModel(provider)
+    if (model === undefined) return { ok: false, latencyMs: 0, error: 'No model is configured for this provider' }
+    // The guard holds the whole test as a promise, not just a membership
+    // flag: `streamListener` awaits it so no ordinary request is served by —
+    // or attributed to — the grant an OAuth row test has borrowed.
+    const test = row.kind === 'oauth'
+      ? this.runOAuthRowTest(provider, row, model)
+      : this.runApiKeyRowTest(provider, row, model)
+    this.testsInFlight.set(provider, test)
     try {
-      const model = this.testModel(provider)
-      if (model === undefined) return { ok: false, latencyMs: 0, error: 'No model is configured for this provider' }
-      return row.kind === 'oauth'
-        ? await this.runOAuthRowTest(provider, row, model)
-        : await this.runApiKeyRowTest(provider, row, model)
+      return await test
     } finally {
-      this.testsInFlight.delete(provider)
+      if (this.testsInFlight.get(provider) === test) this.testsInFlight.delete(provider)
     }
   }
 
@@ -2532,9 +2567,9 @@ export class KeysManagerService {
   /** One request with the row's grant temporarily projected as the route's credential. */
   private async runOAuthRowTest(provider: string, row: KeyRecord, model: string): Promise<KeyTestResult> {
     const grant = row.oauth
-    if (grant === null) throw new Error(`Key "${row.id}" is not an OAuth account`)
+    if (grant === null) return { ok: false, latencyMs: 0, error: `Key "${row.id}" is not an OAuth account` }
     const records = this.credentialRecords()
-    if (records === undefined) throw new Error('The credential store does not support records')
+    if (records === undefined) return { ok: false, latencyMs: 0, error: 'The credential store does not support records' }
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     let result: KeyTestResult = { ok: false, latencyMs: 0, error: 'The test did not run' }
     // The projection write, the request and the restore share the provider's
@@ -2550,11 +2585,21 @@ export class KeysManagerService {
         }
         return
       }
+      const borrowed = structuredClone(stored.payload)
       const previous = await records.readRecord(projectionKey)
-      const previousOwner = this.activeAccounts.get(provider)
       try {
-        await records.modifyRecord(projectionKey, () => Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
-        this.claimProjectionOwner(provider, row.id)
+        await records.modifyRecord(projectionKey, () => Promise.resolve({ kind: 'grant', payload: structuredClone(borrowed) }))
+      } catch (error) {
+        result = {
+          ok: false,
+          latencyMs: 0,
+          error: `The grant could not be projected for the test: ${error instanceof Error ? error.message : String(error)}`,
+        }
+        return
+      }
+      this.claimProjectionOwner(provider, row.id)
+      let restoreFailure: string | undefined
+      try {
         result = await this.runTestRequest(provider, model, {
           provider,
           keyId: null,
@@ -2564,26 +2609,138 @@ export class KeysManagerService {
           test: true,
         })
       } finally {
-        await this.restoreProjection(records, projectionKey, previous)
-        if (previousOwner === undefined) this.activeAccounts.delete(provider)
-        else this.activeAccounts.set(provider, previousOwner)
+        // Compare-by-payload restore: a rotation the request caused is
+        // written back to the tested row, a payload another writer stored
+        // survives untouched, and anything that could not be reconciled must
+        // fail the test instead of reporting a pass on a route left on the
+        // tested grant.
+        restoreFailure = await this.restoreProjection(records, provider, row, projectionKey, previous, borrowed)
+      }
+      if (restoreFailure !== undefined) {
+        result = { ok: false, latencyMs: result.latencyMs, error: restoreFailure }
       }
     })
     return result
   }
 
-  /** Put the projection back exactly as it was before a test borrowed it. */
+  /**
+   * Put the projection back as it was before the test borrowed it, without
+   * losing or overwriting anything that changed meanwhile.
+   *
+   * The decision is compare-by-payload against the borrowed grant: only a
+   * live record that still carries it — or a refresh-rotated version of it
+   * that {@link matchOwningAccount} attributes to the tested row — is
+   * replaced. A rotation is reconciled into the tested row first (the same
+   * plugin-scope write-back {@link reconcileGrantRecord} performs), because
+   * the provider may already have consumed the superseded refresh token. A
+   * foreign or newer payload (another account, a native writer) is left
+   * untouched. In every branch the owner map ends consistent with what the
+   * store actually holds.
+   *
+   * Returns a failure message when the restore or the rotation write-back
+   * did not land, so the caller reports `{ ok: false }` instead of a false
+   * pass.
+   */
   private async restoreProjection(
     records: CredentialRecordsLike,
+    provider: string,
+    row: KeyRecord,
     key: string,
     previous: CredentialRecordLike | undefined,
-  ): Promise<void> {
+    borrowed: OAuthGrantPayload,
+  ): Promise<string | undefined> {
+    let live: CredentialRecordLike | undefined
+    try {
+      live = await records.readRecord(key)
+    } catch (error) {
+      const message = `The credential projection at ${key} could not be re-read after the test: ${error instanceof Error ? error.message : String(error)}`
+      this.pushWarning(message)
+      return message
+    }
+    const liveGrant = live !== undefined && live.kind === 'grant' && isOAuthGrantPayload(live.payload)
+      ? live.payload
+      : undefined
+    const previousGrant = previous !== undefined && previous.kind === 'grant' && isOAuthGrantPayload(previous.payload)
+      ? previous.payload
+      : undefined
+    const carriesBorrowed = liveGrant !== undefined && JSON.stringify(liveGrant) === JSON.stringify(borrowed)
+    if (live !== undefined && !carriesBorrowed) {
+      const rows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
+      const rotationOwner = liveGrant === undefined ? undefined : matchOwningAccount(provider, rows, liveGrant)
+      if (rotationOwner?.id === row.id && this.accountRowIsManaged(provider, row)) {
+        try {
+          await this.writeBackRotation(provider, row, liveGrant!)
+        } catch (error) {
+          // The live projection is the only copy of the rotated payload:
+          // overwriting it with the pre-test payload would strand the account
+          // on a consumed refresh token, so it stays and owns the route.
+          this.claimProjectionOwner(provider, row.id)
+          const message = `The rotated grant for ${provider} could not be written back after the test: ${error instanceof Error ? error.message : String(error)}`
+          this.pushWarning(message)
+          return message
+        }
+      } else {
+        // A foreign or newer payload — another account, a native writer, an
+        // unrecognized record — is not this test's to restore. Only the owner
+        // map follows what is actually stored.
+        this.reconcileProjectionOwner(provider, liveGrant)
+        return undefined
+      }
+    }
     try {
       if (previous === undefined) await records.deleteRecord(key)
       else await records.modifyRecord(key, () => Promise.resolve(structuredClone(previous)))
     } catch (error) {
-      this.pushWarning(`The credential projection at ${key} could not be restored after the test: ${error instanceof Error ? error.message : String(error)}`)
+      // The store still holds what the re-read saw: keep the owner map on
+      // that payload rather than claiming the pre-test account (I2).
+      this.reconcileProjectionOwner(provider, liveGrant)
+      const message = `The credential projection at ${key} could not be restored after the test: ${error instanceof Error ? error.message : String(error)}`
+      this.pushWarning(message)
+      return message
     }
+    this.reconcileProjectionOwner(provider, previousGrant)
+    return undefined
+  }
+
+  /** Point the owner map at the OAuth row the stored payload identifies. */
+  private reconcileProjectionOwner(provider: string, payload: OAuthGrantPayload | undefined): void {
+    const rows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
+    const owner = payload === undefined ? undefined : matchOwningAccount(provider, rows, payload)
+    if (owner === undefined) this.activeAccounts.delete(provider)
+    else this.claimProjectionOwner(provider, owner.id)
+  }
+
+  /**
+   * Persist one authoritative rotated grant payload for a row: the same
+   * plugin-scope write-back {@link reconcileGrantRecord} performs (record
+   * first, then `grantRef`, then cleanup of the superseded record), without
+   * the echo-specific generation guards — the caller already runs inside the
+   * provider's grant chain and owns the decision.
+   */
+  private async writeBackRotation(provider: string, row: KeyRecord, payload: OAuthGrantPayload): Promise<void> {
+    const records = this.credentialRecords()
+    if (records === undefined) throw new Error('The credential store does not support records')
+    const current = row.oauth
+    if (current === null) throw new Error(`Key "${row.id}" is not an OAuth account`)
+    const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
+    const rotatedRef = accountRef(provider, hash)
+    const previousRef = current.grantRef
+    await records.modifyRecord(rotatedRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+    row.oauth = {
+      ...current,
+      ...(previousRef === rotatedRef ? {} : { grantRef: rotatedRef }),
+      ...(payload.email === undefined ? {} : { email: payload.email }),
+      ...(payload.accountId === undefined ? {} : { accountId: payload.accountId }),
+      ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
+    }
+    if (previousRef !== rotatedRef) {
+      try {
+        await records.deleteRecord(previousRef)
+      } catch (error) {
+        this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    this.store.touch()
   }
 
   /**
@@ -2617,7 +2774,7 @@ export class KeysManagerService {
       return {
         ok: false,
         latencyMs: Date.now() - started,
-        error: signal.aborted ? 'Timed out after 20s' : error instanceof Error ? error.message : String(error),
+        error: isTestTimeoutAbort(error, signal) ? 'Timed out after 20s' : error instanceof Error ? error.message : String(error),
       }
     }
   }
@@ -4237,9 +4394,14 @@ export class KeysManagerService {
     const binding = this.bindingState(record)
     if (binding === 'mismatch') {
       if (sessionId !== undefined && step !== undefined) this.clearRetry(providerId, sessionId, step.turn, step.step)
-      return next()
+      return this.isolateFromTest(providerId, next())
     }
-    return this.wrapStream(options, next, providerId, sessionId, step)
+    // An ordinary request must never be served by the grant a row test has
+    // borrowed for this provider, nor be attributed to the tested account.
+    // The isolation wrapper waits for that test to settle before the normal
+    // path resolves its credential; a test-scope request returned above, so
+    // it never waits on its own guard.
+    return this.isolateFromTest(providerId, this.wrapStream(options, next, providerId, sessionId, step))
   }
 
   /**
@@ -4252,6 +4414,57 @@ export class KeysManagerService {
     if (accountId === undefined) return null
     const row = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
     return row !== undefined && row.kind === 'oauth' && row.oauth !== null ? row.id : null
+  }
+
+  /**
+   * Keep an ordinary request out of the window where a row test borrows (or
+   * is restoring) this provider's projection. The wrapped stream starts only
+   * after the in-flight test settles; without this wait the request would be
+   * served by the borrowed grant and its outcome attributed to the tested
+   * account. A test-scope request returns from `streamListener` before this
+   * wrapper, so a test never waits on its own guard.
+   */
+  private isolateFromTest(providerId: string, stream: AsyncIterable<StreamChunkLike>): AsyncIterable<StreamChunkLike> {
+    const service = this
+    let iterator: AsyncIterator<StreamChunkLike> | undefined
+    let waited = false
+    return {
+      [Symbol.asyncIterator](): AsyncIterator<StreamChunkLike> {
+        return {
+          async next(): Promise<IteratorResult<StreamChunkLike>> {
+            if (!waited) {
+              waited = true
+              await service.settleProviderTest(providerId)
+            }
+            if (iterator === undefined) iterator = stream[Symbol.asyncIterator]()
+            return iterator.next()
+          },
+          async return(value?: unknown): Promise<IteratorResult<StreamChunkLike>> {
+            if (iterator?.return !== undefined) return iterator.return(value as StreamChunkLike)
+            return { done: true, value: undefined }
+          },
+          async throw(error?: unknown): Promise<IteratorResult<StreamChunkLike>> {
+            if (iterator?.throw !== undefined) return iterator.throw(error)
+            throw error
+          },
+        }
+      },
+    }
+  }
+
+  /**
+   * Wait for the in-flight test on this provider to settle. The wait is
+   * bounded by the test's own 20 s request timeout, and a failed test never
+   * fails the waiting request.
+   */
+  private async settleProviderTest(providerId: string): Promise<void> {
+    const pending = this.testsInFlight.get(providerId)
+    if (pending === undefined) return
+    try {
+      await pending
+    } catch {
+      // The waiting request owns its own outcome.
+    }
   }
 
   /**
