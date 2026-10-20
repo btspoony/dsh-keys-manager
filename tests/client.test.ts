@@ -1330,4 +1330,79 @@ describe('account ui', () => {
       setRuntimeContext(null)
     }
   })
+
+  test('overlapping login polls cannot resurrect an older nonterminal state (C5)', async () => {
+    // Round-5 finding C5: an accountAttempt RPC that outlasts the 1 s tick can
+    // resolve out of order, and an older `pending` view landing after a newer
+    // `failed` left the dialog stuck nonterminal forever. The poll loop skips
+    // its tick while a poll is in flight, and any response older than the
+    // state already shown is discarded.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const state = makeState()
+      state.providers[0] = makeOauthProvider()
+      let accountAttemptCalls = 0
+      const deferred: Array<(value: RpcResult) => void> = []
+      const olderPending = makePendingAttemptView()
+      const failed = { ...makeAttemptView(), status: 'failed' as const, prompt: undefined, error: 'sign-in rejected', updatedAt: 5 }
+      const harness = makeContext()
+      harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+        if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+        if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makeAttemptView() }
+        if (endpoint === 'keysManager/answerAccountPrompt') return { ok: true, value: null }
+        if (endpoint === 'keysManager/accountAttempt') {
+          accountAttemptCalls += 1
+          if (accountAttemptCalls === 1) return { ok: true, value: makeAttemptView() }
+          // The interval's poll outlasts several ticks.
+          if (accountAttemptCalls === 2) return new Promise<RpcResult>(resolve => deferred.push(resolve))
+          return { ok: true, value: failed }
+        }
+        return { ok: false, error: { message: `unexpected ${endpoint}` } }
+      }
+      const store = createStore(harness.ctx)
+      setRuntimeContext({ ctx: harness.ctx, store })
+      const view = mountView(KeysManagerBody)
+      await view.flush()
+      ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+      view.render()
+      ;(findButtons(view.nodes, 'addAccount')[0]!.props!.onClick as () => void)()
+      await view.flush()
+      expect(accountAttemptCalls).toBe(1)
+
+      // A slow poll is in flight; further ticks must not stack behind it.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(accountAttemptCalls).toBe(2)
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(accountAttemptCalls).toBe(2)
+
+      // Answering the prompt forces a fresh poll, which returns the terminal
+      // failed state out of order with the still-pending interval poll.
+      const form = findByClass(view.nodes, 'km-login-prompt')[0]
+      expect(form).toBeDefined()
+      const input = descendants(view.nodes, form!).find(node => node.type === 'input')
+      ;(input!.props!.onChange as (event: unknown) => void)({ target: { value: '123-456' } })
+      view.render()
+      const submitted = findByClass(view.nodes, 'km-login-prompt')[0]
+      ;(submitted!.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      expect(view.nodes.some(node => node.text === 'loginFailed')).toBe(true)
+      expect(view.nodes.some(node => node.text.includes('sign-in rejected'))).toBe(true)
+
+      // The earlier pending response resolves late: it must not reopen the flow.
+      deferred[0]!({ ok: true, value: olderPending })
+      await view.flush()
+      expect(view.nodes.some(node => node.text === 'loginFailed')).toBe(true)
+      expect(view.nodes.some(node => node.text === 'loginPending')).toBe(false)
+      expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+      // Terminal state sticks and polling has stopped.
+      await vi.advanceTimersByTimeAsync(5000)
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
+      setRuntimeContext(null)
+    }
+  })
 })

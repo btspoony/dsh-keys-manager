@@ -932,41 +932,70 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
     let stopped = false
     let timer: ReturnType<typeof setInterval> | undefined
     let failures = 0
+    // Round-5 finding C5: an accountAttempt RPC can outlast the 1 s tick, and
+    // overlapping polls can resolve out of order — an older `pending` response
+    // landing after a newer `failed`/`cancelled` left the dialog stuck in a
+    // nonterminal state forever. Two guards: the interval never starts a poll
+    // while one is in flight, and a response older than the state already
+    // shown is discarded (a user-triggered poll may still overlap a tick, and
+    // that overlap must be harmless).
+    let pending = 0
+    let latestUpdatedAt = 0
+    const isTerminal = (status: AccountAttemptView['status']): boolean =>
+      status === 'ready' || status === 'failed' || status === 'cancelled'
     const poll = async (): Promise<void> => {
       if (stopped) return
-      const result = await runtime.store.accountAttempt(attemptId)
-      if (stopped) return
-      if (!result.ok) {
-        failures += 1
-        if (failures >= LOGIN_POLL_FAILURE_LIMIT) {
-          if (timer !== undefined) clearInterval(timer)
-          setPollError(result.error)
+      pending += 1
+      try {
+        const result = await runtime.store.accountAttempt(attemptId)
+        if (stopped) return
+        if (!result.ok) {
+          failures += 1
+          if (failures >= LOGIN_POLL_FAILURE_LIMIT) {
+            if (timer !== undefined) clearInterval(timer)
+            setPollError(result.error)
+          }
+          return // transient failures keep polling until the limit
         }
-        return // transient failures keep polling until the limit
-      }
-      failures = 0
-      if (result.value === null) {
-        // Unknown id: the flow is gone (pruned/expired), which is not success.
-        if (timer !== undefined) clearInterval(timer)
-        setFlowEnded(true)
-        return
-      }
-      const view = result.value
-      setAttempt(current => current !== null && current.updatedAt === view.updatedAt && current.status === view.status ? current : view)
-      if (view.status === 'ready') {
-        if (timer !== undefined) clearInterval(timer)
-        await runtime.store.load()
-        if (!stopped) onCloseRef.current()
-        return
-      }
-      if (view.status === 'failed' || view.status === 'cancelled') {
-        if (timer !== undefined) clearInterval(timer)
+        failures = 0
+        if (result.value === null) {
+          // Unknown id: the flow is gone (pruned/expired), which is not success.
+          if (timer !== undefined) clearInterval(timer)
+          setFlowEnded(true)
+          return
+        }
+        const view = result.value
+        // Never move backwards: a stale response must not resurrect an older
+        // nonterminal state after a terminal one has been shown.
+        if (view.updatedAt < latestUpdatedAt) return
+        latestUpdatedAt = view.updatedAt
+        setAttempt(current => {
+          if (current === null) return view
+          if (isTerminal(current.status) && !isTerminal(view.status)) return current
+          if (current.updatedAt > view.updatedAt) return current
+          if (current.updatedAt === view.updatedAt && current.status === view.status) return current
+          return view
+        })
+        if (view.status === 'ready') {
+          if (timer !== undefined) clearInterval(timer)
+          await runtime.store.load()
+          if (!stopped) onCloseRef.current()
+          return
+        }
+        if (view.status === 'failed' || view.status === 'cancelled') {
+          if (timer !== undefined) clearInterval(timer)
+        }
+      } finally {
+        pending -= 1
       }
     }
     const pollNow = (): void => { void poll() }
     pollNowRef.current = pollNow
-    pollNow()
-    timer = setInterval(pollNow, LOGIN_POLL_MS)
+    void poll()
+    timer = setInterval(() => {
+      // A slow RPC must not stack concurrent polls behind the interval.
+      if (pending === 0) void poll()
+    }, LOGIN_POLL_MS)
     return () => {
       stopped = true
       if (timer !== undefined) clearInterval(timer)
