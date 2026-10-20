@@ -373,6 +373,14 @@ function fakeAuthorization(flows: Array<{ key: string; label: string; methods: A
       if (this.failBegin !== undefined) return Promise.reject(this.failBegin)
       return new Promise((resolve, reject) => {
         this.pending = { request, resolve: resolve as (outcome: { status: string }) => void, reject: reject as (error: Error) => void }
+        // The real seam withdraws the attempt when the caller's signal aborts:
+        // it settles `cancelled` without waiting for the flow, and it does so
+        // asynchronously, so a flow that commits at the same moment can still
+        // resolve `authorized` first.
+        const signal = request.signal as AbortSignal | undefined
+        signal?.addEventListener('abort', () => {
+          queueMicrotask(() => resolve({ status: 'cancelled' }))
+        }, { once: true })
       })
     },
   }
@@ -6933,6 +6941,30 @@ test('a cancelled transport sign-in settles without an account', async () => {
 
     assert.equal(h.service.accountAttempt(attempt.id)?.status, 'cancelled')
     assert.equal(h.service.buildState().transportAccounts?.[0]?.status, 'signed-out')
+    assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
+test('removing a transport account withdraws the pending sign-in and stays removed', async () => {
+  const h = await transportHarness()
+  try {
+    const attempt = await h.service.beginTransportLogin('cursor')
+    // The browser flow had already reached its commit when the removal ran:
+    // the grant lands after the abort, exactly as a commit already in flight
+    // can. The account was deleted, so that write must not recreate it.
+    const request = h.authorization.beganRequests.at(-1)!
+    ;(request.signal as AbortSignal).addEventListener('abort', () => {
+      h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    }, { once: true })
+
+    const state = await h.service.removeTransportAccount('cursor')
+
+    assert.equal(h.credentials.records.has(CURSOR_SCOPE), false)
+    assert.equal(state.transportAccounts?.[0]?.status, 'signed-out')
+    assert.equal(state.transportAccounts?.[0]?.active, false)
+    assert.equal(h.service.accountAttempt(attempt.id)?.status, 'cancelled')
     assertNoPiAiProjection(h)
   } finally {
     await h.close()

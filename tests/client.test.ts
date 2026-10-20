@@ -181,7 +181,7 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     transportStatusNeedsReauth: '需重新登录',
     transportStatusSignedOut: '未登录',
     transportRemoveTitle: '移除 {name} 传输账户？',
-    transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权；路由自身不会重建它。要恢复服务需要重新登录。',
+    transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。',
     cancel: '取消',
     deleteConfirm: '确认删除',
     deleting: '删除中…',

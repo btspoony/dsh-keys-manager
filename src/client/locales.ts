@@ -159,7 +159,7 @@ const zh = {
       transportStatusNeedsReauth: '需重新登录',
       transportStatusSignedOut: '未登录',
       transportRemoveTitle: '移除 {name} 传输账户？',
-      transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权；路由自身不会重建它。要恢复服务需要重新登录。',
+      transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。',
     }
 
 const en = {
@@ -319,7 +319,7 @@ const en = {
       transportStatusNeedsReauth: 'Sign in again',
       transportStatusSignedOut: 'Not signed in',
       transportRemoveTitle: 'Remove the {name} transport account?',
-      transportRemoveBody: 'This removes the grant stored for this transport route from the credential store; the route does not recreate it. Sign in again to restore service.',
+      transportRemoveBody: 'This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service.',
     }
 
 /** Dictionaries registered under the plugin's locale namespace. */

@@ -194,6 +194,11 @@ interface LoginAttempt {
   updatedAt: number
   settledAt?: number
   controller: AbortController
+  /**
+   * Resolves once the seam's attempt has settled AND this manager has acted on
+   * the outcome, so a removal can await it before deleting the grant.
+   */
+  settled?: Promise<void>
   resolvePrompt?: (value: string) => void
   rejectPrompt?: (reason: Error) => void
 }
@@ -753,6 +758,12 @@ export class KeysManagerService {
   private loginSequence = 0
   /** The route → attempt id index for the single transport sign-in rule. */
   private readonly transportInFlight = new Map<string, string>()
+  /**
+   * Per-route removal epoch. A removal bumps it before withdrawing the live
+   * attempt, so that attempt's settle path can tell the account is gone and
+   * drop a grant its commit had already started writing.
+   */
+  private readonly transportRemovals = new Map<string, number>()
   /**
    * Transport-account rows, hydrated from the `llm-omp-transports/<route>`
    * records. Kept out of the pi-ai pool document on purpose: the rows are a
@@ -1599,15 +1610,25 @@ export class KeysManagerService {
     this.loginAttempts.set(attempt.id, attempt)
     this.capLoginAttempts()
     this.transportInFlight.set(route, attempt.id)
+    const generation = this.transportGenerationOf(route)
     // `transportFlowFor` already proved the seam is mounted and the flow has a
     // method; the method id is the flow's own, not the pi-ai `'oauth'` literal.
-    void this.ctx.authorization!.begin({
+    const settled = this.ctx.authorization!.begin({
       key: flow.key,
       method: transportMethodOf(flow)!,
       interaction: this.attemptInteraction(attempt),
       signal: attempt.controller.signal,
     }).then(
-      outcome => {
+      async outcome => {
+        // A removal during the attempt bumped the route's epoch: the account
+        // is gone, so a grant this flow wrote while being withdrawn must not
+        // recreate it. The seam refuses a commit after the abort, but a commit
+        // that had already started can still land.
+        if (this.transportGenerationOf(route) !== generation) {
+          await this.dropRemovedTransportGrant(flow.key)
+          this.finishLoginAttempt(attempt, 'cancelled')
+          return
+        }
         if (outcome.status === 'authorized') {
           this.finishLoginAttempt(attempt, 'ready')
           void this.refreshTransportAccounts()
@@ -1617,6 +1638,9 @@ export class KeysManagerService {
       },
       error => this.failLoginAttempt(attempt, error),
     )
+    // A removal awaits this, so it deletes the grant only after the withdrawn
+    // attempt (and any late write it drops) is done.
+    attempt.settled = settled.then(() => undefined, () => undefined)
     return attemptView(attempt)
   }
 
@@ -1640,17 +1664,50 @@ export class KeysManagerService {
    * Remote: drop one transport route's grant record.
    *
    * The record is the whole account — the transports package re-creates none —
-   * so deleting it leaves the route signed out until the next sign-in. No
-   * manager state is written, hence no `run` queue and no state flush.
+   * so deleting it leaves the route signed out until the next sign-in. A live
+   * sign-in is withdrawn first: left running, its commit would recreate the
+   * grant this removal just deleted. No manager state is written, hence no
+   * `run` queue and no state flush.
    */
   async removeTransportAccount(route: string): Promise<StateView> {
     const flow = this.transportFlowFor(route)
     if (flow === undefined) throw new Error(`Provider "${route}" offers no transport account`)
     const records = this.credentialRecords()
     if (records === undefined) throw new Error('The credential store does not support records')
+    const pendingId = this.transportInFlight.get(route)
+    const pending = pendingId === undefined ? undefined : this.loginAttempts.get(pendingId)
+    if (pending !== undefined && pending.settledAt === undefined) {
+      // Bump the epoch before the abort: the attempt's settle path reads it to
+      // know this removal owns the record, and this await covers that path.
+      this.transportRemovals.set(route, this.transportGenerationOf(route) + 1)
+      pending.controller.abort()
+      await pending.settled
+    }
     await records.deleteRecord(flow.key)
     await this.refreshTransportAccounts()
     return this.buildState()
+  }
+
+  /** The route's removal epoch; absent means never removed. */
+  private transportGenerationOf(route: string): number {
+    return this.transportRemovals.get(route) ?? 0
+  }
+
+  /**
+   * Drop a grant a withdrawn sign-in wrote after its account was removed.
+   *
+   * The seam refuses a commit once the attempt's signal aborts, but a commit
+   * that had already started can still land. The account was deleted, so that
+   * write is deleted too instead of being reported as a signed-in route.
+   */
+  private async dropRemovedTransportGrant(key: string): Promise<void> {
+    const records = this.credentialRecords()
+    if (records === undefined) return
+    try {
+      await records.deleteRecord(key)
+    } catch (error) {
+      this.warn(`transport account ${key} could not be dropped after its removal: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /**
