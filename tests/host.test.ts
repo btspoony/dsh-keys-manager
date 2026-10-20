@@ -5732,6 +5732,52 @@ test('rotation-sync email fallback skips accountId-bearing rows (harvestLogin pa
   }
 })
 
+// Round-8 review (I-000107): the guarded email fallback must be a FALLBACK.
+// With two rows sharing a login email — an earlier email-only row and a later
+// row carrying the exact accountId — the exact match wins regardless of array
+// order, so the rotated grant is never written into the wrong account.
+
+test('rotation-sync prefers an exact accountId over an earlier email-only row (I-000107)', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    // Seeded first, so it precedes the exact match in the row array.
+    const emailOnly = seedOAuthAccount(h, 'anthropic', { email: 'shared@example.com', refresh: 'rt-email-only', access: 'at-email-only' })
+    const exact = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'shared@example.com', refresh: 'rt-b', access: 'at-b' })
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-rotated-b').digest('hex').slice(0, 12))
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-rotated-b', access: 'at-rotated-b', expires: 1_960_000_000_000, accountId: 'acc-b', email: 'shared@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    const provider = h.store.provider('anthropic')!
+    const emailOnlyRow = provider.keys.find(key => key.id === emailOnly.rowId)!
+    const exactRow = provider.keys.find(key => key.id === exact.rowId)!
+    await eventually(() => assert.equal(exactRow.oauth!.grantRef, rotatedRef))
+    // The exact owner was synced; the email-only row was never repointed.
+    assert.equal(emailOnlyRow.oauth!.grantRef, emailOnly.grantRef)
+    assert.equal(emailOnlyRow.oauth!.expiresAt, undefined)
+    assert.ok(h.credentials.records.has(emailOnly.grantRef), 'the email-only row keeps its own grant')
+    // The exact owner's superseded generation is gone, its record holds the
+    // rotated payload.
+    assert.equal(h.credentials.records.has(exact.grantRef), false)
+    const stored = h.credentials.records.get(rotatedRef)!
+    assert.equal((stored.payload as Record<string, unknown>).refresh, 'rt-rotated-b')
+    // The fallback itself still works when no exact row exists (single
+    // email-only row, payload without accountId).
+    const fallback = seedOAuthAccount(h, 'anthropic', { email: 'fallback@example.com', refresh: 'rt-fallback', access: 'at-fallback' })
+    const fallbackRef = accountRef('anthropic', createHash('sha256').update('rt-fallback-rotated').digest('hex').slice(0, 12))
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-fallback-rotated', access: 'at-fallback-rotated', expires: 1_970_000_000_000, email: 'fallback@example.com' },
+    })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    const fallbackRow = provider.keys.find(key => key.id === fallback.rowId)!
+    await eventually(() => assert.equal(fallbackRow.oauth!.grantRef, fallbackRef))
+  } finally {
+    await h.close()
+  }
+})
+
 test('a re-login with a changed refresh token removes the superseded grant record (W2)', async () => {
   const h = await harnessWithManagedAnthropic()
   try {

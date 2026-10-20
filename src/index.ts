@@ -608,17 +608,26 @@ interface TypertRemoteBinding {
 /**
  * The account row whose grant payload matches one live projection payload:
  * the refresh digest names the row first; on a miss (rotated token) the
- * payload's identity metadata re-associates, guarded by the same
- * `accountId === undefined` rule the rotation reconciler applies to its
- * email-only fallback.
+ * payload's identity metadata re-associates.
+ *
+ * The exact `accountId` lookup runs BEFORE the email fallback (round-8
+ * finding I-000107): the fallback is only for rows that never carried an
+ * accountId, and evaluating it in array order let an earlier email-only row
+ * claim a payload that names a later row's accountId — corrupting both the
+ * owner attribution and the cleanup target.
  */
 function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OAuthGrantPayload): KeyRecord | undefined {
   const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
   const projectedRef = accountRef(provider, hash)
-  return accounts.find(candidate => candidate.oauth!.grantRef === projectedRef)
-    ?? accounts.find(candidate =>
-      (payload.accountId !== undefined && candidate.oauth!.accountId === payload.accountId)
-      || (payload.email !== undefined && candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined))
+  const byRef = accounts.find(candidate => candidate.oauth!.grantRef === projectedRef)
+  if (byRef !== undefined) return byRef
+  if (payload.accountId !== undefined) {
+    const byAccountId = accounts.find(candidate => candidate.oauth!.accountId === payload.accountId)
+    if (byAccountId !== undefined) return byAccountId
+  }
+  if (payload.email === undefined) return undefined
+  return accounts.find(candidate =>
+    candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined)
 }
 
 export class KeysManagerService {
