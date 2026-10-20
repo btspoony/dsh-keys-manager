@@ -179,7 +179,9 @@ describe('projectRequest', () => {
     // DSH's compaction producer (`dsh-compaction-basic`) always sets `purpose`
     // and forwards a configured `maxTokens`; refusing either would kill every
     // compaction before the transport. Both are ignored, so the compacted
-    // history projects exactly like any other turn.
+    // history projects exactly like any other turn. The projection is
+    // knob-compatible but not tool-history-compatible: real compaction also
+    // sends `toolHistory` (Task 2), which still throws `TOOLS_UNSUPPORTED`.
     const projected = projectRequest(
       SONNET,
       request(
@@ -208,13 +210,34 @@ describe('projectRequest', () => {
     })
   })
 
+  it('still refuses the tool history real compaction carries', () => {
+    // The knobs above are accepted, but `dsh-compaction-basic` also sends the
+    // session's `toolHistory`, so compaction stays Task-2-gated: this assertion
+    // documents the limit instead of claiming the turn works.
+    expect(() =>
+      projectRequest(
+        SONNET,
+        request(
+          [createUserMessage({ content: [{ type: 'text', text: 'Summarize' }], source: { kind: 'user' } })],
+          {
+            purpose: 'compaction',
+            maxTokens: 8192,
+            toolHistory: { tools: [{ name: 'read', description: 'read', parameters: {} }], updates: [] },
+          },
+        ),
+        't',
+      ),
+    ).toThrowError(expect.objectContaining({ code: TOOLS_UNSUPPORTED }))
+  })
+
   it('projects a session-title-shaped request', () => {
-    // `dsh-session-title-llm` sets `purpose: 'session-title'` and no cap.
+    // `dsh-session-title-llm` sets `purpose: 'session-title'` and always carries
+    // `maxTokens`, which the projection ignores like every other knob.
     const projected = projectRequest(
       SONNET,
       request(
         [createUserMessage({ content: [{ type: 'text', text: 'Name this session' }], source: { kind: 'user' } })],
-        { purpose: 'session-title' },
+        { purpose: 'session-title', maxTokens: 256 },
       ),
       'token',
     )

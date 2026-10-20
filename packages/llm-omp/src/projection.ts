@@ -26,10 +26,13 @@
  * advisory here: they never reach the transport and never fail the call. DSH
  * sets `purpose` on every compaction (`dsh-compaction-basic`) and session-title
  * (`dsh-session-title-llm`) request and forwards a configured `maxTokens` with
- * the compaction one, so refusing either would disable the two mechanisms that
- * keep a long session alive without buying anything the wire can carry; Cursor
- * enforces the catalog `maxTokens` limit server-side, from the model object
- * this projection already sends.
+ * the compaction one, so refusing either would buy nothing the wire can carry;
+ * Cursor enforces the catalog `maxTokens` limit server-side, from the model
+ * object this projection already sends. Ignoring the knobs does not make
+ * compaction usable yet: `dsh-compaction-basic` also sends the session's
+ * `toolHistory`, which this projection refuses with `TOOLS_UNSUPPORTED` until
+ * Task 2 projects tool history, so compaction is Task-2-gated rather than a
+ * knob issue.
  *
  * @module @dsh-keys-manager/llm-omp/projection
  */
