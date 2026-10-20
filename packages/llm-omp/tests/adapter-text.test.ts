@@ -146,7 +146,40 @@ describe('OmpCursorAdapter text streaming', () => {
       transport,
     })
 
-    await expect(collect(adapter.stream(request()))).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' })
+    // A live (unaborted) signal must not turn a credential failure into a
+    // cancellation: only an aborting caller does that.
+    const chunks = collect(adapter.stream(request({ signal: new AbortController().signal })))
+    await expect(chunks).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('reports a refresh cancelled by the caller as one aborted finish', async () => {
+    const { transport, calls } = scriptedTransport('cursor-text.jsonl')
+    const controller = new AbortController()
+    let reads = 0
+    const adapter = new OmpCursorAdapter({
+      access: async () => {
+        reads += 1
+        // The seam's resolver rejects with AbortError when the caller's signal
+        // aborts mid-refresh; that is a cancellation, not a dead sign-in.
+        controller.abort()
+        throw new DOMException('The operation was aborted', 'AbortError')
+      },
+      transport,
+    })
+
+    const chunks = await collect(adapter.stream(request({ signal: controller.signal })))
+
+    expect(chunks).toEqual([
+      {
+        type: 'finish',
+        reason: {
+          kind: 'aborted',
+          failure: { message: 'llm-omp-transports: request aborted before it was sent', code: 'ABORTED' },
+        },
+      },
+    ])
+    expect(reads).toBe(1)
     expect(calls).toHaveLength(0)
   })
 

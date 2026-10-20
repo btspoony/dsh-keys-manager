@@ -135,11 +135,18 @@ export class OmpCursorAdapter extends LlmAdapter {
     // write). Only a request that can be served resolves `access` and carries
     // its token into the transport options.
     const request = projectRequest(row, options)
-    const accessKey = assertUsableApiKey(
-      await this.config.access(options.signal),
-      'llm-omp-transports',
-      CURSOR_CREDENTIAL_KEY,
-    )
+    let credential: string
+    try {
+      credential = await this.config.access(options.signal)
+    } catch (error) {
+      // The resolver rejects when the caller aborts (a refresh is abandoned,
+      // not failed), so that rejection is the turn's cancellation. A genuine
+      // credential failure has no aborted signal and still propagates.
+      if (!aborted()) throw error
+      yield abortedFinish()
+      return
+    }
+    const accessKey = assertUsableApiKey(credential, 'llm-omp-transports', CURSOR_CREDENTIAL_KEY)
     if (aborted()) {
       yield abortedFinish()
       return
