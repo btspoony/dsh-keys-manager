@@ -1540,10 +1540,9 @@ export class KeysManagerService {
         // the settlement broadcast, so returning here would leave the route
         // serving a grant whose login failed/cancelled. Compensate that
         // projection through the same ownership-checked path the failure
-        // handler uses: only the payload captured for this attempt is
-        // deleted, a foreign or newer live grant is never touched, and
-        // unknown provenance stays a loud skip. The release already
-        // published the terminal it owns.
+        // handler uses: only this attempt's captured payload is deleted and
+        // a foreign or newer live grant is never touched. The release
+        // already published the terminal it owns.
         if (attempt.settledAt !== undefined) {
           await this.compensateFailedHarvest(attempt, harvest)
           return
