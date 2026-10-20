@@ -1,0 +1,50 @@
+/**
+ * Install/load integration: the packed `dsh-keys-manager` tarball installs into
+ * a temp DSH profile, resolves its `dsh-llm-omp-transports` dependency, and the
+ * composed `--dump-config` tree carries BOTH loader rows — the loader-level
+ * proof that one installed plugin mounts two components.
+ *
+ * Not covered: the plugin-manager detail page/toggles (DSH's own Web UI) and
+ * any Cursor network behavior.
+ *
+ * Skips when `pnpm` or `dsh` is missing. The run needs no registry access: both
+ * tarballs are packed locally, the root's `^0.1.0` transports dependency is
+ * overridden to the local tarball, and DSH peers are not auto-installed.
+ */
+import { spawnSync } from 'node:child_process'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+
+const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
+const missing = ['pnpm', 'dsh'].filter(
+  command => spawnSync(command, ['--version'], { stdio: 'ignore' }).status !== 0,
+)
+const canInstall = missing.length === 0
+
+if (!canInstall) console.warn(`install.test: skipped — not on PATH: ${missing.join(', ')}`)
+
+describe.skipIf(!canInstall)('install/load integration (packed profile)', () => {
+  it('mounts both bundle components in a fresh profile', () => {
+    const run = spawnSync(process.execPath, [join(repoRoot, 'scripts/verify-install.mjs')], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: 600_000,
+    })
+    const report = `${run.stdout ?? ''}${run.stderr ?? ''}`
+
+    expect(run.status, report).toBe(0)
+
+    // 1. `pnpm pack` rewrote the workspace dependency to a registry range.
+    expect(report).toContain('install-proof: packed dependency dsh-llm-omp-transports -> ^0.1.0')
+
+    // 2. The profile's dependency tree has both packages.
+    expect(report).toContain('install-proof: both components installed: dsh-keys-manager@')
+    expect(report).toContain(' + dsh-llm-omp-transports@')
+
+    // 3. The loader composes exactly two rows, not a single component only.
+    expect(report).toContain('  - id: dsh-keys-manager\n    name: dsh-keys-manager')
+    expect(report).toContain('  - id: llm-omp-transports\n    name: dsh-llm-omp-transports')
+    expect(report).toContain('install-proof: OK')
+  }, 600_000)
+})
