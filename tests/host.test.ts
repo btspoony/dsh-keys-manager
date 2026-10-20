@@ -4626,6 +4626,56 @@ test('a rotation write landing mid-release leaves no orphan record (C6-1/I1)', a
   }
 })
 
+// Round-7 re-review minor: removeOAuthGrant marks the row before its first
+// awaited delete so a rotation write landing mid-removal is rejected. When
+// that delete THROWS, though, the removal never completes — removeAccount /
+// deleteKey rethrow before splicing, a release before its final provider
+// delete — so the row is still live and still managed. The mark must not
+// outlive the failed removal: keeping it skipped rotation sync for a serving
+// row until a restart, which the old "never cleared is safe" comment claimed
+// could not happen.
+
+test('a removal whose grant delete throws clears the retiring mark (R7 minor)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // Fail exactly this row's grant delete, once: the projection delete that
+    // precedes it succeeds, so the removal reaches the row's own await.
+    const raw = h.credentials.raw
+    const realDelete = raw.deleteRecord.bind(raw)
+    let failures = 1
+    raw.deleteRecord = async (key: string): Promise<void> => {
+      if (key === grantRef && failures > 0) {
+        failures -= 1
+        throw new Error('credential store locked')
+      }
+      return realDelete(key)
+    }
+    await assert.rejects(h.service.removeAccount('anthropic', rowId), /credential store locked/)
+    // The failed removal left a live, still-managed row and its grant.
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)
+    assert.ok(row, 'the row survives the failed removal')
+    assert.equal(h.credentials.records.has(grantRef), true)
+    // Recovery runs through the public re-activation path. After it, a
+    // rotation echo must sync into the row again — with a stale retiring
+    // mark the echo is silently skipped and the grantRef never moves.
+    raw.deleteRecord = realDelete
+    await h.service.activateAccount('anthropic', rowId)
+    assert.equal(row!.valueMissing, false)
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-after-failed-remove').digest('hex').slice(0, 12))
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-after-failed-remove',
+      access: 'at-after-failed-remove',
+      accountId: 'acc-9',
+      email: 'dev@example.com',
+    }))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.equal(row!.oauth!.grantRef, rotatedRef))
+  } finally {
+    await h.close()
+  }
+})
+
 // F1 (I-000081): an echo-served rotation whose payload matches a pool row
 // must REGISTER that row as the projection owner. After a restart the pool
 // row is hydrated but no in-process login or activation ran, so nothing

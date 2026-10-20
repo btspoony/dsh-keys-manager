@@ -604,10 +604,13 @@ export class KeysManagerService {
    * last, and it never splices its rows, so while it runs the provider record
    * and the row object both still look live even though the row's grant is
    * already gone. Object identity alone therefore cannot tell "still serving"
-   * from "mid-removal"; this mark can. It is never cleared: the row it names
-   * is either spliced out (removeAccount/deleteKey) or left flagged
-   * `valueMissing` (release). It marks the live object, so a row object
-   * recreated under the same id is unaffected.
+   * from "mid-removal"; this mark can. A successful removal leaves it set —
+   * the row it names is either spliced out (removeAccount/deleteKey) or left
+   * flagged `valueMissing` (release) — but a removal whose awaited steps
+   * THROW must clear it: the row is then still live and still managed, and a
+   * stale mark would silently skip its rotation sync until a restart. It
+   * marks the live object, so a row object recreated under the same id is
+   * unaffected.
    */
   private readonly retiringAccounts = new WeakSet<KeyRecord>()
   /**
@@ -1814,9 +1817,20 @@ export class KeysManagerService {
     // object is no longer a truthful "still serving" signal; the reconciler
     // consults this mark instead (see accountRowStillCurrent).
     this.retiringAccounts.add(row)
-    await this.fallbackToKeysUnqueued(provider, row)
-    const records = this.credentialRecords()
-    if (records !== undefined) await records.deleteRecord(row.oauth.grantRef)
+    try {
+      await this.fallbackToKeysUnqueued(provider, row)
+      const records = this.credentialRecords()
+      if (records !== undefined) await records.deleteRecord(row.oauth.grantRef)
+    } catch (error) {
+      // Round-7 minor: a throwing awaited step aborts the removal — the
+      // callers rethrow before splicing the row or releasing the provider —
+      // so the row is still live and still managed. Clear the mark or the
+      // row would stay permanently retired and its rotation echoes would be
+      // skipped until a restart. A retried removal re-marks before its own
+      // first delete, and a successful removal never reaches this path.
+      this.retiringAccounts.delete(row)
+      throw error
+    }
   }
 
   /**
