@@ -3471,6 +3471,9 @@ export class KeysManagerService {
     // `previous === undefined` case is different — that projection was this
     // test's own write — and is deleted below.
     if (live === undefined && previous !== undefined) {
+      // PR review round 7: the re-read above is an await, so the attempt fence
+      // is re-checked at this write instead of inherited from an earlier site.
+      if (superseded()) return takeover
       this.reconcileProjectionOwner(provider, undefined)
       return undefined
     }
@@ -3496,7 +3499,9 @@ export class KeysManagerService {
       } else {
         // A foreign or newer payload — another account, a native writer, an
         // unrecognized record — is not this test's to restore. Only the owner
-        // map follows what is actually stored.
+        // map follows what is actually stored, and only while this attempt
+        // still owns the provider (PR review round 7: fenced at the write).
+        if (superseded()) return takeover
         this.reconcileProjectionOwner(provider, liveGrant)
         return undefined
       }
