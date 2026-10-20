@@ -700,8 +700,9 @@ interface TransportAccountRowProps {
  *
  * Visually a sibling of {@link AccountRow}, but the model underneath differs:
  * a transport route keeps exactly one grant record and its own adapter
- * resolves it, so there is nothing to project into pi-ai and "Set active" can
- * only re-read the stored grant. Removal deletes that record, and sign-in
+ * resolves it, so there is nothing to project into pi-ai and no "Set active"
+ * entry — the row has no activation control because the stored grant already
+ * IS the route's live credential. Removal deletes that record, and sign-in
  * starts the transports package's own flow.
  */
 function TransportAccountRow({ account }: TransportAccountRowProps): React.ReactElement {
@@ -723,14 +724,6 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
       return
     }
     if (result.value !== null) setLogin({ attemptId: result.value.id })
-  }
-
-  async function activate(): Promise<void> {
-    setBusy(true)
-    setError(null)
-    const result = await runtime.store.activateTransportAccount(account.id)
-    setBusy(false)
-    if (!result.ok) setError(result.error)
   }
 
   async function remove(): Promise<void> {
@@ -777,14 +770,10 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
         title: account.active ? t('accountReauth') : t('transportSignIn'),
       }, busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'refresh', size: 14 }),
         t(account.active ? 'accountReauth' : 'transportSignIn')),
-      // Activation writes nothing (the record IS the live grant); the entry
-      // stays disabled while the grant is already usable.
-      h(Button, {
-        size: 'small',
-        variant: 'ghost',
-        disabled: busy || account.status === 'active',
-        onClick: activate,
-      }, h(Icon, { name: 'check', size: 14 }), t('accountActivate')),
+      // No "Set active" entry: activation would write nothing (the stored grant
+      // already IS the route's live credential), so the host endpoint stays for
+      // API symmetry with the account surface and the row omits a no-effect
+      // control.
       h(Button, {
         size: 'small',
         variant: 'danger',

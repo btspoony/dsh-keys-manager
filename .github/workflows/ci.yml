@@ -34,6 +34,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The install/load proof runs the real CLI, and `tests/install.test.ts`
+      # fails (rather than skips) in CI when `dsh` is missing on PATH. Pin the
+      # CLI explicitly so the proof is versioned with the change that adds it.
+      - name: Install a pinned dsh CLI
+        run: npm install --global @deepseek-ai/dsh@0.2.1-rc.2
+
       - name: Typecheck
         run: pnpm run typecheck
 
@@ -69,3 +75,12 @@ jobs:
           grep -Eq "lib/index\.js( |$)" "$RUNNER_TEMP/pack-listing.txt"
           grep -Eq "lib/client\.js( |$)" "$RUNNER_TEMP/pack-listing.txt"
           grep -Eq "bundle/cordis\.patch\.yml( |$)" "$RUNNER_TEMP/pack-listing.txt"
+
+      # Install/load proof: packs both packages, installs the root tarball into
+      # a fresh DSH profile, and asserts the composed loader tree carries BOTH
+      # components. It needs both builds above (each package's own `prepack`
+      # also rebuilds) and the pinned `dsh` installed before the suite.
+      - name: Install/load proof (packed profile mounts both components)
+        env:
+          CI: "true"
+        run: pnpm exec vitest run tests/install.test.ts

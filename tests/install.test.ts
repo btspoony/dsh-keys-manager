@@ -7,7 +7,9 @@
  * Not covered: the plugin-manager detail page/toggles (DSH's own Web UI) and
  * any Cursor network behavior.
  *
- * Skips when `pnpm` or `dsh` is missing. The run needs no registry access: both
+ * Skips when `pnpm` or `dsh` is missing locally; in CI a missing one fails the
+ * run instead (see the prerequisite test below) — the install/load proof is
+ * evidence, not an optional convenience. The run needs no registry access: both
  * tarballs are packed locally, the root's transports dependency range is
  * overridden to the local tarball, and DSH peers are not auto-installed.
  */
@@ -28,6 +30,15 @@ const missing = ['pnpm', 'dsh'].filter(
 const canInstall = missing.length === 0
 
 if (!canInstall) console.warn(`install.test: skipped — not on PATH: ${missing.join(', ')}`)
+
+describe('install/load proof prerequisites', () => {
+  it('has pnpm and dsh on PATH in CI', () => {
+    // The workflow installs a pinned dsh before the suite, so a missing one
+    // means the only install/load evidence would be skipped: fail instead.
+    if (process.env.CI === undefined) return
+    expect(missing, `install/load proof cannot run in CI: missing ${missing.join(', ')}`).toEqual([])
+  })
+})
 
 describe.skipIf(!canInstall)('install/load integration (packed profile)', () => {
   it('mounts both bundle components in a fresh profile', () => {

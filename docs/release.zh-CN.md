@@ -6,6 +6,8 @@
 
 CI（`.github/workflows/ci.yml`）先运行根包 typecheck、build、测试，以及对 `lib/index.js`、`lib/client.js`、`bundle/cordis.patch.yml` 的 packed tarball 断言；随后运行 `dsh-llm-omp-transports` workspace 包的 typecheck、build、测试与 drift manifest 校验。
 
+工作流会在测试套件之前安装固定版本的 `@deepseek-ai/dsh`（`0.2.1-rc.2`），并在最后执行显式的安装/装载证明步骤（`vitest run tests/install.test.ts`）：本地打包两个 tarball、把根插件装进全新 profile，组合后的 loader 树必须同时包含两个组件。CI 环境下缺少 `dsh` 或 `pnpm` 时 `tests/install.test.ts` 直接失败而不是跳过；只有本地运行保留跳过这一便利。
+
 ## 发布流程
 
 发布由 PR 驱动：
@@ -25,7 +27,9 @@ CI（`.github/workflows/ci.yml`）先运行根包 typecheck、build、测试，�
 
 ## npm 发布
 
-npm 发布使用 OIDC trusted publishing（无需 `NPM_TOKEN`）。首次发布前，在 npmjs.com 上为本仓库与 `Release` 工作流配置 Trusted Publisher。预发布版本发布到 prerelease dist-tag，不会移动 `latest`。
+npm 发布使用 OIDC trusted publishing（无需 `NPM_TOKEN`）。首次发布前，在 npmjs.com 上为本仓库与 `Release` 工作流配置 Trusted Publisher。**每个发布的包都需要各自的 Trusted Publisher**：`dsh-keys-manager` 与 `dsh-llm-omp-transports` 是两个 npm 包，一个 publisher 条目不会覆盖另一个。预发布版本发布到 prerelease dist-tag，不会移动 `latest`。
+
+`Release` 工作流会**先**发布传输包、后发布根包，且传输包步骤不依赖根包任何东西：它失败时根包发布不会执行。这是有意的——传输包是已安装根包的真实依赖，只发布一半比完全不发布更糟——但也意味着传输包一侧的 npm 问题会阻塞根包。先修好传输包再重跑：其确切版本已在 npm 上时该步骤会自行跳过。
 
 ## Actions 创建 PR 的权限
 

@@ -9,6 +9,13 @@ packed tarball assertion for `lib/index.js`, `lib/client.js`, and
 `bundle/cordis.patch.yml`. It then runs the `dsh-llm-omp-transports`
 workspace package's typecheck, build, tests, and drift-manifest check.
 
+The job installs a pinned `@deepseek-ai/dsh` (`0.2.1-rc.2`) before the suite
+and ends with an explicit install/load proof step (`vitest run
+tests/install.test.ts`): both tarballs are packed, the root plugin is installed
+into a fresh profile, and the composed loader tree must carry both components.
+`tests/install.test.ts` fails in CI when `dsh` or `pnpm` is missing instead of
+skipping; only a local run keeps the convenience skip.
+
 ## Release flow
 
 Releases are PR-driven:
@@ -54,8 +61,18 @@ tarball asks for that transport version.
 
 npm publishing uses OIDC trusted publishing (no `NPM_TOKEN`). Configure a
 Trusted Publisher for this repository and the `Release` workflow on
-npmjs.com before the first release. Prerelease versions publish to a
-prerelease dist-tag and never move `latest`.
+npmjs.com before the first release. **Each published package needs its own
+Trusted Publisher**: `dsh-keys-manager` and `dsh-llm-omp-transports` are two
+npm packages, and one publisher entry does not cover the other. Prerelease
+versions publish to a prerelease dist-tag and never move `latest`.
+
+The `Release` workflow publishes the transports package **before** the root
+package, and the transports step is not conditional on anything the root needs
+at that moment: if it fails, the root publish never runs. That is deliberate —
+the transport is a real dependency of the installed root, so a half-published
+release is worse than none — but it means a transport-side npm problem blocks
+the root. Fix the transport and re-run: the transports step skips itself once
+its exact version is on npm.
 
 ## Actions pull-request permission
 

@@ -1979,6 +1979,9 @@ describe('transport account surface', () => {
     expect(inside.some(node => node.text === '未登录')).toBe(true)
     const signIn = descendants(view.nodes, row).filter(node => node.type === 'button' && node.text.includes('登录'))
     expect(signIn).toHaveLength(1)
+    // No "Set active": the stored grant already is the route's live credential,
+    // so an activation control would be a no-effect button.
+    expect(descendants(view.nodes, row).filter(node => node.text === '设为当前')).toHaveLength(0)
     ;(signIn[0]!.props!.onClick as () => void)()
     await view.flush()
 

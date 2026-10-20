@@ -512,8 +512,20 @@ function transportAccountOf(flow: AuthorizationFlowEntry, record: CredentialReco
     ...(grant?.accountId === undefined ? {} : { accountId: grant.accountId }),
     ...(grant?.expires === undefined ? {} : { expiresAt: grant.expires }),
     status,
-    active: grant !== undefined,
+    // Derived, never a second opinion: an expired or unreadable grant is not
+    // the route's live credential.
+    active: status === 'active',
   }
+}
+
+/**
+ * The method id a transport flow begins with, or undefined when it has none.
+ *
+ * The transports package owns its flow's method id; this manager only reads
+ * the scope prefix, so it must not assume the pi-ai `'oauth'` id.
+ */
+function transportMethodOf(flow: AuthorizationFlowEntry): string | undefined {
+  return flow.methods[0]?.id
 }
 
 /** Env names that are a single API-key credential, not an OAuth/federation token. */
@@ -1253,16 +1265,21 @@ export class KeysManagerService {
    * a route with no registered flow is not a transport account surface, and a
    * route whose record exists but whose flow is gone is not listed at all
    * (there would be nothing to sign in with).
+   *
+   * The method id is the flow's own (`methods[0].id`), never a literal
+   * `'oauth'`: the scope prefix is the whole cross-package contract, and the
+   * transports package may name a method that is not OAuth. A flow with no
+   * method cannot be begun and is not a sign-in surface.
    */
   private transportFlowFor(route: string): AuthorizationFlowEntry | undefined {
     return (this.ctx.authorization?.list() ?? [])
-      .find(entry => entry.key === `${TRANSPORT_CREDENTIAL_SCOPE}/${route}` && entry.methods.some(method => method.id === 'oauth'))
+      .find(entry => entry.key === `${TRANSPORT_CREDENTIAL_SCOPE}/${route}` && transportMethodOf(entry) !== undefined)
   }
 
   /** Every registered transport flow, in seam order. */
   private transportFlows(): AuthorizationFlowEntry[] {
     return (this.ctx.authorization?.list() ?? [])
-      .filter(entry => entry.key.startsWith(`${TRANSPORT_CREDENTIAL_SCOPE}/`) && entry.methods.some(method => method.id === 'oauth'))
+      .filter(entry => entry.key.startsWith(`${TRANSPORT_CREDENTIAL_SCOPE}/`) && transportMethodOf(entry) !== undefined)
   }
 
   /**
@@ -1582,10 +1599,11 @@ export class KeysManagerService {
     this.loginAttempts.set(attempt.id, attempt)
     this.capLoginAttempts()
     this.transportInFlight.set(route, attempt.id)
-    // `transportFlowFor` already proved the seam is mounted (it lists the flows).
+    // `transportFlowFor` already proved the seam is mounted and the flow has a
+    // method; the method id is the flow's own, not the pi-ai `'oauth'` literal.
     void this.ctx.authorization!.begin({
       key: flow.key,
-      method: 'oauth',
+      method: transportMethodOf(flow)!,
       interaction: this.attemptInteraction(attempt),
       signal: attempt.controller.signal,
     }).then(
@@ -3289,7 +3307,7 @@ export class KeysManagerService {
    *
    * The transport rows come from another package's records, and reading them
    * is async while this endpoint is synchronous, so every poll starts a
-   * refresh for the next one (the client ticks every second), unless one is
+   * refresh for the next one (the client ticks every 30 s), unless one is
    * already in flight. The constructor warms the first read and record
    * updates refresh immediately, so the one-tick lag only shows on a cold
    * start.

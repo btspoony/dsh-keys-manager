@@ -214,7 +214,7 @@ export interface TransportAccountView {
   /** Epoch ms when the access token expires. */
   expiresAt?: number
   status: TransportAccountStatus
-  /** True when the listed record holds a usable grant (the route's live credential). */
+  /** Derived from {@link status}: true only while it is `'active'`. */
   active: boolean
 }
 

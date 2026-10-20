@@ -6843,32 +6843,41 @@ test('lists the cursor transport account from its own grant record', async () =>
 
 test('a transport row reports active, expired, needs-reauth and signed-out', async () => {
   const h = await transportHarness()
-  const statusOf = async (): Promise<string | undefined> => {
+  const rowOf = async (): Promise<{ status?: string; active?: boolean }> => {
     await h.service.refreshTransportAccounts()
-    return h.service.buildState().transportAccounts?.[0]?.status
+    return h.service.buildState().transportAccounts?.[0] ?? {}
   }
+  const statusOf = async (): Promise<string | undefined> => (await rowOf()).status
   try {
     // A route with a registered flow but no record still gets a row, so the
     // UI can offer the sign-in that writes it.
     assert.equal(await statusOf(), 'signed-out')
 
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
-    assert.equal(await statusOf(), 'active')
+    const live = await rowOf()
+    assert.equal(live.status, 'active')
+    assert.equal(live.active, true)
 
-    // Expired but refreshable: the route's adapter renews it on the next request.
+    // Expired but refreshable: the route's adapter renews it on the next
+    // request, but the stored grant is not the live credential right now.
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant({ expires: Date.now() - 1000 }) })
-    assert.equal(await statusOf(), 'expired')
+    const expired = await rowOf()
+    assert.equal(expired.status, 'expired')
+    assert.equal(expired.active, false)
 
     // Expired with no refresh token: only a new sign-in restores service.
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant({ expires: Date.now() - 1000, refresh: undefined }) })
     assert.equal(await statusOf(), 'needs-reauth')
+    assert.equal((await rowOf()).active, false)
 
     // A record this manager cannot read is not a usable grant either.
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access' } })
     assert.equal(await statusOf(), 'needs-reauth')
+    assert.equal((await rowOf()).active, false)
 
     h.credentials.records.delete(CURSOR_SCOPE)
     assert.equal(await statusOf(), 'signed-out')
+    assert.equal((await rowOf()).active, false)
     assertNoPiAiProjection(h)
   } finally {
     await h.close()
@@ -6895,6 +6904,21 @@ test('the transport sign-in begins on llm-omp-transports/cursor and harvests not
     assert.equal(h.service.accountAttempt(attempt.id)?.status, 'ready')
     assert.equal(h.service.buildState().transportAccounts?.[0]?.status, 'active')
     assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a transport flow begins with its own method id, not the pi-ai oauth literal', async () => {
+  // The scope prefix is the whole cross-package contract; the method id belongs
+  // to the transports package's flow.
+  const h = await harness([
+    ...piAiFlows(),
+    { key: CURSOR_SCOPE, label: 'Cursor', methods: [{ id: 'cursor-device', label: 'Sign in with Cursor' }] },
+  ])
+  try {
+    await h.service.beginTransportLogin('cursor')
+    assert.equal(h.authorization.beganRequests.at(-1)!.method, 'cursor-device')
   } finally {
     await h.close()
   }
