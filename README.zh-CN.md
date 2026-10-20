@@ -18,6 +18,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 - 插件详情页上提供可搜索的 Keys Manager 页面。
 - 既有 Models 提供商卡片内出现"由 Keys Manager 托管"徽标。
 - 额外内置提供商以普通 `llm-pi-ai` 路由安装。
+- 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，凭据与 API key 并存管理。
 
 ### 额外提供商
 
@@ -53,6 +54,16 @@ dsh plugin --profile web link .
 3. 用别名添加更多 key。每把 key 都以自己的引用存进 Harness 凭据存储；管理器状态文档从不包含 key 字面量。
 4. 在三点菜单中管理 key：重命名、暂停/恢复、删除。key 行显示状态、最近使用，以及冷却中的恢复时间。
 5. 在设置卡片中调整重试次数（1–3）、基础冷却与恢复宽限。
+
+### OAuth 账户
+
+支持原生 OAuth 登录的提供商有两种入池方式：**添加密钥**保存静态 API key，**添加账户**则执行提供商的 OAuth 登录流程，把得到的授权作为账户行存进同一个池。
+
+支持的提供商——`llm-pi-ai` 实现了 OAuth 流的七家：Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI。
+
+增量 1 的真实模型是：**API key 构成选择环**——会话粘滞、轮询选择、重试切换与冷却都作用在该提供商的 API key 之间；**每个提供商由一条被投影的 OAuth 授权服务**——被投影的账户直接响应请求，同时只保留一个活跃授权。按账户排名（在多个账户间轮换或分流）是后续工作。账户行上的计数只反映该账户自身的成功与失败，不代表按账户的流量拆分。被投影的授权失败（过期或刷新被拒）时，该账户进入冷却：支持 key 池的路由会回落到该提供商的 key 池；仅有 OAuth 的路由没有 API-key 池，将停止服务，直到重新登录账户。恢复方式是从账户菜单手动重新登录。
+
+添加账户只把提供商签发的授权存进 Harness 凭据存储（挂在账户的 `grantRef` 之下）；管理器状态里只存引用与非敏感元数据（邮箱、账户 ID、过期时间）——与 API key 相同的无明文布局。
 
 ### 选择与故障策略
 
@@ -95,9 +106,9 @@ $DSH_HOME/keys-manager/state.json
 | `amazon-bedrock` | AWS 凭据链（profile、IAM 密钥、ECS/IRSA/EC2），不是单一 API key |
 | `cloudflare-ai-gateway` | API key 之外还需 Cloudflare 账号 ID 与网关 ID |
 | `cloudflare-workers-ai` | API key 之外还需 Cloudflare 账号 ID |
-| `openai-codex` | 仅支持 ChatGPT OAuth 登录，无 API key 凭据 |
+| `openai-codex` | 仅支持 ChatGPT OAuth 登录，无 API key 凭据——可作为 [OAuth 账户](#oauth-账户)使用而非 key |
 
-其余 DSH 目录路由都提供 API key 凭据。同时支持 OAuth 的提供商（Anthropic、GitHub Copilot、Kimi、OpenRouter、xAI、Radius）仍可经其 API key 路径管理；OAuth 账号在路线图 issue 中单独跟踪。
+其余 DSH 目录路由都提供 API key 凭据。同时支持 OAuth 的提供商（Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI）仍可经其 API key 路径管理，其 OAuth 登录则以 [OAuth 账户](#oauth-账户)形式提供。
 
 ## 文档
 

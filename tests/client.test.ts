@@ -1,8 +1,11 @@
-import { describe, expect, test } from 'vitest'
+import { beforeAll, describe, expect, test, vi } from 'vitest'
+import React from 'react'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
-import type { ClientContext, LocaleDicts, RpcResult, StateView } from '../src/client/types'
+import { RuntimeContext } from '../src/client/runtime'
+import { KeysManagerBody } from '../src/client/ui'
+import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, RpcResult, Runtime, StateView } from '../src/client/types'
 
 function makeState(): StateView {
   return {
@@ -109,7 +112,63 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
   const registrations: Harness['registrations'] = []
   const dictionaries: Harness['dictionaries'] = {}
   const cleanups: Harness['cleanups'] = []
-  const labels: Record<string, string> = { nav: '密钥管理' }
+  // Dictionary values the UI tests resolve (N5): a stub t that echoes key
+  // names can never catch a copy regression, so the surface under test is
+  // rendered with real dictionary values.
+  const labels: Record<string, string> = {
+    nav: '密钥管理',
+    accountIdentity: '账户',
+    accountProjected: '服务中',
+    adoptAccountTitle: '使用 OAuth 账户登录后即可使用该 Provider。',
+    // Round-4 nit I-000087: the account row menu entries are located by
+    // their resolved values, not by the stub's key-name echo.
+    accountReauth: '重新认证',
+    accountActivate: '设为当前',
+    // Round-4 finding 4 (I-000085): both empty bodies resolve real copy so
+    // the capability branch is asserted by value.
+    noKeys: '还没有密钥。添加一个后即可使用该 Provider。',
+    noKeysAccount: '还没有账户。添加一个账户后即可使用该 Provider。',
+    // R5-N2: the whole login status set resolves real copy, so the dialog
+    // assertions locate terminal/pending states by their values instead of
+    // the stub's key-name echo.
+    loginBrowserOpen: '在浏览器中打开',
+    loginFlowEnded: '本次登录流程已结束，请关闭窗口后重新开始。',
+    loginReady: '登录成功。',
+    loginPending: '等待授权…',
+    loginFailed: '登录失败',
+    uses: '使用 {n} 次',
+    failures: '失败 {n} 次',
+    // R7 nit: the account-row status pill is asserted through the resolved
+    // copy, so the whole visible status set is resolved — never the stub's
+    // key-name echo. I-000105: `keyStatusPaused` joins the set so a paused
+    // row can never fall back to rendering its key name.
+    keyStatusActive: '正常',
+    keyStatusCooling: '冷却中',
+    // R9 nit: the cooling row's window lines are asserted through their
+    // resolved copy, so the stub carries the same template the zh dictionary
+    // registers (`{time} 恢复`).
+    coolingUntil: '{time} 恢复',
+    keyStatusPaused: '已暂停',
+    keyStatusMissing: '凭证缺失',
+    keyStatusEmpty: '暂无密钥',
+    keyStatusUnmanaged: '未接管',
+    unmanaged: '未接管',
+    // C6-2: the flow-less route renders the unsupported headline; resolve
+    // the real dictionary value instead of the key echo.
+    unsupported: '暂不支持密钥池',
+    // Round-3 N2: the delete-account copy is asserted through its
+    // distinguishing phrases, so the stub resolves the real values.
+    deleteAccountBody: '这会从凭证库中删除该账户保存的 OAuth 授权。如果它是当前账户，该 Provider 路由将停用它并回落到 API-key 池；Provider 仍保持接管状态。',
+    deleteAccountBodyNoKeys: '这会从凭证库中删除该账户保存的 OAuth 授权。该路由没有 API-key 池，删除后将停止服务，直到重新登录账户。',
+    // R6 nit: the last stub-echo locators now resolve real copy as well, so
+    // every action these tests click is found by the text the UI renders —
+    // never by the key-name echo of a translation the stub does not carry.
+    addKey: '添加密钥',
+    addAccount: '添加账户',
+    adopt: '接管 Provider',
+    loginPromptSubmit: '提交',
+    delete: '删除',
+  }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
     return String(template).replace(/\{(\w+)\}/g, (_, name: string) => String(params[name] ?? `{${name}}`))
@@ -186,6 +245,51 @@ describe('client registration', () => {
     expect(dicts!.en.deleteTitle).toContain('{alias}')
     expect(dicts!.zh.releaseTitle).toContain('{provider}')
 
+    for (const cleanup of harness.cleanups.reverse()) cleanup()
+  })
+
+  test('the registered dictionaries carry the OAuth account key set in both languages', () => {
+    // N3/N-C: key-set + non-empty assertion. The key set is derived from
+    // the surfaces under test — the login dialog, the account row menu
+    // (including the projection badge), and the delete-account dialog —
+    // and must exist in the live registration source (LOCALE_DICTS) for
+    // both languages, without mirroring every translation literal here.
+    const oauthKeys = [
+      'addAccount',
+      'accountIdentity',
+      'accountProjected',
+      'accountReauth',
+      'accountActivate',
+      'adoptAccountTitle',
+      'loginTitle',
+      'loginPending',
+      'loginBrowserOpen',
+      'loginPromptTitle',
+      'loginPromptSubmit',
+      'loginFailed',
+      'loginFlowEnded',
+      'loginReady',
+      'deleteAccountTitle',
+      'deleteAccountBody',
+      'deleteAccountBodyNoKeys',
+      'noKeysAccount',
+    ]
+    const harness = makeContext()
+    apply(harness.ctx)
+    const dicts = harness.dictionaries.value
+    expect(dicts).toBeDefined()
+    for (const key of oauthKeys) {
+      expect(typeof dicts!.en[key]).toBe('string')
+      expect(dicts!.en[key]!.length).toBeGreaterThan(0)
+      expect(typeof dicts!.zh[key]).toBe('string')
+      expect(dicts!.zh[key]!.length).toBeGreaterThan(0)
+      expect(dicts!.en[key]).not.toBe(dicts!.zh[key])
+    }
+    // Counter-parts asserted individually, never as a joined string.
+    expect(dicts!.en.deleteAccountTitle).toContain('{alias}')
+    expect(dicts!.zh.deleteAccountTitle).toContain('{alias}')
+    expect(dicts!.en.deleteAccountBody).not.toBe(dicts!.en.deleteAccountBodyNoKeys)
+    expect(dicts!.zh.deleteAccountBody).not.toBe(dicts!.zh.deleteAccountBodyNoKeys)
     for (const cleanup of harness.cleanups.reverse()) cleanup()
   })
 
@@ -330,5 +434,1355 @@ describe('mutation ordering', () => {
     expect(store.getSnapshot().state?.managedCount).toBe(2)
     expect(store.getSnapshot().error).toBe('update failed')
     expect(store.getSnapshot().busy).toBeNull()
+  })
+})
+
+
+describe('oauth account store', () => {
+  function makeAttempt(): AccountAttemptView {
+    return {
+      id: 'la_1_ab',
+      provider: 'anthropic',
+      alias: 'Work account',
+      status: 'prompt',
+      notices: [{ message: 'Open this page to continue signing in.', url: 'https://example.com/authorize' }],
+      prompt: { kind: 'text', message: 'Paste the verification code' },
+      createdAt: 1,
+      updatedAt: 2,
+    }
+  }
+
+  test('beginAccountLogin returns the attempt view without replacing the state snapshot', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        expect(payload).toEqual({ args: { provider: 'anthropic', alias: 'Work account' } })
+        return { ok: true, value: makeAttempt() }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const stateBefore = store.getSnapshot().state
+    const outcome = await store.beginAccountLogin('anthropic', 'Work account')
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) {
+      expect(outcome.value?.id).toBe('la_1_ab')
+      expect(outcome.value?.status).toBe('prompt')
+      expect(outcome.value?.prompt?.kind).toBe('text')
+    }
+    // The attempt view is not a StateView; the snapshot keeps the loaded state.
+    expect(store.getSnapshot().state).toBe(stateBefore)
+    expect(store.getSnapshot().busy).toBeNull()
+    expect(store.getSnapshot().error).toBeNull()
+  })
+
+  test('answerAccountPrompt acknowledges without touching the snapshot state', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      expect(endpoint).toBe('keysManager/answerAccountPrompt')
+      expect(payload).toEqual({ args: { attemptId: 'la_1_ab', value: '123-456' } })
+      return { ok: true, value: null }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const stateBefore = store.getSnapshot().state
+    const outcome = await store.answerAccountPrompt('la_1_ab', '123-456')
+    expect(outcome).toEqual({ ok: true, value: null })
+    expect(store.getSnapshot().state).toBe(stateBefore)
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  test('accountAttempt polls without queueing or mutating the snapshot', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/accountAttempt') {
+        return payload.args.attemptId === 'la_1_ab' ? { ok: true, value: makeAttempt() } : { ok: true, value: null }
+      }
+      return { ok: true, value: makeState() }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const snapshotBefore = store.getSnapshot()
+    const outcome = await store.accountAttempt('la_1_ab')
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) expect(outcome.value?.notices[0]?.message).toContain('signing in')
+    // A poll is read-only: no busy flag, no state replacement, no error.
+    const snapshotAfter = store.getSnapshot()
+    expect(snapshotAfter.busy).toBe(snapshotBefore.busy)
+    expect(snapshotAfter.state).toBe(snapshotBefore.state)
+
+    const missing = await store.accountAttempt('la_missing')
+    expect(missing).toEqual({ ok: true, value: null })
+  })
+
+  test('listAccountAttempts returns the attempt array', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      expect(endpoint).toBe('keysManager/listAccountAttempts')
+      return { ok: true, value: [makeAttempt()] }
+    }
+    const store = createStore(harness.ctx)
+    const outcome = await store.listAccountAttempts()
+    expect(outcome.ok).toBe(true)
+    if (outcome.ok) expect(outcome.value.map(entry => entry.id)).toEqual(['la_1_ab'])
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  test('activateAccount and removeAccount are queued mutations that refresh the state', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/activateAccount') {
+        expect(payload).toEqual({ args: { provider: 'anthropic', accountId: 'k_oauth1' } })
+        const state = makeState()
+        state.providers[0].keys[0].alias = 'Work account'
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/removeAccount') {
+        expect(payload).toEqual({ args: { provider: 'anthropic', accountId: 'k_oauth1' } })
+        const state = makeState()
+        state.managedCount = 0
+        return { ok: true, value: state }
+      }
+      return { ok: true, value: makeState() }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    const activated = await store.activateAccount('anthropic', 'k_oauth1')
+    expect(activated.ok).toBe(true)
+    expect(store.getSnapshot().state?.providers[0].keys[0].alias).toBe('Work account')
+    expect(store.getSnapshot().busy).toBeNull()
+
+    const removed = await store.removeAccount('anthropic', 'k_oauth1')
+    expect(removed.ok).toBe(true)
+    expect(store.getSnapshot().state?.managedCount).toBe(0)
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  test('account wrapper failures surface the error and clear the busy flag', async () => {
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async () => ({ ok: false, error: { message: 'already in progress' } })
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    const begun = await store.beginAccountLogin('anthropic')
+    expect(begun).toEqual({ ok: false, error: 'already in progress' })
+    const polled = await store.accountAttempt('la_1_ab')
+    expect(polled).toEqual({ ok: false, error: 'already in progress' })
+    const answered = await store.answerAccountPrompt('la_1_ab', 'x')
+    expect(answered).toEqual({ ok: false, error: 'already in progress' })
+    const activated = await store.activateAccount('anthropic', 'k_oauth1')
+    expect(activated).toEqual({ ok: false, error: 'already in progress' })
+    expect(store.getSnapshot().error).toBe('already in progress')
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+})
+
+
+/**
+ * Minimal React test renderer for the no-DOM vitest environment.
+ *
+ * The client bundle deliberately ships without react-dom and the repo adds no
+ * test-only renderer, so rendering tests drive the real hooks dispatcher:
+ * components run for real and produce plain element trees, while per-position
+ * hook chains keep component state across re-renders. Effects run only inside
+ * `flush()` and no DOM is ever touched.
+ */
+type FlatNode = { type: unknown; props: Record<string, unknown> | null; text: string; path: string }
+
+const reactInternals = (React as unknown as {
+  __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED: { ReactCurrentDispatcher: { current: unknown } }
+}).__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED
+
+function depsEqual(a: unknown[] | undefined, b: unknown[] | undefined): boolean {
+  if (a === undefined || b === undefined || a.length !== b.length) return false
+  return a.every((item, index) => Object.is(item, b[index]))
+}
+
+function setRuntimeContext(runtime: Runtime | null): void {
+  ;(RuntimeContext as unknown as { _currentValue?: unknown })._currentValue = runtime
+}
+
+function mountView(component: (props: Record<string, unknown>) => React.ReactElement | null, props: Record<string, unknown> = {}) {
+  const pool = new Map<string, { records: Array<{ kind: string; value: any }>; cursor: number }>()
+  const effectQueue: Array<{ record: { kind: string; value: any }; run: () => void | (() => void) }> = []
+  let nodes: FlatNode[] = []
+  let currentChain: { records: Array<{ kind: string; value: any }>; cursor: number } | null = null
+  let rendering = false
+  let dirty = false
+
+  const tick = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0))
+
+  function renderAll(): void {
+    if (rendering) {
+      dirty = true
+      return
+    }
+    rendering = true
+    dirty = false
+    try {
+      nodes = []
+      renderElement(React.createElement(component, props), 'root')
+    } finally {
+      rendering = false
+    }
+    if (dirty) renderAll()
+  }
+
+  function renderElement(node: unknown, path: string): string {
+    if (node === null || node === undefined || typeof node === 'boolean') return ''
+    if (typeof node === 'string' || typeof node === 'number') {
+      nodes.push({ type: null, props: null, text: String(node), path })
+      return String(node)
+    }
+    if (Array.isArray(node)) {
+      return node.map((child, index) => renderElement(child, `${path}/${index}`)).join('')
+    }
+    const element = node as { type: unknown; props: Record<string, unknown> | null; key?: unknown }
+    if (typeof element.type === 'function') {
+      const name = (element.type as { name?: string }).name ?? 'anon'
+      const chainKey = `${path}#${name}`
+      let chain = pool.get(chainKey)
+      if (chain === undefined) {
+        chain = { records: [], cursor: 0 }
+        pool.set(chainKey, chain)
+      }
+      const previousChain = currentChain
+      const previousDispatcher = reactInternals.ReactCurrentDispatcher.current
+      currentChain = chain
+      reactInternals.ReactCurrentDispatcher.current = dispatcher
+      let output: unknown
+      try {
+        chain.cursor = 0
+        output = (element.type as (props: Record<string, unknown>) => unknown)(element.props ?? {})
+      } finally {
+        reactInternals.ReactCurrentDispatcher.current = previousDispatcher
+        currentChain = previousChain
+      }
+      return renderElement(output, chainKey)
+    }
+    const text = renderElement((element.props?.children ?? null) as unknown, `${path}>`)
+    nodes.push({ type: element.type, props: element.props, text, path })
+    return text
+  }
+
+  function nextRecord(kind: string, create: () => unknown): { kind: string; value: any } {
+    const chain = currentChain
+    if (chain === null) throw new Error('hook called outside of a rendered component')
+    if (chain.cursor >= chain.records.length) chain.records.push({ kind, value: create() })
+    const record = chain.records[chain.cursor]!
+    if (record.kind !== kind) throw new Error(`hook order changed: expected ${record.kind}, got ${kind}`)
+    chain.cursor += 1
+    return record
+  }
+
+  const scheduleRender = (): void => renderAll()
+
+  const dispatcher = {
+    useState(initial: unknown): [unknown, (action: unknown) => void] {
+      const holder = nextRecord('state', () => {
+        const cell = {
+          value: typeof initial === 'function' ? (initial as () => unknown)() : initial,
+          set(action: unknown): void {
+            const next = typeof action === 'function' ? (action as (current: unknown) => unknown)(cell.value) : action
+            if (!Object.is(next, cell.value)) {
+              cell.value = next
+              scheduleRender()
+            }
+          },
+        }
+        return cell
+      }).value as { value: unknown; set: (action: unknown) => void }
+      return [holder.value, holder.set]
+    },
+    useRef(initial: unknown): { current: unknown } {
+      return nextRecord('ref', () => ({ current: initial })).value
+    },
+    useMemo(factory: () => unknown, deps: unknown[]): unknown {
+      const cell = nextRecord('memo', () => ({ cached: undefined as unknown, deps: undefined as unknown[] | undefined })).value as { cached: unknown; deps: unknown[] | undefined }
+      if (cell.deps === undefined || !depsEqual(cell.deps, deps)) {
+        cell.cached = factory()
+        cell.deps = deps
+      }
+      return cell.cached
+    },
+    useCallback(fn: unknown, deps: unknown[]): unknown {
+      return dispatcher.useMemo(() => fn, deps)
+    },
+    useEffect(run: () => void | (() => void), deps: unknown[]): void {
+      const record = nextRecord('effect', () => ({ deps: undefined as unknown[] | undefined, queued: false, cleanup: undefined as (() => void) | undefined }))
+      const cell = record.value as { deps: unknown[] | undefined; queued: boolean; cleanup?: () => void }
+      if (cell.deps === undefined || !depsEqual(cell.deps, deps)) {
+        cell.deps = deps
+        if (!cell.queued) {
+          cell.queued = true
+          effectQueue.push({ record, run })
+        }
+      }
+    },
+    useSyncExternalStore(subscribe: (listener: () => void) => () => void, getSnapshot: () => unknown): unknown {
+      const cell = nextRecord('store', () => ({ value: undefined as unknown, unsubscribe: undefined as (() => void) | undefined })).value as { value: unknown; unsubscribe?: () => void }
+      cell.value = getSnapshot()
+      if (cell.unsubscribe === undefined) cell.unsubscribe = subscribe(scheduleRender)
+      return cell.value
+    },
+    useContext(ctx: { _currentValue?: unknown }): unknown {
+      return ctx._currentValue
+    },
+    useId(): string { return 'km-test-id' },
+    useDebugValue(): void {},
+    useImperativeHandle(): void {},
+    useLayoutEffect(run: () => void | (() => void), deps: unknown[]): void { dispatcher.useEffect(run, deps) },
+    useInsertionEffect(run: () => void | (() => void), deps: unknown[]): void { dispatcher.useEffect(run, deps) },
+    useTransition(): [boolean, (callback: () => void) => void] { return [false, (callback: () => void) => callback()] },
+    useDeferredValue(value: unknown): unknown { return value },
+  }
+
+  renderAll()
+
+  return {
+    get nodes(): FlatNode[] { return nodes },
+    render(): FlatNode[] {
+      renderAll()
+      return nodes
+    },
+    async flush(): Promise<void> {
+      let guard = 0
+      while (effectQueue.length > 0 && guard < 25) {
+        const batch = effectQueue.splice(0)
+        for (const entry of batch) {
+          const cell = entry.record.value as { queued: boolean; cleanup?: () => void }
+          cell.cleanup?.()
+          const cleanup = entry.run()
+          cell.cleanup = typeof cleanup === 'function' ? cleanup : undefined
+          cell.queued = false
+        }
+        await tick()
+      }
+      await tick()
+    },
+    unmount(): void {
+      for (const chain of pool.values()) {
+        for (const record of [...chain.records].reverse()) {
+          const cell = record.value as { cleanup?: () => void; unsubscribe?: () => void }
+          if (record.kind === 'effect') cell.cleanup?.()
+          if (record.kind === 'store') cell.unsubscribe?.()
+        }
+      }
+      pool.clear()
+    },
+  }
+}
+
+function hostNodes(nodes: FlatNode[]): FlatNode[] {
+  return nodes.filter(node => typeof node.type === 'string')
+}
+
+function findByClass(nodes: FlatNode[], className: string): FlatNode[] {
+  return hostNodes(nodes).filter(node => String((node.props?.className as string | undefined) ?? '').split(/\s+/).includes(className))
+}
+
+function findButtons(nodes: FlatNode[], needle: string): FlatNode[] {
+  return hostNodes(nodes).filter(node => node.type === 'button' && node.text.includes(needle))
+}
+
+function descendants(nodes: FlatNode[], ancestor: FlatNode): FlatNode[] {
+  return nodes.filter(node => node.path.startsWith(ancestor.path))
+}
+
+function makeOauthKey(): KeyView {
+  const base = makeState().providers[0]!.keys[0]!
+  return {
+    ...base,
+    id: 'k_oauth9',
+    alias: 'Work account',
+    importedFrom: null,
+    kind: 'oauth',
+    totalUses: 3,
+    totalFailures: 1,
+    oauth: { provider: 'zai-coding-cn', email: 'work@anthropic.example', accountId: 'acc_9', expiresAt: Date.now() + 3_600_000 },
+  }
+}
+
+function makeOauthProvider(): ProviderView {
+  const base = makeState().providers[0]!
+  return {
+    ...base,
+    nativeAuth: { env: ['ZAI_CODING_CN_API_KEY'], oauth: true },
+    keys: [makeOauthKey(), makeState().providers[0]!.keys[0]!],
+  }
+}
+
+function makeAttemptView(): AccountAttemptView {
+  return {
+    id: 'la_1_ab',
+    provider: 'zai-coding-cn',
+    alias: 'Work account',
+    status: 'prompt',
+    notices: [{ message: 'Open this page to continue signing in.', url: 'https://example.com/authorize' }],
+    prompt: { kind: 'text', message: 'Paste the verification code' },
+    createdAt: 1,
+    updatedAt: 2,
+  }
+}
+
+function makePendingAttemptView(): AccountAttemptView {
+  return { ...makeAttemptView(), status: 'pending', prompt: undefined }
+}
+
+function makeReadyAttemptView(): AccountAttemptView {
+  return { ...makeAttemptView(), status: 'ready', prompt: undefined, accountId: 'k_oauth9', updatedAt: 3 }
+}
+
+/** A parked select prompt: a closed choice the dialog must start on. */
+function makeSelectAttemptView(options: Array<{ id: string; label: string }>): AccountAttemptView {
+  return { ...makeAttemptView(), prompt: { kind: 'select', message: 'Choose the account to continue with', options } }
+}
+
+describe('account ui', () => {
+  beforeAll(() => {
+    // The node test environment has no DOM; modal effects only need the
+    // document surface to exist so their focus/inert bookkeeping can no-op.
+    ;(globalThis as unknown as { document?: unknown }).document = {
+      getElementById: () => null,
+      createElement: () => ({ remove() {} }),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      activeElement: null,
+      body: {},
+      head: { appendChild: () => {} },
+    }
+    ;(globalThis as unknown as { HTMLElement?: unknown }).HTMLElement = class FakeHTMLElement {}
+  })
+
+  test('oauth-capable managed providers show Add account beside Add key; others keep Add key only', async () => {
+    const state = makeState()
+    state.providers[0]!.nativeAuth = { env: ['ZAI_CODING_CN_API_KEY'], oauth: true }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+
+    expect(findButtons(view.nodes, '添加密钥')).toHaveLength(1)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
+    view.unmount()
+
+    // A provider without native OAuth keeps the single Add key entry.
+    const plainHarness = makeContext()
+    const plainStore = createStore(plainHarness.ctx)
+    setRuntimeContext({ ctx: plainHarness.ctx, store: plainStore })
+    const plainView = mountView(KeysManagerBody)
+    await plainView.flush()
+    const plainHead = findByClass(plainView.nodes, 'km-provider-head')[0]
+    expect(plainHead).toBeDefined()
+    ;(plainHead!.props!.onClick as () => void)()
+    plainView.render()
+    expect(findButtons(plainView.nodes, '添加密钥')).toHaveLength(1)
+    expect(findButtons(plainView.nodes, '添加账户')).toHaveLength(0)
+    plainView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('unmanaged OAuth-capable providers enable Adopt and offer Add account; Add key stays gated by key support', async () => {
+    // MF1: an OAuth-only route is adoptable for accounts even though the
+    // key pool does not apply — Adopt is enabled, Add account rides the
+    // adopt flow, and Add key stays disabled on the managed route.
+    const unmanaged = makeState()
+    unmanaged.providers[0] = {
+      ...makeState().providers[0]!,
+      provider: 'openai-codex',
+      displayName: 'OpenAI Codex',
+      managed: false,
+      configured: false,
+      active: false,
+      supported: false,
+      accountSupported: true,
+      reason: 'Uses ChatGPT OAuth sign-in only; no API-key credential',
+      nativeAuth: { env: [], oauth: true },
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'unmanaged',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: unmanaged })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+
+    const adopt = findButtons(view.nodes, '接管 Provider')[0]
+    expect(adopt).toBeDefined()
+    expect(adopt!.props!.disabled).toBe(false)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
+    // I-000063: the adopt panel headline resolves the account title, not
+    // the unsupported reason — assert the dictionary value, never the key.
+    const adoptTitle = findByClass(view.nodes, 'km-adopt-title')[0]
+    expect(adoptTitle).toBeDefined()
+    expect(adoptTitle!.text).toBe('使用 OAuth 账户登录后即可使用该 Provider。')
+    view.unmount()
+
+    // On the managed OAuth-only route, Add key is disabled (server refuses
+    // it too) while Add account stays available.
+    const managed = makeState()
+    managed.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: true,
+      reason: 'Uses ChatGPT OAuth sign-in only; no API-key credential',
+    }
+    const managedHarness = makeContext({ ok: true, value: managed })
+    const managedStore = createStore(managedHarness.ctx)
+    setRuntimeContext({ ctx: managedHarness.ctx, store: managedStore })
+    const managedView = mountView(KeysManagerBody)
+    await managedView.flush()
+    const managedHead = findByClass(managedView.nodes, 'km-provider-head')[0]
+    expect(managedHead).toBeDefined()
+    ;(managedHead!.props!.onClick as () => void)()
+    managedView.render()
+    const addKey = findButtons(managedView.nodes, '添加密钥')[0]
+    expect(addKey).toBeDefined()
+    expect(addKey!.props!.disabled).toBe(true)
+    expect(findButtons(managedView.nodes, '添加账户')).toHaveLength(1)
+    managedView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a legacy snapshot without accountSupported keeps Adopt and the empty state consistent (R5-N3)', async () => {
+    // R5-N3: the adopt gate read `accountSupported === true` while the
+    // empty-state gate read oauthCapable(), which treats a missing host
+    // verdict as supported. On a snapshot that predates the field the two
+    // gates disagreed: the adopt panel claimed the provider was unsupported
+    // and disabled Adopt while Add account was offered beside it. Both gates
+    // now derive from oauthCapable().
+    const reason = 'Uses ChatGPT OAuth sign-in only; no API-key credential'
+    const legacy = makeState()
+    legacy.providers[0] = {
+      ...makeState().providers[0]!,
+      provider: 'openai-codex',
+      displayName: 'OpenAI Codex',
+      managed: false,
+      configured: false,
+      active: false,
+      supported: false,
+      // Deliberately absent: the pre-C6-2 host snapshot shape.
+      reason,
+      nativeAuth: { env: [], oauth: true },
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'unmanaged',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: legacy })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    expect(findButtons(view.nodes, '接管 Provider')[0]!.props!.disabled).toBe(false)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
+    expect(findByClass(view.nodes, 'km-adopt-title')[0]!.text).toBe('使用 OAuth 账户登录后即可使用该 Provider。')
+    view.unmount()
+
+    // The empty-state gate agrees on the same snapshot: a managed legacy
+    // route with no keys invites a sign-in instead of claiming an
+    // unsupported verdict it does not mean.
+    const managed = makeState()
+    managed.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      reason,
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'empty',
+      keys: [],
+    }
+    const managedHarness = makeContext({ ok: true, value: managed })
+    const managedStore = createStore(managedHarness.ctx)
+    setRuntimeContext({ ctx: managedHarness.ctx, store: managedStore })
+    const managedView = mountView(KeysManagerBody)
+    await managedView.flush()
+    ;(findByClass(managedView.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    managedView.render()
+    expect(findByClass(managedView.nodes, 'km-empty-keys')[0]!.text).toContain('还没有账户。添加一个账户后即可使用该 Provider。')
+    expect(findByClass(managedView.nodes, 'km-empty-keys')[0]!.text).not.toContain('暂不支持密钥池')
+    managedView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a nativeAuth.oauth route without a registered flow hides Add account (C6-2)', async () => {
+    // C6-2: the catalog flag says the provider supports OAuth upstream, but
+    // the host verdict says no flow can begin here. The sign-in entry must be
+    // hidden — offering it would open a dialog whose begin() fails.
+    const reason = 'This provider has no OAuth sign-in flow registered in this Harness build'
+    const unmanaged = makeState()
+    unmanaged.providers[0] = {
+      ...makeState().providers[0]!,
+      provider: 'google-gemini-cli',
+      displayName: 'Google Gemini CLI',
+      managed: false,
+      configured: false,
+      active: false,
+      supported: false,
+      accountSupported: false,
+      reason,
+      nativeAuth: { env: [], oauth: true },
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'unmanaged',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: unmanaged })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(0)
+    // Neither capability exists, so Adopt is disabled and the unsupported
+    // headline carries the host's truthful reason instead of a sign-in
+    // invitation only the flow-less route cannot honour.
+    expect(findButtons(view.nodes, '接管 Provider')[0]!.props!.disabled).toBe(true)
+    expect(findByClass(view.nodes, 'km-adopt-title')[0]!.text).toBe('暂不支持密钥池')
+    expect(view.nodes.map(node => node.text)).toContain(reason)
+    view.unmount()
+
+    // The same verdict on a managed route hides Add account beside the
+    // (disabled) Add key entry.
+    const managed = makeState()
+    managed.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: false,
+      reason,
+    }
+    const managedHarness = makeContext({ ok: true, value: managed })
+    const managedStore = createStore(managedHarness.ctx)
+    setRuntimeContext({ ctx: managedHarness.ctx, store: managedStore })
+    const managedView = mountView(KeysManagerBody)
+    await managedView.flush()
+    const managedHead = findByClass(managedView.nodes, 'km-provider-head')[0]
+    expect(managedHead).toBeDefined()
+    ;(managedHead!.props!.onClick as () => void)()
+    managedView.render()
+    expect(findButtons(managedView.nodes, '添加账户')).toHaveLength(0)
+    expect(findButtons(managedView.nodes, '添加密钥')[0]!.props!.disabled).toBe(true)
+    managedView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a managed flow-less route states the unsupported verdict instead of inviting a key (C6-2/M1)', async () => {
+    // M1: C6-2 makes a managed route with nativeAuth.oauth but no enumerable
+    // flow reachable. Neither capability exists there, so the empty body must
+    // not invite a key beside the disabled Add key — it states the truthful
+    // unsupported verdict (the same copy the adopt headline uses).
+    const reason = 'This provider has no OAuth sign-in flow registered in this Harness build'
+    const state = makeState()
+    state.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: false,
+      reason,
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'empty',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const empty = findByClass(view.nodes, 'km-empty-keys')[0]
+    expect(empty).toBeDefined()
+    // R5-N1: the flow-less verdict is visible text, not only the disabled Add
+    // key's hover title — the empty body states the unsupported headline AND
+    // the host's real reason, exactly like the unmanaged adopt panel does.
+    expect(empty!.text).toContain('暂不支持密钥池')
+    expect(empty!.text).toContain(reason)
+    expect(empty!.text).not.toContain('还没有密钥。添加一个后即可使用该 Provider。')
+    expect(findButtons(view.nodes, '添加密钥')[0]!.props!.disabled).toBe(true)
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(0)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a managed keyless provider renders the empty-state pill, not the unmanaged label', async () => {
+    // Round-3 finding 7: adopting an OAuth-only route sits at
+    // managed + zero keys until the first sign-in; the pill must read as
+    // the empty state, never as "Not managed" beside the Managed badge.
+    const state = makeState()
+    state.providers[0] = { ...makeOauthProvider(), keyCount: 0, healthyKeyCount: 0, status: 'empty', keys: [] }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    const headText = descendants(view.nodes, head!).map(node => node.text).filter(Boolean)
+    expect(headText).toContain('暂无密钥')
+    expect(headText).not.toContain('未接管')
+    view.unmount()
+    setRuntimeContext(null)
+
+    // The unmanaged route keeps the default arm.
+    const unmanaged = makeState()
+    const unmanagedHarness = makeContext({ ok: true, value: unmanaged })
+    const unmanagedStore = createStore(unmanagedHarness.ctx)
+    setRuntimeContext({ ctx: unmanagedHarness.ctx, store: unmanagedStore })
+    const unmanagedView = mountView(KeysManagerBody)
+    await unmanagedView.flush()
+    const deepInfraHead = findByClass(unmanagedView.nodes, 'km-provider-head')[1]
+    expect(deepInfraHead).toBeDefined()
+    const deepInfraText = descendants(unmanagedView.nodes, deepInfraHead!).map(node => node.text).filter(Boolean)
+    expect(deepInfraText).toContain('未接管')
+    expect(deepInfraText).not.toContain('暂无密钥')
+    unmanagedView.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('an OAuth-only keyless route invites a sign-in instead of telling the user to add a key (I-000085)', async () => {
+    // Round-4 finding 4: on a managed route with no key capability, Add key
+    // is disabled, so the empty body must invite the only available action
+    // (Add account) rather than "Add one".
+    const state = makeState()
+    state.providers[0] = {
+      ...makeOauthProvider(),
+      supported: false,
+      accountSupported: true,
+      reason: 'Uses ChatGPT OAuth sign-in only; no API-key credential',
+      keyCount: 0,
+      healthyKeyCount: 0,
+      status: 'empty',
+      keys: [],
+    }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const empty = findByClass(view.nodes, 'km-empty-keys')[0]
+    expect(empty).toBeDefined()
+    // The sign-in invitation, resolved from the dictionary — never the
+    // key-capable "Add one" copy, and never the raw key name. R5-N1 appends
+    // the host's reason beneath every key-unsupported empty body (the same
+    // rule the unmanaged adopt panel applies), so the copy is matched rather
+    // than pinned to the whole block.
+    expect(empty!.text).toContain('还没有账户。添加一个账户后即可使用该 Provider。')
+    expect(empty!.text).not.toContain('还没有密钥。添加一个后即可使用该 Provider。')
+    expect(empty!.text).toContain('Uses ChatGPT OAuth sign-in only; no API-key credential')
+    expect(empty!.text).not.toContain('noKeys')
+    // The viable action is present beside the copy; Add key stays gated.
+    expect(findButtons(view.nodes, '添加账户')).toHaveLength(1)
+    expect(findButtons(view.nodes, '添加密钥')[0]!.props!.disabled).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('oauth rows render as distinct account rows with identity, glyph, and counters', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]
+    expect(head).toBeDefined()
+    ;(head!.props!.onClick as () => void)()
+    view.render()
+
+    expect(findByClass(view.nodes, 'km-account-row')).toHaveLength(1)
+    expect(findByClass(view.nodes, 'km-key-row')).toHaveLength(1)
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const inside = descendants(view.nodes, row)
+    expect(inside.some(node => node.text === 'work@anthropic.example')).toBe(true)
+    expect(findByClass(view.nodes, 'km-account-glyph')).toHaveLength(1)
+    // N5: resolved dictionary values, not key names or a pinned separator.
+    expect(inside.some(node => node.text === '账户')).toBe(true)
+    // Round-3 N1: the counter parts asserted individually, never as a
+    // joined string pin of the separator format.
+    expect(inside.some(node => node.text === '使用 3 次')).toBe(true)
+    expect(inside.some(node => node.text === '失败 1 次')).toBe(true)
+    // R7 nit: scope the pill query to the account row — the provider header
+    // renders one too, so a whole-view count passes even when the row's own
+    // pill is missing — and assert the resolved copy.
+    const pills = findByClass(inside, 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('正常')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a demoted account row resolves the missing status copy', async () => {
+    // R7 nit: the demoted row's own pill renders the resolved
+    // "credential missing" copy, scoped to the row instead of the view.
+    const state = makeState()
+    state.providers[0] = { ...makeOauthProvider(), keys: [{ ...makeOauthKey(), status: 'missing', valueMissing: true }] }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const pills = findByClass(descendants(view.nodes, row), 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('凭证缺失')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a cooling account row resolves the cooling status copy', async () => {
+    // I-000105: the cooling arm is rendered and asserted by its resolved
+    // copy, so the dictionary entry is exercised rather than dead fixture.
+    const cooldownUntil = Date.now() + 60_000
+    const state = makeState()
+    state.providers[0] = {
+      ...makeOauthProvider(),
+      keys: [{ ...makeOauthKey(), status: 'cooling', cooldownUntil }],
+    }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const pills = findByClass(descendants(view.nodes, row), 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('冷却中')
+    // R9 nit: the cooling WINDOW itself must be observable, not just the
+    // pill. AccountRow renders the resolved "recovers at" copy on a
+    // `km-key-time km-warn` node only while `cold` is true, so a regression
+    // that hardcodes cold=false drops the node (and the resolved timestamp).
+    const coldLines = findByClass(descendants(view.nodes, row), 'km-warn')
+    expect(coldLines).toHaveLength(1)
+    expect(String(coldLines[0]!.props!.className).split(/\s+/)).toContain('km-key-time')
+    const clock = new Intl.DateTimeFormat('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(cooldownUntil))
+    expect(coldLines[0]!.text).toBe(`${clock} 恢复`)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a paused account row resolves the paused status copy', async () => {
+    // I-000105: `statusKey` maps 'paused' to `keyStatusPaused`; the fixture
+    // must carry the resolved copy, or the row would render the bare key.
+    const state = makeState()
+    state.providers[0] = { ...makeOauthProvider(), keys: [{ ...makeOauthKey(), status: 'paused' }] }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const row = findByClass(view.nodes, 'km-account-row')[0]!
+    const pills = findByClass(descendants(view.nodes, row), 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('已暂停')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the projected account row is badged and its Set active entry is disabled', async () => {
+    // Step 6: exactly one account row carries the projection badge, and
+    // only that row's Set active entry is disabled.
+    const state = makeState()
+    const projected = { ...makeOauthKey(), projected: true }
+    const other = { ...makeOauthKey(), id: 'k_oauth8', oauth: { provider: 'zai-coding-cn', email: 'other@anthropic.example', accountId: 'acc_8', expiresAt: Date.now() + 3_600_000 } }
+    state.providers[0] = { ...makeOauthProvider(), keys: [projected, other] }
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const rows = findByClass(view.nodes, 'km-account-row')
+    expect(rows).toHaveLength(2)
+    const badged = rows.filter(row => descendants(view.nodes, row).some(node => node.text === '服务中'))
+    expect(badged).toHaveLength(1)
+    const dots = descendants(view.nodes, badged[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(dots[0]!.props!.onClick as () => void)()
+    view.render()
+    const activate = descendants(view.nodes, badged[0]!).filter(node => node.type === 'button' && node.text.includes('设为当前'))
+    expect(activate).toHaveLength(1)
+    expect(activate[0]!.props!.disabled).toBe(true)
+
+    // The non-projected row keeps Set active enabled.
+    const otherRow = rows.find(row => row.path !== badged[0]!.path)!
+    const otherDots = descendants(view.nodes, otherRow).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(otherDots[0]!.props!.onClick as () => void)()
+    view.render()
+    const otherActivate = descendants(view.nodes, otherRow).filter(node => node.type === 'button' && node.text.includes('设为当前'))
+    expect(otherActivate).toHaveLength(1)
+    expect(otherActivate[0]!.props!.disabled).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('after a demotion the badge and Set active return to the not-serving state', async () => {
+    // Round-3 finding 4, client view: what the host publishes after its own
+    // demotion (no row projected) drops the serving badge and re-enables
+    // Set active — the documented re-activation path is reachable again.
+    const demoted = makeState()
+    const row = makeOauthKey()
+    demoted.providers[0] = { ...makeOauthProvider(), keys: [row] }
+    const harness = makeContext({ ok: true, value: demoted })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const rows = findByClass(view.nodes, 'km-account-row')
+    expect(rows).toHaveLength(1)
+    expect(rows.filter(row => descendants(view.nodes, row).some(node => node.text === '服务中'))).toHaveLength(0)
+    const dots = descendants(view.nodes, rows[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(dots[0]!.props!.onClick as () => void)()
+    view.render()
+    const activate = descendants(view.nodes, rows[0]!).filter(node => node.type === 'button' && node.text.includes('设为当前'))
+    expect(activate).toHaveLength(1)
+    expect(activate[0]!.props!.disabled).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the delete-account copy states the key-pool fallback only for key-capable routes', async () => {
+    // Step 8: an OAuth-only route states the real consequence (no serving
+    // until re-login); a key-capable route keeps the fallback clause.
+    const buildCopy = async (supported: boolean): Promise<string> => {
+      const state = makeState()
+      state.providers[0] = { ...makeOauthProvider(), supported, reason: supported ? undefined : 'Uses ChatGPT OAuth sign-in only; no API-key credential' }
+      const harness = makeContext({ ok: true, value: state })
+      const store = createStore(harness.ctx)
+      setRuntimeContext({ ctx: harness.ctx, store })
+      const view = mountView(KeysManagerBody)
+      await view.flush()
+      ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+      view.render()
+      const dots = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+      ;(dots[0]!.props!.onClick as () => void)()
+      view.render()
+      // R6 nit: locate the destructive account menu item by the structural
+      // hooks the row already renders (role="menuitem" + km-menu-danger)
+      // instead of the stub's key-name echo for t('delete').
+      const del = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!)
+        .filter(node => node.type === 'button' && node.props?.['role'] === 'menuitem' && findByClass([node], 'km-menu-danger').length > 0)
+      expect(del).toHaveLength(1)
+      ;(del[0]!.props!.onClick as () => void)()
+      view.render()
+      const copy = findByClass(view.nodes, 'km-modal-copy')[0]!
+      view.unmount()
+      setRuntimeContext(null)
+      return copy.text
+    }
+    // Round-3 N2: assert the copy itself through its distinguishing
+    // phrases — a swapped translation or key-name echo can no longer pass.
+    expect(await buildCopy(true)).toContain('回落到 API-key 池')
+    expect(await buildCopy(true)).not.toContain('停止服务')
+    expect(await buildCopy(false)).toContain('停止服务')
+    expect(await buildCopy(false)).not.toContain('回落到 API-key 池')
+  })
+
+  test('the account re-authentication entry carries the target row id', async () => {
+    // Round-3 finding 6, client half: Re-authenticate passes the row id so
+    // the host can bind the fresh grant to that row.
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    let loginArgs: unknown
+    const harness = makeContext({ ok: true, value: state })
+    const originalCall = harness.ctx.connection.rpc.call.bind(harness.ctx.connection.rpc)
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        loginArgs = payload
+        return { ok: true, value: makePendingAttemptView() }
+      }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePendingAttemptView() }
+      return originalCall(channel, endpoint, payload)
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const dots = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(dots[0]!.props!.onClick as () => void)()
+    view.render()
+    const reauth = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!).filter(node => node.type === 'button' && node.text.includes('重新认证'))
+    expect(reauth).toHaveLength(1)
+    ;(reauth[0]!.props!.onClick as () => void)()
+    await view.flush()
+    expect(loginArgs).toEqual({ args: { provider: 'zai-coding-cn', alias: 'Work account', targetAccountId: 'k_oauth9' } })
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('login dialog walks prompt → answer → ready and closes after a state refresh', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    let answered = false
+    let getStateCalls = 0
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/getState') {
+        getStateCalls += 1
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        expect(payload).toEqual({ args: { provider: 'zai-coding-cn', alias: undefined } })
+        return { ok: true, value: makeAttemptView() }
+      }
+      if (endpoint === 'keysManager/answerAccountPrompt') {
+        expect(payload).toEqual({ args: { attemptId: 'la_1_ab', value: '123-456' } })
+        answered = true
+        return { ok: true, value: null }
+      }
+      if (endpoint === 'keysManager/accountAttempt') {
+        return { ok: true, value: answered ? makeReadyAttemptView() : makeAttemptView() }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    // The dialog shows the browser-open notice and the parked prompt.
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+    const link = hostNodes(view.nodes).find(node => node.type === 'a')
+    expect(link?.props?.href).toBe('https://example.com/authorize')
+    expect(link?.text).toContain('在浏览器中打开')
+    expect(findButtons(view.nodes, '提交')).toHaveLength(1)
+    expect(view.nodes.some(node => node.text === 'Paste the verification code')).toBe(true)
+
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form).toBeDefined()
+    const promptInput = descendants(view.nodes, form!).find(node => node.type === 'input')
+    expect(promptInput).toBeDefined()
+    ;(promptInput!.props!.onChange as (event: unknown) => void)({ target: { value: '123-456' } })
+    view.render()
+    const submittedForm = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(submittedForm).toBeDefined()
+    ;(submittedForm!.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+    await view.flush()
+
+    expect(answered).toBe(true)
+    // ready: snapshot refresh, then the dialog closes itself.
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(0)
+    expect(getStateCalls).toBeGreaterThanOrEqual(2)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  // Round-9 finding P2: a select is a closed choice whose answer starts empty,
+  // and the empty string matched no rendered option — the submit button stayed
+  // disabled until the user touched the control, so a one-option prompt could
+  // not be answered at all. The dialog now seeds the answer from the first
+  // option whenever the parked prompt arrives or changes.
+
+  test('a select prompt starts on its first option so submit is enabled without a manual change (P2)', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const selectAttempt = makeSelectAttemptView([
+      { id: 'personal', label: 'Personal account' },
+      { id: 'work', label: 'Work account' },
+    ])
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: selectAttempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: selectAttempt }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form).toBeDefined()
+    const select = descendants(view.nodes, form!).find(node => node.type === 'select')
+    expect(select).toBeDefined()
+    // Seeded from the first option, matching a rendered option exactly.
+    expect(select!.props!.value).toBe('personal')
+    const submit = findButtons(view.nodes, '提交')[0]
+    expect(submit).toBeDefined()
+    expect(submit!.props!.disabled).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a one-option select prompt can be submitted and sends that option (P2)', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const selectAttempt = makeSelectAttemptView([{ id: 'only', label: 'Only account' }])
+    const answers: Array<{ args: { attemptId: string; value: string } }> = []
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: selectAttempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: selectAttempt }
+      if (endpoint === 'keysManager/answerAccountPrompt') {
+        answers.push(payload as { args: { attemptId: string; value: string } })
+        return { ok: true, value: null }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    const submit = findButtons(view.nodes, '提交')[0]
+    expect(submit).toBeDefined()
+    expect(submit!.props!.disabled).toBe(false)
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form).toBeDefined()
+    ;(form!.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+    await view.flush()
+    // No manual selection: the first (and only) option is what gets sent.
+    expect(answers).toEqual([{ args: { attemptId: 'la_1_ab', value: 'only' } }])
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('notice URLs only render as links for http/https schemes (S2)', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const unsafeAttempt = { ...makeAttemptView(), notices: [{ message: 'Open this page to continue signing in.', url: 'javascript:alert(1)' }] }
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: unsafeAttempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: unsafeAttempt }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    // A non-http(s) notice URL stays plain text: no anchor, no href.
+    expect(hostNodes(view.nodes).filter(node => node.type === 'a')).toHaveLength(0)
+    expect(view.nodes.some(node => node.text.includes('Open this page to continue signing in.'))).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a vanished login flow ends the dialog with the neutral flow-ended state', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    let accountAttemptCalls = 0
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePendingAttemptView() }
+      if (endpoint === 'keysManager/accountAttempt') {
+        accountAttemptCalls += 1
+        return { ok: true, value: null }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    // null means the flow is gone: a neutral ended state, not success.
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+    expect(view.nodes.some(node => node.text === '本次登录流程已结束，请关闭窗口后重新开始。')).toBe(true)
+    expect(view.nodes.some(node => node.text === '登录成功。')).toBe(false)
+    const pollsAtEnd = accountAttemptCalls
+    await view.flush()
+    await view.flush()
+    expect(accountAttemptCalls).toBe(pollsAtEnd)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('three consecutive polling failures stop polling and render the failure notice (N1)', async () => {
+    // Fake only the dialog's polling interval: the mount harness awaits
+    // real setTimeout(0) ticks in flush().
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const state = makeState()
+      state.providers[0] = makeOauthProvider()
+      let accountAttemptCalls = 0
+      const harness = makeContext()
+      harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+        if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+        if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePendingAttemptView() }
+        if (endpoint === 'keysManager/accountAttempt') {
+          accountAttemptCalls += 1
+          return { ok: false, error: { message: 'host restarted under the dialog' } }
+        }
+        return { ok: false, error: { message: `unexpected ${endpoint}` } }
+      }
+      const store = createStore(harness.ctx)
+      setRuntimeContext({ ctx: harness.ctx, store })
+      const view = mountView(KeysManagerBody)
+      await view.flush()
+      ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+      view.render()
+      ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
+      await view.flush()
+      // Initial poll + two interval ticks = three consecutive failures.
+      await vi.advanceTimersByTimeAsync(1000)
+      await view.flush()
+      await vi.advanceTimersByTimeAsync(1000)
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      // The failure notice renders with the RPC error instead of an endless
+      // "Waiting for authorization…".
+      expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+      expect(view.nodes.some(node => node.text === '登录失败')).toBe(true)
+      expect(view.nodes.some(node => node.text.includes('host restarted under the dialog'))).toBe(true)
+      // Polling stopped: further time adds no calls.
+      await vi.advanceTimersByTimeAsync(5000)
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('overlapping login polls cannot resurrect an older nonterminal state (C5)', async () => {
+    // Round-5 finding C5: an accountAttempt RPC that outlasts the 1 s tick can
+    // resolve out of order, and an older `pending` view landing after a newer
+    // `failed` left the dialog stuck nonterminal forever. The poll loop skips
+    // its tick while a poll is in flight, and any response older than the
+    // state already shown is discarded.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const state = makeState()
+      state.providers[0] = makeOauthProvider()
+      let accountAttemptCalls = 0
+      const deferred: Array<(value: RpcResult) => void> = []
+      const olderPending = makePendingAttemptView()
+      const failed = { ...makeAttemptView(), status: 'failed' as const, prompt: undefined, error: 'sign-in rejected', updatedAt: 5 }
+      const harness = makeContext()
+      harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+        if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+        if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makeAttemptView() }
+        if (endpoint === 'keysManager/answerAccountPrompt') return { ok: true, value: null }
+        if (endpoint === 'keysManager/accountAttempt') {
+          accountAttemptCalls += 1
+          if (accountAttemptCalls === 1) return { ok: true, value: makeAttemptView() }
+          // The interval's poll outlasts several ticks.
+          if (accountAttemptCalls === 2) return new Promise<RpcResult>(resolve => deferred.push(resolve))
+          return { ok: true, value: failed }
+        }
+        return { ok: false, error: { message: `unexpected ${endpoint}` } }
+      }
+      const store = createStore(harness.ctx)
+      setRuntimeContext({ ctx: harness.ctx, store })
+      const view = mountView(KeysManagerBody)
+      await view.flush()
+      ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+      view.render()
+      ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
+      await view.flush()
+      expect(accountAttemptCalls).toBe(1)
+
+      // A slow poll is in flight; further ticks must not stack behind it.
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(accountAttemptCalls).toBe(2)
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(accountAttemptCalls).toBe(2)
+
+      // Answering the prompt forces a fresh poll, which returns the terminal
+      // failed state out of order with the still-pending interval poll.
+      const form = findByClass(view.nodes, 'km-login-prompt')[0]
+      expect(form).toBeDefined()
+      const input = descendants(view.nodes, form!).find(node => node.type === 'input')
+      ;(input!.props!.onChange as (event: unknown) => void)({ target: { value: '123-456' } })
+      view.render()
+      const submitted = findByClass(view.nodes, 'km-login-prompt')[0]
+      ;(submitted!.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      expect(view.nodes.some(node => node.text === '登录失败')).toBe(true)
+      expect(view.nodes.some(node => node.text.includes('sign-in rejected'))).toBe(true)
+
+      // The earlier pending response resolves late: it must not reopen the flow.
+      deferred[0]!({ ok: true, value: olderPending })
+      await view.flush()
+      expect(view.nodes.some(node => node.text === '登录失败')).toBe(true)
+      expect(view.nodes.some(node => node.text === '等待授权…')).toBe(false)
+      expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+      // Terminal state sticks and polling has stopped.
+      await vi.advanceTimersByTimeAsync(5000)
+      await view.flush()
+      expect(accountAttemptCalls).toBe(3)
+      view.unmount()
+    } finally {
+      vi.useRealTimers()
+      setRuntimeContext(null)
+    }
   })
 })

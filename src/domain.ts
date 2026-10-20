@@ -28,8 +28,33 @@ export interface ManagerSettings {
   autoSwitch: boolean
 }
 
-/** Reserved OAuth2 account payload; unset for API-key rows. */
-export type OAuthRecord = Record<string, unknown>
+/**
+ * OAuth account metadata persisted for one `kind: 'oauth'` pool member.
+ *
+ * The manager state stays secret-free: the grant payload (refresh/access
+ * tokens) lives in the credential store under `grantRef`, and only this
+ * reference plus display metadata is stored here.
+ */
+export interface OAuthAccount {
+  /** OAuth2 provider id the account belongs to, e.g. 'anthropic'. */
+  provider: string
+  /** Account email when the provider disclosed one. */
+  email?: string
+  /** Provider-side account identifier when disclosed. */
+  accountId?: string
+  /** Epoch ms when the current access token expires; informational only. */
+  expiresAt?: number
+  /** Plugin-scope credential reference holding this account's grant payload. */
+  grantRef: string
+}
+
+/** OAuth account facts surfaced to the UI; the grant reference stays host-side. */
+export interface OAuthAccountView {
+  provider: string
+  email?: string
+  accountId?: string
+  expiresAt?: number
+}
 
 /** One persisted key. Key literals live only in the credential store. */
 export interface KeyRecord {
@@ -50,8 +75,8 @@ export interface KeyRecord {
   totalFailures: number
   valueMissing: boolean
   importedFrom: string | null
-  /** Reserved for subscription OAuth2 accounts. */
-  oauth: OAuthRecord | null
+  /** OAuth account metadata; null for API-key rows. */
+  oauth: OAuthAccount | null
 }
 
 /** One model entry installed into a pi-ai route profile. */
@@ -115,6 +140,15 @@ export interface KeyView {
   importedFrom: string | null
   valueMissing: boolean
   kind: 'api-key' | 'oauth'
+  /** Identity line + expiry for `kind: 'oauth'` rows; absent for API keys. */
+  oauth?: OAuthAccountView | null
+  /**
+   * True when this account's grant IS the provider's live projection
+   * (round-2 review, step 6); only ever set on `kind: 'oauth'` rows.
+   * Round-3 N3: this per-key flag is the single wire carrier of ownership —
+   * the provider-view `projectedAccountId` duplicate was removed.
+   */
+  projected?: boolean
 }
 
 /** Public provider row returned to the UI. */
@@ -129,7 +163,14 @@ export interface ProviderView {
   managed: boolean
   configured: boolean
   active: boolean
+  /** Key-pool verdict: can this route take API keys (Add key / addKey). */
   supported: boolean
+  /**
+   * Account-management verdict: can this route be adopted for OAuth
+   * account sign-in. Distinct from `supported` (MF1): an OAuth-only route
+   * is account-adoptable while carrying no key-pool credential.
+   */
+  accountSupported?: boolean
   reason?: string
   settingsNs: string
   settingsPath: string[]
@@ -174,4 +215,38 @@ export interface ExtraProvider {
   baseURL: string
   env: string[]
   models: ModelRecord[]
+}
+
+/** Serializable notice captured on an interactive sign-in attempt. */
+export interface AccountAttemptNotice {
+  message: string
+  url?: string
+  code?: string
+}
+
+/** Serializable prompt parked on an interactive sign-in attempt. */
+export interface AccountAttemptPrompt {
+  kind: 'text' | 'secret' | 'select'
+  message: string
+  placeholder?: string
+  options?: ReadonlyArray<{ id: string; label: string; description?: string }>
+}
+
+/**
+ * Serializable state of one interactive OAuth sign-in attempt, shared by the
+ * Host service and the Web Client. Secrets never appear: prompts and notices
+ * carry messages, URLs, and codes only.
+ */
+export interface AccountAttemptView {
+  id: string
+  provider: string
+  alias?: string
+  status: 'pending' | 'prompt' | 'ready' | 'failed' | 'cancelled'
+  notices: AccountAttemptNotice[]
+  prompt?: AccountAttemptPrompt
+  error?: string
+  /** Pool member id of the account row a successful login produced. */
+  accountId?: string
+  createdAt: number
+  updatedAt: number
 }

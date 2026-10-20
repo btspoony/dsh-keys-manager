@@ -6,9 +6,10 @@ Current design boundaries of the Keys Manager plugin:
 
 - CoreWeave provider support is deferred to a later release; it is tracked in
   [issue #11](https://github.com/btspoony/dsh-keys-manager/issues/11).
-- OAuth2 account pools are designed for but not implemented. Anthropic key
-  pools manage a plain `ANTHROPIC_API_KEY`; its OAuth/federation token paths
-  are not account pools.
+- OAuth2 account pools ship as increment 1 for seven pi-ai-backed providers;
+  see the OAuth accounts limits below. Anthropic key pools still manage a
+  plain `ANTHROPIC_API_KEY` — its OAuth/federation token paths are separate
+  account rows, not key-pool members.
 - Cloudflare AI Gateway and Workers AI require a Cloudflare account ID (and a
   gateway ID for AI Gateway) in addition to the API key. They are reported as
   unsupported key pools and should be configured natively in Models.
@@ -29,3 +30,31 @@ Current design boundaries of the Keys Manager plugin:
   window is open. The pin window is 60 seconds, which bounds this exposure
   but does not eliminate it; concurrent multi-step retry behavior remains
   best-effort.
+
+## OAuth accounts (increment 1)
+
+- Account sign-in is limited to the seven providers whose OAuth flows the
+  `llm-pi-ai` host implements: Anthropic, GitHub Copilot, Kimi Coding,
+  OpenAI Codex, OpenRouter, Radius, and xAI. Extending coverage through an
+  oh-my-pi extension is tracked in
+  [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15).
+- Grant refresh failure is fail-loud: the account cools down. A
+  key-capable route falls back to the provider's key pool; an OAuth-only
+  route has no API-key pool and stops serving requests until an account is
+  signed in again. Re-authentication is manual —
+  re-login from the account menu.
+- Only one active grant per provider is kept.
+- Conditional delete is a credential-seam capability this plugin does not
+  have: the store offers `deleteRecord(key)` with no compare/version guard,
+  so demoting or compensating the `llm-pi-ai/<provider>` projection is a
+  decide-then-delete pair. A native grant written in the sub-microtask window
+  between the final comparison and the delete's queue entry can therefore be
+  deleted even though it no longer belongs to the account being removed. The
+  manager narrows the window (a compare inside the seam's per-key lock plus a
+  pre-delete re-read) and a regression test pins the residual exactly. The
+  upstream capability request is store issue I-000090 (credential seam:
+  compare-and-delete / versioned delete primitive).
+- Increment 1 keeps the selection model key-centric: the provider's API
+  keys form the sticky/round-robin/failover/cooldown ring, and exactly one
+  projected OAuth grant serves the provider. Per-account ranking
+  (rotating between accounts) is future work, not part of this increment.

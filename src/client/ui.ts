@@ -1,7 +1,7 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView } from './types'
+import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from './format'
@@ -12,7 +12,7 @@ type T = (key: string, params?: Record<string, string | number>) => string
 type Tone = 'success' | 'warn' | 'idle' | 'error'
 type IconName =
   | 'search' | 'plus' | 'dots' | 'chevron' | 'eye' | 'eyeOff' | 'key' | 'check'
-  | 'pause' | 'play' | 'trash' | 'close' | 'refresh' | 'warning' | 'shield'
+  | 'pause' | 'play' | 'trash' | 'close' | 'refresh' | 'warning' | 'shield' | 'user'
 
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ')
@@ -60,12 +60,42 @@ function providerInitial(provider: ProviderView | undefined): string {
   return source.length === 0 ? '?' : source.slice(0, 1).toUpperCase()
 }
 
+/**
+ * True when this route can offer OAuth sign-in right now.
+ *
+ * C6-2: the catalog's `nativeAuth.oauth` flag says the provider supports
+ * OAuth upstream; the host's `accountSupported` verdict says this Harness
+ * build has a flow it can actually begin. The host verdict is authoritative
+ * whenever present, so a nativeAuth.oauth route without a pi-ai flow hides
+ * Add account instead of opening a sign-in that would fail. Older host
+ * snapshots that predate the field keep the catalog-only behaviour.
+ */
+function oauthCapable(provider: ProviderView): boolean {
+  return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
+}
+
+/**
+ * Identity line of an OAuth account row: the email, else the provider-side
+ * account id, else the provider's display name.
+ */
+function accountIdentityOf(key: KeyView, provider: ProviderView): string {
+  const oauth = key.oauth
+  if (oauth !== null && oauth !== undefined) {
+    if (oauth.email !== undefined && oauth.email.length > 0) return oauth.email
+    if (oauth.accountId !== undefined && oauth.accountId.length > 0) return oauth.accountId
+  }
+  return provider.displayName || provider.provider
+}
+
 function statusKey(status: KeyStatus | ProviderStatus): string {
   switch (status) {
     case 'active': return 'keyStatusActive'
     case 'cooling': return 'keyStatusCooling'
     case 'paused': return 'keyStatusPaused'
     case 'missing': return 'keyStatusMissing'
+    // A managed route with zero keys (round-3 finding 7): "Not managed"
+    // would contradict the Managed badge rendered beside it.
+    case 'empty': return 'keyStatusEmpty'
     default: return 'keyStatusUnmanaged'
   }
 }
@@ -76,6 +106,7 @@ function statusTone(status: KeyStatus | ProviderStatus): Tone {
     case 'cooling': return 'warn'
     case 'paused': return 'idle'
     case 'missing': return 'error'
+    case 'empty': return 'idle'
     default: return 'idle'
   }
 }
@@ -114,6 +145,7 @@ function Icon({ name, size = 16, className }: IconProps): React.ReactElement {
   if (name === 'refresh') return h('svg', common, h('path', { d: 'M20 11a8 8 0 10-2.3 6M20 5v6h-6' }))
   if (name === 'warning') return h('svg', common, h('path', { d: 'M12 3l9.5 17h-19L12 3zM12 9v5M12 17.2v.1' }))
   if (name === 'shield') return h('svg', common, h('path', { d: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM9 12l2 2 4-4' }))
+  if (name === 'user') return h('svg', common, h('circle', { cx: 12, cy: 8, r: 3.6 }), h('path', { d: 'M5 20a7 7 0 0114 0' }))
   return h('svg', common)
 }
 
@@ -493,6 +525,148 @@ function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
   )
 }
 
+interface AccountRowProps {
+  provider: ProviderView
+  keyRecord: KeyView
+  now: number
+  /** Start a fresh OAuth sign-in that replaces this account's grant. */
+  onReauthenticate: () => void
+}
+
+/**
+ * One `kind: 'oauth'` pool member. Visually a sibling of {@link KeyRow}
+ * (same grid, same status/last-used columns) but distinct through the
+ * account glyph, the brand accent bar, and the identity line: accounts are
+ * addressed by their provider-disclosed identity instead of a human alias.
+ */
+function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowProps): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const locale = useLocaleId()
+  const key = keyRecord
+  const identity = accountIdentityOf(key, provider)
+  const [menu, setMenu] = React.useState(false)
+  const [confirm, setConfirm] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const rootRef = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    if (!menu) return undefined
+    const onDown = (event: MouseEvent): void => {
+      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) setMenu(false)
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setMenu(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  async function activate(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.activateAccount(provider.provider, key.id)
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+  }
+
+  async function remove(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.removeAccount(provider.provider, key.id)
+    setBusy(false)
+    if (!result.ok) setError(result.error)
+    else setConfirm(false)
+  }
+
+  const cold = key.status === 'cooling' && key.cooldownUntil > now
+  // Round-3 N1: the counters render as separate nodes (separator included),
+  // so tests can assert the parts instead of pinning the joined string.
+  const metaParts = [
+    key.totalUses > 0 ? t('uses', { n: key.totalUses }) : null,
+    key.totalFailures > 0 ? t('failures', { n: key.totalFailures }) : null,
+  ].filter((value): value is string => value !== null)
+
+  return h('div', { className: 'km-account-row', ref: rootRef },
+    h('div', { className: 'km-key-identity' },
+      h('div', { className: 'km-key-alias-line' },
+        h('span', { className: 'km-account-glyph', 'aria-hidden': true }, h(Icon, { name: 'user', size: 13 })),
+        h('span', { className: 'km-key-alias' }, identity),
+        h('span', { className: 'km-tag km-tag-accent' }, t('accountIdentity')),
+        // Step 6: the row whose grant IS the live projection is badged.
+        key.projected === true ? h('span', { className: 'km-tag km-tag-accent' }, t('accountProjected')) : null,
+      ),
+      h('div', { className: 'km-key-sub' },
+        h('span', { className: 'km-mono km-muted' }, `•••• ${key.id.slice(-4)}`),
+      ),
+    ),
+    h('div', { className: 'km-key-status' },
+      h(StatusPill, { status: key.status, t }),
+      cold ? h('div', { className: 'km-key-time km-warn' }, t('coolingUntil', { time: formatClock(key.cooldownUntil, locale, t) })) : null,
+      cold ? h('div', { className: 'km-key-time' }, t('remaining', { time: durationText(key.cooldownUntil - now, t) })) : null,
+    ),
+    h('div', { className: 'km-key-last' },
+      h('div', { className: 'km-key-time' }, `${t('lastUsed')}: ${relativeTime(key.lastUsedAt, now, t)}`),
+      metaParts.length > 0 ? h('div', { className: 'km-key-time km-muted' },
+        metaParts.map((value, index) => [
+          index > 0 ? h('span', { key: `sep-${index}`, className: 'km-dot-sep', 'aria-hidden': true }, '·') : null,
+          h('span', { key: `part-${index}` }, value),
+        ])) : null,
+    ),
+    h('div', { className: 'km-key-actions' },
+      h('button', {
+        type: 'button',
+        className: 'km-icon-btn',
+        'aria-haspopup': 'menu',
+        'aria-expanded': menu,
+        title: t('moreActions'),
+        'aria-label': t('moreActions'),
+        onClick: () => setMenu(current => !current),
+        disabled: busy,
+      }, h(Icon, { name: 'dots', size: 17 })),
+      menu ? h('div', { className: 'km-menu', role: 'menu' },
+        h('button', {
+          type: 'button',
+          className: 'km-menu-item',
+          role: 'menuitem',
+          onClick: () => { setMenu(false); void activate() },
+          // Step 6: the projected row already serves the route; setting it
+          // active again is a no-op, so the entry stays disabled.
+          disabled: busy || key.projected === true,
+        }, h(Icon, { name: 'check', size: 15 }), t('accountActivate')),
+        h('button', {
+          type: 'button',
+          className: 'km-menu-item',
+          role: 'menuitem',
+          onClick: () => { setMenu(false); onReauthenticate() },
+          disabled: busy,
+        }, h(Icon, { name: 'refresh', size: 15 }), t('accountReauth')),
+        h('div', { className: 'km-menu-sep' }),
+        h('button', { type: 'button', className: 'km-menu-item km-menu-danger', role: 'menuitem', onClick: () => { setMenu(false); setConfirm(true) }, disabled: busy }, h(Icon, { name: 'trash', size: 15 }), t('delete')),
+      ) : null,
+    ),
+    error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
+    confirm ? h(Modal, {
+      // SF4: account-specific copy — the grant removal consequence, not a
+      // key-deletion/provider-release promise. Step 8: the key-pool
+      // fallback clause appears only when the route actually has key
+      // support; an OAuth-only route states the real consequence instead.
+      title: t('deleteAccountTitle', { alias: identity }),
+      onClose: () => setConfirm(false),
+      busy,
+      footer: [
+        h(Button, { key: 'cancel', onClick: () => setConfirm(false), disabled: busy }, t('cancel')),
+        h(Button, { key: 'delete', variant: 'danger', onClick: remove, disabled: busy }, busy ? t('deleting') : t('deleteConfirm')),
+      ],
+    }, h('p', { className: 'km-modal-copy' }, t(provider.supported === true ? 'deleteAccountBody' : 'deleteAccountBodyNoKeys'))) : null,
+  )
+}
+
 interface ProviderCardProps {
   provider: ProviderView
   expanded: boolean
@@ -507,6 +681,8 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
   const [adopting, setAdopting] = React.useState(false)
   const [releasing, setReleasing] = React.useState(false)
   const [confirmRelease, setConfirmRelease] = React.useState(false)
+  const [login, setLogin] = React.useState<{ attemptId: string } | null>(null)
+  const [startingLogin, setStartingLogin] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const managed = provider.managed
   const broken = managed && provider.bindingHealthy === false
@@ -541,6 +717,57 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
     setConfirmRelease(false)
   }
 
+  /**
+   * Start one interactive OAuth sign-in and open the login dialog for it.
+   * `targetAccountId` (round-3 finding 6) names the row a re-authentication
+   * replaces: the host binds the committed grant to that row, so a rotated
+   * token with no identity metadata cannot duplicate the account. The dialog
+   * state carries only the attempt id (round-4 nit): the alias is host-side
+   * naming input for a new row, never dialog state, so keeping it there invited
+   * the wrong assumption about which account a resumed attempt belongs to.
+   */
+  async function openLogin(targetAccountId?: string, alias?: string): Promise<void> {
+    if (startingLogin) return
+    setStartingLogin(true)
+    setError(null)
+    const result = await runtime.store.beginAccountLogin(provider.provider, alias, targetAccountId)
+    setStartingLogin(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    if (result.value !== null) setLogin({ attemptId: result.value.id })
+  }
+
+  /**
+   * MF1 reachability: an unmanaged OAuth-capable route adopts first (zero
+   * keys when no key credential exists), then opens its sign-in dialog.
+   */
+  async function adoptThenLogin(): Promise<void> {
+    if (provider.managed) {
+      await openLogin()
+      return
+    }
+    setAdopting(true)
+    setError(null)
+    const result = await runtime.store.call('adoptProvider', { provider: provider.provider })
+    setAdopting(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    await openLogin()
+  }
+
+  // MF1: adoption is reachable through either capability — key-pool support
+  // or OAuth account sign-in. An OAuth-only route stays adoptable while the
+  // key entry (Add key) stays gated by key support alone. Round-5 nit N3:
+  // this gate derives from the same `oauthCapable()` rule as the empty-state
+  // gate, so a legacy snapshot without `accountSupported` does not show an
+  // enabled sign-in entry beside a disabled Adopt and an "unsupported" panel.
+  const accountAdoptable = oauthCapable(provider)
+  const adoptable = provider.supported || accountAdoptable
+
   return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', managed && 'km-provider-managed') },
     h('button', {
       type: 'button',
@@ -554,7 +781,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
           h('span', { className: 'km-provider-name' }, provider.displayName || provider.provider),
           h('span', { className: 'km-tag' }, originLabel),
           managed ? h('span', { className: 'km-tag km-tag-accent' }, t('managedBadge')) : null,
-          !managed && !provider.supported ? h('span', { className: 'km-tag km-tag-warn' }, t('unsupported')) : null,
+          !managed && !provider.supported && !accountAdoptable ? h('span', { className: 'km-tag km-tag-warn' }, t('unsupported')) : null,
         ),
         h('span', { className: 'km-provider-meta' },
           h('span', { className: 'km-mono' }, provider.provider),
@@ -566,7 +793,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
       h('span', { className: 'km-provider-side' },
         managed
           ? h('span', { className: 'km-count' }, countText(t, keyCount, 'providerKeyOne', 'providerKeys'))
-          : h('span', { className: 'km-count km-muted' }, provider.supported ? t('unmanaged') : t('unsupported')),
+          : h('span', { className: 'km-count km-muted' }, adoptable ? t('unmanaged') : t('unsupported')),
         managed ? h(StatusPill, { status: provider.status, t }) : null,
         h(Icon, { name: 'chevron', size: 16, className: cx('km-chevron', expanded && 'km-chevron-open') }),
       ),
@@ -576,7 +803,17 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
       warning !== undefined || broken ? h(Notice, { tone: 'warn', title: t('warning') }, broken ? t('bindingBroken') : warning) : null,
       !managed ? h('div', { className: 'km-adopt' },
         h('div', { className: 'km-adopt-copy' },
-          h('div', { className: 'km-adopt-title' }, provider.supported ? t(isExtra ? 'adoptExtraHint' : 'adoptHint') : t('unsupported')),
+          // I-000063: an OAuth-only route is account-adoptable, so its
+          // adopt panel headline must invite sign-in instead of claiming
+          // the provider is unsupported. The unsupported headline remains
+          // only for providers that are neither key- nor account-capable.
+          h('div', { className: 'km-adopt-title' },
+            provider.supported
+              ? t(isExtra ? 'adoptExtraHint' : 'adoptHint')
+              : accountAdoptable
+                ? t('adoptAccountTitle')
+                : t('unsupported'),
+          ),
           !provider.supported && provider.reason !== undefined ? h('div', { className: 'km-muted' }, provider.reason) : null,
           provider.apiKeyEnv !== null ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('secret')}:`), h('span', { className: 'km-mono' }, provider.apiKeyEnv)) : null,
           provider.baseURL !== null ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('baseUrl')}:`), h('span', { className: 'km-mono km-truncate' }, provider.baseURL)) : null,
@@ -585,10 +822,18 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         isExtra
           ? h(KeyForm, { provider, autoFocus: true })
           : h('div', { className: 'km-adopt-actions' },
-              h(Button, { variant: 'primary', onClick: adopt, disabled: adopting || !provider.supported },
+              h(Button, { variant: 'primary', onClick: adopt, disabled: adopting || !adoptable },
                 adopting ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'shield', size: 14 }),
                 h('span', null, adopting ? t('adopting') : t('adopt')),
               ),
+              // MF1: Add account is reachable from the unmanaged/adopt flow —
+              // adopt (zero keys for OAuth-only routes) then sign in.
+              oauthCapable(provider)
+                ? h(Button, { variant: 'secondary', onClick: () => void adoptThenLogin(), disabled: adopting || startingLogin },
+                    startingLogin ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'user', size: 14 }),
+                    h('span', null, startingLogin ? t('adopting') : t('addAccount')),
+                  )
+                : null,
             ),
       ) : h('div', { className: 'km-managed-body' },
         h('div', { className: 'km-managed-toolbar' },
@@ -597,10 +842,14 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
             provider.baseURL !== null ? h('span', { className: 'km-mono km-muted km-truncate' }, provider.baseURL) : null,
           ),
           h('div', { className: 'km-managed-actions' },
-            h(Button, { variant: 'secondary', size: 'small', onClick: () => setAdding(current => !current), disabled: releasing },
+            h(Button, { variant: 'secondary', size: 'small', onClick: () => setAdding(current => !current), disabled: releasing || !provider.supported, title: provider.supported ? undefined : provider.reason },
               h(Icon, { name: 'plus', size: 14 }),
               h('span', null, t('addKey')),
             ),
+            oauthCapable(provider) ? h(Button, { variant: 'secondary', size: 'small', onClick: () => void openLogin(), disabled: releasing || startingLogin },
+              h(Icon, { name: 'user', size: 14 }),
+              h('span', null, t('addAccount')),
+            ) : null,
             h(Button, { variant: 'ghost', size: 'small', onClick: () => setConfirmRelease(true), disabled: releasing },
               releasing ? t('releasing') : t('release'),
             ),
@@ -608,8 +857,27 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         ),
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
         provider.keys.length === 0
-          ? h('div', { className: 'km-empty-keys' }, t('noKeys'))
-          : h('div', { className: 'km-keys' }, provider.keys.map(key => h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
+          // Round-4 finding 4 (I-000085): the empty body must name an action
+          // this route actually offers. Add key is disabled without key
+          // capability, so an account-only route invites a sign-in instead
+          // of telling the user to "add one". A managed route with neither
+          // capability (C6-2: nativeAuth.oauth without an enumerable flow)
+          // offers no action at all, so it states the unsupported verdict
+          // rather than inviting a key the toolbar refuses.
+          // Round-5 nit N1: the reason is part of that verdict as visible
+          // text, matching the unmanaged adopt panel, instead of being
+          // reachable only through the disabled Add key's hover title.
+          ? h('div', { className: 'km-empty-keys' },
+              h('div', null, provider.supported
+                ? t('noKeys')
+                : oauthCapable(provider) ? t('noKeysAccount') : t('unsupported')),
+              !provider.supported && provider.reason !== undefined
+                ? h('div', { className: 'km-muted' }, provider.reason)
+                : null,
+            )
+          : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
+              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) })
+              : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
       ),
       h('div', { className: 'km-provider-foot' },
         h('span', { className: 'km-muted' }, provider.extra ? `${t('api')}: ${provider.api ?? '—'} · ${t('models')}: ${provider.models.length}` : null),
@@ -625,7 +893,245 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         h(Button, { key: 'release', variant: 'danger', onClick: release, disabled: releasing }, releasing ? t('releasing') : t('releaseConfirm')),
       ],
     }, h('p', { className: 'km-modal-copy' }, t(provider.createdProfile === true ? 'releaseBodyCreated' : 'releaseBody'))) : null,
+    login !== null ? h(LoginDialog, {
+      provider,
+      attemptId: login.attemptId,
+      onClose: () => setLogin(null),
+    }) : null,
   )
+}
+
+const LOGIN_POLL_MS = 1000
+
+/**
+ * Only http(s) notice URLs render as links: the notice channel is
+ * seam-provided, but a malformed or hostile scheme must fall back to plain
+ * text instead of becoming a clickable href. Returns null when the URL is
+ * absent or not allowlisted.
+ */
+function safeNoticeUrl(url: string | undefined): string | null {
+  if (url === undefined || url.length === 0) return null
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? url : null
+  } catch {
+    return null
+  }
+}
+
+interface LoginDialogProps {
+  provider: ProviderView
+  attemptId: string
+  onClose: () => void
+}
+
+/** Consecutive polling failures tolerated before the dialog gives up (N1). */
+const LOGIN_POLL_FAILURE_LIMIT = 3
+
+/**
+ * Interactive OAuth sign-in dialog. State arrives by polling
+ * `accountAttempt` (a dialog-local cadence layered on the store's read-only
+ * poller); `null` means the flow is gone — a neutral ended state, never
+ * success. Prompt answers go through the `answerAccountPrompt` ack, and
+ * polling continues until a terminal status. A permanent polling failure
+ * (host restart pruned the attempt, revoked RPC) stops the poller after
+ * three consecutive misses and renders the failure notice (N1) instead of
+ * waiting forever.
+ */
+function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const [attempt, setAttempt] = React.useState<AccountAttemptView | null>(null)
+  const [flowEnded, setFlowEnded] = React.useState(false)
+  const [pollError, setPollError] = React.useState<string | null>(null)
+  const [answer, setAnswer] = React.useState('')
+  const [answering, setAnswering] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const pollNowRef = React.useRef<(() => void) | null>(null)
+  const onCloseRef = React.useRef(onClose)
+  onCloseRef.current = onClose
+
+  const prompt = attempt?.prompt
+  // Round-9 finding P2: a select is a closed choice, so its answer must start
+  // on one of the rendered options. The empty initial answer matched no
+  // option, which kept the submit button disabled unless the user touched the
+  // control — and a one-option prompt could never be answered at all. The
+  // signature changes only when the parked prompt does, so a fresh prompt
+  // (re)seeds the answer while polling refreshes of the same prompt keep the
+  // user's choice.
+  const promptKey = prompt === undefined
+    ? ''
+    : `${prompt.kind}\u0000${prompt.message}\u0000${(prompt.options ?? []).map(option => option.id).join('\u0000')}`
+  React.useEffect(() => {
+    const options = prompt !== undefined && prompt.kind === 'select' ? prompt.options : undefined
+    if (options !== undefined && options.length > 0) {
+      setAnswer(current => options.some(option => option.id === current) ? current : options[0]!.id)
+      return
+    }
+    setAnswer('')
+  }, [promptKey])
+
+  React.useEffect(() => {
+    let stopped = false
+    let timer: ReturnType<typeof setInterval> | undefined
+    let failures = 0
+    // Round-5 finding C5: an accountAttempt RPC can outlast the 1 s tick, and
+    // overlapping polls can resolve out of order — an older `pending` response
+    // landing after a newer `failed`/`cancelled` left the dialog stuck in a
+    // nonterminal state forever. Two guards: the interval never starts a poll
+    // while one is in flight, and a response older than the state already
+    // shown is discarded (a user-triggered poll may still overlap a tick, and
+    // that overlap must be harmless).
+    let pending = 0
+    let latestUpdatedAt = 0
+    const isTerminal = (status: AccountAttemptView['status']): boolean =>
+      status === 'ready' || status === 'failed' || status === 'cancelled'
+    const poll = async (): Promise<void> => {
+      if (stopped) return
+      pending += 1
+      try {
+        const result = await runtime.store.accountAttempt(attemptId)
+        if (stopped) return
+        if (!result.ok) {
+          failures += 1
+          if (failures >= LOGIN_POLL_FAILURE_LIMIT) {
+            if (timer !== undefined) clearInterval(timer)
+            setPollError(result.error)
+          }
+          return // transient failures keep polling until the limit
+        }
+        failures = 0
+        if (result.value === null) {
+          // Unknown id: the flow is gone (pruned/expired), which is not success.
+          if (timer !== undefined) clearInterval(timer)
+          setFlowEnded(true)
+          return
+        }
+        const view = result.value
+        // Never move backwards: a stale response must not resurrect an older
+        // nonterminal state after a terminal one has been shown.
+        if (view.updatedAt < latestUpdatedAt) return
+        latestUpdatedAt = view.updatedAt
+        setAttempt(current => {
+          if (current === null) return view
+          if (isTerminal(current.status) && !isTerminal(view.status)) return current
+          if (current.updatedAt > view.updatedAt) return current
+          if (current.updatedAt === view.updatedAt && current.status === view.status) return current
+          return view
+        })
+        if (view.status === 'ready') {
+          if (timer !== undefined) clearInterval(timer)
+          await runtime.store.load()
+          if (!stopped) onCloseRef.current()
+          return
+        }
+        if (view.status === 'failed' || view.status === 'cancelled') {
+          if (timer !== undefined) clearInterval(timer)
+        }
+      } finally {
+        pending -= 1
+      }
+    }
+    const pollNow = (): void => { void poll() }
+    pollNowRef.current = pollNow
+    void poll()
+    timer = setInterval(() => {
+      // A slow RPC must not stack concurrent polls behind the interval.
+      if (pending === 0) void poll()
+    }, LOGIN_POLL_MS)
+    return () => {
+      stopped = true
+      if (timer !== undefined) clearInterval(timer)
+    }
+  }, [attemptId, runtime])
+
+  async function submitAnswer(event: React.FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    const prompt = attempt?.prompt
+    if (prompt === undefined || answering) return
+    const value = answer.trim()
+    if (value.length === 0) return
+    setAnswering(true)
+    setError(null)
+    const result = await runtime.store.answerAccountPrompt(attemptId, value)
+    setAnswering(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setAnswer('')
+    // The answer is only an ack: poll immediately for the next state.
+    pollNowRef.current?.()
+  }
+
+  const lastNotice = attempt !== null && attempt.notices.length > 0 ? attempt.notices[attempt.notices.length - 1]! : null
+  const safeUrl = attempt !== null ? attempt.notices.map(notice => safeNoticeUrl(notice.url)).reverse().find(url => url !== null) ?? null : null
+  const answerable = prompt !== undefined && !answering && answer.trim().length > 0
+
+  let body: React.ReactNode
+  if (pollError !== null) {
+    // N1: the poller gave up on a permanent RPC failure.
+    body = h(Notice, { tone: 'error', icon: 'warning', title: t('loginFailed') }, pollError)
+  } else if (flowEnded) {
+    body = h(Notice, { tone: 'warn', icon: 'warning' }, t('loginFlowEnded'))
+  } else if (attempt === null || attempt.status === 'pending') {
+    body = h('div', { className: 'km-login-flow' },
+      h('div', { className: 'km-login-pending' }, h(Icon, { name: 'refresh', size: 15, className: 'km-spin' }), h('span', null, t('loginPending'))),
+      lastNotice !== null ? h('div', { className: 'km-login-notices' }, lastNotice.message) : null,
+      safeUrl !== null ? h('div', { className: 'km-login-notices' },
+        h('a', { className: 'km-login-link', href: safeUrl, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
+      ) : null,
+    )
+  } else if (attempt.status === 'ready') {
+    body = h('div', { className: 'km-login-pending' }, h(Icon, { name: 'check', size: 15 }), h('span', null, t('loginReady')))
+  } else if (attempt.status === 'failed' || attempt.status === 'cancelled') {
+    body = h(Notice, { tone: 'error', icon: 'warning', title: t('loginFailed') }, attempt.error ?? lastNotice?.message ?? provider.displayName)
+  } else {
+    body = h('div', { className: 'km-login-flow' },
+      lastNotice !== null ? h('div', { className: 'km-login-notices' }, lastNotice.message) : null,
+      safeUrl !== null ? h('div', { className: 'km-login-notices' },
+        h('a', { className: 'km-login-link', href: safeUrl, target: '_blank', rel: 'noreferrer' }, t('loginBrowserOpen')),
+      ) : null,
+      prompt !== undefined ? h('form', { className: 'km-login-prompt', onSubmit: submitAnswer },
+        h('div', { className: 'km-login-prompt-title' }, t('loginPromptTitle')),
+        h('div', { className: 'km-field' },
+          h('span', { className: 'km-field-label' }, prompt.message),
+          prompt.kind === 'select' && prompt.options !== undefined
+            ? h('select', {
+                className: 'km-input',
+                value: answer,
+                onChange: (event: React.ChangeEvent<HTMLSelectElement>) => setAnswer(event.target.value),
+                disabled: answering,
+                autoFocus: true,
+              }, prompt.options.map(option => h('option', { key: option.id, value: option.id }, option.label)))
+            : h('input', {
+                className: 'km-input',
+                type: prompt.kind === 'secret' ? 'password' : 'text',
+                value: answer,
+                onChange: (event: React.ChangeEvent<HTMLInputElement>) => setAnswer(event.target.value),
+                placeholder: prompt.placeholder,
+                spellCheck: false,
+                disabled: answering,
+                autoFocus: true,
+              }),
+        ),
+        error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
+        h('div', { className: 'km-form-actions' },
+          h(Button, { variant: 'primary', type: 'submit', disabled: !answerable },
+            answering ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'check', size: 14 }),
+            h('span', null, answering ? t('loginPending') : t('loginPromptSubmit')),
+          ),
+        ),
+      ) : null,
+    )
+  }
+
+  return h(Modal, {
+    title: t('loginTitle'),
+    onClose,
+    busy: false,
+    footer: h(Button, { onClick: onClose, disabled: answering }, t('close')),
+  }, body)
 }
 
 function SettingsCard(): React.ReactElement {

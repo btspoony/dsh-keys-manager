@@ -227,6 +227,64 @@ export function shouldFailover(code: string | undefined): boolean {
   return typeof code === 'string' && code.length > 0 && !NON_KEY_FAILURE_CODES.has(code)
 }
 
+/** Failure code pi-ai raises for OAuth-specific problems (grant expired, refresh rejected, ...). */
+export const OAUTH_FAILURE_CODE = 'oauth'
+
+/** Credential-reference scope prefix under which OAuth grant payloads live. */
+export const OAUTH_GRANT_SCOPE = 'keys-manager'
+
+/** How one model-request failure affects pool health. */
+export type FailureDisposition =
+  /** OAuth-specific failure: failover-eligible and starts a cooldown. */
+  | 'oauth'
+  /** Ordinary key failure: failover-eligible and starts a cooldown (existing semantics). */
+  | 'failover'
+  /** Request/config-shaped failure: the candidate's health is untouched. */
+  | 'ignore'
+
+/**
+ * Classify one model-request failure against the pool policy.
+ *
+ * pi-ai raises `ModelsError("oauth", ...)` when the OAuth grant itself is
+ * the problem; that must cool the account down and fail over, while the
+ * existing `NON_KEY_FAILURE_CODES` exclusions (e.g.
+ * `CONTEXT_WINDOW_EXCEEDED`) stay excluded unchanged.
+ */
+export function classifyOAuthFailure(failure: LlmFailureLike | undefined): FailureDisposition {
+  const code = typeof failure?.code === 'string' ? failure.code : ''
+  if (code === OAUTH_FAILURE_CODE) return 'oauth'
+  return shouldFailover(code) ? 'failover' : 'ignore'
+}
+
+/** Whether a provider route supports OAuth account sign-in. */
+export function isOAuthCapable(provider: { nativeAuth?: { env?: readonly string[]; oauth?: boolean } | null } | undefined): boolean {
+  return provider?.nativeAuth?.oauth === true
+}
+
+/**
+ * Build the plugin-scope credential reference that holds one account's
+ * grant payload, e.g. `keys-manager/anthropic-3fa2c1`. The name part stays
+ * within the lowercase-hyphen credential key charset: a stem whose first
+ * character is a digit is prefixed with `p-` so the reference is always
+ * acceptable to the credential store's key grammar.
+ */
+export function accountRef(provider: string, hash: string): string {
+  const folded = provider.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  const guarded = folded.length === 0 ? 'provider' : /^[0-9]/.test(folded) ? `p-${folded}` : folded
+  const stem = guarded.slice(0, 40)
+  const suffix = hash.toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 12) || '0'
+  return `${OAUTH_GRANT_SCOPE}/${stem}-${suffix}`
+}
+
+/**
+ * SF3 note on arbitration (former `cascadeOrder` removed): there is no
+ * kind-ranked cascade. The live selection model is projection presence
+ * (the projected grant serves via pi-ai's stored-credential preference)
+ * plus probe fail-skip over a kind-agnostic cursor-anchored ring — an
+ * OAuth row leaves that ring only when its account probe fails on its
+ * non-credential-grammar ref. Any per-account ranking is roadmap work.
+ */
+
 /** Session/provider binding key. */
 export function bindingKey(sessionId: string, provider: string): string {
   return `${sessionId}\u0000${provider}`
