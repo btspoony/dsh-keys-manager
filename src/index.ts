@@ -1900,6 +1900,15 @@ export class KeysManagerService {
       // state document.
       if (owner.valueMissing === true) {
         owner.valueMissing = false
+        // R14-SF3: a demotion is earned by a failure, so the row usually
+        // still carries the cooldown `markFailure` wrote. Re-adoption is the
+        // same manual-recovery equivalence `activateAccount` and re-auth
+        // implement: the live projection is serving again, so the old
+        // window ends with it — otherwise the resurrected row renders
+        // "cooling" and stays out of the healthy counts until the timer
+        // expires. Only this proven-adoption branch clears; a row whose
+        // projection did not reappear keeps its window.
+        owner.cooldownUntil = 0
         this.store.touch()
       }
     }

@@ -4012,6 +4012,45 @@ test('a demoted row is re-adopted when its projection reappears (R7-SF3)', async
   }
 })
 
+// Round-14 review (R14-SF3): the R7-SF3 re-adoption cleared `valueMissing`
+// but not the cooldown the demoting `markFailure` had just written, so the
+// resurrected row rendered "cooling" and stayed out of the healthy counts
+// until the old window expired — the third instance of the C3/M1 symptom
+// (re-authentication and activateAccount both end the window).
+
+test('a demoted-and-cooling row is not cooling after re-adoption (R14-SF3)', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    // The real demotion path: the failure cools the row AND starts the
+    // projection delete.
+    ;(h.service as unknown as { markFailure: (p: string, k: string, f: unknown) => void })
+      .markFailure('anthropic', rowId, { code: 'oauth', message: 'OAuth refresh failed for anthropic' })
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    assert.ok(row.cooldownUntil > Date.now())
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false))
+    assert.equal(row.valueMissing, true)
+    assert.equal(h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!.keys.find(key => key.id === rowId)!.status, 'missing')
+
+    // A native sign-in / pi-ai write re-projects this exact account's grant.
+    h.credentials.records.set(GRANT_KEY, structuredClone(h.credentials.records.get(grantRef)!))
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+
+    // Re-adoption ends the window the demotion earned: the live projection
+    // proves the row is serving again.
+    await eventually(() => assert.equal(row.valueMissing, false))
+    assert.equal(row.cooldownUntil, 0)
+    const provider = h.service.buildState().providers.find(entry => entry.provider === 'anthropic')!
+    const revived = provider.keys.find(key => key.id === rowId)!
+    assert.equal(revived.projected, true)
+    assert.equal(revived.status, 'active')
+    assert.ok(provider.healthyKeyCount >= 1)
+    assert.equal(provider.healthyKeyCount, provider.keys.filter(key => key.status === 'active').length)
+  } finally {
+    await h.close()
+  }
+})
+
 test('re-authenticating a cooling account clears the stale cooldown (C3)', async () => {
   // Round-5 finding C3: the re-auth recovery cleared valueMissing but left the
   // old cooldown timer, so the freshly projected grant still reported cooling
