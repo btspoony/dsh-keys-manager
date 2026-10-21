@@ -5208,6 +5208,468 @@ test('activation projects the generation the row still names when a rotation ech
   }
 })
 
+/**
+ * Park the first `readRecord` of `key` AFTER it resolved, so a test can
+ * interleave another operation while the activation body is suspended on the
+ * seam. The real store returns what it read, so a removal landing in the parked
+ * window cannot retract the snapshot.
+ */
+function parkGrantRead(h: Harness, key: string): { parked: () => boolean; release: () => void; restore: () => void } {
+  const raw = h.credentials.raw
+  const real = raw.readRecord.bind(raw)
+  let releaseRead: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { releaseRead = resolve })
+  let parked = false
+  raw.readRecord = async (candidate: string) => {
+    if (candidate === key && !parked) {
+      const snapshot = await real(candidate)
+      parked = true
+      await gate
+      return snapshot
+    }
+    return real(candidate)
+  }
+  return {
+    parked: () => parked,
+    release: () => releaseRead?.(),
+    restore: () => { raw.readRecord = real },
+  }
+}
+
+// Plan iter-pool-activate-queue, Task 2 regression: activation used to run its
+// credential read and projection write INSIDE the process-wide mutation queue,
+// so one slow credential store delayed every unrelated mutation. The invariant
+// pinned here: while activation's grant read is parked on the seam, another
+// mutation still gets its queue turn and completes.
+
+test('a parked activation credential read does not delay an unrelated mutation', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const park = parkGrantRead(h, grantRef)
+  const activating = h.service.activateAccount('anthropic', rowId)
+  let mutated = false
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    const mutation = h.service.addKey('anthropic', 'unrelated', 'sk-unrelated-value').then(() => { mutated = true })
+    // Deterministic observation, no wall-clock race: the mutation's own turn
+    // must complete while the read is still parked.
+    await eventually(() => assert.equal(mutated, true, 'the mutation queue was held across activation credential I/O'))
+    await mutation
+  } finally {
+    park.release()
+    await activating.catch(() => {})
+    park.restore()
+    await h.close()
+  }
+})
+
+// Plan iter-pool-activate-queue, Task 2 removal race: `removeAccount` runs on
+// the mutation queue only, never on the provider's grant chain, so once the
+// credential I/O leaves the queue the chain body is the only thing keeping a
+// removal out of activation's read → project window. The invariant pinned
+// here: a removal that lands while the grant read is parked leaves no
+// projection record behind and no stale owner claim.
+//
+// This is a guard, not a reproduction: on the pre-split tree the queue turn
+// already serializes the removal after activation, so it is green there too.
+
+test('a removal landing during a parked activation read leaves no projection record or owner claim', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const park = parkGrantRead(h, grantRef)
+  const activating = h.service.activateAccount('anthropic', rowId)
+  let removing: Promise<unknown> | undefined
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    let removalSettled = false
+    removing = h.service.removeAccount('anthropic', rowId).finally(() => { removalSettled = true })
+    // Observable removal turn, no fixed sleep: its delete of the row's grant
+    // record (or its own settlement) is the proof it ran. On the pre-split tree
+    // it is still queued behind the activation turn, so the bounded wait just
+    // expires and the assertions below still decide.
+    for (let i = 0; i < 200 && !removalSettled && h.credentials.records.has(grantRef); i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    park.release()
+    const [, removed] = await Promise.allSettled([activating, removing])
+    assert.equal(removed!.status, 'fulfilled')
+    assert.equal(h.credentials.records.has(grantRef), false, 'the removed row grant record is gone')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'no projection record outlives the removed row')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'no stale projection owner claim')
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
+  } finally {
+    park.release()
+    await activating.catch(() => {})
+    await removing?.catch(() => {})
+    park.restore()
+    await h.close()
+  }
+})
+
+// QC MF1 (must-fix): `close()` drains the grant chains under a deadline and
+// then closes the store, so an activation body abandoned by that deadline
+// resumes on a closed manager. Its read may finish; its projection write, its
+// owner claim and its binding sync may not.
+
+test('an activation body resumed after close writes no projection and claims nothing', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  const park = parkGrantRead(h, grantRef)
+  // QA-F1: count the projection writes the abandoned body attempts AFTER the
+  // store closed. Without this the case cannot tell "the body never wrote"
+  // from "the body wrote and the refusal's rollback deleted it".
+  let closed = false
+  let projectionWritesAfterClose = 0
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    if (closed && key === GRANT_KEY) projectionWritesAfterClose += 1
+    return realModify(key, mutate)
+  }
+  ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 30
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    // The drain gives up on the parked body and closes the store.
+    await h.service.close()
+    closed = true
+    park.release()
+    await assert.rejects(() => activating, /shutting down/)
+    assert.equal(projectionWritesAfterClose, 0, 'an abandoned body attempted a projection write after shutdown')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'a resumed body wrote the projection into a closing store')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'a resumed body claimed ownership')
+  } finally {
+    park.release()
+    await activating.catch(() => {})
+    raw.modifyRecord = realModify
+    park.restore()
+    await h.close()
+  }
+})
+
+// QC MF2 (must-fix): the withdrawal goes through the delete authority, not a
+// blind delete. A native writer that repoints the projection between this
+// activation's write and its compensating delete keeps its grant, and that
+// deletion is never classified as an out-of-band removal.
+
+test('a native writer replacing the projection in the compensation window keeps its grant', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  let releaseWrite: (() => void) | undefined
+  const writeReleased = new Promise<void>(resolve => { releaseWrite = resolve })
+  let writeStarted = false
+  let proofCalls = 0
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    if (key !== GRANT_KEY) return realModify(key, mutate)
+    if (!writeStarted) {
+      writeStarted = true
+      await writeReleased
+      return realModify(key, mutate)
+    }
+    proofCalls += 1
+    // The native sign-in lands between the activation's write and its
+    // withdrawal, exactly inside the compensation window.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-native', access: 'at-native', expires: 1_900_000_000_000, accountId: 'acc-native' },
+    })
+    return realModify(key, mutate)
+  }
+  const activating = h.service.activateAccount('anthropic', rowId)
+  let removing: Promise<unknown> | undefined
+  try {
+    await eventually(() => assert.equal(writeStarted, true))
+    removing = h.service.removeAccount('anthropic', rowId).catch(() => undefined)
+    await eventually(() => assert.equal(h.credentials.records.has(grantRef), false, 'the removal did not run'))
+    releaseWrite!()
+    await activating.catch(() => undefined)
+    await removing
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(proofCalls >= 1, true, 'the withdrawal never proved what it deleted')
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.ok(live, 'the native projection was deleted')
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-native', 'the native grant did not survive')
+    assert.equal(
+      h.service.buildState().warnings.some(warning => warning.includes('removed outside Keys Manager')),
+      false,
+      'the withdrawn deletion echoed as an out-of-band removal',
+    )
+  } finally {
+    releaseWrite?.()
+    await activating.catch(() => {})
+    await removing?.catch(() => {})
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
+// QC SF1 (should-fix): an activation whose projection was withdrawn must never
+// report success. Here a removal deletes the just-written projection and then
+// aborts on the grant record, so the row stays live with nothing projecting the
+// route — the row-object check alone reads that as a success.
+
+test('a declined activation never reports success while no projection serves the route', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  let releaseWrite: (() => void) | undefined
+  const writeSettled = new Promise<void>(resolve => { releaseWrite = resolve })
+  let held = false
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    const result = await realModify(key, mutate)
+    if (key === GRANT_KEY && !held) {
+      held = true
+      await writeSettled
+    }
+    return result
+  }
+  // The removal's projection delete succeeds; its grant delete fails, so the
+  // removal aborts after taking the projection and leaves the row live.
+  raw.deleteRecord = async (key: string) => {
+    if (key === grantRef) throw new Error('credential store locked')
+    return realDelete(key)
+  }
+  const activating = h.service.activateAccount('anthropic', rowId)
+  let removing: Promise<unknown> | undefined
+  try {
+    await eventually(() => assert.equal(held, true))
+    removing = h.service.removeAccount('anthropic', rowId).catch(() => undefined)
+    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the removal did not take the projection'))
+    releaseWrite!()
+    await assert.rejects(
+      () => activating,
+      /could not be projected/,
+      'a withdrawn projection read back as a successful activation',
+    )
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'a refused activation left its projection behind')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'a refused activation kept the owner claim')
+  } finally {
+    releaseWrite?.()
+    await activating.catch(() => {})
+    await removing?.catch(() => {})
+    raw.modifyRecord = realModify
+    raw.deleteRecord = realDelete
+    await h.close()
+  }
+})
+
+// QC SF2 (should-fix): the hoisted refusals cover the window before the
+// projection, and the chain revalidates the pair after its awaited read. A
+// store that turns read-only while the read is parked must leave no projection
+// record and no owner claim behind the refusal.
+
+test('a read-only flip while the activation read is parked leaves no projection or owner claim', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const park = parkGrantRead(h, grantRef)
+  const activating = h.service.activateAccount('anthropic', rowId)
+  const store = h.store as unknown as { readOnly: boolean }
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    store.readOnly = true
+    park.release()
+    await assert.rejects(() => activating, /refusing to write over it/)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'a refused activation left its projection behind')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'a refused activation kept the owner claim')
+  } finally {
+    store.readOnly = false
+    park.release()
+    await activating.catch(() => {})
+    park.restore()
+    await h.close()
+  }
+})
+
+// QC SF2 (fix round 2): hoisting the refusals cannot cover a `close()` that
+// lands between the chain commit and the queue turn. The turn's rejection path
+// rolls the commit back by identity, so the refused call leaves no orphan
+// projection and no owner claim behind.
+
+test('a close between the chain commit and the turn rolls the projection back', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const service = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
+    grantDrainDeadlineMs: number
+  }
+  const realSync = service.syncBrokerBinding.bind(h.service)
+  let releaseCommit: (() => void) | undefined
+  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
+  let committed = false
+  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
+    const result = await realSync(provider, options)
+    if (provider === 'anthropic' && !committed) {
+      committed = true
+      await commitGate
+    }
+    return result
+  }
+  service.grantDrainDeadlineMs = 30
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(committed, true))
+    await h.service.close()
+    releaseCommit!()
+    await assert.rejects(() => activating, /shutting down/)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the refused activation left its projection behind')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'the refused activation kept the owner claim')
+  } finally {
+    releaseCommit?.()
+    await activating.catch(() => {})
+    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    await h.close()
+  }
+})
+
+// The rollback's other half: what this activation wrote is deleted only while
+// it still holds that exact payload. A native writer that repointed the route
+// in the same window keeps its grant, and only the claim is withdrawn.
+
+test('a native replacement landing before a refused turn survives the rollback', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const service = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
+    grantDrainDeadlineMs: number
+  }
+  const realSync = service.syncBrokerBinding.bind(h.service)
+  let releaseCommit: (() => void) | undefined
+  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
+  let committed = false
+  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
+    const result = await realSync(provider, options)
+    if (provider === 'anthropic' && !committed) {
+      committed = true
+      await commitGate
+    }
+    return result
+  }
+  service.grantDrainDeadlineMs = 30
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(committed, true))
+    // The native sign-in repoints the route before the refusal lands.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-native', access: 'at-native', expires: 1_900_000_000_000, accountId: 'acc-native' },
+    })
+    await h.service.close()
+    releaseCommit!()
+    await assert.rejects(() => activating, /shutting down/)
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.ok(live, 'the rollback deleted the native projection')
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-native')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'the refused activation kept the owner claim')
+  } finally {
+    releaseCommit?.()
+    await activating.catch(() => {})
+    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    await h.close()
+  }
+})
+
+// QC R1 (regression): the row the turn resolves must be the generation the
+// projection was built from. A removal + re-add under the same id inside the
+// window the binding sync widens would otherwise be accepted with the removed
+// row's grant and reported as a healthy active account.
+
+test('an activation whose account row is re-created under the same id is refused', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const service = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
+  }
+  const realSync = service.syncBrokerBinding.bind(h.service)
+  let releaseCommit: (() => void) | undefined
+  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
+  let committed = false
+  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
+    const result = await realSync(provider, options)
+    if (provider === 'anthropic' && !committed) {
+      committed = true
+      await commitGate
+    }
+    return result
+  }
+  const original = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(committed, true))
+    await h.service.removeAccount('anthropic', rowId)
+    // The same id comes back on a different grant generation.
+    const recreatedRef = 'keys-manager/anthropic-recreated'
+    h.credentials.records.set(recreatedRef, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-recreated', access: 'at-recreated', expires: 1_900_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+    })
+    const recreated = structuredClone(original) as KeyRecord
+    recreated.ref = recreatedRef
+    recreated.oauth = { ...original.oauth!, grantRef: recreatedRef }
+    h.store.provider('anthropic')!.keys.push(recreated)
+    h.store.touch()
+    releaseCommit!()
+    await assert.rejects(
+      () => activating,
+      /could not be projected/,
+      'an activation for a re-created row reported success',
+    )
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the stale projection survived the refusal')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'the refused activation kept the owner claim')
+  } finally {
+    releaseCommit?.()
+    await activating.catch(() => {})
+    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    await h.close()
+  }
+})
+
+// QC R2: the rollback's proof read is a seam read that can fail (a closed
+// seam, an unreadable record). Unproven identity is not permission: the caller
+// must still get the frozen refusal, and neither the record nor the claim may
+// be touched.
+
+test('a rollback whose proof read throws leaves the projection and the claim untouched', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const service = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
+    grantDrainDeadlineMs: number
+  }
+  const realSync = service.syncBrokerBinding.bind(h.service)
+  let releaseCommit: (() => void) | undefined
+  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
+  let committed = false
+  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
+    const result = await realSync(provider, options)
+    if (provider === 'anthropic' && !committed) {
+      committed = true
+      await commitGate
+    }
+    return result
+  }
+  service.grantDrainDeadlineMs = 30
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(committed, true))
+    await h.service.close()
+    // The store is unusable from here on: the proof read cannot decide identity.
+    raw.failModifyRecord = true
+    releaseCommit!()
+    await assert.rejects(() => activating, /shutting down/, 'the store error replaced the frozen refusal')
+    assert.equal(h.credentials.records.has(GRANT_KEY), true, 'an unproven projection was deleted')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.get('anthropic'), rowId, 'the claim was withdrawn on unproven identity')
+  } finally {
+    raw.failModifyRecord = false
+    releaseCommit?.()
+    await activating.catch(() => {})
+    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    await h.close()
+  }
+})
+
 // Round-2 review step 6: the projection owner is surfaced through the
 // state view — the provider names the owning row, and exactly one account
 // row is badged as the projected one.
