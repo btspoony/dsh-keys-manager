@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createHash, randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -5129,81 +5129,38 @@ test('activateAccount projects the grant payload into the llm-pi-ai record', asy
 // here: at the instant the projection write lands, the row must not already
 // name another generation, and the record that generation names must survive.
 
-test('activation projects the generation the row still names when a rotation echo lands mid-read (I-000106)', async () => {
+// Plan "Spike outcome" step 5: the row must still name the generation read
+// outside the queue. A rotation echo that repointed it while the read was parked
+// makes the activation refuse instead of projecting an older generation over a
+// newer one.
+
+test('a rotation echo repointing the row mid-read makes the activation refuse (I-000106)', async () => {
   const { h, rowId, grantRef: generation1 } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
-  const raw = h.credentials.raw
-  const realRead = raw.readRecord.bind(raw)
-  const realModify = raw.modifyRecord.bind(raw)
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  const park = parkGrantRead(h, generation1)
+  const activating = h.service.activateAccount('anthropic', rowId)
   try {
-    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
-    // The persisted projection is the row's own generation.
-    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-seed-value', access: 'at-seed-value' }))
-    let releaseRead: (() => void) | undefined
-    const readReleased = new Promise<void>(resolve => { releaseRead = resolve })
-    let readDeferred = false
-    raw.readRecord = async (key: string) => {
-      if (key === generation1 && !readDeferred) {
-        readDeferred = true
-        // Snapshot the generation activation is about to project, then park
-        // the read so a rotation echo can land before the write.
-        const snapshot = structuredClone(h.credentials.records.get(generation1))
-        await readReleased
-        return snapshot
-      }
-      return realRead(key)
-    }
-    // Capture the row's grantRef at the instant activation's projection write
-    // returns — before any echo of that write can reconcile.
-    let rowRefAtProjection: string | undefined
-    let projectedRefresh: string | undefined
-    let captureProjection = false
-    raw.modifyRecord = async (key: string, mutate: any) => {
-      const result = await realModify(key, mutate)
-      if (captureProjection && key === GRANT_KEY) {
-        captureProjection = false
-        rowRefAtProjection = row.oauth!.grantRef
-        projectedRefresh = ((result as FakeCredentialRecord | undefined)?.payload as Record<string, unknown> | undefined)?.refresh as string | undefined
-      }
-      return result
-    }
-    const activating = h.service.activateAccount('anthropic', rowId)
-    await eventually(() => assert.equal(readDeferred, true))
-    captureProjection = true
-    // An external rotation echo lands while the read is parked: pi-ai wrote a
-    // newer generation (the pre-fix reconciler runs outside the mutation queue
-    // and adopts it into the row immediately).
+    await eventually(() => assert.equal(park.parked(), true))
+    // pi-ai commits a newer generation and its echo repoints the row.
     h.credentials.records.set(GRANT_KEY, {
       kind: 'grant',
       payload: { type: 'oauth', refresh: 'rt-rotated', access: 'at-rotated', expires: 1_960_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
     })
     h.credentials.emitRecordUpdated(GRANT_KEY)
-    // Time for the unchained reconciler to repoint the row on the pre-fix
-    // tree; on the fixed tree the echo is queued behind the activation body.
-    await new Promise(resolve => setTimeout(resolve, 30))
-    releaseRead!()
-    await activating
-    // Every queued reconciliation body has settled.
-    await eventually(() => assert.equal(
-      (h.service as unknown as { grantReconciliations: Map<string, Promise<void>> }).grantReconciliations.get('anthropic'),
-      undefined,
-    ))
-    // The projection write named the generation the row still pointed at.
-    assert.equal(rowRefAtProjection, generation1)
-    assert.equal(projectedRefresh, 'rt-seed-value')
-    const projectedRecord = h.credentials.records.get(rowRefAtProjection!)
-    assert.ok(projectedRecord, 'the projected generation still has its record')
-    assert.equal((projectedRecord.payload as Record<string, unknown>).refresh, projectedRefresh)
-    // Settled: the projection, the row and the one surviving plugin-scope
-    // record all agree on the same generation.
-    const projection = h.credentials.records.get(GRANT_KEY)!
-    const rowRecord = h.credentials.records.get(row.oauth!.grantRef)!
-    assert.ok(rowRecord, 'the row names a live grant record')
-    assert.deepEqual(projection.payload, rowRecord.payload)
-    const pluginRecords = [...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/anthropic-'))
-    assert.deepEqual(pluginRecords, [row.oauth!.grantRef])
+    await eventually(() => assert.notEqual(row.oauth!.grantRef, generation1))
+    park.release()
+    await assert.rejects(
+      () => activating,
+      /could not be projected/,
+      'an activation projected the generation the row no longer names',
+    )
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.ok(live, 'the rotation projection was lost')
+    assert.notEqual((live.payload as Record<string, unknown>).refresh, 'rt-seed-value', 'the stale generation overwrote the projection')
   } finally {
-    raw.readRecord = realRead
-    raw.modifyRecord = realModify
+    park.release()
+    await activating.catch(() => {})
+    park.restore()
     await h.close()
   }
 })
@@ -5351,7 +5308,12 @@ test('an activation body resumed after close writes no projection and claims not
 // it persisted and withdraw it — a refused activation must not leave its grant
 // serving behind the failure, nor across a restart.
 
-test('a projection written while shutdown starts is withdrawn instead of left serving after the activation is refused', async () => {
+// Plan "Spike outcome" step 3: `close()` awaits the mutation queue before it
+// closes the store (`src/index.ts:1758-1762`), so a projection write already
+// inside the turn completes instead of being abandoned. The turn has no
+// post-write shutdown check — that check is what used to manufacture the orphan.
+
+test('a close that lands during the projection write waits for the turn and keeps the activation', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   const raw = h.credentials.raw
   const realModify = raw.modifyRecord.bind(raw)
@@ -5365,20 +5327,31 @@ test('a projection written while shutdown starts is withdrawn instead of left se
     }
     return realModify(key, mutate)
   }
-  ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 30
   const activating = h.service.activateAccount('anthropic', rowId)
+  await eventually(() => assert.equal(writeStarted, true))
+  let closeSettled = false
+  const closing = h.service.close().then(() => { closeSettled = true })
   try {
-    await eventually(() => assert.equal(writeStarted, true))
-    // The store closes while the write is still in flight; the write then lands.
-    await h.service.close()
+    // close() is waiting on the queue, not racing the write.
+    await new Promise(resolve => setTimeout(resolve, 40))
+    assert.equal(closeSettled, false, 'close() closed the store while the turn was still writing')
     releaseWrite!()
-    await assert.rejects(() => activating, /shutting down/)
-    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the refused activation left its projection serving')
+    const view = await activating
+    assert.ok(view.providers.some(provider => provider.provider === 'anthropic'))
+    await closing
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.ok(live, 'the completed activation lost its projection')
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-seed-value')
     const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
-    assert.equal(owners.has('anthropic'), false, 'the refused activation claimed ownership')
+    assert.equal(owners.get('anthropic'), rowId, 'the completed activation never claimed the projection')
+    const persisted = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as any
+    const row = persisted.providers.anthropic.keys.find((key: any) => key.id === rowId)
+    assert.equal(row.valueMissing, false)
+    assert.equal(row.cooldownUntil, 0)
   } finally {
     releaseWrite?.()
     await activating.catch(() => {})
+    await closing.catch(() => {})
     raw.modifyRecord = realModify
     await h.close()
   }
@@ -5388,33 +5361,22 @@ test('a projection written while shutdown starts is withdrawn instead of left se
 // compare-and-delete (I-000090), so the proof is re-run immediately before the
 // delete. A record a foreign writer replaced in that gap is left alone.
 
-test('a projection replaced between the proof and the delete survives the rollback', async () => {
+// Plan "Spike outcome" step 4: only an `absent` baseline needs a delete, and
+// only while the record is still this activation's own payload. A foreign write
+// that lands before the delete is never removed (I-000090: the seam has no
+// compare-and-delete, so the final read is the narrowing, not a guarantee).
+
+test('a projection replaced between the proof and the delete survives the flush compensation', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  row.cooldownUntil = 4_200
   const raw = h.credentials.raw
   const realModify = raw.modifyRecord.bind(raw)
-  const service = h.service as unknown as {
-    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
-    grantDrainDeadlineMs: number
-  }
-  const realSync = service.syncBrokerBinding.bind(h.service)
-  let releaseCommit: (() => void) | undefined
-  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
-  let committed = false
-  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
-    const result = await realSync(provider, options)
-    if (provider === 'anthropic' && !committed) {
-      committed = true
-      await commitGate
-    }
-    return result
-  }
-  service.grantDrainDeadlineMs = 30
-  let armed = false
   let identityReads = 0
   raw.modifyRecord = async (key: string, mutate: unknown) => {
-    if (armed && key === GRANT_KEY) {
+    if (key === GRANT_KEY) {
       identityReads += 1
-      // The foreign writer lands after the proof, before the delete.
+      // The foreign write lands after the proof, before the delete.
       if (identityReads === 2) {
         h.credentials.records.set(GRANT_KEY, {
           kind: 'grant',
@@ -5424,24 +5386,19 @@ test('a projection replaced between the proof and the delete survives the rollba
     }
     return realModify(key, mutate)
   }
-  const activating = h.service.activateAccount('anthropic', rowId)
+  await chmod(h.dir, 0o500)
   try {
-    await eventually(() => assert.equal(committed, true))
-    await h.service.close()
-    armed = true
-    releaseCommit!()
-    await assert.rejects(() => activating, /shutting down/)
-    assert.equal(identityReads >= 2, true, 'the delete ran without a final identity read')
-    const live = h.credentials.records.get(GRANT_KEY) as FakeCredentialRecord | undefined
-    assert.ok(live, 'the rollback deleted a record it no longer owned')
-    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-foreign')
+    await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
   } finally {
-    releaseCommit?.()
-    await activating.catch(() => {})
+    await chmod(h.dir, 0o700)
     raw.modifyRecord = realModify
-    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
-    await h.close()
   }
+  assert.equal(identityReads >= 2, true, 'the compensation deleted without a final identity read')
+  assert.equal(row.cooldownUntil, 4_200, 'the in-memory cooldown was not restored')
+  const live = h.credentials.records.get(GRANT_KEY)
+  assert.ok(live, 'the compensation deleted a record it no longer owned')
+  assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-foreign')
+  await h.close()
 })
 
 // QC MF2 (must-fix): the withdrawal goes through the delete authority, not a
@@ -5449,56 +5406,57 @@ test('a projection replaced between the proof and the delete survives the rollba
 // activation's write and its compensating delete keeps its grant, and that
 // deletion is never classified as an out-of-band removal.
 
-test('a native writer replacing the projection in the compensation window keeps its grant', async () => {
-  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
-  const raw = h.credentials.raw
-  const realModify = raw.modifyRecord.bind(raw)
-  let releaseWrite: (() => void) | undefined
-  const writeReleased = new Promise<void>(resolve => { releaseWrite = resolve })
-  let writeStarted = false
-  let proofCalls = 0
-  raw.modifyRecord = async (key: string, mutate: unknown) => {
-    if (key !== GRANT_KEY) return realModify(key, mutate)
-    if (!writeStarted) {
-      writeStarted = true
-      await writeReleased
-      return realModify(key, mutate)
-    }
-    proofCalls += 1
-    // The native sign-in lands between the activation's write and its
-    // withdrawal, exactly inside the compensation window.
-    h.credentials.records.set(GRANT_KEY, {
-      kind: 'grant',
-      payload: { type: 'oauth', refresh: 'rt-native', access: 'at-native', expires: 1_900_000_000_000, accountId: 'acc-native' },
-    })
-    return realModify(key, mutate)
-  }
-  const activating = h.service.activateAccount('anthropic', rowId)
-  let removing: Promise<unknown> | undefined
+// Plan "Spike outcome" step 4: an `absent` baseline is the one case that has to
+// remove a record — the projection this activation created — through the proof
+// and the intentional-removal marker.
+
+test('a rejected state flush removes the projection it created', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  row.valueMissing = true
+  row.cooldownUntil = 7_000
+  await chmod(h.dir, 0o500)
   try {
-    await eventually(() => assert.equal(writeStarted, true))
-    removing = h.service.removeAccount('anthropic', rowId).catch(() => undefined)
-    await eventually(() => assert.equal(h.credentials.records.has(grantRef), false, 'the removal did not run'))
-    releaseWrite!()
-    await activating.catch(() => undefined)
-    await removing
-    await drainGrantChain(h, 'anthropic')
-    assert.equal(proofCalls >= 1, true, 'the withdrawal never proved what it deleted')
-    const live = h.credentials.records.get(GRANT_KEY)
-    assert.ok(live, 'the native projection was deleted')
-    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-native', 'the native grant did not survive')
-    assert.equal(
-      h.service.buildState().warnings.some(warning => warning.includes('removed outside Keys Manager')),
-      false,
-      'the withdrawn deletion echoed as an out-of-band removal',
-    )
+    await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
   } finally {
-    releaseWrite?.()
-    await activating.catch(() => {})
-    await removing?.catch(() => {})
-    raw.modifyRecord = realModify
-    await h.close()
+    await chmod(h.dir, 0o700)
   }
+  assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the created projection outlived the failed activation')
+  assert.equal(row.valueMissing, true, 'the in-memory row was not restored')
+  assert.equal(row.cooldownUntil, 7_000, 'the in-memory cooldown was not restored')
+  const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+  assert.equal(owners.has('anthropic'), false, 'the failed flush kept the owner claim')
+  await h.close()
+})
+
+// Plan "Spike outcome" step 4: a present baseline is restored with the same
+// compare-and-write the projection used, and a writer that replaced it is left
+// alone.
+
+test('a rejected state flush puts back the projection it replaced', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  // The route already serves a projection, so this activation overwrites one.
+  h.credentials.records.set(GRANT_KEY, {
+    kind: 'grant',
+    payload: { type: 'oauth', refresh: 'rt-before', access: 'at-before', expires: 1_900_000_000_000, accountId: 'acc-before' },
+  })
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  row.valueMissing = true
+  row.cooldownUntil = 5_000
+  await chmod(h.dir, 0o500)
+  try {
+    await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+  } finally {
+    await chmod(h.dir, 0o700)
+  }
+  const live = h.credentials.records.get(GRANT_KEY)
+  assert.ok(live, 'the compensation deleted a projection it only replaced')
+  assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-before', 'the projection was not restored')
+  assert.equal(row.valueMissing, true, 'the in-memory row was not restored')
+  assert.equal(row.cooldownUntil, 5_000, 'the in-memory cooldown was not restored')
+  const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+  assert.equal(owners.has('anthropic'), false, 'the failed flush kept the owner claim')
+  await h.close()
 })
 
 // QC SF1 (should-fix): an activation whose projection was withdrawn must never
@@ -5506,49 +5464,34 @@ test('a native writer replacing the projection in the compensation window keeps 
 // aborts on the grant record, so the row stays live with nothing projecting the
 // route — the row-object check alone reads that as a success.
 
-test('a declined activation never reports success while no projection serves the route', async () => {
-  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
-  const raw = h.credentials.raw
-  const realModify = raw.modifyRecord.bind(raw)
-  const realDelete = raw.deleteRecord.bind(raw)
-  let releaseWrite: (() => void) | undefined
-  const writeSettled = new Promise<void>(resolve => { releaseWrite = resolve })
-  let held = false
-  raw.modifyRecord = async (key: string, mutate: unknown) => {
-    const result = await realModify(key, mutate)
-    if (key === GRANT_KEY && !held) {
-      held = true
-      await writeSettled
-    }
-    return result
-  }
-  // The removal's projection delete succeeds; its grant delete fails, so the
-  // removal aborts after taking the projection and leaves the row live.
-  raw.deleteRecord = async (key: string) => {
-    if (key === grantRef) throw new Error('credential store locked')
-    return realDelete(key)
-  }
+// Plan "Spike outcome" step 5: the compare baseline is read outside the queue,
+// so a projection removed between that read and the turn makes the in-lock
+// compare fail. The activation refuses without writing and without deleting.
+
+test('an activation whose projection disappeared before the turn refuses and writes nothing', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  h.credentials.records.set(GRANT_KEY, {
+    kind: 'grant',
+    payload: { type: 'oauth', refresh: 'rt-before', access: 'at-before', expires: 1_900_000_000_000, accountId: 'acc-before' },
+  })
+  const park = parkGrantRead(h, GRANT_KEY)
   const activating = h.service.activateAccount('anthropic', rowId)
-  let removing: Promise<unknown> | undefined
   try {
-    await eventually(() => assert.equal(held, true))
-    removing = h.service.removeAccount('anthropic', rowId).catch(() => undefined)
-    await eventually(() => assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the removal did not take the projection'))
-    releaseWrite!()
+    await eventually(() => assert.equal(park.parked(), true))
+    h.credentials.records.delete(GRANT_KEY)
+    park.release()
     await assert.rejects(
       () => activating,
       /could not be projected/,
-      'a withdrawn projection read back as a successful activation',
+      'an activation with nothing to project reported success',
     )
-    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'a refused activation left its projection behind')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'a refused activation wrote its projection')
     const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
     assert.equal(owners.has('anthropic'), false, 'a refused activation kept the owner claim')
   } finally {
-    releaseWrite?.()
+    park.release()
     await activating.catch(() => {})
-    await removing?.catch(() => {})
-    raw.modifyRecord = realModify
-    raw.deleteRecord = realDelete
+    park.restore()
     await h.close()
   }
 })
@@ -5585,38 +5528,60 @@ test('a read-only flip while the activation read is parked leaves no projection 
 // rolls the commit back by identity, so the refused call leaves no orphan
 // projection and no owner claim behind.
 
-test('a close between the chain commit and the turn rolls the projection back', async () => {
+// Plan "Spike outcome": the turn is the commit point, and `close()` drains the
+// queue before closing the store, so a close requested while the turn is queued
+// lets it finish and persist.
+
+test('a close requested while the turn is queued still lets the activation persist', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
-  const service = h.service as unknown as {
-    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
-    grantDrainDeadlineMs: number
+  // Hold the queue with a mutation so the activation's turn is submitted but
+  // cannot start; the turn is already behind `closing`, which `run` reads only
+  // at submission.
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  let writeAfterClose = false
+  let closingSeen = false
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    if (key === GRANT_KEY && closingSeen) writeAfterClose = true
+    return realModify(key, mutate)
   }
-  const realSync = service.syncBrokerBinding.bind(h.service)
-  let releaseCommit: (() => void) | undefined
-  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
-  let committed = false
-  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
-    const result = await realSync(provider, options)
-    if (provider === 'anthropic' && !committed) {
-      committed = true
-      await commitGate
+  const realFlush = h.store.flush.bind(h.store)
+  let releaseAdd: (() => void) | undefined
+  const addGate = new Promise<void>(resolve => { releaseAdd = resolve })
+  let held = false
+  h.store.flush = async () => {
+    if (!held) {
+      held = true
+      await addGate
     }
-    return result
+    return realFlush()
   }
-  service.grantDrainDeadlineMs = 30
-  const activating = h.service.activateAccount('anthropic', rowId)
+  const adding = h.service.addKey('anthropic', 'Queued', 'sk-queued')
+  let closeRequested = false
   try {
-    await eventually(() => assert.equal(committed, true))
-    await h.service.close()
-    releaseCommit!()
-    await assert.rejects(() => activating, /shutting down/)
-    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the refused activation left its projection behind')
-    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
-    assert.equal(owners.has('anthropic'), false, 'the refused activation kept the owner claim')
+    await eventually(() => assert.equal(held, true))
+    const activating = h.service.activateAccount('anthropic', rowId)
+    // The credential read resolves, so the turn is queued behind `adding`.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    closeRequested = true
+    closingSeen = true
+    const closing = h.service.close()
+    releaseAdd!()
+    await adding
+    await activating
+    await closing
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.ok(live, 'the activation lost its projection')
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-seed-value')
+    assert.equal(closeRequested, true)
+    assert.equal(writeAfterClose, true, 'the projection was written outside the queue turn')
+    const persisted = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as any
+    const row = persisted.providers.anthropic.keys.find((key: any) => key.id === rowId)
+    assert.equal(row.valueMissing, false)
   } finally {
-    releaseCommit?.()
-    await activating.catch(() => {})
-    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    releaseAdd?.()
+    h.store.flush = realFlush
+    raw.modifyRecord = realModify
     await h.close()
   }
 })
@@ -5625,45 +5590,36 @@ test('a close between the chain commit and the turn rolls the projection back', 
 // it still holds that exact payload. A native writer that repointed the route
 // in the same window keeps its grant, and only the claim is withdrawn.
 
-test('a native replacement landing before a refused turn survives the rollback', async () => {
+// Plan "Spike outcome" step 5: a foreign writer that replaced the projection
+// between the baseline read and the turn is detected inside the lock and left
+// byte-identical.
+
+test('a projection replaced before the turn refuses without touching the foreign grant', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
-  const service = h.service as unknown as {
-    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
-    grantDrainDeadlineMs: number
-  }
-  const realSync = service.syncBrokerBinding.bind(h.service)
-  let releaseCommit: (() => void) | undefined
-  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
-  let committed = false
-  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
-    const result = await realSync(provider, options)
-    if (provider === 'anthropic' && !committed) {
-      committed = true
-      await commitGate
-    }
-    return result
-  }
-  service.grantDrainDeadlineMs = 30
+  h.credentials.records.set(GRANT_KEY, {
+    kind: 'grant',
+    payload: { type: 'oauth', refresh: 'rt-before', access: 'at-before', expires: 1_900_000_000_000, accountId: 'acc-before' },
+  })
+  const park = parkGrantRead(h, GRANT_KEY)
   const activating = h.service.activateAccount('anthropic', rowId)
   try {
-    await eventually(() => assert.equal(committed, true))
-    // The native sign-in repoints the route before the refusal lands.
+    await eventually(() => assert.equal(park.parked(), true))
     h.credentials.records.set(GRANT_KEY, {
       kind: 'grant',
-      payload: { type: 'oauth', refresh: 'rt-native', access: 'at-native', expires: 1_900_000_000_000, accountId: 'acc-native' },
+      payload: { type: 'oauth', refresh: 'rt-foreign', access: 'at-foreign', expires: 1_900_000_000_000, accountId: 'acc-foreign' },
     })
-    await h.service.close()
-    releaseCommit!()
-    await assert.rejects(() => activating, /shutting down/)
+    park.release()
+    await assert.rejects(() => activating, /could not be projected/)
     const live = h.credentials.records.get(GRANT_KEY)
-    assert.ok(live, 'the rollback deleted the native projection')
-    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-native')
+    assert.ok(live, 'the refused activation deleted the foreign grant')
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-foreign')
+    assert.equal((live.payload as Record<string, unknown>).access, 'at-foreign')
     const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
-    assert.equal(owners.has('anthropic'), false, 'the refused activation kept the owner claim')
+    assert.equal(owners.has('anthropic'), false, 'a refused activation claimed the foreign projection')
   } finally {
-    releaseCommit?.()
+    park.release()
     await activating.catch(() => {})
-    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    park.restore()
     await h.close()
   }
 })
@@ -5673,52 +5629,38 @@ test('a native replacement landing before a refused turn survives the rollback',
 // window the binding sync widens would otherwise be accepted with the removed
 // row's grant and reported as a healthy active account.
 
-test('an activation whose account row is re-created under the same id is refused', async () => {
-  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
-  const service = h.service as unknown as {
-    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
-  }
-  const realSync = service.syncBrokerBinding.bind(h.service)
-  let releaseCommit: (() => void) | undefined
-  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
-  let committed = false
-  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
-    const result = await realSync(provider, options)
-    if (provider === 'anthropic' && !committed) {
-      committed = true
-      await commitGate
-    }
-    return result
-  }
-  const original = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+// Plan "Spike outcome" step 5, second half: the row must still name the
+// generation this activation read. A row re-created under the same id while the
+// read ran belongs to another grant, so the activation refuses rather than
+// projecting the removed row's payload.
+
+test('an activation whose account row names another generation by the turn is refused', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const park = parkGrantRead(h, grantRef)
   const activating = h.service.activateAccount('anthropic', rowId)
   try {
-    await eventually(() => assert.equal(committed, true))
-    await h.service.removeAccount('anthropic', rowId)
-    // The same id comes back on a different grant generation.
-    const recreatedRef = 'keys-manager/anthropic-recreated'
-    h.credentials.records.set(recreatedRef, {
+    await eventually(() => assert.equal(park.parked(), true))
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+    const rotatedRef = 'keys-manager/anthropic-rotated'
+    h.credentials.records.set(rotatedRef, {
       kind: 'grant',
-      payload: { type: 'oauth', refresh: 'rt-recreated', access: 'at-recreated', expires: 1_900_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+      payload: { type: 'oauth', refresh: 'rt-rotated', access: 'at-rotated', expires: 1_900_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
     })
-    const recreated = structuredClone(original) as KeyRecord
-    recreated.ref = recreatedRef
-    recreated.oauth = { ...original.oauth!, grantRef: recreatedRef }
-    h.store.provider('anthropic')!.keys.push(recreated)
+    row.oauth = { ...row.oauth!, grantRef: rotatedRef }
     h.store.touch()
-    releaseCommit!()
+    park.release()
     await assert.rejects(
       () => activating,
       /could not be projected/,
-      'an activation for a re-created row reported success',
+      'an activation for a repointed row reported success',
     )
-    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the stale projection survived the refusal')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the stale projection was written anyway')
     const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
     assert.equal(owners.has('anthropic'), false, 'the refused activation kept the owner claim')
   } finally {
-    releaseCommit?.()
+    park.release()
     await activating.catch(() => {})
-    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    park.restore()
     await h.close()
   }
 })
@@ -5728,44 +5670,40 @@ test('an activation whose account row is re-created under the same id is refused
 // must still get the frozen refusal, and neither the record nor the claim may
 // be touched.
 
-test('a rollback whose proof read throws leaves the projection and the claim untouched', async () => {
+// Plan "Spike outcome" step 4: the proof that guards the only remaining delete
+// can itself fail. Unproven identity authorizes nothing — the caller keeps the
+// original flush error, and the record stays.
+
+test('a failed flush whose proof read throws keeps the projection and the claim untouched', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   const raw = h.credentials.raw
-  const service = h.service as unknown as {
-    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
-    grantDrainDeadlineMs: number
-  }
-  const realSync = service.syncBrokerBinding.bind(h.service)
-  let releaseCommit: (() => void) | undefined
-  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
-  let committed = false
-  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
-    const result = await realSync(provider, options)
-    if (provider === 'anthropic' && !committed) {
-      committed = true
-      await commitGate
+  const realModify = raw.modifyRecord.bind(raw)
+  let modifies = 0
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    if (key === GRANT_KEY) {
+      modifies += 1
+      // The write lands; the compensation's identity proof cannot answer.
+      if (modifies > 1) throw new Error('credential store unavailable')
     }
-    return result
+    return realModify(key, mutate)
   }
-  service.grantDrainDeadlineMs = 30
-  const activating = h.service.activateAccount('anthropic', rowId)
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  row.cooldownUntil = 3_300
+  await chmod(h.dir, 0o500)
   try {
-    await eventually(() => assert.equal(committed, true))
-    await h.service.close()
-    // The store is unusable from here on: the proof read cannot decide identity.
-    raw.failModifyRecord = true
-    releaseCommit!()
-    await assert.rejects(() => activating, /shutting down/, 'the store error replaced the frozen refusal')
-    assert.equal(h.credentials.records.has(GRANT_KEY), true, 'an unproven projection was deleted')
-    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
-    assert.equal(owners.get('anthropic'), rowId, 'the claim was withdrawn on unproven identity')
+    await assert.rejects(
+      () => h.service.activateAccount('anthropic', rowId),
+      /EACCES|permission denied|EPERM/,
+      'the proof error replaced the flush error',
+    )
   } finally {
-    raw.failModifyRecord = false
-    releaseCommit?.()
-    await activating.catch(() => {})
-    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
-    await h.close()
+    await chmod(h.dir, 0o700)
+    raw.modifyRecord = realModify
   }
+  assert.equal(modifies, 2, 'the compensation never ran its identity proof')
+  assert.equal(h.credentials.records.has(GRANT_KEY), true, 'an unproven projection was deleted')
+  assert.equal(row.cooldownUntil, 3_300)
+  await h.close()
 })
 
 // Round-2 review step 6: the projection owner is surfaced through the

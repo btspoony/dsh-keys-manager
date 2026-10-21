@@ -969,27 +969,33 @@ function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OA
 }
 
 /**
- * What an activation's credential half achieved (plan iter-pool-activate-queue).
+ * What one activation read before it entered the queue (plan
+ * iter-pool-activate-queue, "Spike outcome"): the grant payload it will project,
+ * its serialized form, and the projection the route served at that moment.
  *
- * `projected`: the projection this activation wrote is the record the route
- * serves, and the claim it took is still its own — the identity a rollback
- * needs to withdraw exactly that and nothing else. `grantRef` is the row's
- * generation the projection was built from, so the turn can refuse a row that
- * was re-created under the same id while the chain ran. `aborted`: the body
- * stopped (shutdown, read-only store, replaced credential backend) before it
- * could commit — `run` refuses the turn itself. `withdrawn`: the projection was
- * written and then withdrawn, so the caller must not be told the activation
- * succeeded.
- *
- * `written` on `aborted` is what the body already persisted when the abort
- * caught it (F1). Without it an abort between the write and the claim would
- * leave the activation's grant serving behind a failed call, and the caller
- * cannot withdraw a record it cannot name.
+ * The baseline is the compare half of the in-turn compare-and-write: the write
+ * lands only while the live record still equals it, so a foreign writer that
+ * replaced the projection between the read and the turn is left untouched and
+ * the activation refuses. `absent` is a real baseline ("nothing served this
+ * route"), not a wildcard.
  */
-type ActivationProjection =
-  | { state: 'aborted'; written?: string }
-  | { state: 'withdrawn' }
-  | { state: 'projected'; written: string; accountId: string; generation: number; grantRef: string }
+type ActivationBaseline =
+  | { state: 'absent' }
+  | { state: 'present'; kind: CredentialRecordLike['kind']; payload: string; record: CredentialRecordLike }
+
+interface ActivationPreparation {
+  grantRef: string
+  payload: OAuthGrantPayload
+  written: string
+  baseline: ActivationBaseline
+}
+
+/** What the turn changed in memory, for the flush-failure compensation. */
+interface ActivationUndo {
+  valueMissing: boolean
+  cooldownUntil: number
+  generation: number
+}
 
 export class KeysManagerService {
   readonly ctx: HostContext
@@ -3608,40 +3614,63 @@ export class KeysManagerService {
    */
   async activateAccount(provider: string, accountId: string): Promise<StateView> {
     const records = this.credentialRecords()
-    // Locator only: it lets the credential I/O start before the queue turn. The
-    // turn below re-reads the store and decides; this lookup decides nothing.
+    // Locator only: it keeps the row's grantRef reachable for the read below.
+    // The turn re-reads the store and decides; this lookup decides nothing.
     const located = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
-    // The refusals `run` applies (1632, 1634-1636) are hoisted ahead of the
-    // projection write: a refused call should not pay for the chain at all.
-    // They are not the guarantee — the commit's rollback below is (QC SF2).
+    // The refusals `run` applies (1683, 1685-1687) are hoisted ahead of the
+    // credential read: a refused call should not pay for it at all. They are
+    // not the guarantee — the turn's own admission checks are.
     if (this.closing) throw new Error('Keys Manager is shutting down')
     if (this.store.readOnly) {
       throw new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.')
     }
-    const projection: ActivationProjection = located !== undefined
+    // The slow half, outside the queue: read the grant this activation would
+    // project and capture what the route serves now as the compare baseline.
+    // Nothing here decides — admission order belongs to the turn.
+    const prepared = located !== undefined
       && located.kind === 'oauth'
       && located.oauth !== null
       && records !== undefined
-      ? await this.projectActivationGrant(provider, accountId, located, records)
-      : { state: 'aborted' }
+      ? await this.prepareActivation(provider, located, records)
+      : undefined
+    let undo: ActivationUndo | undefined
     try {
-      return await this.run(async () => {
+      const view = await this.run(async () => {
         const providerRecord = this.store.provider(provider)
         if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
         const row = providerRecord.keys.find(candidate => candidate.id === accountId)
         if (row === undefined) throw new Error(`Account "${accountId}" not found on ${provider}`)
         if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account`)
-        if (records === undefined) throw new Error('The credential store does not support records')
-        // A withdrawn or aborted projection must never read back as success
-        // (QC SF1): the caller would see a StateView for an activation the
-        // route does not serve. The verdict is the record's, not the row's.
-        // R1: the projection must describe the generation THIS row still names
-        // — a row re-created under the same id while the chain ran belongs to a
-        // different grant, and reporting success for it would serve nothing.
-        if (projection.state !== 'projected' || row.oauth.grantRef !== projection.grantRef) {
-          if (this.persistenceRefused()) throw new Error('Keys Manager is shutting down')
+        if (records === undefined || prepared === undefined) {
+          throw new Error('The credential store does not support records')
+        }
+        // A remount replaced the credential backend while the read ran; the
+        // payload came from records this manager no longer serves.
+        //
+        // The row must still name the generation this activation read. A
+        // rotation echo or a removal + re-add that repointed it meanwhile
+        // belongs to a different grant, and projecting the old payload would
+        // either overwrite a newer generation or report a success the row does
+        // not serve. Refusing keeps the record untouched; the caller retries.
+        if (this.credentialRecords() !== records || row.oauth.grantRef !== prepared.grantRef) {
           throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
         }
+        // The projection write is a compare-and-write under the seam's per-key
+        // lock: it lands only while the route still serves the baseline read
+        // above. A removal or a foreign writer that got there first makes the
+        // compare fail, and this activation refuses without touching the
+        // record — there is nothing to compensate afterwards.
+        const written = await this.compareAndWriteProjection(records, provider, prepared)
+        if (written === undefined) {
+          throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+        }
+        // No post-write shutdown check: `close()` awaits this queue before it
+        // closes the store (`1758-1762`), so a run that starts in time always
+        // finishes before the store goes away. Refusing here after the write
+        // is what used to manufacture an orphan.
+        undo = { valueMissing: row.valueMissing, cooldownUntil: row.cooldownUntil, generation: 0 }
+        this.claimProjectionOwner(provider, row.id)
+        undo.generation = this.ownershipGenerations.get(provider) ?? 0
         row.valueMissing = false
         // Round-5 finding M1: manual recovery ends the cooling window too, the
         // same reset a successful re-authentication applies. A demoted account
@@ -3656,138 +3685,135 @@ export class KeysManagerService {
         // precedent), so the client updates its snapshot in one round trip.
         return this.buildState()
       })
+      // The re-activated grant is the serving credential again, so a broker
+      // reference left by the key pool must go (see syncBrokerBinding). A
+      // settings refusal does not roll back the committed projection.
+      await this.syncBrokerBinding(provider)
+      return view
     } catch (error) {
-      // SF2: the turn can refuse (`closing`, read-only store, a provider or row
-      // that left) after the chain already committed. The caller is told the
-      // activation failed, so the projection and the claim this activation
-      // wrote must not outlive that answer — rolled back by identity, never
-      // by assumption.
-      await this.rollbackActivationProjection(provider, projection, records)
+      // A rejected flush lands here AFTER the turn resolved its work: `run`
+      // does not roll the mutation back (`1789-1800`), so the row is still
+      // cleared in memory and the projection still serves the route. Undo both
+      // once, by identity. Failures before the write leave `undo` unset.
+      if (undo !== undefined) await this.compensateActivationFlush(provider, accountId, prepared!, undo, records!)
       throw error
     }
   }
 
   /**
-   * Withdraw exactly what one refused activation committed: the owner claim it
-   * still holds, and the projection record only while that record is still
-   * byte-identical to the payload it wrote (QC SF2). A native writer or a newer
-   * activation that repointed the route keeps its grant, and the refusal stands
-   * on its own.
+   * The slow half of an activation, outside the queue: read the row's grant
+   * generation, validate it, and capture the projection the route serves now.
    */
-  private async rollbackActivationProjection(
+  private async prepareActivation(
     provider: string,
-    projection: ActivationProjection,
-    records: CredentialRecordsLike | undefined,
-  ): Promise<void> {
-    const written = projection.state === 'withdrawn' ? undefined : projection.written
-    if (written === undefined || records === undefined) return
-    const proof = await this.activationProjectionProof(records, provider, written)
-    // Unproven identity is not permission (QC R2): a proof that threw leaves
-    // the record and the claim exactly as they are — nothing here may read as
-    // "the projection was cleaned up".
-    if (proof === 'unknown') return
-    // The claim is drawn from its own proof (generation + account id), so a
-    // record another writer replaced still retires a claim that has stopped
-    // being true. Only a matching record may be deleted.
-    // Only a body that got as far as committing took the claim; an aborted one
-    // never reached `claimProjectionOwner`.
-    if (projection.state === 'projected'
-      && this.ownershipGenerations.get(provider) === projection.generation
-      && this.activeAccounts.get(provider) === projection.accountId) {
-      this.activeAccounts.delete(provider)
+    row: KeyRecord,
+    records: CredentialRecordsLike,
+  ): Promise<ActivationPreparation> {
+    const grantRef = row.oauth!.grantRef
+    const stored = await records.readRecord(grantRef)
+    if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+      throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
     }
-    if (proof === 'matches') await this.deleteActivationProjection(records, provider, written)
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    const live = await records.readRecord(projectionKey)
+    const payload = structuredClone(stored.payload)
+    return {
+      grantRef,
+      payload,
+      written: JSON.stringify(payload),
+      baseline: live === undefined
+        ? { state: 'absent' }
+        : { state: 'present', kind: live.kind, payload: JSON.stringify(live.payload), record: structuredClone(live) },
+    }
+  }
+
+  /** Whether the projection still holds the value this activation read. */
+  private matchesActivationBaseline(
+    current: CredentialRecordLike | undefined,
+    baseline: ActivationBaseline,
+  ): boolean {
+    if (baseline.state === 'absent') return current === undefined
+    return current !== undefined
+      && current.kind === baseline.kind
+      && JSON.stringify(current.payload) === baseline.payload
   }
 
   /**
-   * The credential half of an activation, on the provider's grant chain and
-   * outside the mutation queue: read the row's grant generation, project it as
-   * the route's stored credential, claim the projection owner and sync the
-   * broker binding.
-   *
-   * `removeAccount` / `deleteKey` never run on this chain, so the write is
-   * fenced by revalidation instead — the same shape `reconcileGrantRecord`
-   * uses: a pre-write proof refuses a row a removal already took, a post-write
-   * proof withdraws what a removal that landed mid-write would otherwise leave
-   * orphaned, and the body aborts rather than commit once the shutdown drain
-   * has abandoned it or a remount replaced the backend.
+   * Write the projection only while the route still serves the baseline. The
+   * seam's `modifyRecord` mutate body runs under the per-key lock, so this is
+   * the one atomic primitive the activation has (I-000090: `deleteRecord` has
+   * no expected-payload form). Returns the payload written, or `undefined` when
+   * the compare failed and nothing was touched.
    */
-  private projectActivationGrant(
+  private async compareAndWriteProjection(
+    records: CredentialRecordsLike,
+    provider: string,
+    prepared: ActivationPreparation,
+  ): Promise<string | undefined> {
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    let landed = false
+    this.intentionalProjectionRemovals.delete(provider)
+    await records.modifyRecord(projectionKey, async current => {
+      if (!this.matchesActivationBaseline(current, prepared.baseline)) return undefined
+      landed = true
+      return { kind: 'grant', payload: prepared.payload }
+    })
+    return landed ? prepared.written : undefined
+  }
+
+  /**
+   * Undo one activation whose state flush was rejected: the row this turn
+   * cleared in memory, the owner claim it took, and the projection it wrote
+   * (back to the captured baseline).
+   *
+   * The baseline decides the mechanism. A present baseline is restored with the
+   * same compare-and-write the projection used; only an absent baseline has to
+   * remove a record, and only while that record is still this activation's own
+   * payload. A foreign writer's record is never deleted.
+   */
+  private async compensateActivationFlush(
     provider: string,
     accountId: string,
-    row: KeyRecord,
+    prepared: ActivationPreparation,
+    undo: ActivationUndo,
     records: CredentialRecordsLike,
-  ): Promise<ActivationProjection> {
+  ): Promise<void> {
+    const row = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
+    if (row !== undefined) {
+      row.valueMissing = undo.valueMissing
+      row.cooldownUntil = undo.cooldownUntil
+      this.store.touch()
+    }
+    if (this.ownershipGenerations.get(provider) === undo.generation
+      && this.activeAccounts.get(provider) === accountId) {
+      this.activeAccounts.delete(provider)
+    }
+    if (prepared.baseline.state === 'absent') {
+      await this.deleteActivationProjection(records, provider, prepared.written)
+    } else {
+      await this.restoreActivationProjection(records, provider, prepared)
+    }
+  }
+
+  /** Put the projection back to the present baseline, if it is still ours. */
+  private async restoreActivationProjection(
+    records: CredentialRecordsLike,
+    provider: string,
+    prepared: ActivationPreparation,
+  ): Promise<void> {
+    const baseline = prepared.baseline
+    if (baseline.state !== 'present') return
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
-    return this.scheduleGrantReconciliation<ActivationProjection>(provider, async () => {
-      // MF1, the sibling's first guard: `close()` drains the chains under a
-      // deadline and then closes the store, so a body started past it must not
-      // write a secret-bearing projection.
-      if (this.closing) return { state: 'aborted' }
-      // MF1: a remount replaces the credential backend while this body awaits
-      // its read; everything below then describes records the new store does
-      // not hold.
-      const epoch = this.hydrationEpoch
-      // A removal that landed before this body claimed the chain refuses here
-      // rather than projecting a grant nothing owns.
-      if (!this.accountRowIsManaged(provider, row)) {
-        throw new Error(`Account "${accountId}" not found on ${provider}`)
-      }
-      // Re-read the generation under the chain: a rotation that committed
-      // before this body claimed its slot is already reflected here.
-      const grantRef = row.oauth!.grantRef
-      const stored = await records.readRecord(grantRef)
-      if (this.hydrationEpoch !== epoch) return { state: 'aborted' }
-      // The same pair `run` applies to its turn (1632, 1634-1636): the chain
-      // runs outside the queue, so it revalidates for itself.
-      if (this.persistenceRefused() || this.store.readOnly) return { state: 'aborted' }
-      if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
-        throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
-      }
-      const payload = structuredClone(stored.payload)
-      // The exact content this activation wrote, compared by payload (never by
-      // row object identity) when the withdrawal has to prove what it deletes.
-      const written = JSON.stringify(payload)
-      this.intentionalProjectionRemovals.delete(provider)
-      await records.modifyRecord(projectionKey, () => Promise.resolve({ kind: 'grant', payload }))
-      // F1: past this line the projection is persisted, so an abort has to
-      // carry `written` — the caller withdraws exactly that, through the
-      // same proof as the commit rollback, instead of leaving it behind.
-      if (this.hydrationEpoch !== epoch) return { state: 'aborted', written }
-      if (this.persistenceRefused()) return { state: 'aborted', written }
-      // A removal that completed while the write was in flight deleted the
-      // projection before this write re-created it. Its own cleanup already
-      // ran, so the record is withdrawn here through the delete authority
-      // rather than deleted blind (MF2).
-      if (!this.accountRowIsManaged(provider, row)) {
-        await this.deleteActivationProjection(records, provider, written)
-        return { state: 'withdrawn' }
-      }
-      // SF1 post-condition: the projection this activation wrote must still be
-      // the record the route serves. A removal that took it (or a native writer
-      // that replaced it) while the write was settling is not a success.
-      const live = await records.readRecord(projectionKey)
-      if (this.hydrationEpoch !== epoch) return { state: 'aborted', written }
-      if (this.persistenceRefused()) return { state: 'aborted', written }
-      if (live === undefined
-        || live.kind !== 'grant'
-        || !isOAuthGrantPayload(live.payload)
-        || JSON.stringify(live.payload) !== written) {
-        return { state: 'withdrawn' }
-      }
-      this.claimProjectionOwner(provider, row.id)
-      // The re-activated grant is the serving credential again, so a broker
-      // reference left by the key pool must go (see syncBrokerBinding): the
-      // committed projection is not rolled back by a settings failure.
-      await this.syncBrokerBinding(provider)
-      return {
-        state: 'projected',
-        written,
-        accountId: row.id,
-        generation: this.ownershipGenerations.get(provider) ?? 0,
-        grantRef,
-      }
-    })
+    try {
+      await records.modifyRecord(projectionKey, async current => {
+        if (current === undefined
+          || current.kind !== 'grant'
+          || JSON.stringify(current.payload) !== prepared.written) return undefined
+        return { kind: baseline.kind, payload: baseline.record.payload }
+      })
+    } catch (error) {
+      this.warn(`activation projection restore failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /**
