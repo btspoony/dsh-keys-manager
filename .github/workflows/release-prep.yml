@@ -1,9 +1,11 @@
 name: Release prep
 
 # Manual entry point: Actions → "Release prep" → Run workflow (optionally pass
-# an explicit X.Y.Z or X.Y.Z-prerelease, e.g. 0.1.1-alpha.1). Writes that one
-# version to both package.json files (+ lockfile sync), validates the build,
-# and opens a `release v<version>` PR. Merging that PR runs the Release
+# an explicit X.Y.Z or X.Y.Z-prerelease, e.g. 0.1.1-alpha.1). Assembles the
+# CHANGELOG.md section from the authored `.changes/unreleased/` fragments
+# (archived to `.changes/archive/<version>/`), writes that one version to both
+# package.json files (+ lockfile sync), validates the build, and opens a
+# `release v<version>` PR. Merging that PR runs the Release
 # workflow, which publishes dsh-keys-manager@<version> and
 # dsh-llm-omp-transports@<version> (formal versions to `latest`, prereleases
 # to their prerelease dist-tag), pushes both tags, and creates the GitHub
@@ -33,8 +35,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # Full history so `git describe --tags` can find the previous
-          # release tag (nearest ancestor tag of HEAD).
+          # Full history and tags so the already-released tag guards in
+          # prepare-release.mjs (`refs/tags/v<version>` and the transports tag)
+          # see every release.
           fetch-depth: 0
 
       # pnpm/action-setup must run before setup-node so that setup-node's
@@ -80,7 +83,11 @@ jobs:
           set -euo pipefail
           V="${{ steps.want.outputs.version }}"
           # One version drives both published packages: the helper writes it to
-          # the root and to packages/llm-omp/package.json.
+          # the root and to packages/llm-omp/package.json. It also assembles the
+          # CHANGELOG.md section from `.changes/unreleased/*.md` and archives the
+          # consumed fragments to `.changes/archive/<version>/`. An empty
+          # rendered notes body — zero fragments, or fragments with no `- `
+          # bullet lines — exits 1 (nothing to release), so the step fails here.
           if [ "$V" = "auto" ]; then
             OUT="$(node scripts/prepare-release.mjs)"
           else
@@ -106,39 +113,31 @@ jobs:
         run: |
           set -euo pipefail
           # PR body source: the `## [<version>]` section of CHANGELOG.md,
-          # written by the Bump version step above (prepare-release.mjs) and
-          # committed in this release PR. Same guarded extraction as the
-          # Release workflow, so the PR body and the GitHub Release body
-          # share the same extraction source (the same CHANGELOG section);
-          # the PR body additionally appends a merge-instruction line when
-          # the PR is opened below. Guard on the file existing: under
-          # `set -e`, awk on a missing CHANGELOG.md exits 2 and aborts the
-          # step before the fallback could run.
-          # Fall back to git log (nearest ancestor tag of HEAD, full history
-          # when no tag exists) only when the file or the section is missing,
-          # e.g. a release PR prepared before CHANGELOG.md existed.
+          # assembled from the `.changes/unreleased/` fragments by the Bump
+          # version step above (prepare-release.mjs) and committed in this
+          # release PR. Same guarded extraction as the Release workflow, so the
+          # PR body and the GitHub Release body share the same extraction
+          # source (the same CHANGELOG section); the PR body additionally
+          # appends a merge-instruction line when the PR is opened below.
+          # A missing section is fatal: prepare-release.mjs already refused a
+          # release without fragments, so there is no fallback notes source.
           VERSION="${{ steps.ver.outputs.version }}"
-          if [ -f CHANGELOG.md ]; then
-            # Escape regex metacharacters in the version inside awk (the gsub
-            # runs after `-v` argument escape processing, which would strip
-            # backslashes from a shell-escaped value) so the anchor matches
-            # literally: dots must not act as any-char. VERSION is validated
-            # upstream (X.Y.Z or X.Y.Z-prerelease); '-' is a literal character
-            # in awk ERE outside a character class, so prerelease suffixes
-            # need no extra escaping.
-            awk -v v="$VERSION" '
-              BEGIN { gsub(/\./, "\\\\&", v) }
-              /^## \[/ { if (in_section) exit }
-              $0 ~ "^## \\[" v "\\]" { in_section = 1 }
-              in_section
-            ' CHANGELOG.md > /tmp/notes.md
-          fi
+          # Escape regex metacharacters in the version inside awk (the gsub
+          # runs after `-v` argument escape processing, which would strip
+          # backslashes from a shell-escaped value) so the anchor matches
+          # literally: dots must not act as any-char. VERSION is validated
+          # upstream (X.Y.Z or X.Y.Z-prerelease); '-' is a literal character
+          # in awk ERE outside a character class, so prerelease suffixes
+          # need no extra escaping.
+          awk -v v="$VERSION" '
+            BEGIN { gsub(/\./, "\\\\&", v) }
+            /^## \[/ { if (in_section) exit }
+            $0 ~ "^## \\[" v "\\]" { in_section = 1 }
+            in_section
+          ' CHANGELOG.md > /tmp/notes.md
           if [ ! -s /tmp/notes.md ]; then
-            PREV_TAG=$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "")
-            git log --oneline --first-parent ${PREV_TAG:+$PREV_TAG..}HEAD > /tmp/notes.md
-            if [ ! -s /tmp/notes.md ]; then
-              echo "No commits between releases." > /tmp/notes.md
-            fi
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section."
+            exit 1
           fi
 
       - name: Commit prepared release
@@ -148,6 +147,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BRANCH="release/v${{ steps.ver.outputs.version }}"
           git checkout -B "$BRANCH"
+          # -A also stages the released files and the `.changes/` tree: the
+          # fragments the Bump version step moved to `.changes/archive/<version>/`
+          # and the CHANGELOG.md section it wrote.
           git add -A
           git commit -m "chore(release): prepare v${{ steps.ver.outputs.version }}"
           git push --force-with-lease origin "$BRANCH"
