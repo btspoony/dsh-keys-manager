@@ -3589,28 +3589,33 @@ export class KeysManagerService {
    * Make one account's grant payload the route's stored credential
    * (D1 activation projection).
    *
-   * Round-8 finding I-000106 (must-fix): the decide snapshot used to be read
-   * before the seam's lock, and `reconcileGrantRecord` runs OUTSIDE the
-   * mutation queue — so a rotation echo could repoint `row.oauth.grantRef` and
-   * delete the record being projected between the read and the write, leaving
-   * the route on an older generation than the row names. The whole
-   * read → project → claim section therefore runs on the provider's grant
-   * chain ({@link scheduleGrantReconciliation}) — the same chain the
-   * reconciler bodies use. A rotation committed before this body is observed
-   * in `row.oauth.grantRef`; one that arrives while the body runs is queued
-   * behind it and reconciles the generation this body projected. Either way
-   * the projection holds exactly the generation the row names.
+   * Plan iter-pool-activate-queue, "Spike outcome" — the contract this method
+   * implements. The slow half (read the row's grant, validate it, capture what
+   * the route serves now) runs outside the mutation queue, so a slow credential
+   * store does not delay unrelated mutations. The mutation queue turn owns every
+   * write:
    *
-   * The seam's per-key lock still serializes the read-decide-replace steps of
-   * `modifyRecord` (credentials/src/index.ts:236-250) against other writers.
-   * The account whose payload lands becomes the pool's active account and is
-   * cascade-selectable again.
+   * 1. admission checks in queue order, which produce this method's error
+   *    surface (`Provider "…" is not managed`, `Account "…" not found on …`,
+   *    `Key "…" is not an OAuth account`, `The credential store does not support
+   *    records`) — plus a re-check that the row still names the generation the
+   *    read used;
+   * 2. the projection write as a compare-and-write under the seam's per-key
+   *    lock (credentials/src/index.ts:236-250): it lands only while the live
+   *    record still equals the captured baseline, "both absent" included. A
+   *    rotation, a removal or any foreign writer that replaced the projection
+   *    meanwhile makes the compare fail, so this call refuses with the retryable
+   *    `could not be projected` message and leaves the newer projection
+   *    untouched — there is nothing to delete, because nothing was written;
+   * 3. the owner claim, the row writes and the returned `buildState`.
    *
-   * Plan iter-pool-activate-queue: that credential half runs on the chain
-   * BEFORE the mutation queue turn, so a slow credential store no longer
-   * delays unrelated mutations. The turn keeps what only admission order can
-   * decide — the activation error surface, the row writes and the returned
-   * `buildState`.
+   * There is deliberately no shutdown check after the write: `close()` awaits
+   * this queue before it closes the store, so a turn that started in time always
+   * finishes (measured in the spike that produced this contract). A check there
+   * is what used to leave an orphan projection behind.
+   *
+   * The one write the turn cannot make durable by itself is a rejected state
+   * flush; see {@link compensateActivationFlush} for that compensation.
    */
   async activateAccount(provider: string, accountId: string): Promise<StateView> {
     const records = this.credentialRecords()
@@ -3695,6 +3700,13 @@ export class KeysManagerService {
       // does not roll the mutation back (`1789-1800`), so the row is still
       // cleared in memory and the projection still serves the route. Undo both
       // once, by identity. Failures before the write leave `undo` unset.
+      //
+      // Residual (I-000090 territory): `undo` is assigned only once the write
+      // resolved, so a `modifyRecord` that applies its mutation and THEN
+      // rejects refuses with the raw seam error and keeps the projection. What
+      // compensation could run is undecidable from this repo — the seam would
+      // have to promise it never commits then rejects — so this shape is left
+      // as the seam reports it rather than guessed at.
       if (undo !== undefined) await this.compensateActivationFlush(provider, accountId, prepared!, undo, records!)
       throw error
     }
@@ -3752,10 +3764,16 @@ export class KeysManagerService {
   ): Promise<string | undefined> {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     let landed = false
-    this.intentionalProjectionRemovals.delete(provider)
     await records.modifyRecord(projectionKey, async current => {
       if (!this.matchesActivationBaseline(current, prepared.baseline)) return undefined
       landed = true
+      // Only this write supersedes a pending own-removal marker: a projection
+      // is about to serve again, so a removal echo still in flight cannot
+      // describe the live record. A refused compare must leave the marker
+      // armed for the removal it belongs to — clearing it there would let that
+      // removal's echo read as an out-of-band deletion (a spurious "removed
+      // outside Keys Manager" warning and a `valueMissing` row).
+      this.intentionalProjectionRemovals.delete(provider)
       return { kind: 'grant', payload: prepared.payload }
     })
     return landed ? prepared.written : undefined

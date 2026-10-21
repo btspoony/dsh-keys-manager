@@ -5362,11 +5362,16 @@ test('a close that lands during the projection write waits for the turn and keep
 // delete. A record a foreign writer replaced in that gap is left alone.
 
 // Plan "Spike outcome" step 4: only an `absent` baseline needs a delete, and
-// only while the record is still this activation's own payload. A foreign write
-// that lands before the delete is never removed (I-000090: the seam has no
-// compare-and-delete, so the final read is the narrowing, not a guarantee).
+// only while the record is still this activation's own payload. Here the foreign
+// write is already in place when the compensation's identity read looks at the
+// record, so the proof reports `differs` and nothing is deleted.
+//
+// The proof -> delete window itself is NOT covered by this case and cannot be:
+// the seam's `deleteRecord(key)` takes no expected payload (host-types.ts:142,
+// I-000090), so a writer that lands between the proof and the delete still loses
+// its grant. Closing that needs the seam CAS, not another read here.
 
-test('a projection replaced between the proof and the delete survives the flush compensation', async () => {
+test('a foreign projection present when the compensation proves identity is left untouched', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
   row.cooldownUntil = 4_200
@@ -5589,6 +5594,46 @@ test('a close requested while the turn is queued still lets the activation persi
 // The rollback's other half: what this activation wrote is deleted only while
 // it still holds that exact payload. A native writer that repointed the route
 // in the same window keeps its grant, and only the claim is withdrawn.
+
+// N1: an own-removal marker is armed by a deletion this manager already
+// performed (a demotion or an aborted login) and is consumed one-shot by that
+// deletion's echo. A refused compare writes nothing, so it must leave the marker
+// armed — clearing it there would let the echo land as an out-of-band removal.
+
+test('a refused compare keeps a pending own-removal marker', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  h.credentials.records.set(GRANT_KEY, {
+    kind: 'grant',
+    payload: { type: 'oauth', refresh: 'rt-before', access: 'at-before', expires: 1_900_000_000_000, accountId: 'acc-before' },
+  })
+  const markers = (h.service as unknown as { intentionalProjectionRemovals: Map<string, number> }).intentionalProjectionRemovals
+  const park = parkGrantRead(h, GRANT_KEY)
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    // A removal this manager already performed is waiting for its echo.
+    const armedAt = Date.now()
+    markers.set('anthropic', armedAt)
+    // A foreign writer replaces the projection, so the compare will refuse.
+    h.credentials.records.set(GRANT_KEY, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-foreign', access: 'at-foreign', expires: 1_900_000_000_000, accountId: 'acc-foreign' },
+    })
+    park.release()
+    await assert.rejects(() => activating, /could not be projected/)
+    assert.equal(
+      markers.get('anthropic'),
+      armedAt,
+      'a refused compare cleared the marker its own removal was waiting on',
+    )
+    assert.equal((h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh, 'rt-foreign')
+  } finally {
+    park.release()
+    await activating.catch(() => {})
+    park.restore()
+    await h.close()
+  }
+})
 
 // Plan "Spike outcome" step 5: a foreign writer that replaced the projection
 // between the baseline read and the turn is detected inside the lock and left
