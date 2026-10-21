@@ -13976,3 +13976,46 @@ test('a rotation write parked before its updater persists nothing after superses
     await h.close()
   }
 })
+
+// PR review round 39: the same parked updater must also refuse a write when
+// shutdown started while it waited, not only when the attempt was superseded.
+
+test('a rotation write parked before its updater persists nothing after shutdown', async () => {
+  const h = await harness()
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  try {
+    await h.service.adoptProvider('anthropic')
+    const { rowId, grantRef } = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-s', email: 's@example.com', refresh: 'rt-s' })
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === rowId)!
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let parked = false
+    h.credentials.raw.modifyRecord = async (key: string, mutate: any) => {
+      if (!parked) {
+        parked = true
+        await gate
+      }
+      return realModify(key, mutate)
+    }
+    const write = (h.service as unknown as {
+      writeBackRotation: (
+        provider: string,
+        owner: KeyRecord,
+        payload: Record<string, unknown>,
+        capability?: unknown,
+        stillCurrent?: () => boolean,
+      ) => Promise<void>
+    }).writeBackRotation('anthropic', row, { refresh: 'rt-shutdown-rotated', access: 'at-s' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    ;(h.service as unknown as { shutdownRequested: boolean }).shutdownRequested = true
+    release()
+    await assert.rejects(write)
+    assert.equal(row.oauth!.grantRef, grantRef, 'a write resumed after shutdown moved the row')
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-shutdown-rotated').digest('hex').slice(0, 12))
+    assert.equal(h.credentials.records.has(rotatedRef), false, 'a write resumed after shutdown persisted the rotated record')
+  } finally {
+    ;(h.service as unknown as { shutdownRequested: boolean }).shutdownRequested = false
+    h.credentials.raw.modifyRecord = realModify
+    await h.close()
+  }
+})
