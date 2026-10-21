@@ -3,6 +3,17 @@
 All notable changes to dsh-keys-manager are documented here. Generated from
 git log by the release-prep workflow.
 
+## [0.2.2] - 2026-10-21
+
+- 838fb85 Merge pull request #31 from btspoony/feat/unified-release-version
+- ed5baaa Merge pull request #26 from btspoony/fix/oauth-binding-and-key-test
+- 2981bd5 Merge pull request #29 from btspoony/fix/retry-step-regressions
+- 25d7fc8 Merge pull request #28 from btspoony/feat/omp-transport-cursor
+- 03352c5 Merge pull request #27 from btspoony/docs/readme-extra-providers
+- 1d498e8 Merge pull request #23 from btspoony/fix/issue-18-harvest-abort-compensation
+- be938f0 Merge pull request #25 from btspoony/feat/issue-11-coreweave-header-carrier
+- 175e827 Merge pull request #24 from btspoony/docs/readme-desktop-web-install
+
 ## [0.2.1] - 2026-10-20
 
 - 83c11e1 Merge pull request #20 from btspoony/fix/authorization-inject
