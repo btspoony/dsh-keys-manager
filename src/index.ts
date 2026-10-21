@@ -1341,7 +1341,13 @@ export class KeysManagerService {
     }
     return (async () => {
       try {
-        await Promise.all(Object.values(this.store.providers).map(async providerRecord => {
+        // allSettled, never all: under `all`, a rejection from any single
+        // provider task settles this awaited pass at once, so the finally below
+        // flips `hydrationSettled` while the other providers' reads are still
+        // in flight and `awaitProjectionOwnership` calls them ready. No task
+        // body can reject today (the read error is caught inside it), so this
+        // is a structural guard — do not flip it back for style.
+        await Promise.allSettled(Object.values(this.store.providers).map(async providerRecord => {
           const provider = providerRecord.provider
           const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
           try {
