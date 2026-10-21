@@ -11581,3 +11581,61 @@ test('a removal started during the recovery await refuses the test instead of re
     await h.close()
   }
 })
+
+// ── PR #26 review round 16 ──────────────────────────────────────────────────
+
+// The regressions above cover a removal that goes through the coordinator
+// (rounds 12/15) and an in-place mutation of the captured projection (round
+// 14), but not an out-of-band store edit in the window between the pre-borrow
+// captures and the borrow write. A native writer splices the tested row from
+// the provider's keys; the borrow-time re-check must refuse instead of
+// re-projecting the removed account's grant and sending with it.
+test('a row deleted out of band between the captures and the borrow refuses the test', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let armed = false
+  let deleted = false
+  let calls = 0
+  try {
+    await drainGrantChain(h, 'anthropic')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    armed = true
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+    // Both pre-borrow reads have returned. The row is then removed directly in
+    // the store — no removal coordinator, no retirement mark, no credential
+    // delete — before the borrow write runs.
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      const record = await realRead(key)
+      if (armed && !deleted && key === GRANT_KEY) {
+        deleted = true
+        const keys = h.store.provider('anthropic')!.keys
+        keys.splice(keys.findIndex(row => row.id === first.rowId), 1)
+        h.store.touch()
+      }
+      return record
+    }
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(deleted, true, 'the row was removed inside the borrow window')
+    // A structured refusal, not a pass for a credential the route no longer
+    // carries.
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /was removed from anthropic before its test could borrow it/)
+    // Nothing was sent for the removed row…
+    assert.equal(calls, 0)
+    // …the tested grant was never projected over the live one…
+    assert.equal(liveProjectionRefresh(h), 'rt-second')
+    // …and the borrow marker never went up.
+    const borrows = (h.service as unknown as { testBindingBorrows: Set<string> }).testBindingBorrows
+    assert.equal(borrows.has('anthropic'), false, 'the refused borrow left its marker behind')
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
