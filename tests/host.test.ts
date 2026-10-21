@@ -5595,6 +5595,141 @@ test('a close requested while the turn is queued still lets the activation persi
 // it still holds that exact payload. A native writer that repointed the route
 // in the same window keeps its grant, and only the claim is withdrawn.
 
+// P1-A: every mutation a record-updated reconciliation performs is gated by the
+// ownership generation `claimProjectionOwner` bumps. A body that captured its
+// snapshot before the activation committed must leave the claim, the foreign
+// classification, the row state and the warnings exactly as the activation left
+// them — for a branch that classifies the route foreign (a native api-key
+// record) and for one that only drops the owner map entry (a foreign grant).
+
+test('a reconcile that captured its snapshot before the activation keeps the new claim', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native' })
+  await drainGrantChain(h, 'anthropic')
+  const state = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+    warnings: string[]
+  }
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  row.valueMissing = false
+  const park = parkGrantRead(h, GRANT_KEY)
+  h.credentials.emitRecordUpdated(GRANT_KEY)
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    // The reconcile has read the native record and captured its generation.
+    await h.service.activateAccount('anthropic', rowId)
+    assert.equal(state.activeAccounts.get('anthropic'), rowId)
+    // Drain the activation's own warnings so only the stale body's can appear.
+    h.service.buildState()
+    park.release()
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(state.activeAccounts.get('anthropic'), rowId, 'the stale reconcile cleared the activation claim')
+    assert.equal(state.foreignProjections.has('anthropic'), false, 'the stale reconcile marked the route foreign')
+    assert.equal(row.valueMissing, false, 'the stale reconcile demoted the activated row')
+    assert.equal(
+      state.warnings.some(warning => /natively managed|not part of the account pool/.test(warning)),
+      false,
+      'the stale reconcile classified the freshly claimed route out-of-band',
+    )
+  } finally {
+    park.release()
+    park.restore()
+    await h.close()
+  }
+})
+
+// P1-A, second shape: the stale body would merely drop the owner map entry (a
+// foreign grant with no matching row). Nothing it mutates may survive.
+
+test('a reconcile whose stale branch would only drop the owner entry keeps the claim', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  h.credentials.records.set(GRANT_KEY, grantPayload({
+    refresh: 'rt-foreign',
+    access: 'at-foreign',
+    accountId: 'acc-foreign',
+  }))
+  await drainGrantChain(h, 'anthropic')
+  const state = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+    warnings: string[]
+  }
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  row.valueMissing = false
+  const park = parkGrantRead(h, GRANT_KEY)
+  h.credentials.emitRecordUpdated(GRANT_KEY)
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    await h.service.activateAccount('anthropic', rowId)
+    assert.equal(state.activeAccounts.get('anthropic'), rowId)
+    h.service.buildState()
+    park.release()
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(state.activeAccounts.get('anthropic'), rowId, 'the stale reconcile dropped the activation claim')
+    assert.equal(state.foreignProjections.has('anthropic'), false, 'the stale reconcile marked the route foreign')
+    assert.equal(row.valueMissing, false, 'the stale reconcile demoted the activated row')
+    assert.equal(
+      state.warnings.some(warning => /not part of the account pool|unrecognized payload/.test(warning)),
+      false,
+      'the stale reconcile classified the freshly claimed route out-of-band',
+    )
+  } finally {
+    park.release()
+    park.restore()
+    await h.close()
+  }
+})
+
+
+// P1-B: an api-key projection carries its secret in `key`/`env` with no
+// `payload`. A compare limited to `kind` + `payload` would read a rotated native
+// credential as unchanged and overwrite it.
+
+test('a native credential rotated between the read and the turn refuses and survives', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-1', env: { REGION: 'eu' } })
+  const park = parkGrantRead(h, GRANT_KEY)
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-2', env: { REGION: 'us' } })
+    park.release()
+    await assert.rejects(
+      () => activating,
+      /could not be projected/,
+      'a rotated native credential was overwritten by the projection',
+    )
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal(live.kind, 'api-key')
+    assert.equal(live.key, 'sk-native-2', 'the newer native secret was lost')
+    assert.deepEqual(live.env, { REGION: 'us' })
+  } finally {
+    park.release()
+    await activating.catch(() => {})
+    park.restore()
+    await h.close()
+  }
+})
+
+// P1-C: the flush-failure compensation restores the captured record itself.
+// Rebuilding it from `kind` + `payload` drops an api-key projection's secret.
+
+test('a rejected flush restores a native api-key projection with its secret', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const baseline = { kind: 'api-key' as const, key: 'sk-native-before', env: { REGION: 'eu' } }
+  h.credentials.records.set(GRANT_KEY, baseline)
+  await chmod(h.dir, 0o500)
+  try {
+    await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+  } finally {
+    await chmod(h.dir, 0o700)
+  }
+  const live = h.credentials.records.get(GRANT_KEY)!
+  assert.deepEqual(live, { kind: 'api-key', key: 'sk-native-before', env: { REGION: 'eu' } })
+  await h.close()
+})
+
 // N1: an own-removal marker is armed by a deletion this manager already
 // performed (a demotion or an aborted login) and is consumed one-shot by that
 // deletion's echo. A refused compare writes nothing, so it must leave the marker

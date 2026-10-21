@@ -15,6 +15,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import {
   KEY_LIMIT,
   accountRef,
@@ -981,7 +982,7 @@ function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OA
  */
 type ActivationBaseline =
   | { state: 'absent' }
-  | { state: 'present'; kind: CredentialRecordLike['kind']; payload: string; record: CredentialRecordLike }
+  | { state: 'present'; record: CredentialRecordLike }
 
 interface ActivationPreparation {
   grantRef: string
@@ -1643,6 +1644,17 @@ export class KeysManagerService {
     const generation = (this.ownershipGenerations.get(provider) ?? 0) + 1
     this.ownershipGenerations.set(provider, generation)
     return generation
+  }
+
+  /**
+   * Whether a claim landed after `generation` was captured. A reconciliation
+   * reads its snapshot before its awaited record read and decides after it, so
+   * an activation (or login) that claimed the route in between owns the answer
+   * now: the stale body must not clear the claim, mark the route foreign, or
+   * re-point the binding. The hydration write uses the same guard.
+   */
+  private ownershipSuperseded(provider: string, generation: number): boolean {
+    return (this.ownershipGenerations.get(provider) ?? 0) !== generation
   }
 
   /**
@@ -3235,7 +3247,7 @@ export class KeysManagerService {
       // can already be superseded. The newer claim owns the route and settled
       // the binding itself: this stale removal decides nothing — no owner
       // delete, no rebind — it only consumes its own one-shot removal marker.
-      if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) {
+      if (this.ownershipSuperseded(provider, generation)) {
         this.intentionalProjectionRemovals.delete(provider)
         return
       }
@@ -3253,6 +3265,7 @@ export class KeysManagerService {
         // with the state the removal created, so the surviving pool serves
         // through the broker instead of pi-ai's bare credential (PR review
         // round 2).
+        if (this.ownershipSuperseded(provider, generation)) return
         await this.syncBindingAfterProjectionChange(provider)
         return
       }
@@ -3273,6 +3286,7 @@ export class KeysManagerService {
       // only an owned one (PR review round 3): a native writer can replace the
       // managed projection first and delete it later, leaving the pool to
       // serve an unbound profile.
+      if (this.ownershipSuperseded(provider, generation)) return
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
@@ -3290,6 +3304,10 @@ export class KeysManagerService {
     // reference over it. With no OAuth row the unowned-grant branch below
     // classifies a valid grant the same way.
     if (record.kind === 'api-key') {
+      // A newer claim (an activation that wrote and claimed after this body
+      // captured its snapshot) owns the route now; this stale classification
+      // must not clear it.
+      if (this.ownershipSuperseded(provider, generation)) return
       // Native api-key management took the route over: the manager no
       // longer owns any projection here.
       this.activeAccounts.delete(provider)
@@ -3302,16 +3320,22 @@ export class KeysManagerService {
       this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
       // pi-ai resolves the broker reference before this record, so a route
       // left bound would keep serving the pool (PR review round 4).
+      // The bump above is this body's own; only a further move is a supersession.
+      const committed = this.ownershipGenerations.get(provider) ?? generation
+      if ((this.ownershipGenerations.get(provider) ?? committed) !== committed) return
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
     if (!isOAuthGrantPayload(record.payload)) {
+      if (this.ownershipSuperseded(provider, generation)) return
       // An unrecognized payload is not ours to interpret: drop the stale
       // owner entry so failure attribution and demotion never fire on it.
       this.activeAccounts.delete(provider)
       this.foreignProjections.add(provider)
       this.noteProjectionCommitted(provider)
       this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
+      const committed = this.ownershipGenerations.get(provider) ?? generation
+      if ((this.ownershipGenerations.get(provider) ?? committed) !== committed) return
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
@@ -3323,6 +3347,7 @@ export class KeysManagerService {
     // applies, so a restarted process and the live reconciler agree.
     const owner = matchOwningAccount(provider, accounts, payload)
     if (owner === undefined) {
+      if (this.ownershipSuperseded(provider, generation)) return
       // A foreign account's grant serves the route: no pool row owns the
       // projection, so the previous owner entry must not survive it — and the
       // live record keeps the pool from claiming the route (round 3).
@@ -3330,6 +3355,8 @@ export class KeysManagerService {
       this.foreignProjections.add(provider)
       this.noteProjectionCommitted(provider)
       this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
+      const committed = this.ownershipGenerations.get(provider) ?? generation
+      if ((this.ownershipGenerations.get(provider) ?? committed) !== committed) return
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
@@ -3342,6 +3369,10 @@ export class KeysManagerService {
     // (`valueMissing`) still qualifies — a projection that reappears for it
     // is re-adopted below. Only a removal in progress is refused.
     if (!this.accountRowIsManaged(provider, owner)) return
+    // A newer claim landed while this body was resolving its read: the
+    // rotation write, the row commit and the binding sync below all describe a
+    // generation that claim already superseded.
+    if (this.ownershipSuperseded(provider, generation)) return
     // F1 (I-000081): the matched grant IS the live projection, so this row
     // owns it from now on — even when no in-process login or activation
     // ran (the post-restart echo-rotation case: a hydrated row, no owner
@@ -3733,9 +3764,7 @@ export class KeysManagerService {
       grantRef,
       payload,
       written: JSON.stringify(payload),
-      baseline: live === undefined
-        ? { state: 'absent' }
-        : { state: 'present', kind: live.kind, payload: JSON.stringify(live.payload), record: structuredClone(live) },
+      baseline: live === undefined ? { state: 'absent' } : { state: 'present', record: structuredClone(live) },
     }
   }
 
@@ -3745,9 +3774,12 @@ export class KeysManagerService {
     baseline: ActivationBaseline,
   ): boolean {
     if (baseline.state === 'absent') return current === undefined
-    return current !== undefined
-      && current.kind === baseline.kind
-      && JSON.stringify(current.payload) === baseline.payload
+    // The compare covers the complete opaque record the seam hands back —
+    // `kind`, `key`, `env` and `payload`. An api-key projection keeps its
+    // secret in `key`/`env` with `payload` undefined, so comparing only the
+    // payload would read a rotated native credential as unchanged and overwrite
+    // it.
+    return current !== undefined && isDeepStrictEqual(current, baseline.record)
   }
 
   /**
@@ -3827,7 +3859,10 @@ export class KeysManagerService {
         if (current === undefined
           || current.kind !== 'grant'
           || JSON.stringify(current.payload) !== prepared.written) return undefined
-        return { kind: baseline.kind, payload: baseline.record.payload }
+        // Return the captured record itself: rebuilding it from `kind` and
+        // `payload` would drop the `key`/`env` an api-key projection carries and
+        // leave the route unusable after a failed flush.
+        return structuredClone(baseline.record)
       })
     } catch (error) {
       this.warn(`activation projection restore failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
