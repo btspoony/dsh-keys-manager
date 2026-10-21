@@ -13402,3 +13402,170 @@ test('a test started while close restores the outstanding borrows is refused', {
     await h.close()
   }
 })
+
+// ── PR #26 review round 35 ──────────────────────────────────────────────────
+
+// Codex P1 (round 35): `reconcileGrantRecord` checked the shutdown state at its
+// entry only. The drain abandons a chain that parked on a record read, and the
+// continuation then wrote the rotated grant record back and committed it into a
+// manager that had already closed. Every await re-checks the state now, and the
+// writes that follow it are refused once shutdown started.
+test('a grant reconcile parked across close writes nothing', { timeout: 10_000 }, async () => {
+  const { h } = await harnessWithTwoProjectedAccounts()
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  let releaseRead: (() => void) | undefined
+  const readGate = new Promise<void>(resolve => { releaseRead = resolve })
+  let parked = false
+  let counting = false
+  const writes = { modify: 0, delete: 0 }
+  raw.modifyRecord = async (...args: any[]) => {
+    if (counting) writes.modify += 1
+    return await realModify(...args)
+  }
+  raw.deleteRecord = async (...args: any[]) => {
+    if (counting) writes.delete += 1
+    return await realDelete(...args)
+  }
+  raw.readRecord = async (key: string) => {
+    if (key === GRANT_KEY && !parked) {
+      parked = true
+      await readGate
+    }
+    return realRead(key)
+  }
+  ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+  ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+  try {
+    // The echo for the live projection parks the reconciler in its read; the
+    // record it will answer with names the tested row, so the continuation
+    // would write the rotated generation back.
+    h.emitEvent('credentials/record-updated', GRANT_KEY)
+    await eventually(() => assert.equal(parked, true))
+
+    await h.service.close()
+
+    // What close() left behind is the baseline the resumed chain may not move.
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')
+    const revision = namespace.revision
+    const records = JSON.stringify([...h.credentials.records])
+    const state = JSON.stringify(h.store.state)
+    const file = await readFile(h.store.file, 'utf8')
+    counting = true
+
+    releaseRead?.()
+    await new Promise<void>(resolve => { setTimeout(resolve, 50) })
+
+    assert.deepEqual(rejections, [], 'the abandoned reconcile rejected after close()')
+    assert.equal(writes.modify + writes.delete, 0, 'a credential record was written after close()')
+    assert.equal(JSON.stringify([...h.credentials.records]), records, 'a credential record changed after close()')
+    assert.equal(namespace.revision, revision, 'the settings document was mutated after close()')
+    assert.equal(JSON.stringify(h.store.state), state, 'the provider state was mutated after close()')
+    assert.equal(await readFile(h.store.file, 'utf8'), file, 'the state document was rewritten after close()')
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    releaseRead?.()
+    await h.close()
+  }
+})
+
+// Codex P1 (round 35): `cleanupTestWindow` checked the shutdown state before its
+// first await only. A cleanup that parked in the projection re-read resumed
+// after `close()` and ran its compare-by-payload write, its removal and the
+// binding sync against a closed manager. The wait and every write decision now
+// re-check the state at the point of writing.
+test('a test cleanup parked across close writes nothing', { timeout: 10_000 }, async () => {
+  const h = await harness()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  let releaseRead: (() => void) | undefined
+  const readGate = new Promise<void>(resolve => { releaseRead = resolve })
+  let armed = false
+  let parked = false
+  let counting = false
+  const writes = { modify: 0, delete: 0 }
+  raw.modifyRecord = async (...args: any[]) => {
+    if (counting) writes.modify += 1
+    return await realModify(...args)
+  }
+  raw.deleteRecord = async (...args: any[]) => {
+    if (counting) writes.delete += 1
+    return await realDelete(...args)
+  }
+  raw.readRecord = async (key: string) => {
+    if (armed && key === GRANT_KEY && !parked) {
+      parked = true
+      await readGate
+    }
+    return realRead(key)
+  }
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    const gate = new Promise<void>(resolve => { releaseTest = resolve })
+    let entered!: () => void
+    const enteredGate = new Promise<void>(resolve => { entered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      entered()
+      // The request only ends once the test releases it, so the cleanup that
+      // follows it is the phase this case parks.
+      await gate
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    testRun = h.service.testKey('anthropic', account.rowId)
+    await enteredGate
+    // The borrow landed: the tested account is projected (the pre-test state
+    // had no projection at all).
+    assert.equal(liveProjectionRefresh(h), 'rt-only')
+
+    // Only the cleanup's own re-read parks from here on: everything before it
+    // (the borrow, the request) has already read its records.
+    armed = true
+    releaseTest!()
+    await eventually(() => assert.equal(parked, true))
+
+    await h.service.close()
+
+    // What close() left behind is the baseline the resumed cleanup may not move.
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')
+    const revision = namespace.revision
+    const records = JSON.stringify([...h.credentials.records])
+    const state = JSON.stringify(h.store.state)
+    const file = await readFile(h.store.file, 'utf8')
+    counting = true
+
+    releaseRead!()
+    await testRun
+    // The abandoned window's settlement retries run off the test promise.
+    await new Promise<void>(resolve => { setTimeout(resolve, 50) })
+
+    assert.deepEqual(rejections, [], 'the abandoned cleanup rejected after close()')
+    assert.equal(writes.modify + writes.delete, 0, 'a credential record was written after close()')
+    assert.equal(JSON.stringify([...h.credentials.records]), records, 'a credential record changed after close()')
+    assert.equal(namespace.revision, revision, 'the settings document was mutated after close()')
+    assert.equal(JSON.stringify(h.store.state), state, 'the provider state was mutated after close()')
+    assert.equal(await readFile(h.store.file, 'utf8'), file, 'the state document was rewritten after close()')
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    releaseRead?.()
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

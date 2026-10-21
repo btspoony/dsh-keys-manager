@@ -1634,6 +1634,15 @@ export class KeysManagerService {
     this.pruneLoginAttempts(now)
   }
 
+  /**
+   * Whether a continuation that resumes from an await must stop writing
+   * (PR review round 35). `shutdownRequested` is up for `close()`'s own
+   * pre-close restoration, which writes by design and never consults this.
+   */
+  private persistenceRefused(): boolean {
+    return this.closing || this.shutdownRequested
+  }
+
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
   async close(): Promise<void> {
     // PR review round 34: the entry marker goes up before the restoration, so
@@ -3103,6 +3112,9 @@ export class KeysManagerService {
     const generation = this.ownershipGenerations.get(provider) ?? 0
     const record = await records.readRecord(key)
     if (this.hydrationEpoch !== epoch) return
+    // PR review round 35: shutdown abandons this chain, so the body resumes
+    // here after `close()`. The read may finish; the writes below may not.
+    if (this.persistenceRefused()) return
     // PR review round 13: this read is authoritative for the provider's
     // projection, so it answers what a failed startup hydration could not —
     // ownership stops being unknown and the binding repair it skipped runs.
@@ -3268,6 +3280,9 @@ export class KeysManagerService {
     // on; a remount since then makes every following decision (the owner
     // cleanup, the generation commit) describe the replaced backend.
     if (this.hydrationEpoch !== epoch) return
+    // PR review round 35: the write above is the last one this body may start
+    // once shutdown began; the compensation and commit below are refused here.
+    if (this.persistenceRefused()) return
     // C6-1 post-write revalidation: a removal that landed while the write
     // was in flight already deleted its own record, so the generation just
     // written must be compensated or it outlives the account. The removed
@@ -3293,6 +3308,9 @@ export class KeysManagerService {
     // PR review round 32: the staleness probe is an await; the store may have
     // been replaced under it.
     if (this.hydrationEpoch !== epoch) return
+    // PR review round 35: the probe is another await; a shutdown that started
+    // under it refuses the discard/compensation below.
+    if (this.persistenceRefused()) return
     if (!stillCurrent) {
       if (rotatedRef !== previousRef) {
         // R5-MF1: the staleness probe is awaited, and a settled harvest can
@@ -3324,6 +3342,9 @@ export class KeysManagerService {
     // exactly like the harvest-time cleanup. QC N1: the ref scheme, identity
     // merge and cleanup are the one write-back owned by
     // {@link commitGrantGeneration}, shared with the connection test.
+    // PR review round 35: the commit is this body's persisted state write; a
+    // shutdown that began under any of the awaits above refuses it.
+    if (this.persistenceRefused()) return
     await this.commitGrantGeneration(provider, owner, payload, rotatedRef)
   }
 
@@ -3804,6 +3825,10 @@ export class KeysManagerService {
     // borrow/binding mutations this window started. Past the caller's deadline
     // an unsettled mutation is a failed cleanup, not a clean route.
     await this.awaitWindowMutations(window)
+    // PR review round 35: the wait above is an await, and shutdown's own
+    // restoration owns every outstanding window from its entry — this cleanup
+    // must not write after it.
+    if (this.persistenceRefused()) return 'Keys Manager is shutting down; the test cleanup was skipped'
     const facts = window.facts
     if (facts !== undefined) {
       // PR review round 28: a restore that starts now reads the state the
@@ -3817,6 +3842,9 @@ export class KeysManagerService {
     // PR review round 3: a superseded attempt may not persist a binding
     // decision derived from a world a newer window now owns.
     if (stillCurrent !== undefined && !stillCurrent()) return 'a newer cleanup attempt took over this provider'
+    // PR review round 35: the restore above awaited; a shutdown that started
+    // under it refuses the binding write below.
+    if (this.persistenceRefused()) return 'Keys Manager is shutting down; the test cleanup was skipped'
     // QC B4: one sync at window end, after the owner map and the projection
     // are back, so the persisted binding matches the state the route actually
     // restored to.
@@ -4454,6 +4482,11 @@ export class KeysManagerService {
     // and the binding sync — is gated on it.
     const superseded = (): boolean => stillCurrent !== undefined && !stillCurrent()
     const takeover = 'a newer cleanup attempt took over this provider'
+    // PR review round 35: the re-read above is an await a cleanup can park in
+    // across `close()`. Only `closing` is read here: shutdown's own pre-close
+    // restoration is a writer by design and runs before that flag goes up.
+    const shutdown = 'Keys Manager is shutting down; the test cleanup was skipped'
+    if (this.closing) return shutdown
     // PR review round 8: the fence is checked in each branch that writes the
     // owner map, instead of once before every branch. The pre-branch check ran
     // after the only await, so it pre-empted the branch fences below and made
@@ -4488,6 +4521,7 @@ export class KeysManagerService {
         // PR review round 8: this branch's write-back starts an awaited write,
         // so it checks the attempt fence where it is about to write.
         if (superseded()) return takeover
+        if (this.closing) return shutdown
         try {
           await this.writeBackRotation(provider, row, liveGrant!)
         } catch (error) {
@@ -4567,8 +4601,9 @@ export class KeysManagerService {
         // that writer's projection instead of being deleted as a leftover.
         let decidedAgainst: string | undefined = undefined
         await records.modifyRecord(key, async current => {
-          // A superseded attempt leaves the record exactly as it found it.
-          if (superseded()) return undefined
+          // A superseded attempt, or a cleanup the shutdown overtook, leaves
+          // the record exactly as it found it.
+          if (superseded() || this.closing) return undefined
           if (current === undefined) return undefined
           const currentGrant = current.kind === 'grant' && isOAuthGrantPayload(current.payload)
             ? current.payload
@@ -4580,12 +4615,16 @@ export class KeysManagerService {
           return undefined
         })
         if (superseded()) return takeover
+        if (this.closing) return shutdown
         if (decidedAgainst === undefined || !await this.projectionStillMatches(records, key, decidedAgainst)) {
           const liveAfter = await records.readRecord(key)
           // PR review round 6: this reconcile follows an awaited re-read; a
           // superseded attempt may not repoint the owner from a world a newer
           // window now owns.
           if (superseded()) return takeover
+          // PR review round 35: the re-read is the cleanup's last await before
+          // it would write; a shutdown that began under it stops the restore.
+          if (this.closing) return shutdown
           this.reconcileProjectionOwner(provider, liveAfter)
           // Already gone: the route has no projection, which is the state the
           // test found. Anything else is a grant this test may not remove —
@@ -4598,6 +4637,7 @@ export class KeysManagerService {
         }
         // The projection this test borrowed may already be a newer window's.
         if (superseded()) return takeover
+        if (this.closing) return shutdown
         await records.deleteRecord(key)
       } else {
         // QC N2: the compare travels with the write, so a foreign payload
@@ -4606,8 +4646,9 @@ export class KeysManagerService {
         // (the borrowed grant, or a rotation of the tested row) is replaced.
         const snapshot = structuredClone(previous)
         left = await records.modifyRecord(key, current => {
-          // A superseded attempt leaves the record exactly as it found it.
-          if (superseded()) return Promise.resolve(current)
+          // A superseded attempt, or a cleanup the shutdown overtook, leaves
+          // the record exactly as it found it.
+          if (superseded() || this.closing) return Promise.resolve(current)
           const currentGrant = current !== undefined && current.kind === 'grant' && isOAuthGrantPayload(current.payload)
             ? current.payload
             : undefined
@@ -4617,6 +4658,7 @@ export class KeysManagerService {
           return Promise.resolve(testLeft ? snapshot : current)
         })
         if (superseded()) return takeover
+        if (this.closing) return shutdown
       }
     } catch (error) {
       // The store still holds what the re-read saw: keep the owner map on
@@ -4679,6 +4721,9 @@ export class KeysManagerService {
     const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
     const rotatedRef = accountRef(provider, hash)
     await records.modifyRecord(rotatedRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+    // PR review round 35: the write above is an await, and the commit below is
+    // the persisted state write that follows it.
+    if (this.closing) throw new Error('Keys Manager is shutting down')
     await this.commitGrantGeneration(provider, row, payload, rotatedRef)
   }
 
@@ -5559,6 +5604,10 @@ export class KeysManagerService {
       if (current !== undefined && !(options.takeover === true && current === record.originalApiKeyEnv)) return false
     }
     const path = [...record.settingsPath, 'apiKeyEnv']
+    // PR review round 35: the last point before the settings write. Only
+    // `closing` is read: shutdown's own pre-close restoration writes here by
+    // design and runs before that flag goes up.
+    if (this.closing) return false
     try {
       // The entry gate above read a snapshot; ownership can turn unknown while
       // this write re-reads its descriptor (PR review round 25). Binding is a
@@ -5585,6 +5634,9 @@ export class KeysManagerService {
     // repair pass owns it.
     const correction = options.correction ?? 0
     if (correction < BINDING_CORRECTION_LIMIT) {
+      // PR review round 35: the mutation above settled across an await, so the
+      // corrective write it may recurse into is refused once shutdown began.
+      if (this.closing) return false
       const settled = this.store.provider(provider)
       if (settled !== undefined && this.keyPoolServes(settled) !== (desired !== undefined)) {
         return this.syncBrokerBinding(provider, { ...options, correction: correction + 1 })
