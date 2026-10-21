@@ -10867,21 +10867,50 @@ test('a release is refused while a probe outlives the isolation deadline', async
       } as any)
     }
 
+    // The api-key window borrows nothing, so the record, the profile fields
+    // the plugin wrote and every managed credential must be what a refused
+    // release leaves behind.
+    const recordBefore = h.store.provider('zai-coding-cn')!
+    const brokerRefBefore = recordBefore.brokerRef
+    const keysBefore = structuredClone(recordBefore.keys)
+    const profileBefore = structuredClone(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'])
+    const revisionBefore = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai').revision
+    const credentialBefore = await h.credentials.raw.resolve(target.ref)
+
     const testRun = h.service.testKey('zai-coding-cn', target.id)
     await probeEntered
     await assert.rejects(
       () => h.service.releaseProvider('zai-coding-cn'),
       /did not settle within|still being cleaned up/,
     )
-    // Refused, not partially applied: the row and its literal are still there.
-    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
-    assert.equal(h.credentials.refs.has(target.ref), true)
+    // Refused, not partially applied: the record, its pool, the profile fields
+    // the plugin wrote and every managed credential are untouched, and no
+    // settings write happened on the way to the refusal.
+    assert.equal(h.store.provider('zai-coding-cn'), recordBefore)
+    assert.equal(h.store.provider('zai-coding-cn')!.brokerRef, brokerRefBefore)
+    assert.deepEqual(h.store.provider('zai-coding-cn')!.keys, keysBefore)
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'], profileBefore)
+    assert.deepEqual(await h.credentials.raw.resolve(target.ref), credentialBefore)
+    assert.equal(
+      h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai').revision,
+      revisionBefore,
+      'the refused release wrote settings',
+    )
 
     releaseProbe!()
     const result = await testRun
     assert.equal(result.ok, false)
     assert.match(String(result.error), /abandoned/)
     assert.equal(requests, 0, 'a probe that outlived its window still sent a request')
+
+    // A refusal is retryable: once the abandoned window's cleanup has ended,
+    // the same call goes through and takes the credential with it.
+    await h.service.releaseProvider('zai-coding-cn')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.credentials.refs.has(target.ref), false)
+    assert.equal(await h.credentials.raw.resolve(target.ref), undefined)
+    // The profile keeps the reference the user had before adoption.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, 'ZAI_CODING_CN_API_KEY')
   } finally {
     releaseProbe?.()
     await h.close()
