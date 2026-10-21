@@ -4,14 +4,18 @@ Conventions for coding agents working in this repository.
 
 ## CHANGELOG.md is generated — never edit it by hand
 
-`CHANGELOG.md` is generated from git log by the release-prep workflow
-(`scripts/prepare-release.mjs`, `updateChangelog`), and the file header says
-so. Do not edit `CHANGELOG.md` manually — this includes its already-published
-`## [<version>]` sections.
+`CHANGELOG.md` is assembled from the authored `.changes/unreleased/` fragments
+by the release-prep workflow (`scripts/prepare-release.mjs`), and the file
+header says so. Do not edit `CHANGELOG.md` manually — this includes its
+already-published `## [<version>]` sections.
 
-To document a fix or feature, write a clear commit message and PR title; the
-next `release-prep` run derives the new changelog section from those notes
-automatically.
+Every user-visible change ships a fragment in `.changes/unreleased/`: one slug
+`.md` file per change, optional `category:` frontmatter, `- ` bullet lines
+(format and example: `.changes/unreleased/README.md`). The release prep run
+groups the fragments into the next `## [<version>]` section and archives the
+consumed files to `.changes/archive/<version>/`. **A release with zero
+fragments fails**: prepare-release exits 1 and reports `.changes/unreleased/`
+rather than publishing an empty changelog section.
 
 ## Two-package pnpm workspace
 
