@@ -11704,3 +11704,78 @@ test('an adopted provider with a failed projection read does not bind', async ()
     await h.close()
   }
 })
+
+// ── PR #26 review round 18 ──────────────────────────────────────────────────
+
+// Advisor: the round-17 regression proves the adopted route's projection is read
+// at all, but the P1 names every "present but foreign" presentation. Adoption
+// holds no account row, so any live record is foreign — a native grant, a native
+// api-key, an unrecognized payload — and each must keep the route off the pool.
+// The round-17 case keeps its own assertions; this table pins all three
+// presentations against the same facts: the pre-adoption reference survives, the
+// record is untouched, ownership is known while the pool does not serve, and an
+// ordinary request resolves the pre-adoption credential instead of a managed row.
+const ADOPTED_FOREIGN_PROJECTIONS: Array<{ label: string; stored: FakeCredentialRecord }> = [
+  {
+    label: 'a native OAuth grant',
+    stored: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native', access: 'at-native' } },
+  },
+  { label: 'a native api-key record', stored: { kind: 'api-key', key: 'sk-native-route' } },
+  {
+    label: 'an unrecognized payload',
+    stored: { kind: 'grant', payload: { type: 'unknown-native', token: 'opaque-native' } },
+  },
+]
+
+for (const { label, stored: nativeRecord } of ADOPTED_FOREIGN_PROJECTIONS) {
+  test(`an adopted provider does not bind over ${label}`, async () => {
+    const h = await harness()
+    const nativeKey = 'llm-pi-ai/zai-coding-cn'
+    try {
+      // Restart shape: the startup snapshot ran before this record existed, so
+      // the adoption's own read is the only one that can see it.
+      await eventually(() => assert.equal((h.service as unknown as { hydrationSettled: boolean }).hydrationSettled, true))
+      h.credentials.records.set(nativeKey, structuredClone(nativeRecord))
+      const before = structuredClone(h.credentials.records.get(nativeKey))
+
+      await h.service.adoptProvider('zai-coding-cn')
+
+      const record = h.store.provider('zai-coding-cn')!
+      const profile = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+      // 1. The profile keeps the reference it had before adoption: no bind.
+      assert.equal(profile.apiKeyEnv, 'ZAI_CODING_CN_API_KEY', `adoption bound the broker over ${label}`)
+      assert.notEqual(profile.apiKeyEnv, record.brokerRef)
+      // 2. The record no pool row owns survives untouched.
+      assert.deepEqual(h.credentials.records.get(nativeKey), before, `adoption rewrote ${label}`)
+      // 3. The read happened (ownership is known) and it answered "not mine".
+      const internals = h.service as unknown as {
+        projectionOwnershipKnown: (provider: string) => boolean
+        keyPoolServes: (record: ProviderRecord) => boolean
+      }
+      assert.equal(internals.projectionOwnershipKnown('zai-coding-cn'), true, `the projection behind ${label} was never read`)
+      assert.equal(internals.keyPoolServes(record), false, `the pool still serves a route ${label} owns`)
+      // 4. An ordinary request resolves the pre-adoption reference, never the
+      //    broker reference, and touches no managed pool row.
+      const resolvedRefs: string[] = []
+      const realResolve = h.credentials.raw.resolve.bind(h.credentials.raw)
+      h.credentials.raw.resolve = async (ref: string) => {
+        resolvedRefs.push(ref)
+        return realResolve(ref)
+      }
+      const values: Array<string | undefined> = []
+      h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+        values.push((await h.credentials.raw.resolve(profile.apiKeyEnv))?.value)
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+      await consume(h.llm.stream({ provider: 'zai-coding-cn', model: 'glm-4.6', messages: [], maxTokens: 32 }))
+      assert.deepEqual(values, ['sk-existing-zai'])
+      assert.deepEqual(resolvedRefs, ['ZAI_CODING_CN_API_KEY'], 'the request asked the broker for a managed key')
+      assert.ok(
+        record.keys.every(row => row.totalUses === 0 && row.lastUsedAt === 0),
+        'a managed row served a request for a route the pool does not serve',
+      )
+    } finally {
+      await h.close()
+    }
+  })
+}
