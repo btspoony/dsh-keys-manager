@@ -8342,6 +8342,7 @@ test('a concurrent test on the same provider is refused with a clear message', a
     const gate = new Promise<void>(resolve => { release = resolve })
     h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
       await gate
+      await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
       yield { type: 'finish', reason: { kind: 'stop' } }
     } as any)
 
@@ -8452,6 +8453,7 @@ test('a native sign-in landing before the borrow write is not overwritten', asyn
     h.llm.stream = (options: Record<string, any>) => {
       calls += 1
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -8501,6 +8503,7 @@ test('an in-place mutation of the captured projection refuses the borrow', async
     h.llm.stream = (options: Record<string, any>) => {
       calls += 1
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -8601,6 +8604,7 @@ test('an api-key test is refused while the oauth account serves the route', asyn
     h.llm.stream = (options: Record<string, any>) => {
       calls += 1
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -8943,6 +8947,7 @@ test('an api-key test is refused on a mismatch route', async () => {
     h.llm.stream = (options: Record<string, any>) => {
       calls += 1
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -11339,6 +11344,7 @@ test('a finish chunk without a completion reason is not a pass', async () => {
     const target = h.store.provider('zai-coding-cn')!.keys[0]!
     const runWith = (chunk: unknown): Promise<KeyTestResult> => {
       h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield chunk
       } as any)
       return h.service.testKey('zai-coding-cn', target.id)
@@ -11640,6 +11646,7 @@ test('releasing a provider waits for a parked row test', async () => {
     h.llm.stream = (options: Record<string, any>) => {
       sent.push(h.credentials.refs.get(target.ref))
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -11708,6 +11715,7 @@ test('a release is refused while a probe outlives the isolation deadline', async
     h.llm.stream = (options: Record<string, any>) => {
       requests += 1
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -11797,6 +11805,7 @@ test('a test starting during a release is refused instead of re-projecting the r
     h.llm.stream = (options: Record<string, any>) => {
       requests += 1
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -11988,6 +11997,7 @@ test('a row deleted out of band between the captures and the borrow refuses the 
     h.llm.stream = (options: Record<string, any>) => {
       calls += 1
       return h.service.streamListener(options as any, async function* () {
+        await h.credentials.raw.resolve(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv)
         yield { type: 'finish', reason: { kind: 'stop' } }
       } as any)
     }
@@ -14161,6 +14171,26 @@ test('the startup repair settles a takeover debt left by adoption', async () => 
     restarted.attachSettings(h.settings)
     await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef))
     assert.equal(record.takeoverPending, false)
+  } finally {
+    await h.close()
+  }
+})
+
+// PR review round 42: a successful finish is not proof that the pinned key was
+// the credential the route used. This generator skips the broker resolve, which
+// is exactly the takeover-during-stream case.
+test('an api-key test fails when the route answered without the pinned key', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].models = [{ id: 'zai-test-model' }]
+    await h.service.adoptProvider('zai-coding-cn')
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    const result = await h.service.testKey('zai-coding-cn', target.id)
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /another credential source|not used/)
   } finally {
     await h.close()
   }

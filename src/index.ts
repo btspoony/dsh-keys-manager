@@ -4909,7 +4909,16 @@ export class KeysManagerService {
           // finish chunk with NO reason, `aborted`, or any kind this broker
           // does not know means the provider did not answer, so reporting a
           // pass would claim a credential it never served.
-          if (kind === 'stop' || kind === 'length' || kind === 'toolUse') return { ok: true }
+          if (kind === 'stop' || kind === 'length' || kind === 'toolUse') {
+            // PR review round 42: a successful ping only proves the route
+            // answered. An api-key row test must also prove the pinned literal
+            // was the credential that served it — a takeover during the stream
+            // would otherwise be reported as this key's success.
+            if (scope.keyId !== null && scope.oauthAccountId === null && scope.keyUsed !== true) {
+              return { ok: false, error: `The ${provider} route was served by another credential source; the selected key was not used.` }
+            }
+            return { ok: true }
+          }
           if (kind === undefined) return { ok: false, error: 'The provider returned no completion reason' }
           return { ok: false, error: kind === 'aborted' ? 'The request was aborted' : `The request ended with "${kind}"` }
         }
