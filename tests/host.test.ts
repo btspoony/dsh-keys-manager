@@ -8881,6 +8881,45 @@ test('a rotation of the serving account during its own test survives', async () 
   }
 })
 
+// PR #26 review round 28 (Codex P1): the QC B2 rule ("the pre-test projection
+// belonged to the tested row, so keep the live payload") cannot read a
+// different generation of the SAME account as the row's own. A re-authentication
+// that projected a newer payload before the borrow is captured as `previous`,
+// the borrow's compare-and-swap then replaces it with the older stored grant,
+// and keeping that borrow stranded the route on the stale generation — the next
+// echo adopted it and deleted the newer one.
+test('a borrow over a newer projection of the same account restores that newer one', async () => {
+  const { h, rowId, grantRef: storedRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com', refresh: 'rt-seed-value' })
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'].models = [{ id: 'claude-test-model' }]
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    // The re-authentication's generation is the route's projection; the row
+    // still names the generation it stored before that sign-in.
+    const newerRef = accountRef('anthropic', createHash('sha256').update('rt-newer-value').digest('hex').slice(0, 12))
+    const newer = grantPayload({ refresh: 'rt-newer-value', access: 'at-newer', accountId: 'acc-9', email: 'dev@example.com' })
+    h.credentials.records.set(newerRef, structuredClone(newer))
+    h.credentials.records.set(GRANT_KEY, structuredClone(newer))
+
+    const result = await h.service.testKey('anthropic', rowId)
+
+    assert.equal(result.ok, true)
+    // The route carries the newer projection the borrow stood on…
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-newer-value'))
+    // …and the row follows it, so the newer generation's record survives while
+    // the older stored generation is the one cleaned up.
+    await drainGrantChain(h, 'anthropic')
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === rowId)!
+    assert.equal(row.oauth!.grantRef, newerRef)
+    assert.equal(h.credentials.records.has(newerRef), true)
+    assert.equal((h.credentials.records.get(newerRef)!.payload as Record<string, unknown>).refresh, 'rt-newer-value')
+    assert.equal(h.credentials.records.has(storedRef), false)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a stalled credential read in an oauth test does not park ordinary requests past the isolation deadline', async () => {
   const { h, first } = await harnessWithTwoProjectedAccounts()
   let testRun: Promise<KeyTestResult> | undefined
@@ -9301,6 +9340,84 @@ test('an abandoned test holds the provider until its late request settles', asyn
     assert.match(String(result.error), /abandoned/)
   } finally {
     releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+// PR #26 review round 28 (Codex P1): the mirror race of the held window. The
+// request settles while the cleanup is still running, so `window.held` is not
+// set yet and the settlement's reconcile reads the running cleanup as the
+// route's owner and skips. The cleanup then observed a settled window, released
+// the fence, and never re-read the write the adapter made after its own restore
+// — ordinary traffic was served by the tested account's grant.
+test('a settlement racing an active cleanup is reconciled before the provider is released', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  let parked = false
+  let releaseCleanup: (() => void) | undefined
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    let restoreWritten!: () => void
+    const restored = new Promise<void>(resolve => { restoreWritten = resolve })
+    const cleanupGate = new Promise<void>(resolve => { releaseCleanup = resolve })
+    const ordinaryStarted: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        await testGate
+        // The adapter ignored the abort and rewrote the borrowed projection.
+        await h.credentials.raw.modifyRecord(GRANT_KEY, () => Promise.resolve(grantPayload({
+          refresh: 'rt-first-refreshed',
+          access: 'at-refreshed',
+          accountId: 'acc-first',
+          email: 'first@example.com',
+        })))
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      ordinaryStarted.push(liveProjectionRefresh(h))
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    // Park the watchdog's cleanup right after its restore write, so the late
+    // write is exactly what a re-read after the restore would see.
+    h.credentials.raw.modifyRecord = async (key: string, mutate: any): Promise<FakeCredentialRecord | undefined> => {
+      const result = await realModify(key, mutate)
+      const cleaning = (h.service as unknown as { cleaningTests: Set<string> }).cleaningTests
+      if (key === GRANT_KEY && !parked && cleaning.has('anthropic')) {
+        parked = true
+        restoreWritten()
+        await cleanupGate
+      }
+      return result
+    }
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    // The cleanup has put the projection back and now stops mid-flight.
+    await restored
+    // The abandoned request settles WHILE that cleanup is still running.
+    releaseTest?.()
+    const result = await testRun!
+    assert.equal(parked, true, 'the abandoned window\'s cleanup did not reach its restore write')
+    assert.equal(liveProjectionRefresh(h), 'rt-first-refreshed')
+    // The cleanup now finishes and must reconcile the late write before it
+    // releases the provider.
+    releaseCleanup?.()
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
+    assert.deepEqual(ordinaryStarted, ['rt-second'], 'the released route served the abandoned test\'s late projection')
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /abandoned/)
+  } finally {
+    releaseTest?.()
+    releaseCleanup?.()
+    h.credentials.raw.modifyRecord = realModify
     await testRun?.catch(() => undefined)
     await h.close()
   }
@@ -9981,6 +10098,56 @@ test('a refused adoption binding write rolls the adoption back entirely', async 
     assert.equal(h.credentials.refs.get('ANTHROPIC_AUTH_TOKEN'), 'oauth-auth-token')
   } finally {
     h.settings.failMutate = false
+    await h.close()
+  }
+})
+
+// PR #26 review round 28 (must-fix, I-000186): a projection event reconciled
+// while the adoption reads its projection makes that read "superseded", and a
+// superseded read used to bind nothing. The reconciliation queued behind it
+// repairs the binding WITHOUT the takeover that only adoption may perform, so
+// a non-empty pre-adoption reference stayed in place forever: the managed key
+// never served, and re-adopting returned at once because the provider was
+// already managed.
+test('an adoption whose projection read is superseded still completes its binding takeover', async () => {
+  const h = await harness()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let intervened = false
+  try {
+    // A pre-adoption reference the profile already carries — the one only the
+    // adoption's takeover may replace.
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = {
+      apiKeyEnv: 'ANTHROPIC_AUTH_TOKEN',
+      models: [{ id: 'claude-test-model' }],
+    }
+    // A native projection serves the route until the sign-out below.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ accountId: 'acc-native', email: 'native@example.com' }))
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY && !intervened) {
+        intervened = true
+        const snapshot = await realRead(key)
+        // The native session ends while the adoption's read is outstanding.
+        h.credentials.records.delete(key)
+        h.credentials.emitRecordUpdated(key)
+        return snapshot
+      }
+      return realRead(key)
+    }
+
+    await h.service.adoptProvider('anthropic')
+
+    const brokerRef = h.store.provider('anthropic')!.brokerRef
+    assert.match(brokerRef, /^KEYSMGR_ANTHROPIC_/)
+    // The takeover completed: the pool serves the adopted route…
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, brokerRef)
+    // …the state agrees…
+    const view = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(view.managed, true)
+    assert.equal(view.bindingHealthy, true)
+    assert.equal(h.store.provider('anthropic')!.originalApiKeyEnv, 'ANTHROPIC_AUTH_TOKEN')
+    assert.equal(h.credentials.refs.get('ANTHROPIC_AUTH_TOKEN'), 'oauth-auth-token')
+  } finally {
+    h.credentials.raw.readRecord = realRead
     await h.close()
   }
 })

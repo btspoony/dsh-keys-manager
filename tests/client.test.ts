@@ -835,6 +835,59 @@ describe('row test dispatch', () => {
       vi.useRealTimers()
     }
   })
+
+  // PR #26 review round 28 (I-000178 occurrence): the generation used to move
+  // only when the SETTLING request owned the newest token. With A under test and
+  // B started after it, B settled first and moved the generation, a refresh
+  // started during A captured that newer generation, and A's settlement left it
+  // untouched — so a snapshot taken inside A's own borrow installed the borrowed
+  // view after the host had already restored the route.
+  test('a settling test invalidates the snapshots of its own borrow, not only the newest', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    const answers: Array<(result: RpcResult) => void> = []
+    let answerRefresh: ((result: RpcResult) => void) | undefined
+    let loads = 0
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') {
+        loads += 1
+        // The read the test parks is the one taken inside A's borrow.
+        if (loads === 2) return await new Promise<RpcResult>(resolve => { answerRefresh = resolve })
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/testKey') {
+        return await new Promise<RpcResult>(resolve => { answers.push(resolve) })
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+    await store.load()
+    expect(rowProjected()).toBeUndefined()
+
+    const first = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    const second = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // B owns the newest token and settles first.
+    answers[1]!({ ok: true, value: { ok: true, latencyMs: 3 } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // A refresh starts inside A's still-open borrow and captures the generation
+    // B's settlement left behind.
+    const refresh = store.load()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // A settles: not the newest token, but this window is its own.
+    answers[0]!({ ok: true, value: { ok: true, latencyMs: 5 } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    answerRefresh!({ ok: true, value: borrowed })
+    await refresh
+    expect(rowProjected()).toBeUndefined()
+    expect(store.getSnapshot().busy).toBeNull()
+
+    expect(await first).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await second).toEqual({ ok: true, value: { ok: true, latencyMs: 3 } })
+  })
 })
 
 

@@ -861,6 +861,13 @@ interface RowTestWindow {
    * kept the provider isolated. Only the settlement releases such a window.
    */
   held: boolean
+  /**
+   * Set by the settlement that found a cleanup still holding the fence (PR
+   * review round 28). That cleanup re-reads the late write and reconciles it
+   * before it releases the provider; without the marker the release happened
+   * with whatever the adapter wrote after the cleanup's own restore.
+   */
+  lateReconcileRequested: boolean
 }
 
 /** Original credential provider methods captured before wrapping. */
@@ -3427,6 +3434,7 @@ export class KeysManagerService {
       cleaned: false,
       settled: false,
       held: false,
+      lateReconcileRequested: false,
     }
     // PR review round 21: the request is over when the guarded promise settles,
     // and that is what a held cleanup waits for. The marker is registered before
@@ -3588,6 +3596,16 @@ export class KeysManagerService {
       window.held = true
       return undefined
     }
+    // PR review round 28: the request settled while this cleanup ran, so its
+    // settlement could not reconcile the late write itself — a running cleanup
+    // reads as the route's owner. Reconcile that write here, before the release
+    // hands the route back: a failure keeps the fence for the next attempt.
+    if (window.lateReconcileRequested) {
+      window.lateReconcileRequested = false
+      const late = await this.withinCleanupDeadline(() => this.reconcileLateWindowProjection(window, true))
+      if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
+      if (late !== undefined) return late
+    }
     this.releaseAbandonedWindow(window)
     return undefined
   }
@@ -3623,6 +3641,11 @@ export class KeysManagerService {
     await this.awaitWindowMutations(window)
     const facts = window.facts
     if (facts !== undefined) {
+      // PR review round 28: a restore that starts now reads the state the
+      // route carries at this moment, so it also covers a settlement that
+      // asked for a late reconcile before it began; only a settlement landing
+      // while this restore runs still needs the cleanup to re-read afterwards.
+      window.lateReconcileRequested = false
       const restored = await this.restoreProjection(facts.records, window.provider, window.row, facts.key, facts.previous, facts.borrowed, stillCurrent)
       if (restored !== undefined) return restored
     }
@@ -3661,8 +3684,10 @@ export class KeysManagerService {
    *
    * Returns the failure, so a caller that releases the provider afterwards (PR
    * review round 21) can keep the fence instead. `ownsFence` is passed by the
-   * settlement of a held window: it already owns the provider's fence, which
-   * the default guards would read as a competing cleanup and skip.
+   * settlement of a held window and by the cleanup that releases a window whose
+   * settlement it deferred (PR review round 28): both already own the
+   * provider's fence, which the default guards would read as a competing
+   * cleanup and skip.
    */
   private async reconcileLateWindowProjection(window: RowTestWindow, ownsFence = false): Promise<string | undefined> {
     const facts = window.facts
@@ -3671,8 +3696,14 @@ export class KeysManagerService {
     if (!ownsFence) {
       // A cleanup that is still running — or one that gave up and left the
       // provider fenced — owns the route: its own attempt reads the late state
-      // and reconciles it, and this late promise must not race it.
-      if (this.cleaningTests.has(provider)) return undefined
+      // and reconciles it, and this late promise must not race it. PR review
+      // round 28: that attempt only knows about the late write through this
+      // marker, set synchronously with `window.settled` in the caller, so a
+      // cleanup that observes a settled window also observes this request.
+      if (this.cleaningTests.has(provider)) {
+        if (this.abandonedWindows.get(provider) === window) window.lateReconcileRequested = true
+        return undefined
+      }
       const active = this.testsActive.get(provider)
       if (active !== undefined && active !== window.test) return undefined
     }
@@ -4278,7 +4309,18 @@ export class KeysManagerService {
     // it: its echo re-matches the same row, moves `grantRef` to the superseded
     // generation and deletes the rotated record — leaving the account on a
     // consumed refresh token.
-    if (previousOwner?.id === row.id) {
+    //
+    // PR review round 28: ownership alone cannot decide that, because the
+    // captured `previous` is a *different generation* of the same account
+    // whenever a re-authentication projected a newer payload before the borrow
+    // (the borrow's compare-and-swap then replaced it with the older stored
+    // grant). Keeping the borrowed payload there strands the route on the
+    // stale generation, and the next echo adopts it and deletes the newer one.
+    // Only the payload identity decides: identical payloads are the pre-test
+    // projection itself, and a different one that the store still carries as
+    // the borrow is the newer generation this restore puts back.
+    const staleBorrow = previousGrant !== undefined && JSON.stringify(previousGrant) !== JSON.stringify(borrowed)
+    if (previousOwner?.id === row.id && !(carriesBorrowed && staleBorrow)) {
       this.reconcileProjectionOwner(provider, live)
       return undefined
     }
@@ -5496,15 +5538,23 @@ export class KeysManagerService {
       // snapshot, so its projection is read HERE, before the first binding
       // sync. Without the read, "not in the snapshot" looked exactly like "no
       // projection" and the sync bound the pool over the route's native grant.
-      const ownershipRead = await this.readAdoptionProjection(provider)
+      let ownershipRead = await this.readAdoptionProjection(provider)
+      // PR review round 28 (I-000186): a read a projection event overtook lands
+      // nothing, and the reconciliation queued behind it repairs the binding
+      // WITHOUT the takeover only this adoption may perform — so a superseded
+      // answer left a committed adoption on its pre-adoption reference forever
+      // (the pool never serves, and re-adopting returns immediately because the
+      // provider is managed). The retry only reads, and the chain is drained by
+      // definition once this read is its tail: the adoption waits for that
+      // authoritative answer instead of committing an undecided bind.
+      // No deadlock: no grant-chain body awaits the mutation queue this body holds.
+      while (ownershipRead === 'superseded') ownershipRead = await this.readAdoptionProjection(provider)
       // The binding follows the serving credential, never the route's ability
       // to hold keys: an OAuth-only route (`caps.keys === false`, no key row)
       // keeps its profile unbound so pi-ai reaches the stored grant, while a
       // route with an imported API key binds through the one authority.
       // Adoption is the only caller allowed to take over the pre-adoption
       // reference it recorded as `originalApiKeyEnv`.
-      // A superseded read lands nothing either: the reconciliation it raced is
-      // queued behind it and re-derives the classification and the binding.
       const bound = ownershipRead === 'known'
         ? await this.syncBrokerBinding(provider, { takeover: true })
         : false

@@ -241,13 +241,17 @@ export function createStore(ctx: ClientContext): ClientStore {
       // nobody watching its answer. It sends at once, sets no global busy flag
       // and never replaces the snapshot: the host's answer is observation-only.
       activeTests += 1
-      const token = ++testGeneration
+      ++testGeneration
       const request = rpc('testKey', { provider, keyId })
       // The deadline below releases only the row: the snapshot isolation lasts
       // until this RPC actually settles, because the host may still project the
-      // tested account while it runs (PR review round 24). The release is owned
-      // by the request that opened the window: an older request settling later
-      // must not close a newer window or invalidate its snapshots (round 26).
+      // tested account while it runs (PR review round 24). An older request
+      // settling later must not close a newer window (round 26), but it must
+      // invalidate the snapshots taken inside its OWN borrow: a refresh that
+      // read the store while this window borrowed it can answer after a newer
+      // window settled and the generation already moved (round 28). Every
+      // settle therefore advances the generation; `activeTests` still decides
+      // whether a window is open at all.
       // Residual: an RPC that never settles keeps the isolation for the life of
       // the page — the safe direction, the row still shows its timeout, and a
       // reload is the recovery.
@@ -258,7 +262,7 @@ export function createStore(ctx: ClientContext): ClientStore {
         // Count down this request's own borrow even when a newer window owns
         // the tail, so the isolation cannot outlive every settled request.
         activeTests -= 1
-        if (testGeneration === token) testGeneration += 1
+        testGeneration += 1
         // The host has put the route back once no test borrows it, so a
         // mutation view dropped inside the window can be read again.
         refreshDroppedState()
