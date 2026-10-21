@@ -3319,10 +3319,9 @@ export class KeysManagerService {
       this.noteProjectionCommitted(provider)
       this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
       // pi-ai resolves the broker reference before this record, so a route
-      // left bound would keep serving the pool (PR review round 4).
-      // The bump above is this body's own; only a further move is a supersession.
-      const committed = this.ownershipGenerations.get(provider) ?? generation
-      if ((this.ownershipGenerations.get(provider) ?? committed) !== committed) return
+      // left bound would keep serving the pool (PR review round 4). The sync
+      // stamps the generation it entered with and re-checks before its own
+      // write, so this body's own bump cannot strand it.
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
@@ -3334,8 +3333,6 @@ export class KeysManagerService {
       this.foreignProjections.add(provider)
       this.noteProjectionCommitted(provider)
       this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
-      const committed = this.ownershipGenerations.get(provider) ?? generation
-      if ((this.ownershipGenerations.get(provider) ?? committed) !== committed) return
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
@@ -3355,8 +3352,6 @@ export class KeysManagerService {
       this.foreignProjections.add(provider)
       this.noteProjectionCommitted(provider)
       this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
-      const committed = this.ownershipGenerations.get(provider) ?? generation
-      if ((this.ownershipGenerations.get(provider) ?? committed) !== committed) return
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
@@ -3384,31 +3379,31 @@ export class KeysManagerService {
     // the stale echo claim is discarded exactly like a stale hydration
     // read (the rotation sync below still runs, but a commit that a newer
     // claim has superseded is rejected — round-9 P1).
-    let claimedGeneration: number | undefined
-    if ((this.ownershipGenerations.get(provider) ?? 0) === generation) {
-      this.claimProjectionOwner(provider, owner.id)
-      claimedGeneration = this.ownershipGenerations.get(provider)
-      // R7-SF3: the live projection proves this row's identity again, so a
-      // demoted row is re-adopted — restore its owner claim (above) and end
-      // the demoted state. `valueMissing` means "not serving but still
-      // managed", not "removal in progress": a native sign-in or pi-ai
-      // write that re-projects the grant recovers the account without a
-      // manual re-activation. The flag is persisted with the rest of the
-      // state document.
-      if (owner.valueMissing === true) {
-        owner.valueMissing = false
-        // R14-SF3: a demotion is earned by a failure, so the row usually
-        // still carries the cooldown `markFailure` wrote. Re-adoption is the
-        // same manual-recovery equivalence `activateAccount` and re-auth
-        // implement: the live projection is serving again, so the old
-        // window ends with it — otherwise the resurrected row renders
-        // "cooling" and stays out of the healthy counts until the timer
-        // expires. Only this proven-adoption branch clears; a row whose
-        // projection did not reappear keeps its window.
-        owner.cooldownUntil = 0
-        this.store.touch()
-      }
+    // Unconditional: the guard above already returned when a newer claim
+    // landed, and nothing between the two awaits.
+    this.claimProjectionOwner(provider, owner.id)
+    const claimedGeneration = this.ownershipGenerations.get(provider)
+    // R7-SF3: the live projection proves this row's identity again, so a
+    // demoted row is re-adopted — restore its owner claim (above) and end
+    // the demoted state. `valueMissing` means "not serving but still
+    // managed", not "removal in progress": a native sign-in or pi-ai
+    // write that re-projects the grant recovers the account without a
+    // manual re-activation. The flag is persisted with the rest of the
+    // state document.
+    if (owner.valueMissing === true) {
+      owner.valueMissing = false
+      // R14-SF3: a demotion is earned by a failure, so the row usually
+      // still carries the cooldown `markFailure` wrote. Re-adoption is the
+      // same manual-recovery equivalence `activateAccount` and re-auth
+      // implement: the live projection is serving again, so the old
+      // window ends with it — otherwise the resurrected row renders
+      // "cooling" and stays out of the healthy counts until the timer
+      // expires. Only this proven-adoption branch clears; a row whose
+      // projection did not reappear keeps its window.
+      owner.cooldownUntil = 0
+      this.store.touch()
     }
+
     // Rotation sync: the rotated payload is authoritative (the plan's
     // single-writer contract — "sync them back to the owning plugin-scope
     // record on record-updated"), so write it back to the row's grant
@@ -3491,7 +3486,18 @@ export class KeysManagerService {
     // PR review round 35: the commit is this body's persisted state write; a
     // shutdown that began under any of the awaits above refuses it.
     if (this.persistenceRefused()) return
-    await this.commitGrantGeneration(provider, owner, payload, rotatedRef)
+    // The commit is the row repoint plus the superseded record's delete, both
+    // after the awaits above (most recently `rotationStillCurrent`'s own record
+    // read). A claim that landed in that read owns the route now, so the commit
+    // refuses like every other mutation in this body.
+    const commitGeneration = claimedGeneration ?? generation
+    await this.commitGrantGeneration(
+      provider,
+      owner,
+      payload,
+      rotatedRef,
+      () => !this.ownershipSuperseded(provider, commitGeneration),
+    )
     // PR review round 44: the projection now serves this managed account again,
     // so a profile that still names the broker would make pi-ai resolve the
     // pool first and fail with MISSING_CREDENTIAL. Converge the binding with the
@@ -6033,7 +6039,7 @@ export class KeysManagerService {
    */
   private async syncBrokerBinding(
     provider: string,
-    options: { takeover?: boolean; write?: boolean; borrow?: boolean; correction?: number } = {},
+    options: { takeover?: boolean; write?: boolean; borrow?: boolean; correction?: number; ownershipGeneration?: number } = {},
   ): Promise<boolean> {
     const record = this.store.provider(provider)
     if (record === undefined) return false
@@ -6083,15 +6089,27 @@ export class KeysManagerService {
     // `closing` is read: shutdown's own pre-close restoration writes here by
     // design and runs before that flag goes up.
     if (this.closing) return false
+    // A caller that stamped the ownership generation it entered with forbids
+    // this write once a newer claim landed: the binding it would commit was
+    // derived from the classification that claim replaced.
+    if (options.ownershipGeneration !== undefined
+      && this.ownershipSuperseded(provider, options.ownershipGeneration)) return false
     try {
       // The entry gate above read a snapshot; ownership can turn unknown while
       // this write re-reads its descriptor (PR review round 25). Binding is a
       // guess then, so the gate closes again at the last point before the
       // mutation. Unbinding stays allowed.
+      // `mutateSettings` re-reads its descriptor before writing, so the gate
+      // above is not the last point: the stamp travels into its `stillWrites`
+      // predicate, which runs immediately before `settings.mutate`. A claim
+      // that landed in the descriptor re-read must not leave this binding
+      // behind — it describes the classification that claim replaced.
+      const stamp = options.ownershipGeneration
       const written = await this.mutateSettings(
         record.settingsNs,
         [desired === undefined ? { op: 'unset', path } : { op: 'set', path, value: desired }],
-        () => desired === undefined || this.projectionOwnershipKnown(provider),
+        () => (desired === undefined || this.projectionOwnershipKnown(provider))
+          && (stamp === undefined || !this.ownershipSuperseded(provider, stamp)),
       )
       if (!written) return false
     } catch (error) {
@@ -6188,6 +6206,11 @@ export class KeysManagerService {
     // land after `close()` has drained the chains; the binding write it ends in
     // is persistence, so shutdown refuses it.
     if (this.closing) return
+    // The own-generation stamp: `syncBrokerBinding` awaits before it writes
+    // settings, and a claim landing in that window would make the binding
+    // describe the pre-claim classification. Every caller is covered here
+    // rather than at the call sites.
+    const generation = this.ownershipGenerations.get(provider) ?? 0
     try {
       // PR review round 40: adoption keeps the pre-adoption reference while a
       // foreign projection serves the route and records that it still owes the
@@ -6196,8 +6219,8 @@ export class KeysManagerService {
       // once the bind lands; `originalApiKeyEnv` alone proves nothing.
       const record = this.store.provider(provider)
       const takeover = record?.takeoverPending === true
-      const bound = await this.syncBrokerBinding(provider, { takeover })
-      if (takeover && bound && record !== undefined) {
+      const bound = await this.syncBrokerBinding(provider, { takeover, ownershipGeneration: generation })
+      if (takeover && bound && record !== undefined && !this.ownershipSuperseded(provider, generation)) {
         record.takeoverPending = false
         this.store.touch()
       }

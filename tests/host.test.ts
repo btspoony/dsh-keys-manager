@@ -5681,6 +5681,114 @@ test('a reconcile whose stale branch would only drop the owner entry keeps the c
   }
 })
 
+// MF1: the reconcile's row commit follows the staleness probe's own awaited
+// record read, so the generation that probe observed is already stale when the
+// commit runs. A claim that lands inside that read must leave the row pointing
+// at the activation's projection instead of the rotation's generation.
+
+test('a claim landing in the staleness probe keeps the activation generation on the row', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  // A rotation echo for this managed row: same account, a newer refresh token.
+  h.credentials.records.set(GRANT_KEY, grantPayload({
+    refresh: 'rt-echo-rotation',
+    access: 'at-echo-rotation',
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+  }))
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  let releaseProbe: (() => void) | undefined
+  const probeGate = new Promise<void>(resolve => { releaseProbe = resolve })
+  let probeParked = false
+  let grantReads = 0
+  raw.readRecord = async (key: string) => {
+    if (key !== GRANT_KEY) return realRead(key)
+    grantReads += 1
+    const snapshot = await realRead(key)
+    // The second read of the echo key is `rotationStillCurrent`'s own probe —
+    // the one whose answer the generation check above it already decided.
+    if (grantReads === 2) {
+      probeParked = true
+      await probeGate
+    }
+    return snapshot
+  }
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  h.credentials.emitRecordUpdated(GRANT_KEY)
+  try {
+    await eventually(() => assert.equal(probeParked, true))
+    // The claim lands while the probe's read is still parked. The activation's
+    // own projection write echoes in this fake store, and that fresher echo
+    // would reconcile the row again and mask what the stale body did — so only
+    // the pre-armed echo is allowed to run.
+    raw.emitRecordUpdated = () => undefined
+    await h.service.activateAccount('anthropic', rowId)
+    raw.emitRecordUpdated = realEmit
+    assert.equal((h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts.get('anthropic'), rowId)
+    releaseProbe!()
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(row.oauth!.grantRef, grantRef, 'the stale rotation repointed the row after the activation claimed it')
+    assert.equal(
+      (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts.get('anthropic'),
+      rowId,
+      'the stale rotation cleared the activation claim',
+    )
+    assert.equal(h.credentials.records.has(grantRef), true, 'the stale rotation deleted the activation generation')
+  } finally {
+    releaseProbe?.()
+    raw.readRecord = realRead
+    raw.emitRecordUpdated = realEmit
+    await h.close()
+  }
+})
+
+// MF2: `syncBindingAfterProjectionChange` awaits into `syncBrokerBinding`, which
+// re-reads its settings descriptor before writing. A claim landing in that read
+// must keep the binding derived from the pre-claim classification out of the
+// profile.
+
+test('a binding sync whose claim lands before the settings write is not written', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    const record = h.store.provider('anthropic')!
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    await h.service.activateAccount('anthropic', rowId)
+    // Demotion hands the route back to the pool, then the profile loses its
+    // reference: the sync below is a real bind write.
+    await h.service.fallbackToKeys('anthropic')
+    await drainGrantChain(h, 'anthropic')
+    delete h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv
+    const internals = h.service as unknown as {
+      ownershipGenerations: Map<string, number>
+      syncBindingAfterProjectionChange: (provider: string) => Promise<void>
+    }
+    const realDescribe = h.settings.describe.bind(h.settings)
+    let describes = 0
+    h.settings.describe = () => {
+      describes += 1
+      // The last point before `settings.mutate`: a claim lands here.
+      if (describes === 2) {
+        internals.ownershipGenerations.set('anthropic', (internals.ownershipGenerations.get('anthropic') ?? 0) + 1)
+      }
+      return realDescribe()
+    }
+    try {
+      await internals.syncBindingAfterProjectionChange('anthropic')
+    } finally {
+      h.settings.describe = realDescribe
+    }
+    assert.equal(describes >= 2, true, 'the settings write was never attempted')
+    assert.equal(
+      h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv,
+      undefined,
+      'the binding derived from the superseded classification was written anyway',
+    )
+    assert.equal(record.takeoverPending === true, false)
+  } finally {
+    await h.close()
+  }
+})
 
 // P1-B: an api-key projection carries its secret in `key`/`env` with no
 // `payload`. A compare limited to `kind` + `payload` would read a rotated native
@@ -5719,15 +5827,19 @@ test('a rejected flush restores a native api-key projection with its secret', as
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   const baseline = { kind: 'api-key' as const, key: 'sk-native-before', env: { REGION: 'eu' } }
   h.credentials.records.set(GRANT_KEY, baseline)
-  await chmod(h.dir, 0o500)
   try {
-    await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.deepEqual(live, { kind: 'api-key', key: 'sk-native-before', env: { REGION: 'eu' } })
   } finally {
-    await chmod(h.dir, 0o700)
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
   }
-  const live = h.credentials.records.get(GRANT_KEY)!
-  assert.deepEqual(live, { kind: 'api-key', key: 'sk-native-before', env: { REGION: 'eu' } })
-  await h.close()
 })
 
 // N1: an own-removal marker is armed by a deletion this manager already
