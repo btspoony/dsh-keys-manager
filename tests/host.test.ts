@@ -158,6 +158,9 @@ function fakeSettings(): any {
     failMutate: false,
     failDescribe: false,
     namespaces,
+    // Every mutation the service attempts, recorded before it can throw, so a
+    // test can assert that a refusal never wrote anything.
+    mutateCalls: [] as Array<{ ns: string; ops: any[]; expectedRevision?: number }>,
     describe() {
       if (this.failDescribe) throw new Error('settings unavailable')
       return namespaces.map(entry => ({
@@ -170,6 +173,7 @@ function fakeSettings(): any {
       }))
     },
     async mutate(ns: string, ops: any[], expectedRevision?: number) {
+      this.mutateCalls.push({ ns, ops, expectedRevision })
       if (this.failMutate) throw new Error('revision conflict')
       const entry = namespaces.find(candidate => candidate.ns === ns)
       if (!entry) throw new Error(`missing namespace ${ns}`)
@@ -309,6 +313,16 @@ function fakeLlm(): any {
           settingsNs: 'llm-pi-ai',
           settingsPath: ['providers', 'cloudflare-workers-ai'],
           nativeAuth: { env: ['CLOUDFLARE_API_KEY', 'CLOUDFLARE_ACCOUNT_ID'], oauth: false },
+        },
+        // The transports package registers its cursor route as configurable
+        // with an empty Config schema, so its namespace never appears in
+        // `settings.describe()`. The entry is here so the route's verdict is
+        // derived from `settingsNs`, not from a mounted namespace.
+        {
+          provider: 'cursor',
+          displayName: 'Cursor',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'cursor'],
         },
       ]
     },
@@ -1959,6 +1973,7 @@ test('a failed credential unset keeps the provider manageable', async () => {
     const record = h.store.provider('zai-coding-cn')!
     assert.notEqual(record, undefined)
     assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, record.brokerRef)
+    // A transport entry in the directory must not inflate the managed count.
     assert.equal(h.service.getState().managedCount, 1)
     h.credentials.raw.failUnset = false
     await h.service.releaseProvider('zai-coding-cn')
@@ -9849,6 +9864,7 @@ const TRANSPORT_FLOW = {
 }
 
 const CURSOR_SCOPE = 'llm-omp-transports/cursor'
+const TRANSPORT_NS = 'llm-omp-transports'
 
 /** The grant payload the transports package writes for the cursor route. */
 function cursorGrant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -9890,13 +9906,52 @@ test('lists the cursor transport account from its own grant record', async () =>
       status: 'active',
       active: true,
     }])
-    // The row is additive beside the pi-ai pool, not part of it.
-    assert.equal(state.providers.some(provider => provider.provider === 'cursor'), false)
+    // The route is a provider card of its own, but never a pi-ai pool member:
+    // no managed record and no key row behind it.
+    const cursor = state.providers.find(provider => provider.provider === 'cursor')
+    assert.equal(cursor?.managed, false)
+    assert.equal(cursor?.keys.length, 0)
     // The snapshot never carries the grant payload itself.
     const text = JSON.stringify(state)
     assert.ok(!text.includes('cursor-access'))
     assert.ok(!text.includes('cursor-refresh'))
     assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a transport route is a plugin route and is never key- or account-adoptable', async () => {
+  const h = await transportHarness()
+  try {
+    const state = h.service.buildState()
+    const view = state.providers.find(provider => provider.provider === 'cursor')
+    assert.ok(view !== undefined)
+    assert.equal(view.origin, 'plugin')
+    assert.equal(view.transport, true)
+    assert.equal(view.supported, false)
+    assert.equal(view.accountSupported, false)
+    assert.equal(view.managed, false)
+    assert.match(view.reason ?? '', /transport plugin/i)
+    // The card renders in the 已接管 section, but the published count stays
+    // managed-only: the client derives its own number from the provider list.
+    assert.equal(state.managedCount, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a transport route is refused before any settings write', async () => {
+  const h = await transportHarness()
+  try {
+    // Declare the transport namespace: without it the call would abort on a
+    // missing namespace and the no-write assertion below would prove nothing.
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: {}, revision: 1 })
+    await assert.rejects(() => h.service.adoptProvider('cursor'), /transport plugin/i)
+    // The refusal lands before the settings layer is asked to write anything.
+    assert.equal(h.settings.mutateCalls.length, 0)
+    assert.deepEqual(h.settings.valueOf(TRANSPORT_NS), {})
+    assert.equal(h.store.providers.cursor, undefined)
   } finally {
     await h.close()
   }
