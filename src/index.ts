@@ -849,6 +849,18 @@ interface RowTestWindow {
    * new test is refused until the window's cleanup completed.
    */
   cleaned: boolean
+  /**
+   * Set once the window's request is over (PR review round 21). A cleanup that
+   * finishes before this may not release the provider: the adapter can still
+   * refresh and rewrite the borrowed projection, so the settlement reconciles
+   * that late write first.
+   */
+  settled: boolean
+  /**
+   * The cleanup completed while the request was still running and therefore
+   * kept the provider isolated. Only the settlement releases such a window.
+   */
+  held: boolean
 }
 
 /** Original credential provider methods captured before wrapping. */
@@ -3350,8 +3362,23 @@ export class KeysManagerService {
     // Everything that awaits — the ownership readiness wait (QC B6) and the
     // request — belongs to the guarded promise, so a second call cannot slip
     // past the lock during the wait.
-    const window: RowTestWindow = { provider, row, borrowBinding: false, releasedBinding: false, mutations: [], cleaned: false }
-    const test = this.runRowTest(record, row, window)
+    const window: RowTestWindow = {
+      provider,
+      row,
+      borrowBinding: false,
+      releasedBinding: false,
+      mutations: [],
+      cleaned: false,
+      settled: false,
+      held: false,
+    }
+    // PR review round 21: the request is over when the guarded promise settles,
+    // and that is what a held cleanup waits for. The marker is registered before
+    // any settlement listener (the abandon retry), so that retry observes a
+    // settled window instead of re-holding it forever.
+    const test = this.runRowTest(record, row, window).finally(() => {
+      window.settled = true
+    })
     window.test = test
     this.testsActive.set(provider, test)
     // The guard holds the whole test as a promise, not just a membership
@@ -3420,11 +3447,19 @@ export class KeysManagerService {
     const cause = origin === 'deadline'
       ? `did not settle within ${this.isolationWaitMs}ms`
       : 'could not be cleaned up when it finished'
-    if (failure === undefined) {
+    if (failure === undefined && !window.held) {
       this.warn(`connection test for ${window.provider} ${cause}; its borrowed credential was put back and the provider slot is released`)
       return
     }
-    this.warn(`connection test for ${window.provider} ${cause} and its cleanup did not complete (${failure}); the provider stays isolated`)
+    if (failure === undefined) {
+      // PR review round 21: the route is back, but the request that borrowed it
+      // is still running and can refresh and rewrite that projection. The
+      // provider stays isolated until the settlement reconciles the late write
+      // and releases it.
+      this.warn(`connection test for ${window.provider} ${cause}; its borrowed credential was put back, but its request has not settled, so the provider stays isolated until it does`)
+    } else {
+      this.warn(`connection test for ${window.provider} ${cause} and its cleanup did not complete (${failure}); the provider stays isolated`)
+    }
     const pending = window.test
     if (pending === undefined) return
     const retry = (): void => { void this.retryAbandonedWindow(window) }
@@ -3450,11 +3485,18 @@ export class KeysManagerService {
     const window = this.abandonedWindows.get(provider)
     if (window === undefined) return !this.cleaningTests.has(provider)
     const failure = await this.attemptAbandonedCleanup(window)
-    if (failure === undefined) {
+    if (failure === undefined && !window.held) {
       this.warn(origin === 'settled'
         ? `the abandoned connection test for ${provider} settled; its borrowed credential was put back and the provider slot is released`
         : `the abandoned connection test for ${provider} was cleaned up on the next attempt; its borrowed credential was put back and the provider slot is released`)
       return true
+    }
+    if (failure === undefined) {
+      // PR review round 21: the cleanup put the route back, but the request it
+      // borrowed it for is still running and can rewrite the projection, so the
+      // provider is not servable yet.
+      this.warn(`the abandoned connection test for ${provider} was cleaned up, but its request has not settled; the provider stays isolated until it does`)
+      return false
     }
     this.warn(`the abandoned connection test for ${provider} is still fenced (${failure}); the provider stays isolated`)
     return false
@@ -3463,6 +3505,12 @@ export class KeysManagerService {
   /**
    * Run the window's cleanup under its hard deadline and drop the provider's
    * isolation only when it completed. Returns the reason it could not finish.
+   *
+   * PR review round 21: the request that borrowed the route is not part of the
+   * cleanup, so a cleanup can finish while that request is still able to
+   * refresh and rewrite the borrowed projection. Such a window is held
+   * ({@link RowTestWindow.held}) — the fence and the isolation entries stay —
+   * and only its settlement reconciles the late write and releases it.
    */
   private async attemptAbandonedCleanup(window: RowTestWindow): Promise<string | undefined> {
     const provider = window.provider
@@ -3476,11 +3524,25 @@ export class KeysManagerService {
     // over: its writes may finish (they were decided against the live store),
     // but it may not release state that attempt now owns.
     if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
+    if (!window.settled && window.facts !== undefined) {
+      // PR review round 21: the route is back, but the request that borrowed
+      // this projection is still running and can refresh and rewrite it. Hold
+      // the isolation (the fence and the entries above stay) until that
+      // settlement reconciles the late write and releases the provider.
+      window.held = true
+      return undefined
+    }
+    this.releaseAbandonedWindow(window)
+    return undefined
+  }
+
+  /** Drop every isolation entry this window still owns, identity-checked. */
+  private releaseAbandonedWindow(window: RowTestWindow): void {
     if (this.testsActive.get(window.provider) === window.test) this.testsActive.delete(window.provider)
     if (this.testsInFlight.get(window.provider) === window.test) this.testsInFlight.delete(window.provider)
     if (this.abandonedWindows.get(window.provider) === window) this.abandonedWindows.delete(window.provider)
+    window.held = false
     this.cleaningTests.delete(window.provider)
-    return undefined
   }
 
   /**
@@ -3540,23 +3602,31 @@ export class KeysManagerService {
    * rotation of the tested row): a foreign payload survives, and a newer
    * generation is written back to the tested row before the pre-test
    * projection is restored.
+   *
+   * Returns the failure, so a caller that releases the provider afterwards (PR
+   * review round 21) can keep the fence instead. `ownsFence` is passed by the
+   * settlement of a held window: it already owns the provider's fence, which
+   * the default guards would read as a competing cleanup and skip.
    */
-  private async reconcileLateWindowProjection(window: RowTestWindow): Promise<void> {
+  private async reconcileLateWindowProjection(window: RowTestWindow, ownsFence = false): Promise<string | undefined> {
     const facts = window.facts
-    if (facts === undefined) return
+    if (facts === undefined) return undefined
     const provider = window.provider
-    // A cleanup that is still running — or one that gave up and left the
-    // provider fenced — owns the route: its own attempt reads the late state
-    // and reconciles it, and this late promise must not race it.
-    if (this.cleaningTests.has(provider)) return
-    const active = this.testsActive.get(provider)
-    if (active !== undefined && active !== window.test) return
+    if (!ownsFence) {
+      // A cleanup that is still running — or one that gave up and left the
+      // provider fenced — owns the route: its own attempt reads the late state
+      // and reconciles it, and this late promise must not race it.
+      if (this.cleaningTests.has(provider)) return undefined
+      const active = this.testsActive.get(provider)
+      if (active !== undefined && active !== window.test) return undefined
+    }
     const failure = await this.restoreProjection(facts.records, provider, window.row, facts.key, facts.previous, facts.borrowed, undefined, true)
     if (failure !== undefined) {
       this.warn(`the late projection write of the abandoned connection test for ${provider} could not be reconciled: ${failure}`)
-      return
+      return failure
     }
     await this.syncBindingAfterProjectionChange(provider)
+    return undefined
   }
 
   /**
@@ -3924,6 +3994,12 @@ export class KeysManagerService {
           })
         }
       } finally {
+        // PR review round 21: the request is over. A cleanup that completed
+        // while it was still running held the provider's isolation for exactly
+        // this point, so the late write is reconciled before that isolation is
+        // released; a failed reconcile keeps the fence (the existing
+        // borrow-could-not-be-undone path).
+        window.settled = true
         if (window.cleaned) {
           // QC fix wave 2: this window was abandoned and its cleanup already
           // ran (or is running) under the watchdog. Restoring from this
@@ -3935,7 +4011,10 @@ export class KeysManagerService {
           // refreshed and rewritten the borrowed projection after that
           // cleanup ran. Reconcile that late write against what the window
           // found before the route counts as handed back.
-          await this.reconcileLateWindowProjection(window)
+          const late = await this.reconcileLateWindowProjection(window, window.held)
+          if (window.held && late === undefined && this.abandonedWindows.get(provider) === window) {
+            this.releaseAbandonedWindow(window)
+          }
         } else {
           const restored = await this.cleanupTestWindow(window)
           if (restoreFailure === undefined) restoreFailure = restored

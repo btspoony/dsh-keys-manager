@@ -9111,8 +9111,18 @@ test('an abandoned oauth test does not leave the borrowed grant serving ordinary
     assert.equal(liveProjectionRefresh(h), 'rt-first')
     // The abandoned window puts the borrowed projection back on its own…
     await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
-    // …so the ordinary request is served by the user's account, never by the
-    // credential the abandoned test borrowed.
+    // …but its request is still running and can rewrite that projection, so the
+    // provider stays isolated: ordinary traffic is refused instead of being
+    // served by the credential the abandoned test borrowed (PR review round 21).
+    await assert.rejects(
+      () => consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 })),
+      /still being cleaned up/,
+    )
+    assert.deepEqual(ordinaryStarted, [])
+    // Once that request settles the route is handed back, and ordinary traffic
+    // is served by the user's account again.
+    releaseTest?.()
+    await testRun!
     await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
     assert.deepEqual(ordinaryStarted, ['rt-second'])
   } finally {
@@ -9216,6 +9226,74 @@ test('an abandoned test reconciles the projection its late request rewrote', asy
     assert.ok(h.credentials.records.has(rotatedRef))
     // Ordinary traffic is served by the user's account, never by the account
     // the abandoned test borrowed.
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
+    assert.deepEqual(ordinaryStarted, ['rt-second'])
+    // The wedged request never reports the pass it eventually produced.
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /abandoned/)
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+// PR review round 21 (Codex P1): the cleanup can complete while the abandoned
+// request is still running. Releasing the provider there admits ordinary
+// traffic in the interval where the adapter can still refresh and rewrite the
+// borrowed grant — and the record-updated reconciliation of that write queues
+// behind the still-running request body. The isolation is therefore held until
+// the request settles, which reconciles the late write before releasing.
+
+test('an abandoned test holds the provider until its late request settles', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    const ordinaryStarted: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        await testGate
+        // The adapter ignored the abort and rewrites the borrowed projection
+        // long after the watchdog's cleanup put the user's one back.
+        await h.credentials.raw.modifyRecord(GRANT_KEY, () => Promise.resolve(grantPayload({
+          refresh: 'rt-first-refreshed',
+          access: 'at-refreshed',
+          accountId: 'acc-first',
+          email: 'first@example.com',
+        })))
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      ordinaryStarted.push(liveProjectionRefresh(h))
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    // The cleanup completed while the request is still parked: the borrowed
+    // projection is back, but that request can still rewrite it.
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
+    // An ordinary request is refused instead of being served during that
+    // interval — never by the tested account's grant, and never through a route
+    // whose projection the late write can still change.
+    await assert.rejects(
+      () => consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 })),
+      /still being cleaned up/,
+    )
+    assert.deepEqual(ordinaryStarted, [], 'ordinary traffic was served while the abandoned request could still rewrite the projection')
+
+    // The abandoned request now writes the tested grant back into service.
+    releaseTest?.()
+    const result = await testRun!
+    // The settlement reconciled the late write before the provider was handed
+    // back, so ordinary traffic is served by the user's account again.
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
     await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
     assert.deepEqual(ordinaryStarted, ['rt-second'])
     // The wedged request never reports the pass it eventually produced.
@@ -11826,14 +11904,15 @@ test('a key-only provider reconciled onto a native api-key record is foreign', a
   }
 })
 
-// I-000179 (late restore): the watchdog's cleanup can hand the route back and
-// release the provider while the abandoned request is still parked, so the
-// account whose projection the window captured can be deleted before that
-// request settles. The late reconcile then compared against `previous`, whose
-// row no longer matched anything, so nothing rejected the write and the route
-// was handed a deleted account's credential. The restore now requires the
-// previous owner to still be managed, leaves the live record alone and reports
-// that the borrow could not be undone.
+// I-000179 (late restore): an abandoned request keeps the provider isolated
+// until it settles (PR review round 21), so the removal coordinator can no
+// longer take the captured owner away in that window — but an out-of-band
+// writer can still splice the row out. The late reconcile must not restore a
+// deleted account's credential then: it compared against `previous`, whose row
+// no longer matched anything, so nothing rejected the write and the route was
+// handed a deleted account's credential. The restore now requires the previous
+// owner to still be managed, leaves the live record alone and reports that the
+// borrow could not be undone.
 test('a late abandoned-window restore does not restore a deleted owner', async () => {
   const { h, first, second } = await harnessWithTwoProjectedAccounts()
   let releaseTest: (() => void) | undefined
@@ -11863,23 +11942,27 @@ test('a late abandoned-window restore does not restore a deleted owner', async (
 
     testRun = h.service.testKey('anthropic', first.rowId)
     await entered
-    // The watchdog put the user's projection back and released the provider…
+    // The watchdog put the user's projection back, but the wedged request can
+    // still rewrite it, so the provider stays isolated (PR review round 21) and
+    // the coordinator cannot take the previous owner away yet.
     await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
-    await eventually(() => assert.equal(
-      (h.service as unknown as { cleaningTests: Set<string> }).cleaningTests.has('anthropic'),
-      false,
-    ))
-    // …so the previous owner can be deleted before the wedged request settles.
-    await h.service.removeAccount('anthropic', second.rowId)
-    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the demotion left the removed account projected')
+    await assert.rejects(
+      () => h.service.removeAccount('anthropic', second.rowId),
+      /still being cleaned up|did not settle within/,
+    )
+    assert.equal(liveProjectionRefresh(h), 'rt-second', 'the refused removal changed the projection')
+    // An out-of-band writer splices the previous owner's row out before the
+    // wedged request settles — the case the late restore must not undo.
+    const owners = h.store.provider('anthropic')!.keys
+    owners.splice(owners.findIndex(candidate => candidate.id === second.rowId), 1)
+    h.store.touch()
 
     releaseTest?.()
     const result = await testRun!
 
-    // The late write is reconciled: the deleted account's credential is NOT
-    // put back…
+    // The late write is reconciled: the deleted owner's credential is NOT put
+    // back…
     await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-first-refreshed'))
-    assert.equal(h.credentials.records.has(second.grantRef), false, 'the deleted account was re-projected')
     // …the newer generation is still written back to the tested row…
     const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === first.rowId)!
     const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-first-refreshed').digest('hex').slice(0, 12))
