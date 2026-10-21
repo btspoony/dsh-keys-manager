@@ -3,11 +3,11 @@
  * `.changes/unreleased/*.md` fragments. The fragment parsing/grouping and the
  * section insertion are pure helpers, so they are asserted directly; the
  * directory reader is exercised on a temp directory (skip rules + filename
- * order). The zero-fragment refusal itself lives in `main()` (it exits the
- * process), so the reader's empty list is what is asserted here.
+ * order). The refusal itself is the exported `notesRefusal` (the process exit
+ * lives in `main()`), so every refusal branch is asserted without spawning.
  */
 // @ts-ignore — scripts/prepare-release.mjs is plain Node ESM without type declarations.
-import { buildSectionBody, insertSection, parseFragment, readFragments } from '../scripts/prepare-release.mjs'
+import { buildSectionBody, insertSection, notesRefusal, parseFragment, readFragments } from '../scripts/prepare-release.mjs'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,7 +35,29 @@ describe('parseFragment', () => {
       file: 'plain.md',
       category: undefined,
       bullets: ['- add provider foo', '- keep  inner spacing'],
+      dropped: 0,
     })
+  })
+
+  it('drops a prose-only body and reports it instead of publishing it', () => {
+    const fragment = parseFragment('prose.md', 'This release adds a provider.\nAnd fixes a bug.\n')
+
+    expect(fragment.bullets).toEqual([])
+    expect(fragment.dropped).toBe(2)
+  })
+
+  it('drops dash-only lines: a bare "-" and "- " carry no note text', () => {
+    const fragment = parseFragment('dashes.md', '-\n- \n-  \n')
+
+    expect(fragment.bullets).toEqual([])
+    expect(fragment.dropped).toBe(3)
+  })
+
+  it('keeps only the bullet lines of a mixed fragment', () => {
+    const fragment = parseFragment('mixed.md', 'Notes for 0.3.0:\n- real bullet\n  - indented bullet\ntrailing prose\n')
+
+    expect(fragment.bullets).toEqual(['- real bullet', '- indented bullet'])
+    expect(fragment.dropped).toBe(2)
   })
 
   it('reads the category from frontmatter and drops the frontmatter from the body', () => {
@@ -68,6 +90,37 @@ describe('buildSectionBody', () => {
     ])
 
     expect(body).toBe('')
+  })
+})
+
+describe('notesRefusal', () => {
+  it('returns null for healthy fragments', () => {
+    expect(notesRefusal([parseFragment('a.md', '- a change\n')])).toBeNull()
+  })
+
+  it('names the directory when there are no fragments at all', () => {
+    const refusal = notesRefusal([])
+
+    expect(refusal).toContain('.changes/unreleased/')
+    expect(refusal).toContain('- ')
+  })
+
+  it('names a prose-only fragment file', () => {
+    const refusal = notesRefusal([parseFragment('prose.md', 'This release adds things.\n')])
+
+    expect(refusal).toContain('prose.md')
+  })
+
+  it('names a fragment whose "- " lines carry no text', () => {
+    const refusal = notesRefusal([parseFragment('dashes.md', '- \n-\n')])
+
+    expect(refusal).toContain('dashes.md')
+  })
+
+  it('passes as soon as one fragment carries a bullet', () => {
+    const fragments = [parseFragment('prose.md', 'prose\n'), parseFragment('good.md', '- a change\n')]
+
+    expect(notesRefusal(fragments)).toBeNull()
   })
 })
 

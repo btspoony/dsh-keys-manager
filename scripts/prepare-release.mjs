@@ -14,9 +14,12 @@
  * capture. Node built-ins only, no new dependencies.
  *
  * The fragments ARE the release notes: a release whose rendered body is empty
- * (zero fragments, or fragments without bullet lines) is refused on both a
- * dry run and a real run, so an empty `## [<version>]` section can never be
- * published.
+ * (zero fragments, prose-only fragments, or fragments without `- ` bullet
+ * lines) is refused on both a dry run and a real run, so an empty
+ * `## [<version>]` section can never be published. Archiving never overwrites
+ * an existing `.changes/archive/<version>/` file, and a failed archive reports
+ * what moved and what did not. A run prints `ARCHIVED=1` only when it really
+ * consumed the fragments.
  *
  * The workspace package `packages/llm-omp` (`dsh-llm-omp-transports`) ships as
  * part of the same release and always carries the same version: the resolved
@@ -33,14 +36,23 @@
  *
  * Exit codes: 0 = bumped (or dry-run resolved) and printed versions; 1 =
  * rejected (unparseable version, existing tag, no changelog bullets in
- * `.changes/unreleased/`, unparseable current package.json version, invalid
+ * `.changes/unreleased/`, an archive destination that already exists, an
+ * archive move that failed, unparseable current package.json version, invalid
  * prerelease dist-tag, or CHANGELOG.md write error).
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PKG_PATH = join(REPO_ROOT, 'package.json')
@@ -202,19 +214,28 @@ function parseFrontmatter(text) {
 }
 
 /**
- * One fragment file -> its grouping category (undefined = default) and its
- * body lines. Lines are rendered verbatim, `- ` prefix included; only
- * whitespace-only lines are dropped.
+ * One fragment file -> its grouping category (undefined = default), its bullet
+ * lines, and how many other non-blank body lines were ignored. Only lines that
+ * start with `- ` after trimming (and carry text after the dash) are release
+ * notes; prose cannot pass for a bullet, so a fragment of prose renders an
+ * empty body and the caller refuses the release instead of publishing a
+ * paragraph as a changelog entry.
  */
 export function parseFragment(file, text) {
   const { frontmatter, body } = parseFrontmatter(text)
+  const bullets = []
+  let dropped = 0
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed.length === 0) continue
+    if (trimmed.startsWith('- ') && trimmed.slice(2).trim().length > 0) bullets.push(trimmed)
+    else dropped += 1
+  }
   return {
     file,
     category: frontmatter.category?.trim() || undefined,
-    bullets: body
-      .split('\n')
-      .map((line) => line.trimEnd())
-      .filter((line) => line.trim().length > 0),
+    bullets,
+    dropped,
   }
 }
 
@@ -253,6 +274,26 @@ export function buildSectionBody(fragments) {
   return groups
     .map((group) => [`### ${group.category}`, '', ...group.bullets].join('\n'))
     .join('\n\n')
+}
+
+/**
+ * Why this fragment set cannot be released, or null when it can. The rendered
+ * body IS the release notes, so an empty body — no fragments at all, fragments
+ * that are prose only, or fragments whose `- ` lines carry no text — would
+ * publish an empty section: refuse it. The message names the files that
+ * contributed nothing. Exported so a caller (CI, a test) can ask the same
+ * question without running the release flow.
+ */
+export function notesRefusal(fragments) {
+  if (buildSectionBody(fragments).trim() !== '') return null
+  const empties = fragments
+    .filter((fragment) => fragment.bullets.length === 0)
+    .map((fragment) => fragment.file)
+  return (
+    'no changelog bullets in .changes/unreleased/ — nothing to release. ' +
+    'Add one `- ` bullet per user-visible change (format: .changes/unreleased/README.md).' +
+    (empties.length === 0 ? '' : ` Fragment files without bullets: ${empties.join(', ')}.`)
+  )
 }
 
 /**
@@ -310,14 +351,59 @@ function updateChangelog(version, body) {
   return true
 }
 
-/** Move the consumed fragments to `.changes/archive/<version>/`. */
+/**
+ * Move the consumed fragments to `.changes/archive/<version>/`.
+ *
+ * Authored release notes are never overwritten: a destination file that
+ * already exists refuses the whole move before anything is renamed, so a
+ * collision cannot leave the fragments half-archived. A move that fails
+ * mid-way reports exactly which files were archived and which remain, then
+ * exits 1 — a partially archived set must not be silently reported as done.
+ * `FS_*` is not needed for that; the paths are printed verbatim.
+ */
 function archiveFragments(version, fragments) {
-  if (fragments.length === 0) return
+  if (fragments.length === 0) return true
   const destination = join(ARCHIVE_DIR, version)
-  mkdirSync(destination, { recursive: true })
-  for (const fragment of fragments) {
-    renameSync(join(UNRELEASED_DIR, fragment.file), join(destination, fragment.file))
+  const moves = fragments.map((fragment) => ({
+    file: fragment.file,
+    from: join(UNRELEASED_DIR, fragment.file),
+    to: join(destination, fragment.file),
+  }))
+
+  const collisions = moves.filter((move) => existsSync(move.to)).map((move) => move.to)
+  if (collisions.length > 0) {
+    console.error(
+      `Error: refusing to overwrite archived release notes: ${collisions.join(', ')}. ` +
+        'Move the existing files away (or pick another version) and re-run.',
+    )
+    process.exit(1)
   }
+
+  const fail = (error, archived) => {
+    const remaining = moves.slice(archived.length).map((candidate) => candidate.from)
+    console.error(`Error: cannot archive fragments: ${error.message}`)
+    console.error(
+      `Archived (${archived.length}): ${archived.length === 0 ? 'none' : archived.join(', ')}.`,
+    )
+    console.error(`Remaining (${remaining.length}): ${remaining.join(', ')}.`)
+    process.exit(1)
+  }
+
+  const archived = []
+  try {
+    mkdirSync(destination, { recursive: true })
+  } catch (error) {
+    fail(error, archived)
+  }
+  for (const move of moves) {
+    try {
+      renameSync(move.from, move.to)
+    } catch (error) {
+      fail(error, archived)
+    }
+    archived.push(move.file)
+  }
+  return true
 }
 
 function main() {
@@ -355,20 +441,27 @@ function main() {
   // rendered body is empty — no fragments at all, or only fragments with no
   // bullet lines — would publish an empty `## [<version>]` section: refuse
   // instead, on a dry run too (a dry run is release validation, not an
-  // exemption).
+  // exemption). Prose that looks like notes is not a bullet; it is reported
+  // below and never rendered.
   const fragments = readFragments()
-  const body = buildSectionBody(fragments)
-  if (body.trim() === '') {
-    const empties = fragments
-      .filter((fragment) => fragment.bullets.length === 0)
-      .map((fragment) => fragment.file)
-    console.error(
-      'Error: no changelog bullets in .changes/unreleased/ — nothing to release. ' +
-        'Add one `- ` bullet per user-visible change (format: .changes/unreleased/README.md).' +
-        (empties.length === 0 ? '' : ` Fragment files without bullets: ${empties.join(', ')}.`),
-    )
+  for (const fragment of fragments) {
+    if (fragment.dropped > 0) {
+      console.error(
+        `Notice: ${fragment.file}: ignored ${fragment.dropped} non-bullet line(s) — notes publish only "- " bullets.`,
+      )
+    }
+  }
+  const refusal = notesRefusal(fragments)
+  if (refusal !== null) {
+    console.error(`Error: ${refusal}`)
     process.exit(1)
   }
+  const body = buildSectionBody(fragments)
+
+  // Whether this run actually moved the fragments into the archive, so a
+  // caller can tell "release prepared" from "nothing consumed" (dry run, or an
+  // existing section for this version) without guessing from the tree.
+  let archived = false
 
   // Write only outside a dry run: a dry run validates and prints the resolved
   // versions exactly like a real run, then leaves the working tree untouched.
@@ -385,10 +478,10 @@ function main() {
     // Fragments are archived only when this run rendered them: an existing
     // section (idempotent re-run) must not consume them unrendered.
     if (updateChangelog(version, body)) {
-      archiveFragments(version, fragments)
+      archived = archiveFragments(version, fragments)
     } else {
       console.error(
-        `Notice: CHANGELOG.md already has a "## [${version}]" section — fragments left in .changes/unreleased/.`,
+        `Notice: CHANGELOG.md already has a "## [${version}]" section — fragments left in .changes/unreleased/: ${fragments.map((fragment) => fragment.file).join(', ')}.`,
       )
     }
   }
@@ -401,10 +494,27 @@ function main() {
   console.log(`TAG=v${version}`)
   console.log(`TRANSPORT_VERSION=${transportVersion}`)
   console.log(`TRANSPORT_TAG=${transportTag}`)
+  console.log(`ARCHIVED=${archived ? 1 : 0}`)
+}
+
+/**
+ * Whether this module is the entry point of the running process. Compared by
+ * real path, not by string: a symlinked checkout (macOS `/tmp` ->
+ * `/private/tmp`, a linked worktree, an npm bin shim) runs `argv[1]` through a
+ * different path than `import.meta.url`, and a string comparison would silently
+ * no-op the whole release flow. Importing the module (tests) stays a no-op.
+ */
+function isDirectExecution() {
+  if (process.argv[1] === undefined) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
 }
 
 // Run only when executed directly (node scripts/prepare-release.mjs):
 // importing the module (tests) must not start the release flow.
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectExecution()) {
   main()
 }

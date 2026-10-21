@@ -85,8 +85,9 @@ jobs:
           # One version drives both published packages: the helper writes it to
           # the root and to packages/llm-omp/package.json. It also assembles the
           # CHANGELOG.md section from `.changes/unreleased/*.md` and archives the
-          # consumed fragments to `.changes/archive/<version>/`; with zero
-          # fragments it exits 1 (nothing to release), so the step fails here.
+          # consumed fragments to `.changes/archive/<version>/`. An empty
+          # rendered notes body — zero fragments, or fragments with no `- `
+          # bullet lines — exits 1 (nothing to release), so the step fails here.
           if [ "$V" = "auto" ]; then
             OUT="$(node scripts/prepare-release.mjs)"
           else
