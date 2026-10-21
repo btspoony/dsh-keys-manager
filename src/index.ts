@@ -882,6 +882,14 @@ interface CredentialWrappers {
 /** How the live provider profile relates to the managed broker reference. */
 type BindingState = 'healthy' | 'mismatch' | 'unknown'
 
+/**
+ * How one adoption projection read resolved. `superseded` means a projection
+ * event was reconciled while the read was outstanding: the reconciliation
+ * queued behind it is authoritative, so this read classifies and binds nothing
+ * and ownership stays unknown until that read answers.
+ */
+type AdoptionProjectionRead = 'known' | 'unknown' | 'superseded'
+
 /** Settings snapshot with an explicit readability signal. */
 interface SettingsSnapshot {
   writable: boolean
@@ -2876,7 +2884,7 @@ export class KeysManagerService {
    * callers that must observe the failure await the returned promise (the
    * fire-and-forget echo caller attaches its own catch).
    */
-  private scheduleGrantReconciliation(provider: string, body: () => Promise<void>): Promise<void> {
+  private scheduleGrantReconciliation<T>(provider: string, body: () => Promise<T>): Promise<T> {
     const previous = this.grantReconciliations.get(provider) ?? Promise.resolve()
     const next = previous.then(body, body)
     const tail = next.then(() => undefined, () => undefined)
@@ -5406,7 +5414,9 @@ export class KeysManagerService {
       // route with an imported API key binds through the one authority.
       // Adoption is the only caller allowed to take over the pre-adoption
       // reference it recorded as `originalApiKeyEnv`.
-      const bound = ownershipRead
+      // A superseded read lands nothing either: the reconciliation it raced is
+      // queued behind it and re-derives the classification and the binding.
+      const bound = ownershipRead === 'known'
         ? await this.syncBrokerBinding(provider, { takeover: true })
         : false
       // A refused write the pool's serving shape required leaves a state no
@@ -5414,11 +5424,11 @@ export class KeysManagerService {
       // undo the adoption entirely (PR review round 2). A foreign projection or
       // an unreadable one needs no write: the profile is not the pool's to
       // rewrite, and the adoption itself is complete.
-      if (ownershipRead && !bound && this.keyPoolServes(record)) {
+      if (ownershipRead === 'known' && !bound && this.keyPoolServes(record)) {
         await this.rollbackAdoption(record, imported)
         throw new Error(`The ${provider} profile refused the credential binding write; the adoption was rolled back. Repair the profile in Models and adopt again.`)
       }
-      if (!ownershipRead) {
+      if (ownershipRead === 'unknown') {
         // Ownership stays unknown and nothing was bound; a later authoritative
         // read clears the marker and re-derives the binding.
         this.pushWarning(`The ${provider} route was adopted, but its stored credential could not be read; its models profile was left unbound until the credential store answers.`)
@@ -5443,16 +5453,31 @@ export class KeysManagerService {
    * stays unknown, so nothing may be bound and no repair touches the route
    * until an authoritative read answers ({@link noteProjectionReadSucceeded}).
    *
-   * Returns false for that failure; the adoption itself is kept — there is no
-   * write to roll back, and only the binding is undecided.
+   * Returns `unknown` for that failure; the adoption itself is kept — there is
+   * no write to roll back, and only the binding is undecided.
+   *
+   * The classification runs inside the route's grant chain (PR review round
+   * 22, Codex P1). A native write or deletion reconciled while the read is
+   * outstanding is therefore either already visible to it or queued behind it:
+   * a read whose snapshot a newer event overtook reports `superseded` and lands
+   * nothing, so a stale absence can never bind the broker over a newer
+   * projection state and a stale presence can never leave the pool unbound.
    */
-  private async readAdoptionProjection(provider: string): Promise<boolean> {
+  private readAdoptionProjection(provider: string): Promise<AdoptionProjectionRead> {
+    return this.scheduleGrantReconciliation(provider, () => this.classifyAdoptionProjection(provider))
+  }
+
+  /** Body of {@link readAdoptionProjection}: read, then land the classification. */
+  private async classifyAdoptionProjection(provider: string): Promise<AdoptionProjectionRead> {
+    // This body's own chain entry. A projection event reconciled during the
+    // read appends a newer tail, which re-reads the live state.
+    const chainTail = this.grantReconciliations.get(provider)
     const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     const records = this.credentialRecords()
     if (records === undefined) {
       this.ownershipReadFailures.add(provider)
       this.warn(`projection ownership for ${provider} could not be read during adoption: the credential store is unavailable`)
-      return false
+      return 'unknown'
     }
     let record: Awaited<ReturnType<CredentialRecordsLike['readRecord']>>
     try {
@@ -5460,13 +5485,19 @@ export class KeysManagerService {
     } catch (error) {
       this.ownershipReadFailures.add(provider)
       this.warn(`projection ownership for ${provider} could not be read during adoption: ${error instanceof Error ? error.message : String(error)}`)
-      return false
+      return 'unknown'
+    }
+    if (this.grantReconciliations.get(provider) !== chainTail) {
+      // Ownership stays unknown until the queued read answers; nothing here may
+      // land, and the adoption binds nothing.
+      this.ownershipReadFailures.add(provider)
+      return 'superseded'
     }
     this.ownershipReadFailures.delete(provider)
     this.noteProviderHydrated(provider)
     if (record === undefined) this.foreignProjections.delete(provider)
     else this.foreignProjections.add(provider)
-    return true
+    return 'known'
   }
 
   /**

@@ -11904,6 +11904,107 @@ test('a key-only provider reconciled onto a native api-key record is foreign', a
   }
 })
 
+// ── PR #26 review round 22 ──────────────────────────────────────────────────
+
+// Codex P1 (thread PRRT_kwDOVOL9Bc6usm_o): the adoption projection read ran
+// outside the per-route grant chain, so a native write reconciled while the
+// read was outstanding was overwritten by the stale absence — and adoption then
+// bound the broker over the credential the route actually serves. The
+// classification is chained now: a read an overtaking event superseded lands
+// nothing, and the queued reconciliation owns both the marker and the binding.
+test('a native projection written during the adoption read is not overwritten by the stale absence', async () => {
+  const h = await harness()
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  try {
+    // The adoption's read snapshots "no projection" and resolves late.
+    let releaseRead: (() => void) | undefined
+    const readReleased = new Promise<void>(resolve => { releaseRead = resolve })
+    let parked = false
+    raw.readRecord = async (key: string) => {
+      if (key === GRANT_KEY && !parked) {
+        parked = true
+        const stale = structuredClone(h.credentials.records.get(key))
+        await readReleased
+        return stale
+      }
+      return realRead(key)
+    }
+    const adopting = h.service.adoptProvider('anthropic')
+    await eventually(() => assert.equal(parked, true))
+    // A native writer takes the route over while the read is parked; its echo
+    // reconciles against the pre-fix tree right away, ahead of the stale read.
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-route' })
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    releaseRead!()
+    await adopting
+    const record = h.store.provider('anthropic')!
+    const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers.anthropic?.apiKeyEnv
+    assert.notEqual(bound(), record.brokerRef,
+      'adoption bound the broker over a credential written after its stale read')
+    // The queued reconciliation is authoritative: it re-reads the live record,
+    // classifies it foreign (no pool row owns an adoption's projection) and
+    // keeps the profile off the pool.
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(bound(), undefined, 'the stale absence unbound a route that still projects')
+    assert.equal(
+      (h.service as unknown as { foreignProjections: Set<string> }).foreignProjections.has('anthropic'),
+      true,
+      'the native write was not classified as a foreign projection',
+    )
+  } finally {
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+// The mirror case: the deletion's echo reconciled ahead of a stale presence, so
+// the adoption added the foreign marker and unbound the profile it had just
+// bound — and no later event repaired the pool. A superseded read now lands
+// nothing and the queued deletion reconciliation binds the surviving pool.
+test('a projection deleted during the adoption read does not leave the pool unbound', async () => {
+  const h = await harness()
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  try {
+    // The route already projects a native grant when adoption reads it.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    let releaseRead: (() => void) | undefined
+    const readReleased = new Promise<void>(resolve => { releaseRead = resolve })
+    let parked = false
+    raw.readRecord = async (key: string) => {
+      if (key === GRANT_KEY && !parked) {
+        parked = true
+        const stale = structuredClone(h.credentials.records.get(key))
+        await readReleased
+        return stale
+      }
+      return realRead(key)
+    }
+    const adopting = h.service.adoptProvider('anthropic')
+    await eventually(() => assert.equal(parked, true))
+    // The projection is deleted (and its echo reconciled) while the read parks.
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    releaseRead!()
+    await adopting
+    await drainGrantChain(h, 'anthropic')
+    const record = h.store.provider('anthropic')!
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef,
+      'the surviving key pool was left unbound after the projection was deleted')
+    assert.equal(
+      (h.service as unknown as { foreignProjections: Set<string> }).foreignProjections.has('anthropic'),
+      false,
+      'a deleted projection still marks the route foreign',
+    )
+  } finally {
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
+
 // I-000179 (late restore): an abandoned request keeps the provider isolated
 // until it settles (PR review round 21), so the removal coordinator can no
 // longer take the captured owner away in that window — but an out-of-band
