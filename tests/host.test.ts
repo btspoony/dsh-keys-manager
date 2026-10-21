@@ -6032,6 +6032,160 @@ test('a claim landing inside the compensation keeps its own classification', asy
   }
 })
 
+// F3: our own demotion can remove the projection during the compensation window
+// without superseding the claim. The proof must answer "absent" there, not
+// "differs": folding the two together marked the serviceless route foreign,
+// which makes `keyPoolServes` false and leaves no usable credential.
+
+test('a projection removed during the compensation leaves the route pool-served', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  let grantWrites = 0
+  raw.emitRecordUpdated = () => undefined
+  raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+    // Call #1 is the activation's projection; call #2 is the compensation's
+    // proof, and by then our own demotion has already removed the record.
+    if (key === GRANT_KEY && ++grantWrites === 2) h.credentials.records.delete(GRANT_KEY)
+    return realModify(key, mutate)
+  }
+  h.credentials.records.delete(GRANT_KEY)
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(internals.foreignProjections.has('anthropic'), false,
+      'a record nobody serves marked the route foreign, so no credential can serve it')
+    assert.equal(internals.activeAccounts.has('anthropic'), false)
+  } finally {
+    raw.modifyRecord = realModify
+    raw.emitRecordUpdated = realEmit
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F4: a delete that removes the record and then throws is real (R14-SF2), so the
+// compensation re-proves the outcome instead of assuming the record survived.
+
+test('a throwing delete that removed the projection still leaves the route pool-served', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  raw.emitRecordUpdated = () => undefined
+  raw.deleteRecord = async (key: string) => {
+    await realDelete(key)
+    throw new Error('credential store locked')
+  }
+  h.credentials.records.delete(GRANT_KEY)
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(internals.activeAccounts.has('anthropic'), false,
+      'the claim survived a projection the throwing delete had already removed')
+    assert.equal(internals.foreignProjections.has('anthropic'), false)
+  } finally {
+    raw.deleteRecord = realDelete
+    raw.emitRecordUpdated = realEmit
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F5: the restored record decides its owner. A captured owner id that the
+// baseline payload does not match must not be put back.
+
+test('a restored baseline is grouped by its payload, not a captured owner id', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({
+    accountId: 'acc-a',
+    email: 'a@example.com',
+    refresh: 'rt-a',
+  })
+  const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  try {
+    await h.service.activateAccount('anthropic', b.rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The owner map names A while the projection serves B's generation.
+    internals.activeAccounts.set('anthropic', rowA)
+    const raw = h.credentials.raw
+    const realEmit = raw.emitRecordUpdated.bind(raw)
+    raw.emitRecordUpdated = () => undefined
+    try {
+      await chmod(h.dir, 0o500)
+      try {
+        await assert.rejects(() => h.service.activateAccount('anthropic', b.rowId), /EACCES|permission denied|EPERM/)
+      } finally {
+        await chmod(h.dir, 0o700)
+      }
+    } finally {
+      raw.emitRecordUpdated = realEmit
+    }
+    assert.equal(internals.activeAccounts.get('anthropic'), b.rowId,
+      'the compensation restored an owner the baseline record does not match')
+    assert.equal(internals.foreignProjections.has('anthropic'), false)
+  } finally {
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F6: the repair's own sync can still commit a binding derived from the
+// pre-claim classification unless it carries the same stamp.
+
+test('a repair whose claim lands during the bind does not write the binding', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const record = h.store.provider('anthropic')!
+  const internals = h.service as unknown as {
+    ownershipGenerations: Map<string, number>
+    repairBinding: (provider: string) => Promise<void>
+  }
+  record.takeoverPending = true
+  delete h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv
+  const realDescribe = h.settings.describe.bind(h.settings)
+  let describes = 0
+  h.settings.describe = () => {
+    describes += 1
+    // The last point before `settings.mutate`: a claim lands here.
+    if (describes === 2) {
+      internals.ownershipGenerations.set('anthropic', (internals.ownershipGenerations.get('anthropic') ?? 0) + 1)
+    }
+    return realDescribe()
+  }
+  try {
+    await internals.repairBinding('anthropic')
+  } finally {
+    h.settings.describe = realDescribe
+  }
+  assert.equal(describes >= 2, true, 'the settings write was never attempted')
+  assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, undefined,
+    'the repair wrote a binding derived from a superseded classification')
+  assert.equal(record.takeoverPending, true)
+  await h.close()
+})
+
 // Addendum: `repairBinding` settles the takeover debt after an awaited sync, so
 // it carries the same stale-owner window the activation's sync had.
 

@@ -3784,7 +3784,14 @@ export class KeysManagerService {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     const live = await records.readRecord(projectionKey)
     const payload = structuredClone(stored.payload)
-    const owner = this.activeAccounts.get(provider)
+    // F5: the restored record decides its owner, so the classification is
+    // derived from the baseline payload through the shared matcher — the same
+    // rule the reconciler applies — rather than from an owner id captured
+    // earlier that the record may no longer belong to.
+    const accounts = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
+    const baselineOwner = live !== undefined && live.kind === 'grant' && isOAuthGrantPayload(live.payload)
+      ? matchOwningAccount(provider, accounts, live.payload)
+      : undefined
     return {
       grantRef,
       payload,
@@ -3792,16 +3799,13 @@ export class KeysManagerService {
       baseline: live === undefined ? { state: 'absent' } : { state: 'present', record: structuredClone(live) },
       // Captured with the baseline, before the turn claims the route: the
       // compensation has to put back the classification that matches the
-      // record it restores, and only this snapshot still knows it.
-      // Any present record the pool does not own is foreign (the same rule the
-      // reconciler applies): a native api-key credential or an unrecognized
-      // payload by shape, a grant no row claims because nothing here serves it.
-      // `none` is therefore only the absent-baseline case.
-      classification: live !== undefined && (owner === undefined || live.kind !== 'grant' || !isOAuthGrantPayload(live.payload))
-        ? { state: 'foreign' }
-        : owner !== undefined
-          ? { state: 'owned', rowId: owner }
-          : { state: 'none' },
+      // record it restores, and only this snapshot still knows it. Any present
+      // record no row's payload matches is foreign (a native api-key
+      // credential, an unrecognized payload, an unowned grant), so `none` is
+      // only the absent-baseline case.
+      classification: live === undefined
+        ? { state: 'none' }
+        : baselineOwner !== undefined ? { state: 'owned', rowId: baselineOwner.id } : { state: 'foreign' },
     }
   }
 
@@ -3961,10 +3965,23 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
     provider: string,
     written: string,
-  ): Promise<'matches' | 'differs' | 'unknown'> {
+  ): Promise<'matches' | 'absent' | 'differs' | 'unknown'> {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     try {
-      return await this.projectionStillMatches(records, projectionKey, written) ? 'matches' : 'differs'
+      // Absent and "another writer's record" are different answers: absent
+      // means nothing serves the route any more (our own demotion can remove
+      // the projection without superseding the claim), while `differs` means a
+      // replacement does. Folding them together marked a serviceless route
+      // foreign, which makes `keyPoolServes` false and leaves no usable
+      // credential at all.
+      let state: 'matches' | 'absent' | 'differs' = 'absent'
+      await records.modifyRecord(projectionKey, async current => {
+        state = current === undefined
+          ? 'absent'
+          : current.kind === 'grant' && JSON.stringify(current.payload) === written ? 'matches' : 'differs'
+        return undefined
+      })
+      return state
     } catch (error) {
       this.warn(`activation projection proof failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
       return 'unknown'
@@ -3991,8 +4008,10 @@ export class KeysManagerService {
     // seam CAS, not another read here. Anything but a proven match is left
     // alone.
     const proof = await this.activationProjectionProof(records, provider, written)
+    // `absent` needs no delete and leaves nothing serving (the pool does);
     // `differs` means another writer's record serves the route; `unknown`
     // proves nothing and must keep the activation's claim.
+    if (proof === 'absent') return 'gone'
     if (proof !== 'matches') return proof === 'differs' ? 'foreign' : 'ours'
     const markedAt = Date.now()
     this.intentionalProjectionRemovals.set(provider, markedAt)
@@ -4005,7 +4024,13 @@ export class KeysManagerService {
         this.intentionalProjectionRemovals.delete(provider)
       }
       this.warn(`cancelled activation projection cleanup failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
-      // The delete threw, so nothing was removed: our projection is still live.
+      // R14-SF2 applies here too: a throwing delete may have removed the record
+      // before throwing, so the outcome is re-proved rather than assumed —
+      // guessing is what this file forbids. A second failure
+      // proves nothing and keeps the claim (`ours`).
+      const after = await this.activationProjectionProof(records, provider, written)
+      if (after === 'absent') return 'gone'
+      if (after === 'differs') return 'foreign'
       return 'ours'
     }
     return 'gone'
@@ -6274,11 +6299,13 @@ export class KeysManagerService {
       && !this.foreignProjections.has(provider)
       && this.oauthOwnerFor(provider) === null
     // The awaited sync can be superseded (an activation claims the route while
-    // it runs). Settling the debt then would record a takeover reconciled for a
-    // generation that no longer owns the route, so the generation is captured
-    // here and re-read immediately before the clear.
+    // it runs). It would then commit a binding derived from the pre-claim
+    // classification, and settling the debt would record a takeover reconciled
+    // for a generation that no longer owns the route. The generation is
+    // captured here, passed to the sync's own last-mile gate, and re-read
+    // immediately before the clear.
     const generation = this.ownershipGenerations.get(provider) ?? 0
-    const bound = await this.syncBrokerBinding(provider, { write: false, takeover })
+    const bound = await this.syncBrokerBinding(provider, { write: false, takeover, ownershipGeneration: generation })
     if (takeover && bound && record !== undefined && !this.ownershipSuperseded(provider, generation)) {
       record.takeoverPending = false
       this.store.touch()
