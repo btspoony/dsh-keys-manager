@@ -190,6 +190,14 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     transportStatusSignedOut: '未登录',
     transportRemoveTitle: '移除 {name} 传输账户？',
     transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。',
+    // Provider quick filter: the chip row resolves its real copy, so the set
+    // and order are asserted by the value the UI renders.
+    filterAll: '全部',
+    filterBuiltin: '内置',
+    filterPlugin: '插件',
+    filterOauth: '支持 OAuth',
+    filterTransport: '传输',
+    availableEmpty: '没有匹配的 Provider。',
     cancel: '取消',
     deleteConfirm: '确认删除',
     deleting: '删除中…',
@@ -2574,5 +2582,217 @@ describe('transport account surface', () => {
     expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
     view.unmount()
     setRuntimeContext(null)
+  })
+})
+
+describe('provider quick filter', () => {
+  type View = ReturnType<typeof mountView>
+
+  /** Route origin the row tag shows, including the legacy-snapshot fallback. */
+  function originOf(provider: ProviderView): string {
+    return provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
+  }
+
+  /** The row's own sign-in verdict (`oauthCapable()`), not raw catalog flags. */
+  function capability(provider: ProviderView): boolean {
+    return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
+  }
+
+  /** One row per origin, the host-refused OAuth row, and one unmanaged row. */
+  function filterState(): StateView {
+    const state = makeState()
+    const base = state.providers[0]!
+    const row = (provider: string, origin: ProviderView['origin'], oauth: boolean, managed: boolean, accountSupported?: boolean): ProviderView => ({
+      ...base,
+      provider,
+      displayName: provider,
+      origin,
+      managed,
+      nativeAuth: { env: [], oauth },
+      ...(accountSupported === undefined ? {} : { accountSupported }),
+    })
+    state.providers = [
+      row('builtin-route', 'dsh', false, true),
+      row('plugin-route', 'plugin', true, false, true),
+      // A catalog-flagged route the host refuses: not OAuth-capable.
+      row('blocked-route', 'plugin', true, true, false),
+      row('custom-route', 'custom', false, true),
+    ]
+    state.transportAccounts = [makeTransportAccount()]
+    return state
+  }
+
+  function chipNode(view: View, value: string) {
+    const node = findByClass(view.nodes, `km-chip-${value}`)[0]
+    expect(node, `chip ${value}`).toBeDefined()
+    return node!
+  }
+
+  function chipCount(view: View, value: string): number {
+    const count = findByClass(descendants(view.nodes, chipNode(view, value)), 'km-chip-count')[0]
+    expect(count, `count of chip ${value}`).toBeDefined()
+    return Number(count!.text)
+  }
+
+  function selectChip(view: View, value: string): void {
+    ;(chipNode(view, value).props!.onClick as () => void)()
+    view.render()
+  }
+
+  function providerNames(view: View): string[] {
+    return findByClass(view.nodes, 'km-provider').map(card =>
+      String(findByClass(descendants(view.nodes, card), 'km-provider-name')[0]?.text ?? ''),
+    )
+  }
+
+  function sectionTitles(view: View): string[] {
+    return findByClass(view.nodes, 'km-section-title').map(node => node.text)
+  }
+
+  function section(view: View, title: string) {
+    const head = findByClass(view.nodes, 'km-section-title').find(node => node.text === title)
+    expect(head, `section ${title}`).toBeDefined()
+    const owner = findByClass(view.nodes, 'km-section').find(candidate =>
+      descendants(view.nodes, candidate).some(node => node.path === head!.path),
+    )
+    expect(owner, `owner of ${title}`).toBeDefined()
+    return owner!
+  }
+
+  function typeQuery(view: View, value: string): void {
+    const input = findByClass(view.nodes, 'km-search-input')[0]
+    expect(input).toBeDefined()
+    ;(input!.props!.onChange as (event: unknown) => void)({ target: { value } })
+    view.render()
+  }
+
+  async function mountFiltered(): Promise<{ view: View; state: StateView }> {
+    const state = filterState()
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    return { view, state }
+  }
+
+  test('no filter selected keeps the whole list and shows one chip per predicate', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      // The chip set and its order are a product decision, so the row renders
+      // exactly one chip per predicate in the fixed order origin → capability
+      // → surface.
+      expect(findByClass(view.nodes, 'km-chip-label').map(node => node.text))
+        .toEqual(['全部', '内置', '插件', '支持 OAuth', '传输'])
+      expect(chipNode(view, 'all').props?.['aria-pressed']).toBe(true)
+
+      expect(providerNames(view).sort()).toEqual(state.providers.map(provider => provider.provider).sort())
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(state.transportAccounts!.length)
+      expect(sectionTitles(view)).toContain('传输账户')
+
+      // Every count is derived from the snapshot through its own predicate —
+      // never a literal, never a sum of the other chips.
+      const all = chipCount(view, 'all')
+      const builtin = chipCount(view, 'builtin')
+      const plugin = chipCount(view, 'plugin')
+      const oauth = chipCount(view, 'oauth')
+      expect(all).toBe(state.providers.length + state.transportAccounts!.length)
+      expect(builtin).toBe(state.providers.filter(provider => originOf(provider) === 'dsh').length)
+      expect(plugin).toBe(state.providers.filter(provider => originOf(provider) === 'plugin').length)
+      expect(oauth).toBe(state.providers.filter(capability).length)
+      expect(chipCount(view, 'transport')).toBe(state.transportAccounts!.length)
+      // Overlapping predicates, not a partition: with a custom-origin route in
+      // the snapshot the origin chips are a strict subset of All.
+      expect(builtin + plugin).toBeLessThan(all)
+      expect(oauth).toBeLessThanOrEqual(all)
+      // And `oauthCapable()` is stricter than the catalog flag alone.
+      expect(state.providers.filter(provider => provider.nativeAuth?.oauth === true).length).toBeGreaterThan(oauth)
+      expect(oauth).toBeGreaterThan(0)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('Plugin narrows to plugin-origin rows and filters the transport section out', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      selectChip(view, 'plugin')
+      expect(providerNames(view).sort())
+        .toEqual(state.providers.filter(provider => originOf(provider) === 'plugin').map(provider => provider.provider).sort())
+      expect(chipNode(view, 'plugin').props?.['aria-pressed']).toBe(true)
+      expect(chipNode(view, 'all').props?.['aria-pressed']).toBe(false)
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
+      expect(sectionTitles(view)).not.toContain('传输账户')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('OAuth-capable narrows to the rows that can start a sign-in now', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      selectChip(view, 'oauth')
+      expect(providerNames(view).sort())
+        .toEqual(state.providers.filter(capability).map(provider => provider.provider).sort())
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('Transport narrows to its own section and keeps an empty section rather than a blank page', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      selectChip(view, 'transport')
+      expect(providerNames(view)).toEqual([])
+      expect(sectionTitles(view)).toContain('传输账户')
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(state.transportAccounts!.length)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+
+    // The same chip with zero transport rows: head, count and the existing
+    // empty copy, so no new string is invented for the empty filter.
+    const emptyState = filterState()
+    emptyState.transportAccounts = []
+    const harness = makeContext({ ok: true, value: emptyState })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const emptyView = mountView(KeysManagerBody)
+    await emptyView.flush()
+    try {
+      selectChip(emptyView, 'transport')
+      expect(sectionTitles(emptyView)).toContain('传输账户')
+      const head = section(emptyView, '传输账户')
+      expect(findByClass(descendants(emptyView.nodes, head), 'km-section-count')[0]?.text).toBe('0')
+      expect(findByClass(descendants(emptyView.nodes, head), 'km-empty')[0]?.text).toBe('没有匹配的 Provider。')
+    } finally {
+      emptyView.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('the filter composes with the text search and clearing restores the list', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      selectChip(view, 'plugin')
+      typeQuery(view, 'builtin')
+      expect(providerNames(view)).toEqual([])
+
+      typeQuery(view, 'plugin')
+      expect(providerNames(view)).toEqual(['plugin-route'])
+
+      typeQuery(view, '')
+      selectChip(view, 'all')
+      expect(providerNames(view).sort()).toEqual(state.providers.map(provider => provider.provider).sort())
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(state.transportAccounts!.length)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
   })
 })
