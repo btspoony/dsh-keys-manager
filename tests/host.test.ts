@@ -5790,6 +5790,431 @@ test('a binding sync whose claim lands before the settings write is not written'
   }
 })
 
+// Compensation wave: restoring the projection is only half the undo — the
+// route's owner classification must match the record that ends up serving it,
+// or requests pick the pool while a grant serves and failures attribute to the
+// wrong account.
+
+test('a rejected flush restores a managed baseline to its previous owner', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({
+    accountId: 'acc-a',
+    email: 'a@example.com',
+    refresh: 'rt-a',
+  })
+  const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+    oauthOwnerFor: (provider: string) => string | null
+  }
+  try {
+    await h.service.activateAccount('anthropic', b.rowId)
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(internals.oauthOwnerFor('anthropic'), b.rowId)
+    // No reconciliation may repair the classification: the seam's echo is what
+    // would hide a compensation that forgot it (and the optional subscription
+    // is not guaranteed at all).
+    const raw = h.credentials.raw
+    const realEmit = raw.emitRecordUpdated.bind(raw)
+    raw.emitRecordUpdated = () => undefined
+    try {
+      await chmod(h.dir, 0o500)
+      try {
+        await assert.rejects(() => h.service.activateAccount('anthropic', rowA), /EACCES|permission denied|EPERM/)
+      } finally {
+        await chmod(h.dir, 0o700)
+      }
+    } finally {
+      raw.emitRecordUpdated = realEmit
+    }
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).accountId, 'acc-b', 'the baseline record was not restored')
+    assert.equal(internals.oauthOwnerFor('anthropic'), b.rowId, 'the route lost its previous owner after the compensation')
+    assert.equal(internals.foreignProjections.has('anthropic'), false)
+  } finally {
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('a rejected flush classifies a restored native projection as foreign', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-before', env: { REGION: 'eu' } })
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  try {
+    raw.emitRecordUpdated = () => undefined
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    raw.emitRecordUpdated = realEmit
+    assert.equal(internals.foreignProjections.has('anthropic'), true, 'a restored native record left the route pool-served')
+    assert.equal(internals.activeAccounts.has('anthropic'), false, 'the activation claim survived against a native baseline')
+  } finally {
+    raw.emitRecordUpdated = realEmit
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('a flush failure whose proof is unknown keeps the activation claim', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    activationProjectionProof: (records: unknown, provider: string, written: string) => Promise<string>
+  }
+  h.credentials.records.delete(GRANT_KEY)
+  const realProof = internals.activationProjectionProof.bind(h.service)
+  // A store failure proves nothing, so it is never permission to delete.
+  internals.activationProjectionProof = async () => 'unknown'
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(h.credentials.records.has(GRANT_KEY), true, 'an unproven projection was deleted')
+    assert.equal(internals.activeAccounts.get('anthropic'), rowId, 'the live activation projection lost its claim')
+  } finally {
+    internals.activationProjectionProof = realProof
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('a flush failure whose restore throws keeps the activation claim', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as { activeAccounts: Map<string, string> }
+  h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-before', env: { REGION: 'eu' } })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  let grantWrites = 0
+  raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+    // The first write is the activation's projection; the second is the
+    // compensation's restore, which the seam refuses.
+    if (key === GRANT_KEY && ++grantWrites === 2) throw new Error('credential store locked')
+    return realModify(key, mutate)
+  }
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(internals.activeAccounts.get('anthropic'), rowId, 'a failed restore dropped the claim on a live projection')
+  } finally {
+    raw.modifyRecord = realModify
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// Guard, not a fix proof: on the pre-fix head the claim was deleted and the
+// delete authority proved a match, so every assertion here already held. It
+// pins the absent-baseline outcome against the classification rewrite above
+// (a `gone` route must not keep an owner or a foreign marker).
+
+test('a rejected flush over an absent baseline leaves the route pool-served', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  h.credentials.records.delete(GRANT_KEY)
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the activation projection survived the compensation')
+    assert.equal(internals.activeAccounts.has('anthropic'), false)
+    assert.equal(internals.foreignProjections.has('anthropic'), false)
+  } finally {
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F2: a present grant no row owns is foreign by the same rule the reconciler
+// applies. Classifying it `none` would call the route pool-served while the
+// restored record serves.
+
+test('a restored grant baseline no row owns is classified foreign', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  // A grant this pool does not own, as a foreign sign-in would leave it.
+  h.credentials.records.set(GRANT_KEY, {
+    kind: 'grant',
+    payload: {
+      type: 'oauth',
+      refresh: 'rt-unowned',
+      access: 'at-unowned',
+      expires: 1_800_000_000_000,
+      accountId: 'acc-unowned',
+    },
+  })
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  try {
+    raw.emitRecordUpdated = () => undefined
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    raw.emitRecordUpdated = realEmit
+    assert.equal(h.credentials.records.get(GRANT_KEY)?.kind, 'grant')
+    assert.equal(internals.foreignProjections.has('anthropic'), true,
+      'an unowned grant baseline left the route reading as pool-served')
+    assert.equal(internals.activeAccounts.has('anthropic'), false)
+  } finally {
+    raw.emitRecordUpdated = realEmit
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F1: the classification decides after the compensation's own I/O. A claim
+// that lands inside it already settled what serves the route, so its
+// classification must survive the undo untouched.
+
+test('a claim landing inside the compensation keeps its own classification', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const other = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-other', email: 'other@example.com', refresh: 'rt-other' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+    ownershipGenerations: Map<string, number>
+  }
+  h.credentials.records.delete(GRANT_KEY)
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  raw.emitRecordUpdated = () => undefined
+  raw.deleteRecord = async (key: string) => {
+    await realDelete(key)
+    // A newer claim lands while the compensation's own delete is in flight.
+    internals.activeAccounts.set('anthropic', other.rowId)
+    internals.foreignProjections.delete('anthropic')
+    internals.ownershipGenerations.set('anthropic', (internals.ownershipGenerations.get('anthropic') ?? 0) + 1)
+  }
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(internals.activeAccounts.get('anthropic'), other.rowId,
+      'the compensation overwrote a claim that landed after its own await')
+    assert.equal(internals.foreignProjections.has('anthropic'), false,
+      'the compensation marked a route another owner had just claimed')
+  } finally {
+    raw.emitRecordUpdated = realEmit
+    raw.deleteRecord = realDelete
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F3: our own demotion can remove the projection during the compensation window
+// without superseding the claim. The proof must answer "absent" there, not
+// "differs": folding the two together marked the serviceless route foreign,
+// which makes `keyPoolServes` false and leaves no usable credential.
+
+test('a projection removed during the compensation leaves the route pool-served', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  let grantWrites = 0
+  raw.emitRecordUpdated = () => undefined
+  raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+    // Call #1 is the activation's projection; call #2 is the compensation's
+    // proof, and by then our own demotion has already removed the record.
+    if (key === GRANT_KEY && ++grantWrites === 2) h.credentials.records.delete(GRANT_KEY)
+    return realModify(key, mutate)
+  }
+  h.credentials.records.delete(GRANT_KEY)
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(internals.foreignProjections.has('anthropic'), false,
+      'a record nobody serves marked the route foreign, so no credential can serve it')
+    assert.equal(internals.activeAccounts.has('anthropic'), false)
+  } finally {
+    raw.modifyRecord = realModify
+    raw.emitRecordUpdated = realEmit
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F4: a delete that removes the record and then throws is real (R14-SF2), so the
+// compensation re-proves the outcome instead of assuming the record survived.
+
+test('a throwing delete that removed the projection still leaves the route pool-served', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  raw.emitRecordUpdated = () => undefined
+  raw.deleteRecord = async (key: string) => {
+    await realDelete(key)
+    throw new Error('credential store locked')
+  }
+  h.credentials.records.delete(GRANT_KEY)
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(internals.activeAccounts.has('anthropic'), false,
+      'the claim survived a projection the throwing delete had already removed')
+    assert.equal(internals.foreignProjections.has('anthropic'), false)
+  } finally {
+    raw.deleteRecord = realDelete
+    raw.emitRecordUpdated = realEmit
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F5: the restored record decides its owner. A captured owner id that the
+// baseline payload does not match must not be put back.
+
+test('a restored baseline is grouped by its payload, not a captured owner id', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({
+    accountId: 'acc-a',
+    email: 'a@example.com',
+    refresh: 'rt-a',
+  })
+  const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b' })
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+  }
+  try {
+    await h.service.activateAccount('anthropic', b.rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The owner map names A while the projection serves B's generation.
+    internals.activeAccounts.set('anthropic', rowA)
+    const raw = h.credentials.raw
+    const realEmit = raw.emitRecordUpdated.bind(raw)
+    raw.emitRecordUpdated = () => undefined
+    try {
+      await chmod(h.dir, 0o500)
+      try {
+        await assert.rejects(() => h.service.activateAccount('anthropic', b.rowId), /EACCES|permission denied|EPERM/)
+      } finally {
+        await chmod(h.dir, 0o700)
+      }
+    } finally {
+      raw.emitRecordUpdated = realEmit
+    }
+    assert.equal(internals.activeAccounts.get('anthropic'), b.rowId,
+      'the compensation restored an owner the baseline record does not match')
+    assert.equal(internals.foreignProjections.has('anthropic'), false)
+  } finally {
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
+// F6: the repair's own sync can still commit a binding derived from the
+// pre-claim classification unless it carries the same stamp.
+
+test('a repair whose claim lands during the bind does not write the binding', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const record = h.store.provider('anthropic')!
+  const internals = h.service as unknown as {
+    ownershipGenerations: Map<string, number>
+    repairBinding: (provider: string) => Promise<void>
+  }
+  record.takeoverPending = true
+  delete h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv
+  const realDescribe = h.settings.describe.bind(h.settings)
+  let describes = 0
+  h.settings.describe = () => {
+    describes += 1
+    // The last point before `settings.mutate`: a claim lands here.
+    if (describes === 2) {
+      internals.ownershipGenerations.set('anthropic', (internals.ownershipGenerations.get('anthropic') ?? 0) + 1)
+    }
+    return realDescribe()
+  }
+  try {
+    await internals.repairBinding('anthropic')
+  } finally {
+    h.settings.describe = realDescribe
+  }
+  assert.equal(describes >= 2, true, 'the settings write was never attempted')
+  assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, undefined,
+    'the repair wrote a binding derived from a superseded classification')
+  assert.equal(record.takeoverPending, true)
+  await h.close()
+})
+
+// Addendum: `repairBinding` settles the takeover debt after an awaited sync, so
+// it carries the same stale-owner window the activation's sync had.
+
+test('a repair whose claim lands during the awaited sync keeps its takeover debt', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const record = h.store.provider('anthropic')!
+  const internals = h.service as unknown as {
+    ownershipGenerations: Map<string, number>
+    repairBinding: (provider: string) => Promise<void>
+    syncBrokerBinding: (provider: string, options?: Record<string, unknown>) => Promise<boolean>
+  }
+  record.takeoverPending = true
+  delete h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv
+  const realSync = internals.syncBrokerBinding.bind(h.service)
+  internals.syncBrokerBinding = async (provider: string, options?: Record<string, unknown>) => {
+    const bound = await realSync(provider, options)
+    // A claim lands after the awaited sync resolved, before the debt is settled.
+    internals.ownershipGenerations.set(provider, (internals.ownershipGenerations.get(provider) ?? 0) + 1)
+    return bound
+  }
+  try {
+    await internals.repairBinding('anthropic')
+  } finally {
+    internals.syncBrokerBinding = realSync
+  }
+  assert.equal(record.takeoverPending, true, 'the takeover debt was cleared for a superseded generation')
+  await h.close()
+})
+
 // D2: the takeover debt is cleared only after `syncBrokerBinding` resolves,
 // and a claim that lands inside that awaited write means the binding this sync
 // committed no longer describes the route's owner. The recheck is what keeps
