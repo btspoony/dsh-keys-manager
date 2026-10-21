@@ -5457,7 +5457,7 @@ export class KeysManagerService {
         active: active.has(entry.provider),
         supported: transport ? false : support.supported,
         ...(transport
-          ? { reason: 'This route is served by a transport plugin credential; manage it in Transport accounts.' }
+          ? { reason: 'This route is served by a transport plugin; manage its account from this provider card.' }
           : support.reason === undefined ? {} : { reason: support.reason }),
         accountSupported: transport ? false : accountSupport.supported,
         ...(transport ? { transport: true } : {}),
@@ -5577,7 +5577,9 @@ export class KeysManagerService {
       writable: descriptor.writable && !this.store.readOnly,
       settings: { ...normalizeSettings(this.store.settings) },
       providers: views,
-      managedCount: views.filter(view => view.managed).length,
+      // The count matches the set the client groups under 已接管: a transport
+      // route renders as a card there, so the two numbers must agree.
+      managedCount: views.filter(view => view.managed || view.transport === true).length,
       keyCount: allKeys.length,
       healthyKeyCount: allKeys.filter(key => key.status === 'active').length,
       coolingKeyCount: allKeys.filter(key => key.status === 'cooling').length,
@@ -5943,7 +5945,7 @@ export class KeysManagerService {
       // adopting it would bind a profile nothing serves (and its namespace is
       // not even mounted). Refuse before any settings read or write.
       if (entry.settingsNs === TRANSPORT_CREDENTIAL_SCOPE) {
-        throw new Error(`Provider "${provider}" is served by a transport plugin; manage its account in Transport accounts`)
+        throw new Error(`Provider "${provider}" is served by a transport plugin; manage its account from its provider card`)
       }
       const descriptor = this.describeSettings()
       const namespace = this.namespace(descriptor, entry.settingsNs)

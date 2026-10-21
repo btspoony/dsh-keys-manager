@@ -1969,7 +1969,9 @@ test('a failed credential unset keeps the provider manageable', async () => {
     const record = h.store.provider('zai-coding-cn')!
     assert.notEqual(record, undefined)
     assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, record.brokerRef)
-    assert.equal(h.service.getState().managedCount, 1)
+    // `managedCount` also counts transport cards, so assert the managed set the
+    // release left behind instead of that combined number.
+    assert.equal(h.service.getState().providers.filter(view => view.managed).length, 1)
     h.credentials.raw.failUnset = false
     await h.service.releaseProvider('zai-coding-cn')
     assert.equal(h.store.provider('zai-coding-cn'), undefined)
@@ -9918,14 +9920,17 @@ test('lists the cursor transport account from its own grant record', async () =>
 test('a transport route is a plugin route and is never key- or account-adoptable', async () => {
   const h = await transportHarness()
   try {
-    const view = h.service.buildState().providers.find(provider => provider.provider === 'cursor')
+    const state = h.service.buildState()
+    const view = state.providers.find(provider => provider.provider === 'cursor')
     assert.ok(view !== undefined)
     assert.equal(view.origin, 'plugin')
     assert.equal(view.transport, true)
     assert.equal(view.supported, false)
     assert.equal(view.accountSupported, false)
     assert.equal(view.managed, false)
-    assert.match(view.reason ?? '', /Transport accounts/)
+    assert.match(view.reason ?? '', /transport plugin/i)
+    // The 已接管 section renders this card, so the host count must include it.
+    assert.equal(state.managedCount, 1)
   } finally {
     await h.close()
   }
@@ -9934,7 +9939,7 @@ test('a transport route is a plugin route and is never key- or account-adoptable
 test('adopting a transport route is refused before any settings write', async () => {
   const h = await transportHarness()
   try {
-    await assert.rejects(() => h.service.adoptProvider('cursor'), /Transport accounts/)
+    await assert.rejects(() => h.service.adoptProvider('cursor'), /transport plugin/i)
     assert.equal(h.settings.valueOf('llm-omp-transports'), undefined)
     assert.equal(h.store.providers.cursor, undefined)
   } finally {

@@ -156,7 +156,6 @@ const zh = {
       deleteAccountBodyNoKeys: '这会从凭证库中删除该账户保存的 OAuth 授权。该路由没有 API-key 池，删除后将停止服务，直到重新登录账户。',
       // Transport accounts (llm-omp-transports/<route>): managed beside the
       // pi-ai pool, so the copy never promises a key-pool fallback.
-      transportAccounts: '传输账户',
       transportProviderHint: '该路由由传输插件提供，凭证就在本卡片中管理。',
       transportTag: '传输',
       transportSignIn: '登录',
@@ -323,7 +322,6 @@ const en = {
       deleteAccountBody: 'This removes the account’s stored OAuth grant from the credential store. If it is the active account, the provider route stops serving it and falls back to its API-key pool; the provider stays managed.',
       deleteAccountBodyNoKeys: 'This removes the account’s stored OAuth grant from the credential store. This route has no API-key pool, so it stops serving requests until an account is signed in again.',
       // Transport accounts — same values as locale/en.json.
-      transportAccounts: 'Transport accounts',
       transportProviderHint: 'Served by a transport plugin: its credential is managed inside this card.',
       transportTag: 'Transport',
       transportSignIn: 'Sign in',

@@ -914,7 +914,12 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
   const originLabel = transport || origin === 'plugin' ? t('pluginBuiltin') : origin === 'dsh' ? t('dshBuiltin') : t('customProvider')
   const providerMeta = [
     provider.provider,
-    provider.active ? t('active') : provider.configured ? t('configured') : t('notConfigured'),
+    // `active`/`configured` are read off the route's profile or the host's
+    // provider list, neither of which describes a transport route: its state
+    // is the account row it carries.
+    transport
+      ? transportAccount !== undefined ? t(transportStatusKey(transportAccount.status)) : null
+      : provider.active ? t('active') : provider.configured ? t('configured') : t('notConfigured'),
     provider.api ?? null,
   ].filter((value): value is string => Boolean(value))
 
@@ -1496,11 +1501,14 @@ function KeysManagerBody(): React.ReactElement {
     return haystack.includes(normalizedQuery)
   }
   // A transport route is a provider card of its own: it groups with the
-  // managed providers, but it is never offered as addable and never counts
-  // toward `managedCount` or the key pool.
+  // managed providers (as `managedCount` does), but it is never offered as
+  // addable and never counts toward the key pool.
   const managed = providers.filter(provider => (provider.managed || provider.transport === true) && matches(provider))
   const available = providers.filter(provider => !provider.managed && provider.transport !== true && matches(provider))
   const visibleAvailable = showAllAvailable || normalizedQuery.length > 0 ? available : available.slice(0, 12)
+  // A reported grant whose route has no provider card would otherwise lose its
+  // only sign-in/remove control, so it renders on its own in the same section.
+  const orphanAccounts = transportAccounts.filter(account => !providers.some(provider => provider.provider === account.id))
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1590,6 +1598,12 @@ function KeysManagerBody(): React.ReactElement {
             expanded: expanded.has(provider.provider),
             onToggle: () => toggle(provider.provider),
           }))),
+      orphanAccounts.length > 0
+        ? h('div', { className: 'km-provider-list' }, orphanAccounts.map(account => h(TransportAccountRow, {
+            key: account.scope,
+            account,
+          })))
+        : null,
     ) : null,
 
     !loading && !failed ? h('section', { className: 'km-section' },

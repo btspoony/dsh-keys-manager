@@ -180,7 +180,6 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // Transport account surface (`llm-omp-transports/<route>`): every copy the
     // row renders resolves its real zh value, so the assertions below locate
     // the section, status pill and dialogs by rendered text.
-    transportAccounts: '传输账户',
     transportTag: '传输',
     pluginBuiltin: '插件内置',
     transportProviderHint: '该路由由传输插件提供，凭证就在本卡片中管理。',
@@ -1340,7 +1339,7 @@ function makeTransportProvider(): ProviderView {
     active: false,
     supported: false,
     accountSupported: false,
-    reason: 'This route is served by a transport plugin credential; manage it in Transport accounts.',
+    reason: 'This route is served by a transport plugin; manage its account from this provider card.',
     settingsNs: 'llm-omp-transports',
     settingsPath: ['providers', 'cursor'],
     apiKeyEnv: null,
@@ -2463,7 +2462,6 @@ describe('account ui', () => {
 
 describe('transport account surface', () => {
   const TRANSPORT_KEYS = [
-    'transportAccounts',
     'transportProviderHint',
     'transportTag',
     'transportSignIn',
@@ -2522,7 +2520,11 @@ describe('transport account surface', () => {
     const card = providerCard(view.nodes, 'cursor')
     expect(card.text).toContain('插件内置')
     expect(card.text).toContain('传输')
-    expect(card.text).not.toContain('接管 Provider')
+    // The head's state word comes from the account, never from the route's
+    // profile (which can never load: a transport route mounts no namespace).
+    expect(card.text).toContain('正常')
+    expect(card.text).not.toContain('未配置')
+    expect(card.text).not.toContain('已配置')
     expect(card.text).not.toContain('暂不支持密钥池')
     expect(card.text).not.toContain('未接管')
 
@@ -2568,6 +2570,24 @@ describe('transport account surface', () => {
     const inside = descendants(view.nodes, providerCard(view.nodes, 'cursor'))
     expect(inside.some(node => node.text === '该路由由传输插件提供，凭证就在本卡片中管理。')).toBe(true)
     expect(findByClass(inside, 'km-transport-row')).toHaveLength(0)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a transport account whose route has no provider card still renders its row', async () => {
+    // The grant is host state of its own: a snapshot that omits the route from
+    // the provider list must not hide the only control that can remove it.
+    const state = makeState()
+    state.transportAccounts = [makeTransportAccount()]
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const rows = findByClass(view.nodes, 'km-transport-row')
+    expect(rows).toHaveLength(1)
+    expect(descendants(view.nodes, rows[0]!).some(node => node.text === 'llm-omp-transports/cursor')).toBe(true)
+    expect(view.nodes.some(node => node.text === '传输账户')).toBe(false)
     view.unmount()
     setRuntimeContext(null)
   })
