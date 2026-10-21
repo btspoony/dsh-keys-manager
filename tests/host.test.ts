@@ -5790,6 +5790,76 @@ test('a binding sync whose claim lands before the settings write is not written'
   }
 })
 
+// P2-A: the returned view must carry the binding attempt's warning. Building it
+// inside the queue turn drained the snapshot first, so a refused binding
+// reported a clean activation while requests kept using the key pool.
+
+test('a refused binding during activation is reported in the returned state', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    const record = h.store.provider('anthropic')!
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // The demoted state a broker-bound route is left in, written directly so no
+    // binding pass can re-derive it first.
+    const foreign: FakeCredentialRecord = {
+      kind: 'api-key',
+      key: 'sk-native-takeover',
+      env: { NATIVE: '1' },
+    }
+    h.credentials.records.set(GRANT_KEY, foreign)
+    const internalsOwner = h.service as unknown as { foreignProjections: Set<string> }
+    internalsOwner.foreignProjections.add('anthropic')
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = record.brokerRef
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef)
+    h.settings.mutate = async () => { throw new Error('settings are read-only') }
+    const view = await h.service.activateAccount('anthropic', rowId)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef,
+      'the binding was written, so the refusal is not under test')
+    assert.equal(
+      view.warnings.some(warning => /pi-ai credential reference|broker binding/i.test(warning)),
+      true,
+      'the refused binding was missing from the returned state, so the activation read as a clean success',
+    )
+  } finally {
+    await h.close()
+  }
+})
+
+// P2-B: the row rollback belongs to the outcomes that changed what serves the
+// route. When the activation keeps serving (`ours`), its row must keep the live
+// state instead of re-rendering as missing/cooling.
+
+test('a flush failure that keeps the projection keeps the row live', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  const internals = h.service as unknown as {
+    activationProjectionProof: (records: unknown, provider: string, written: string) => Promise<string>
+  }
+  // A previously demoted account, re-activated, whose flush then fails while
+  // the proof cannot establish anything.
+  row.valueMissing = true
+  row.cooldownUntil = Date.now() + 60_000
+  h.credentials.records.delete(GRANT_KEY)
+  const realProof = internals.activationProjectionProof.bind(h.service)
+  internals.activationProjectionProof = async () => 'unknown'
+  try {
+    await chmod(h.dir, 0o500)
+    try {
+      await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
+    } finally {
+      await chmod(h.dir, 0o700)
+    }
+    assert.equal(row.valueMissing, false, 'a serving account was rolled back to its demoted state')
+    assert.equal(row.cooldownUntil, 0, 'a serving account was rolled back to its cooling window')
+  } finally {
+    internals.activationProjectionProof = realProof
+    await chmod(h.dir, 0o700).catch(() => undefined)
+    await h.close()
+  }
+})
+
 // Compensation wave: restoring the projection is only half the undo — the
 // route's owner classification must match the record that ends up serving it,
 // or requests pick the pool while a grant serves and failures attribute to the
@@ -6463,7 +6533,11 @@ test('a failed flush whose proof read throws keeps the projection and the claim 
   }
   assert.equal(modifies, 2, 'the compensation never ran its identity proof')
   assert.equal(h.credentials.records.has(GRANT_KEY), true, 'an unproven projection was deleted')
-  assert.equal(row.cooldownUntil, 3_300)
+  // The unproven proof keeps the projection and the claim (`ours`), and the
+  // account is serving, so the row keeps the live state the activation wrote —
+  // only outcomes that changed what serves roll the row back.
+  assert.equal(row.cooldownUntil, 0, 'a serving account was rolled back to its pre-activation cooling window')
+  assert.equal(row.valueMissing, false)
   await h.close()
 })
 

@@ -3695,7 +3695,7 @@ export class KeysManagerService {
       : undefined
     let undo: ActivationUndo | undefined
     try {
-      const view = await this.run(async () => {
+      await this.run(async () => {
         const providerRecord = this.store.provider(provider)
         if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
         const row = providerRecord.keys.find(candidate => candidate.id === accountId)
@@ -3741,15 +3741,18 @@ export class KeysManagerService {
         // from `cooldownUntil` only (core.ts:168-174).
         row.cooldownUntil = 0
         this.store.touch()
-        // Remote methods hand back the refreshed state view (addKey/deleteKey
-        // precedent), so the client updates its snapshot in one round trip.
-        return this.buildState()
       })
       // The re-activated grant is the serving credential again, so a broker
       // reference left by the key pool must go (see syncBrokerBinding). A
       // settings refusal does not roll back the committed projection.
       await this.syncBrokerBinding(provider)
-      return view
+      // P2-A: the returned view is built AFTER the binding attempt. Building it
+      // inside the turn drained the snapshot before the sync could push its
+      // warning, so a refused binding reported a clean activation while
+      // requests kept using the pool. Remote methods hand back the refreshed
+      // state (addKey/deleteKey precedent), so the client updates in one round
+      // trip — including the warning that says the route is not converged.
+      return this.buildState()
     } catch (error) {
       // A rejected flush lands here AFTER the turn resolved its work: `run`
       // does not roll the mutation back (`1789-1800`), so the row is still
@@ -3869,12 +3872,6 @@ export class KeysManagerService {
     undo: ActivationUndo,
     records: CredentialRecordsLike,
   ): Promise<void> {
-    const row = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
-    if (row !== undefined) {
-      row.valueMissing = undo.valueMissing
-      row.cooldownUntil = undo.cooldownUntil
-      this.store.touch()
-    }
     const outcome = prepared.baseline.state === 'absent'
       ? await this.deleteActivationProjection(records, provider, prepared.written)
       : await this.restoreActivationProjection(records, provider, prepared)
@@ -3884,6 +3881,19 @@ export class KeysManagerService {
     // newer owner or mark its route foreign. No await separates this check from
     // the writes in the switch.
     if (this.ownershipSuperseded(provider, undo.generation)) return
+    // P2-B: the row rollback belongs to the outcomes that actually changed what
+    // serves the route. `ours` keeps the activation's projection and claim — the
+    // account IS serving — so restoring the pre-activation demotion would render
+    // a live account as missing/cooling, and a restart without an echo would
+    // persist that lie.
+    if (outcome !== 'ours') {
+      const row = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
+      if (row !== undefined) {
+        row.valueMissing = undo.valueMissing
+        row.cooldownUntil = undo.cooldownUntil
+        this.store.touch()
+      }
+    }
     switch (outcome) {
       case 'ours':
         // The activation's projection is still the live record, so its claim
