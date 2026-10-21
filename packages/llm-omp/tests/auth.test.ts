@@ -561,6 +561,27 @@ describe('cursor access resolver', () => {
     controller.abort()
     expect(calls[0].init?.signal?.aborted).toBe(true)
   })
+
+  it('does not commit a refresh that completed after the caller cancelled', async () => {
+    const now = 1_000_000
+    const controller = new AbortController()
+    const { fetch } = stubFetch(() => {
+      // The exchange answers; the turn is then cancelled before the write.
+      controller.abort()
+      return json({ access_token: AUTH_TOKEN })
+    })
+    const stale: StoredCredentialRecord = {
+      kind: 'grant',
+      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now - 60_000 },
+    }
+    const store = fakeStore(stale)
+
+    await expect(
+      createCursorAccess(store.credentials, { fetch, now: () => now })(controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    // The withdrawn turn wrote nothing: the stale grant is still the record.
+    expect(store.record()).toEqual(stale)
+  })
 })
 
 describe('llm-omp-transports registration', () => {

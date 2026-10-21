@@ -124,7 +124,7 @@ function abortReason(signal: AbortSignal): unknown {
 }
 
 /** Throw when the caller withdrew before the next network step. */
-function throwIfAborted(signal?: AbortSignal): void {
+export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted === true) throw abortReason(signal)
 }
 

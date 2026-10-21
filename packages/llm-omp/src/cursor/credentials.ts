@@ -17,7 +17,7 @@
  */
 import { LlmError } from '@deepseek-ai/dsh-llm'
 
-import { CursorAuthError, refreshCursorToken } from './auth.js'
+import { CursorAuthError, refreshCursorToken, throwIfAborted } from './auth.js'
 import type { CursorFetch } from './auth.js'
 
 /** The record this plugin owns: scope `<plugin name>`, id the provider route. */
@@ -129,6 +129,10 @@ export function createCursorAccess(
           )
         }
         const refreshed = await refreshCursorToken(live.refresh, { fetch: options.fetch, signal })
+        // A turn cancelled while the exchange ran must not commit the token it
+        // will never use; the refresh already happened, so the next turn simply
+        // refreshes again.
+        throwIfAborted(signal)
         return {
           kind: 'grant',
           payload: { ...(payloadOf(current) ?? {}), access: refreshed.access, refresh: refreshed.refresh, expires: refreshed.expires },

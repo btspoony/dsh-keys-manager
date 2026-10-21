@@ -68,6 +68,15 @@ jobs:
       - name: Assert the llm-omp drift manifest is current
         run: git diff --exit-code -- packages/llm-omp/scripts/omp-manifest.json
 
+      # The pinned catalog's row contents are the route's whole model surface:
+      # a pin bump that regenerates the manifest but not this table would ship
+      # stale rows under a fresh provenance hash.
+      - name: Assert the generated Cursor catalog is current
+        run: |
+          set -euo pipefail
+          pnpm --filter dsh-llm-omp-transports run generate:catalog
+          git diff --exit-code -- packages/llm-omp/src/catalog/cursor.ts
+
       - name: Assert packed tarball contents
         run: |
           set -euo pipefail
