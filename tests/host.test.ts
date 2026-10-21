@@ -12305,3 +12305,64 @@ test('an addKey with unknown projection ownership does not bind the broker', asy
     await h.close()
   }
 })
+
+// ── PR #26 review round 25 ──────────────────────────────────────────────────
+
+// Advisor: the round-24 gate only saw the entry snapshot. `mutateSettings`
+// re-reads the settings descriptor before its write, so an ownership failure
+// recorded in that stretch (a concurrent path's failed projection read) still
+// persisted the broker reference. The bind gate is closed again at the last
+// point before `settings.mutate`; the unbind direction stays allowed.
+test('a bind whose ownership turns unknown before the settings write is not written', async () => {
+  const h = await harness()
+  const provider = 'zai-coding-cn'
+  try {
+    await h.service.adoptProvider(provider)
+    const record = h.store.provider(provider)!
+    const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers[provider].apiKeyEnv
+    // The startup-repair shape: the pooled route's profile is unbound, so this
+    // call is the bind direction.
+    delete h.settings.valueOf('llm-pi-ai').providers[provider].apiKeyEnv
+    const internals = h.service as unknown as {
+      syncBrokerBinding: (candidate: string, options?: Record<string, unknown>) => Promise<boolean>
+      projectionOwnershipKnown: (candidate: string) => boolean
+      ownershipReadFailures: Set<string>
+    }
+    assert.equal(internals.projectionOwnershipKnown(provider), true, 'the route was unattributed before the write')
+    const revision = (): number =>
+      h.settings.namespaces.find((entry: { ns: string }) => entry.ns === 'llm-pi-ai').revision
+
+    // First describe: the entry snapshot, which still answers "known". Second:
+    // the descriptor re-read inside mutateSettings — the race records a failed
+    // projection read there, so only a check after that read can see it.
+    const realDescribe = h.settings.describe.bind(h.settings)
+    let describes = 0
+    h.settings.describe = () => {
+      describes += 1
+      if (describes === 2) internals.ownershipReadFailures.add(provider)
+      return realDescribe()
+    }
+    const before = revision()
+    let written: boolean
+    try {
+      written = await internals.syncBrokerBinding(provider)
+    } finally {
+      h.settings.describe = realDescribe
+    }
+
+    assert.equal(written, false, 'the bind reported a shape it never wrote')
+    assert.equal(bound(), undefined, 'the broker was bound after ownership turned unknown mid-write')
+    assert.equal(internals.projectionOwnershipKnown(provider), false, 'the race recorded no ownership failure')
+    assert.equal(revision(), before, 'the settings document was mutated')
+
+    // The unbind direction stays allowed: a bound profile the pool no longer
+    // serves is released even while ownership is unknown.
+    h.settings.valueOf('llm-pi-ai').providers[provider].apiKeyEnv = record.brokerRef
+    for (const key of record.keys) if (key.kind === 'api-key') key.valueMissing = true
+    assert.equal(await internals.syncBrokerBinding(provider), true)
+    assert.equal(bound(), undefined, 'the unbind direction was gated by unknown ownership')
+    assert.equal(internals.projectionOwnershipKnown(provider), false, 'the ownership failure was cleared')
+  } finally {
+    await h.close()
+  }
+})

@@ -4901,8 +4901,19 @@ export class KeysManagerService {
     return descriptor.namespaces.find(entry => entry.ns === ns)
   }
 
-  /** Apply one path-addressed settings write through the live revision. */
-  private async mutateSettings(ns: string, ops: readonly SettingsPathOp[]): Promise<void> {
+  /**
+   * Apply one path-addressed settings write through the live revision.
+   *
+   * `stillWrites` runs after the descriptor re-read and immediately before the
+   * mutation: a decision derived from an earlier snapshot can be stale by then
+   * ({@link syncBrokerBinding}'s bind gate, PR review round 25). A declining
+   * guard skips the write and reports it.
+   */
+  private async mutateSettings(
+    ns: string,
+    ops: readonly SettingsPathOp[],
+    stillWrites?: () => boolean,
+  ): Promise<boolean> {
     const settings = this.settingsService()
     if (settings === undefined) throw new Error('Settings are unavailable in this composition')
     if (settings.writable === false) throw new Error('The active profile is read-only')
@@ -4913,7 +4924,9 @@ export class KeysManagerService {
       throw new Error(`Cannot read settings: ${error instanceof Error ? error.message : String(error)}`)
     }
     if (descriptor === undefined) throw new Error(`Settings namespace "${ns}" is not mounted`)
+    if (stillWrites !== undefined && !stillWrites()) return false
     await settings.mutate(ns, ops, descriptor.revision)
+    return true
   }
 
   /** Prune expired bindings at most once a minute, without a restart. */
@@ -5247,9 +5260,16 @@ export class KeysManagerService {
     }
     const path = [...record.settingsPath, 'apiKeyEnv']
     try {
-      await this.mutateSettings(record.settingsNs, [
-        desired === undefined ? { op: 'unset', path } : { op: 'set', path, value: desired },
-      ])
+      // The entry gate above read a snapshot; ownership can turn unknown while
+      // this write re-reads its descriptor (PR review round 25). Binding is a
+      // guess then, so the gate closes again at the last point before the
+      // mutation. Unbinding stays allowed.
+      const written = await this.mutateSettings(
+        record.settingsNs,
+        [desired === undefined ? { op: 'unset', path } : { op: 'set', path, value: desired }],
+        () => desired === undefined || this.projectionOwnershipKnown(provider),
+      )
+      if (!written) return false
     } catch (error) {
       this.bindingWriteRefused(provider, error instanceof Error ? error.message : String(error))
       return false
