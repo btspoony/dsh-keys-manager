@@ -2606,6 +2606,15 @@ describe('transport account surface', () => {
     expect(findByClass(view.nodes, 'km-section-count')[0]!.text).toBe('1')
     expect(view.nodes.some(node => node.text === '还没有接管的 Provider。从下方选择一个开始。')).toBe(false)
 
+    // One rule for both numbers: with no provider card at all, the tile and the
+    // section head agree on the row, and the summary does not claim emptiness.
+    const managedStat = findByClass(view.nodes, 'km-stat').find(node => node.text.includes('已接管'))!
+    expect(descendants(view.nodes, managedStat).find(node => node.type === 'strong')!.text).toBe('1')
+    const summary = mountView(KeysManagerCard, { view: 'summary' })
+    await summary.flush()
+    expect(summary.nodes.some(node => node.text.includes('尚未接管任何 Provider'))).toBe(false)
+    summary.unmount()
+
     // The same search that filters provider cards filters the row.
     const input = findByClass(view.nodes, 'km-search-input')[0]!
     ;(input.props!.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'nope' } })

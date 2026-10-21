@@ -75,14 +75,25 @@ function oauthCapable(provider: ProviderView): boolean {
 }
 
 /**
- * The set the 已接管 surface renders: managed providers plus transport cards.
+ * Transport account rows no provider card owns: without a card they have no
+ * other sign-in/remove control, so the 已接管 surface renders them directly.
+ */
+function orphanTransportAccounts(providers: ProviderView[], transportAccounts: TransportAccountView[]): TransportAccountView[] {
+  return transportAccounts.filter(account => !providers.some(provider => provider.provider === account.id))
+}
+
+/**
+ * Entries the 已接管 surface renders: provider cards (managed or transport)
+ * plus transport account rows with no card.
  *
  * `StateView.managedCount` is the host's managed-only count (a transport route
  * stays out of it), so every 已接管 number the client renders derives from this
- * list instead — one number per label, and it agrees with the section.
+ * rule instead — the summary tile, the collapsed summary and the section head
+ * cannot disagree.
  */
-function managedViewCount(providers: ProviderView[]): number {
-  return providers.filter(provider => provider.managed || provider.transport === true).length
+function managedEntryCount(providers: ProviderView[], transportAccounts: TransportAccountView[]): number {
+  const cards = providers.filter(provider => provider.managed || provider.transport === true).length
+  return cards + orphanTransportAccounts(providers, transportAccounts).length
 }
 
 /**
@@ -1517,15 +1528,15 @@ function KeysManagerBody(): React.ReactElement {
   const managed = providers.filter(provider => (provider.managed || provider.transport === true) && matches(provider))
   const available = providers.filter(provider => !provider.managed && provider.transport !== true && matches(provider))
   const visibleAvailable = showAllAvailable || normalizedQuery.length > 0 ? available : available.slice(0, 12)
-  // A reported grant whose route has no provider card would otherwise lose its
-  // only sign-in/remove control, so it renders on its own in the same section
-  // and obeys the same search filter.
+  // Orphan rows obey the same search filter their provider cards do.
   const matchesAccount = (account: TransportAccountView): boolean => {
     if (normalizedQuery.length === 0) return true
     const haystack = [account.id, account.scope, account.displayName].join(' ').toLowerCase()
     return haystack.includes(normalizedQuery)
   }
-  const orphanAccounts = transportAccounts.filter(account => !providers.some(provider => provider.provider === account.id) && matchesAccount(account))
+  const orphanAccounts = orphanTransportAccounts(providers, transportAccounts).filter(matchesAccount)
+  // One number for the section head and the tile above it.
+  const managedEntries = managedEntryCount(providers, transportAccounts)
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1562,7 +1573,7 @@ function KeysManagerBody(): React.ReactElement {
 
     h('div', { className: 'km-embedded-head' },
       h('div', { className: 'km-summary' },
-        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : managedViewCount(providers)), h('span', null, t('managed'))),
+        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : managedEntries), h('span', null, t('managed'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.keyCount ?? 0), h('span', null, t('keys'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.healthyKeyCount ?? 0), h('span', null, t('healthy'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.coolingKeyCount ?? 0), h('span', null, t('cooling'))),
@@ -1603,7 +1614,7 @@ function KeysManagerBody(): React.ReactElement {
     !loading && !failed ? h('section', { className: 'km-section' },
       h('div', { className: 'km-section-head' },
         h('h2', { className: 'km-section-title' }, t('managed')),
-        h('span', { className: 'km-section-count' }, managed.length + orphanAccounts.length),
+        h('span', { className: 'km-section-count' }, managedEntries),
       ),
       // The placeholder only when the section renders neither a card nor a row.
       managed.length === 0 && orphanAccounts.length === 0
@@ -1672,7 +1683,7 @@ function KeysManagerCard({ view }: KeysManagerCardProps): React.ReactElement | n
   if (view === 'summary') {
     const state = snapshot.state
     if (state === null) return h('span', { className: 'km-summary-line' }, snapshot.status === 'error' ? t('loadError') : t('loading'))
-    const managed = managedViewCount(state.providers)
+    const managed = managedEntryCount(state.providers, state.transportAccounts ?? [])
     if (managed === 0) return h('span', { className: 'km-summary-line' }, t('summaryEmpty'))
     return h('span', { className: 'km-summary-line' }, t('summaryText', { providers: managed, keys: state.keyCount }))
   }
