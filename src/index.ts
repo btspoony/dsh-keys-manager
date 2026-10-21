@@ -3404,6 +3404,12 @@ export class KeysManagerService {
     // shutdown that began under any of the awaits above refuses it.
     if (this.persistenceRefused()) return
     await this.commitGrantGeneration(provider, owner, payload, rotatedRef)
+    // PR review round 44: the projection now serves this managed account again,
+    // so a profile that still names the broker would make pi-ai resolve the
+    // pool first and fail with MISSING_CREDENTIAL. Converge the binding with the
+    // serving source, exactly like activation and harvest do — off the grant
+    // chain, which this body runs on (a settings write inside it would re-enter).
+    void this.syncBindingAfterProjectionChange(provider)
   }
 
   /**
