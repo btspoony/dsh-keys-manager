@@ -513,7 +513,16 @@ interface PluginHarness {
  * State lives under a temp `DSH_HOME`; `close()` disposes effects in reverse
  * order and restores the environment.
  */
-async function pluginHarness(): Promise<PluginHarness> {
+/**
+ * Options for the model-routing modifier the host installs beside this plugin.
+ * `provider` is what that modifier finally resolves the route to;
+ * `shortCircuit` models an outer listener that answers without calling `next()`.
+ */
+interface PluginHarnessOptions {
+  modelRouting?: { provider: string; shortCircuit?: boolean }
+}
+
+async function pluginHarness(options: PluginHarnessOptions = {}): Promise<PluginHarness> {
   const dir = await mkdtemp(join(tmpdir(), 'keys-manager-plugin-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = dir
@@ -525,6 +534,16 @@ async function pluginHarness(): Promise<PluginHarness> {
   const llm = fakeLlm()
   const cleanups: Array<() => unknown> = []
   const chains = new Map<string, Array<(payload: any, next: () => any) => any>>()
+  // Registered BEFORE `apply()`, so it sits where the host's own model-selection
+  // modifier sits: after this plugin's prepended observer, inside its `next()`.
+  const routing = options.modelRouting
+  if (routing !== undefined) {
+    chains.set('agent/request', [(_payload: any, next: () => any) => {
+      if (routing.shortCircuit === true) return { provider: routing.provider }
+      next()
+      return { provider: routing.provider }
+    }])
+  }
   const typertRegistrations: NonNullable<PluginHarness['typertRegistrations']> = []
   let service: KeysManagerService | undefined
   const ctx: any = {
@@ -2932,6 +2951,111 @@ test('a new step preserves another in-flight step retry pin', async () => {
   }
 })
 
+
+test('the request-step observer records the provider the routing modifier finally selects (I-000043)', async () => {
+  // The host's model-selection modifier replaces the provider inside `next()`.
+  // An observer registered WITHOUT prepend runs after it, so it reads the
+  // pre-routing route: the step is then keyed to a provider that never streams,
+  // the retry pin is never consumed, and the wrong route's counter moves.
+  const h = await pluginHarness({ modelRouting: { provider: 'deepseek-official' } })
+  try {
+    // Both routes must be managed: the observer ignores unmanaged providers.
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.adoptProvider('deepseek-official')
+    await h.emit('agent/request', { agent: { session: { id: 'session-routing' } }, turn: 3, step: 2 }, () => ({ provider: 'zai-coding-cn' }))
+    const steps = (h.service as any).requestSteps as Map<string, { turn: number; step: number }>
+    assert.equal(steps.get('session-routing\u0000deepseek-official')?.turn, 3)
+    assert.equal(steps.get('session-routing\u0000deepseek-official')?.step, 2)
+    // The route the modifier replaced must not carry the step.
+    assert.equal(steps.has('session-routing\u0000zai-coding-cn'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a short-circuiting routing listener still leaves the request step recorded (I-000043)', async () => {
+  // A prepended observer runs outside the modifier chain, so it observes the
+  // request even when an outer listener answers without calling `next()`.
+  const h = await pluginHarness({ modelRouting: { provider: 'deepseek-official', shortCircuit: true } })
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.adoptProvider('deepseek-official')
+    await h.emit('agent/request', { agent: { session: { id: 'session-short-circuit' } }, turn: 1, step: 4 }, () => ({ provider: 'zai-coding-cn' }))
+    const steps = (h.service as any).requestSteps as Map<string, { turn: number; step: number }>
+    assert.equal(steps.get('session-short-circuit\u0000deepseek-official')?.step, 4)
+    assert.equal(steps.get('session-short-circuit\u0000deepseek-official')?.turn, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failover recovery returns the failing step identity to the retry stream (I-000041)', async () => {
+  // The recovery identity must survive the request boundary: the step is
+  // recorded by the `agent/request` waterfall, the failing attempt reports
+  // through `agent/request-error`, and the retry's `llm/stream` — not a direct
+  // `selectKey` call — must consume that step's pin and land on the alternate.
+  // An unrelated step running in between must neither consume nor inherit it.
+  const h = await pluginHarness()
+  try {
+    const service = h.service
+    await service.adoptProvider('zai-coding-cn')
+    await service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await service.addKey('zai-coding-cn', 'third', 'sk-third')
+    await service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = service.store.provider('zai-coding-cn')!
+    provider.cursor = 0
+    const [first, second] = provider.keys
+    const failure = { code: 'RATE_LIMIT', message: 'busy' }
+    const step = { turn: 2, step: 3 }
+    const seen: Array<string | undefined> = []
+    const request = (at = step): unknown =>
+      h.emit('agent/request', { agent: { session: { id: 'session-recovery' } }, ...at }, () => ({ provider: 'zai-coding-cn' }))
+    const stream = (): Promise<void> => consume(h.emit('llm/stream', {
+      provider: 'zai-coding-cn',
+      model: 'model',
+      sessionId: 'session-recovery',
+      messages: [],
+    }, async function* () {
+      // Resolve inside the wrapped scope so the broker marks the attempt as
+      // having used a managed credential.
+      seen.push((await h.credentials.raw.resolve(provider.brokerRef))?.value)
+      yield { type: 'finish', reason: { kind: 'error', failure } }
+    }) as AsyncIterable<unknown>)
+    const fail = (at = step): unknown => h.emit('agent/request-error', {
+      provider: 'zai-coding-cn',
+      ...at,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-recovery' } },
+    }, async () => undefined)
+
+    // Failure one spends the step's retry budget on the key that streamed.
+    await request()
+    await stream()
+    assert.deepEqual(await fail(), { kind: 'retry' })
+    // Failure two fails over and pins the alternate for this very step.
+    await request()
+    await stream()
+    assert.deepEqual(await fail(), { kind: 'retry' })
+    const pins = (service as any).retryBindings as Map<string, { keyId: string }>
+    assert.equal(pins.get('session-recovery\u0000zai-coding-cn\u00002\u00003')?.keyId, second.id)
+
+    // A concurrent step's stream advances the pool but must not touch the pin.
+    await request({ turn: 2, step: 4 })
+    await stream()
+    assert.equal(pins.size, 1)
+
+    // The failing step's retry reaches the alternate through the stream
+    // boundary — not the third key, not the cooled one.
+    await request()
+    await stream()
+    assert.equal(seen.at(-1), 'sk-second')
+    assert.equal(pins.size, 0)
+    assert.equal(provider.keys.find(key => key.id === first.id)!.cooldownUntil > 0, true)
+  } finally {
+    await h.close()
+  }
+})
 
 test('request steps are keyed per provider', async () => {
   const h = await harness()
