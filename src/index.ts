@@ -989,7 +989,27 @@ interface ActivationPreparation {
   payload: OAuthGrantPayload
   written: string
   baseline: ActivationBaseline
+  /** The route's owner classification before this activation claimed it. */
+  classification: ActivationClassification
 }
+
+/**
+ * Who owned the route before the activation. The compensation restores the
+ * record, so it must restore the classification that belongs to it: a route
+ * read as pool-served while a record serves it picks the wrong credential and
+ * attributes failures to the wrong account.
+ */
+type ActivationClassification =
+  | { state: 'owned'; rowId: string }
+  | { state: 'foreign' }
+  | { state: 'none' }
+
+/**
+ * What the compensation left serving the route. `ours` means the activation's
+ * own projection is (or may still be) live, so its claim must survive; the
+ * other three name something the classification can be derived from.
+ */
+type CompensationOutcome = 'baseline' | 'ours' | 'foreign' | 'gone'
 
 /** What the turn changed in memory, for the flush-failure compensation. */
 interface ActivationUndo {
@@ -3764,11 +3784,22 @@ export class KeysManagerService {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     const live = await records.readRecord(projectionKey)
     const payload = structuredClone(stored.payload)
+    const owner = this.activeAccounts.get(provider)
     return {
       grantRef,
       payload,
       written: JSON.stringify(payload),
       baseline: live === undefined ? { state: 'absent' } : { state: 'present', record: structuredClone(live) },
+      // Captured with the baseline, before the turn claims the route: the
+      // compensation has to put back the classification that matches the
+      // record it restores, and only this snapshot still knows it.
+      classification: live !== undefined && (live.kind !== 'grant' || !isOAuthGrantPayload(live.payload))
+        // A native record (an api-key credential, an unrecognized payload)
+        // serves the route whether or not a reconcile had classified it yet.
+        ? { state: 'foreign' }
+        : owner !== undefined
+          ? { state: 'owned', rowId: owner }
+          : this.foreignProjections.has(provider) ? { state: 'foreign' } : { state: 'none' },
     }
   }
 
@@ -3838,15 +3869,45 @@ export class KeysManagerService {
       row.cooldownUntil = undo.cooldownUntil
       this.store.touch()
     }
-    if (this.ownershipGenerations.get(provider) === undo.generation
-      && this.activeAccounts.get(provider) === accountId) {
-      this.activeAccounts.delete(provider)
+    // Only a compensation that still owns the generation may reclassify: a
+    // newer claim already settled what serves the route.
+    if (this.ownershipGenerations.get(provider) !== undo.generation) return
+    const outcome = prepared.baseline.state === 'absent'
+      ? await this.deleteActivationProjection(records, provider, prepared.written)
+      : await this.restoreActivationProjection(records, provider, prepared)
+    switch (outcome) {
+      case 'ours':
+        // The activation's projection is still the live record, so its claim
+        // stays: deleting it would call the route pool-served while a record
+        // serves it, and selection plus failure attribution would be wrong
+        // until an echo reconciled the route (never, if the optional
+        // `record-updated` subscription is unavailable).
+        return
+      case 'baseline':
+        this.applyActivationClassification(provider, prepared.classification)
+        return
+      case 'foreign':
+        this.activeAccounts.delete(provider)
+        this.foreignProjections.add(provider)
+        return
+      case 'gone':
+        // Nothing serves the route any more, so the pool does.
+        this.activeAccounts.delete(provider)
+        this.foreignProjections.delete(provider)
+        return
     }
-    if (prepared.baseline.state === 'absent') {
-      await this.deleteActivationProjection(records, provider, prepared.written)
-    } else {
-      await this.restoreActivationProjection(records, provider, prepared)
+  }
+
+  /** Put the route's owner classification back to a captured snapshot. */
+  private applyActivationClassification(provider: string, classification: ActivationClassification): void {
+    if (classification.state === 'owned') {
+      this.activeAccounts.set(provider, classification.rowId)
+      this.foreignProjections.delete(provider)
+      return
     }
+    this.activeAccounts.delete(provider)
+    if (classification.state === 'foreign') this.foreignProjections.add(provider)
+    else this.foreignProjections.delete(provider)
   }
 
   /** Put the projection back to the present baseline, if it is still ours. */
@@ -3854,23 +3915,35 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
     provider: string,
     prepared: ActivationPreparation,
-  ): Promise<void> {
+  ): Promise<CompensationOutcome> {
     const baseline = prepared.baseline
-    if (baseline.state !== 'present') return
+    if (baseline.state !== 'present') return 'baseline'
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    let outcome: CompensationOutcome = 'ours'
     try {
       await records.modifyRecord(projectionKey, async current => {
-        if (current === undefined
-          || current.kind !== 'grant'
-          || JSON.stringify(current.payload) !== prepared.written) return undefined
+        if (current === undefined) {
+          outcome = 'gone'
+          return undefined
+        }
+        if (current.kind !== 'grant' || JSON.stringify(current.payload) !== prepared.written) {
+          // A record this activation did not write serves the route now.
+          outcome = 'foreign'
+          return undefined
+        }
         // Return the captured record itself: rebuilding it from `kind` and
         // `payload` would drop the `key`/`env` an api-key projection carries and
         // leave the route unusable after a failed flush.
+        outcome = 'baseline'
         return structuredClone(baseline.record)
       })
     } catch (error) {
+      // An unreadable or refused seam proves nothing: the activation's
+      // projection may still be live, so `ours` keeps its claim.
       this.warn(`activation projection restore failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      return 'ours'
     }
+    return outcome
   }
 
   /**
@@ -3903,7 +3976,7 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
     provider: string,
     written: string,
-  ): Promise<void> {
+  ): Promise<CompensationOutcome> {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     // F2: the identity read and the delete cannot be atomic here — the seam has
     // no compare-and-delete, `deleteRecord(key)` takes no expected payload
@@ -3912,7 +3985,10 @@ export class KeysManagerService {
     // the record inside it still loses its grant, and that residual needs the
     // seam CAS, not another read here. Anything but a proven match is left
     // alone.
-    if (await this.activationProjectionProof(records, provider, written) !== 'matches') return
+    const proof = await this.activationProjectionProof(records, provider, written)
+    // `differs` means another writer's record serves the route; `unknown`
+    // proves nothing and must keep the activation's claim.
+    if (proof !== 'matches') return proof === 'differs' ? 'foreign' : 'ours'
     const markedAt = Date.now()
     this.intentionalProjectionRemovals.set(provider, markedAt)
     try {
@@ -3924,7 +4000,10 @@ export class KeysManagerService {
         this.intentionalProjectionRemovals.delete(provider)
       }
       this.warn(`cancelled activation projection cleanup failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      // The delete threw, so nothing was removed: our projection is still live.
+      return 'ours'
     }
+    return 'gone'
   }
 
   /**
@@ -6189,8 +6268,13 @@ export class KeysManagerService {
     const takeover = record?.takeoverPending === true
       && !this.foreignProjections.has(provider)
       && this.oauthOwnerFor(provider) === null
+    // The awaited sync can be superseded (an activation claims the route while
+    // it runs). Settling the debt then would record a takeover reconciled for a
+    // generation that no longer owns the route, so the generation is captured
+    // here and re-read immediately before the clear.
+    const generation = this.ownershipGenerations.get(provider) ?? 0
     const bound = await this.syncBrokerBinding(provider, { write: false, takeover })
-    if (takeover && bound && record !== undefined) {
+    if (takeover && bound && record !== undefined && !this.ownershipSuperseded(provider, generation)) {
       record.takeoverPending = false
       this.store.touch()
     }
