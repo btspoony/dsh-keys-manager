@@ -70,12 +70,12 @@ function providerInitial(provider: ProviderView | undefined): string {
  * Add account instead of opening a sign-in that would fail. Older host
  * snapshots that predate the field keep the catalog-only behaviour.
  */
-function oauthCapable(provider: ProviderView): boolean {
+export function oauthCapable(provider: ProviderView): boolean {
   return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
 }
 
 /** Where the row tag says a route came from, including legacy snapshots. */
-function originOf(provider: ProviderView): 'dsh' | 'plugin' | 'custom' {
+export function originOf(provider: ProviderView): 'dsh' | 'plugin' | 'custom' {
   return provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
 }
 
@@ -1527,11 +1527,19 @@ function KeysManagerBody(): React.ReactElement {
   const visibleAvailable = showAllAvailable || normalizedQuery.length > 0 ? available : available.slice(0, 12)
   // Transport rows are not ProviderView rows: only All and Transport reach them.
   const transportFiltered = filter === 'transport' || filter === 'all'
+  // Counts follow the query-narrowed population the section heads render, so a
+  // no-match query cannot leave a chip advertising rows no section shows.
   const filterCount = (value: ProviderFilter): number => {
-    if (value === 'all') return providers.length + transportAccounts.length
+    const searchable = providers.filter(matches)
+    if (value === 'all') return searchable.length + transportAccounts.length
     if (value === 'transport') return transportAccounts.length
-    return providers.filter(provider => matchesFilter(provider, value)).length
+    return searchable.filter(provider => matchesFilter(provider, value)).length
   }
+  // The managed list can be empty because nothing is managed, or because the
+  // query or the active chip hides rows that exist; the empty body says which.
+  // The query branch wins in the renderer, so this predicate needs only the
+  // chip term: with a query present the query copy is shown regardless.
+  const managedHiddenByChip = filter !== 'all' && providers.some(provider => provider.managed)
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1627,7 +1635,7 @@ function KeysManagerBody(): React.ReactElement {
         h('span', { className: 'km-section-count' }, managed.length),
       ),
       managed.length === 0
-        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, t('managedEmpty')))
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, normalizedQuery.length > 0 ? t('noSearch') : managedHiddenByChip ? t('managedFilteredEmpty') : t('managedEmpty')))
         : h('div', { className: 'km-provider-list' }, managed.map(provider => h(ProviderCard, {
             key: provider.provider,
             provider,

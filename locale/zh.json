@@ -10,6 +10,7 @@
   "filterTransport": "传输",
   "unattributed": "{n} 无归属",
   "unattributedHint": "该路由在归属读取尚未落地（或已失败）期间应答的请求数；读取完成归属后清零。",
+  "managedFilteredEmpty": "当前筛选下没有已接管的 Provider。",
   "addAccount": "添加账户",
   "adoptAccountTitle": "使用 OAuth 账户登录后即可使用该 Provider。",
   "accountIdentity": "账户",
