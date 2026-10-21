@@ -5,7 +5,7 @@ import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
-import { KeysManagerBody } from '../src/client/ui'
+import { KeysManagerBody, oauthCapable, originOf } from '../src/client/ui'
 import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
 
 function makeState(): StateView {
@@ -198,6 +198,11 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     filterOauth: '支持 OAuth',
     filterTransport: '传输',
     availableEmpty: '没有匹配的 Provider。',
+    // Managed section: its empty body distinguishes "none exist" from "the
+    // active chip hides them", so both values resolve real copy.
+    managed: '已接管',
+    managedEmpty: '还没有接管的 Provider。从下方选择一个开始。',
+    managedFilteredEmpty: '当前筛选下没有已接管的 Provider。',
     cancel: '取消',
     deleteConfirm: '确认删除',
     deleting: '删除中…',
@@ -2598,16 +2603,6 @@ describe('transport account surface', () => {
 describe('provider quick filter', () => {
   type View = ReturnType<typeof mountView>
 
-  /** Route origin the row tag shows, including the legacy-snapshot fallback. */
-  function originOf(provider: ProviderView): string {
-    return provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
-  }
-
-  /** The row's own sign-in verdict (`oauthCapable()`), not raw catalog flags. */
-  function capability(provider: ProviderView): boolean {
-    return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
-  }
-
   /** One row per origin, the host-refused OAuth row, and one unmanaged row. */
   function filterState(): StateView {
     const state = makeState()
@@ -2690,6 +2685,10 @@ describe('provider quick filter', () => {
     expectLocaleParity(['filterAll', 'filterBuiltin', 'filterPlugin', 'filterOauth', 'filterTransport'])
   })
 
+  test('the filtered-empty copy exists in both dictionaries and mirrors locale/*.json', () => {
+    expectLocaleParity(['managedFilteredEmpty'])
+  })
+
   test('no filter selected keeps the whole list and shows one chip per predicate', async () => {
     const { view, state } = await mountFiltered()
     try {
@@ -2713,7 +2712,7 @@ describe('provider quick filter', () => {
       expect(all).toBe(state.providers.length + state.transportAccounts!.length)
       expect(builtin).toBe(state.providers.filter(provider => originOf(provider) === 'dsh').length)
       expect(plugin).toBe(state.providers.filter(provider => originOf(provider) === 'plugin').length)
-      expect(oauth).toBe(state.providers.filter(capability).length)
+      expect(oauth).toBe(state.providers.filter(oauthCapable).length)
       expect(chipCount(view, 'transport')).toBe(state.transportAccounts!.length)
       // Overlapping predicates, not a partition: with a custom-origin route in
       // the snapshot the origin chips are a strict subset of All.
@@ -2749,7 +2748,7 @@ describe('provider quick filter', () => {
     try {
       selectChip(view, 'oauth')
       expect(providerNames(view).sort())
-        .toEqual(state.providers.filter(capability).map(provider => provider.provider).sort())
+        .toEqual(state.providers.filter(oauthCapable).map(provider => provider.provider).sort())
       expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
     } finally {
       view.unmount()
@@ -2800,12 +2799,93 @@ describe('provider quick filter', () => {
       typeQuery(view, 'plugin')
       expect(providerNames(view)).toEqual(['plugin-route'])
 
+      // Counts follow the same query-narrowed population the section heads
+      // render: a no-match query cannot leave a chip advertising hidden rows.
+      typeQuery(view, 'no-such-provider')
+      expect(providerNames(view)).toEqual([])
+      expect(chipCount(view, 'plugin')).toBe(0)
+      expect(chipCount(view, 'all')).toBe(state.transportAccounts!.length)
+
       typeQuery(view, '')
       selectChip(view, 'all')
       expect(providerNames(view).sort()).toEqual(state.providers.map(provider => provider.provider).sort())
       expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(state.transportAccounts!.length)
     } finally {
       view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('Built-in narrows to the dsh-origin rows', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      selectChip(view, 'builtin')
+      expect(providerNames(view).sort()).toEqual(
+        state.providers.filter(provider => originOf(provider) === 'dsh').map(provider => provider.provider).sort(),
+      )
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a custom-origin row stays reachable through All and the text search', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      const custom = state.providers
+        .filter(provider => originOf(provider) === 'custom')
+        .map(provider => provider.provider)
+      expect(custom.length).toBeGreaterThan(0)
+      // No chip covers custom-origin rows (a Custom chip is deferred), so
+      // every chip hides them...
+      for (const chip of ['builtin', 'plugin', 'oauth', 'transport']) {
+        selectChip(view, chip)
+        for (const name of custom) expect(providerNames(view)).not.toContain(name)
+      }
+      // ...but All composed with the text search still reaches them.
+      selectChip(view, 'all')
+      typeQuery(view, 'custom')
+      expect(providerNames(view).sort()).toEqual(custom.sort())
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('an emptied managed list says the chip hides the rows, not that none exist', async () => {
+    const { view } = await mountFiltered()
+    try {
+      // The fixture has managed rows, none of them OAuth-capable.
+      selectChip(view, 'oauth')
+      const managedSection = section(view, '已接管')
+      expect(findByClass(descendants(view.nodes, managedSection), 'km-provider')).toHaveLength(0)
+      const empty = findByClass(descendants(view.nodes, managedSection), 'km-empty')[0]
+      expect(empty?.text).toBe('当前筛选下没有已接管的 Provider。')
+      // The unfiltered managed population is not empty, so this copy would lie.
+      expect(empty?.text).not.toBe('还没有接管的 Provider。从下方选择一个开始。')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('the filter is view state only: remounting starts on All', async () => {
+    const first = await mountFiltered()
+    try {
+      selectChip(first.view, 'transport')
+      expect(chipNode(first.view, 'transport').props?.['aria-pressed']).toBe(true)
+    } finally {
+      first.view.unmount()
+      setRuntimeContext(null)
+    }
+    const second = await mountFiltered()
+    try {
+      expect(chipNode(second.view, 'all').props?.['aria-pressed']).toBe(true)
+      expect(providerNames(second.view).sort())
+        .toEqual(second.state.providers.map(provider => provider.provider).sort())
+    } finally {
+      second.view.unmount()
       setRuntimeContext(null)
     }
   })

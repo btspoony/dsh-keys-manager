@@ -8,6 +8,7 @@
   "filterPlugin": "Plugin",
   "filterOauth": "OAuth-capable",
   "filterTransport": "Transport",
+  "managedFilteredEmpty": "No managed providers match the current filter.",
   "addAccount": "Add account",
   "adoptAccountTitle": "Sign in with an OAuth account to use this provider.",
   "accountIdentity": "Account",

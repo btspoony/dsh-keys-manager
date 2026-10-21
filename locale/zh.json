@@ -8,6 +8,7 @@
   "filterPlugin": "插件",
   "filterOauth": "支持 OAuth",
   "filterTransport": "传输",
+  "managedFilteredEmpty": "当前筛选下没有已接管的 Provider。",
   "addAccount": "添加账户",
   "adoptAccountTitle": "使用 OAuth 账户登录后即可使用该 Provider。",
   "accountIdentity": "账户",
