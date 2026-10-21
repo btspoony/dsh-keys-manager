@@ -13862,3 +13862,117 @@ test('a pre-close restoration released between its entry check and the write ref
     await h.close()
   }
 })
+
+// PR review round 38: the rotation write-back and its commit are separated by
+// awaits. A superseded attempt must neither repoint the row nor delete the
+// generation a newer attempt already committed.
+
+test('a superseded rotation commit leaves a newer generation untouched', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('anthropic')
+    const { rowId } = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-a', email: 'a@example.com', refresh: 'rt-old' })
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === rowId)!
+    const newerRef = accountRef('anthropic', createHash('sha256').update('rt-new').digest('hex').slice(0, 12))
+    row.oauth = { ...row.oauth!, grantRef: newerRef }
+    h.credentials.records.set(newerRef, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-new', access: 'at-new', accountId: 'acc-a', email: 'a@example.com' },
+    })
+    const commit = h.service as unknown as {
+      commitGrantGeneration: (
+        provider: string,
+        owner: KeyRecord,
+        payload: Record<string, unknown>,
+        rotatedRef: string,
+        guard?: () => boolean,
+      ) => Promise<void>
+    }
+    await commit.commitGrantGeneration('anthropic', row, { refresh: 'rt-old', access: 'at-old' }, 'stale-ref', () => false)
+    assert.equal(row.oauth!.grantRef, newerRef, 'a superseded commit moved the row off the newer generation')
+    assert.equal(h.credentials.records.has(newerRef), true, 'a superseded commit deleted the newer generation')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a commit that resumes after shutdown was requested writes nothing', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('anthropic')
+    const { rowId, grantRef } = seedOAuthAccount(h, 'anthropic', { refresh: 'rt-shutdown' })
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === rowId)!
+    ;(h.service as unknown as { shutdownRequested: boolean }).shutdownRequested = true
+    const commit = h.service as unknown as {
+      commitGrantGeneration: (
+        provider: string,
+        owner: KeyRecord,
+        payload: Record<string, unknown>,
+        rotatedRef: string,
+      ) => Promise<void>
+    }
+    await commit.commitGrantGeneration('anthropic', row, { refresh: 'rt-late' }, 'late-ref')
+    assert.equal(row.oauth!.grantRef, grantRef, 'a commit wrote after shutdown started')
+    assert.equal(h.credentials.records.has('late-ref'), false)
+  } finally {
+    ;(h.service as unknown as { shutdownRequested: boolean }).shutdownRequested = false
+    await h.close()
+  }
+})
+
+test('a second close joins the first shutdown instead of restoring again', async () => {
+  const h = await harness()
+  try {
+    const first = h.service.close()
+    const second = h.service.close()
+    assert.equal(first, second, 'a repeated close started a second shutdown')
+    await first
+    await second
+  } finally {
+    await h.close()
+  }
+})
+
+// PR review round 39: the seam can park `modifyRecord` before it invokes the
+// updater, so the gates must be read inside the updater, not only before the
+// call. A rotation write superseded while parked must persist nothing.
+
+test('a rotation write parked before its updater persists nothing after supersession', async () => {
+  const h = await harness()
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  try {
+    await h.service.adoptProvider('anthropic')
+    const { rowId, grantRef } = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-p', email: 'p@example.com', refresh: 'rt-p' })
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === rowId)!
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let parked = false
+    h.credentials.raw.modifyRecord = async (key: string, mutate: any) => {
+      if (!parked) {
+        parked = true
+        await gate
+      }
+      return realModify(key, mutate)
+    }
+    let current = true
+    const write = (h.service as unknown as {
+      writeBackRotation: (
+        provider: string,
+        owner: KeyRecord,
+        payload: Record<string, unknown>,
+        capability?: unknown,
+        stillCurrent?: () => boolean,
+      ) => Promise<void>
+    }).writeBackRotation('anthropic', row, { refresh: 'rt-rotated', access: 'at-rotated' }, undefined, () => current)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    current = false
+    release()
+    await assert.rejects(write)
+    assert.equal(row.oauth!.grantRef, grantRef, 'a superseded write moved the row')
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-rotated').digest('hex').slice(0, 12))
+    assert.equal(h.credentials.records.has(rotatedRef), false, 'a superseded write persisted the rotated record')
+  } finally {
+    h.credentials.raw.modifyRecord = realModify
+    await h.close()
+  }
+})

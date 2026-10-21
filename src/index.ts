@@ -999,6 +999,8 @@ export class KeysManagerService {
   private readonly selectionQueues = new Map<string, Promise<unknown>>()
   private queue: Promise<unknown> = Promise.resolve()
   private closing = false
+  /** The one shutdown this manager runs; a later close() joins it (round 38). */
+  private closePromise: Promise<void> | undefined
   /**
    * The pre-close restoration is running (PR review round 37). Only inside it
    * — set when {@link restoreBorrowedWindows} starts and cleared in its
@@ -1662,11 +1664,28 @@ export class KeysManagerService {
    */
   private persistenceRefused(capability?: RestoreCapability): boolean {
     if (!this.closing && !this.shutdownRequested) return false
-    return !(capability === PRE_CLOSE_RESTORE && this.preCloseRestorePhase)
+    // PR review round 38: the capability is scoped to the one restoration pass
+    // that runs before shutdown closes the store. Once `closing` is set the
+    // pass is over for good, so a capability left over from a timed-out pass
+    // (or handed to a repeated `close()`) cannot write again.
+    return !(capability === PRE_CLOSE_RESTORE && this.preCloseRestorePhase && !this.closing)
   }
 
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    // PR review round 38: shutdown is single-entry. A second call (or a
+    // concurrent one) joins the first instead of replaying the restoration,
+    // which would otherwise write to a store the first call already closed.
+    // Not `async`: callers share the identical promise, so a repeated close
+    // cannot observe a second shutdown.
+    if (this.closePromise !== undefined) return this.closePromise
+    const closing = this.closeOnce()
+    this.closePromise = closing
+    return closing
+  }
+
+  /** The body of the one shutdown this manager runs. */
+  private async closeOnce(): Promise<void> {
     // PR review round 34: the entry marker goes up before the restoration, so
     // the window this function spends putting borrowed projections back cannot
     // accept a new test and a new borrow.
@@ -4559,8 +4578,13 @@ export class KeysManagerService {
         if (superseded()) return takeover
         if (this.persistenceRefused(capability)) return shutdown
         try {
-          await this.writeBackRotation(provider, row, liveGrant!, capability)
+          await this.writeBackRotation(provider, row, liveGrant!, capability, stillCurrent)
         } catch (error) {
+          // PR review round 38: the helper throws when this attempt was
+          // superseded mid-write or shutdown started; neither may claim the
+          // route, and nothing may be written on their behalf.
+          if (superseded()) return takeover
+          if (this.persistenceRefused(capability)) return shutdown
           // The live projection is the only copy of the rotated payload:
           // overwriting it with the pre-test payload would strand the account
           // on a consumed refresh token, so it stays and owns the route —
@@ -4755,18 +4779,37 @@ export class KeysManagerService {
     row: KeyRecord,
     payload: OAuthGrantPayload,
     capability?: RestoreCapability,
+    stillCurrent?: () => boolean,
   ): Promise<void> {
     const records = this.credentialRecords()
     if (records === undefined) throw new Error('The credential store does not support records')
     if (row.oauth === null) throw new Error(`Key "${row.id}" is not an OAuth account`)
+    // PR review round 38: this helper's three steps are separated by awaits, so
+    // both gates are read again at each of them. A superseded attempt may not
+    // write the rotated record, and shutdown refuses the persistence outright
+    // rather than only at the commit below.
+    if (this.persistenceRefused(capability) || (stillCurrent !== undefined && !stillCurrent())) {
+      throw new Error('Keys Manager is shutting down or the test cleanup was superseded')
+    }
     const hash = createHash('sha256').update(payload.refresh).digest('hex').slice(0, 12)
     const rotatedRef = accountRef(provider, hash)
-    await records.modifyRecord(rotatedRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+    // PR review round 39: the seam may park this call before it invokes the
+    // updater, so the gates are read inside the updater itself — a write
+    // decided before shutdown/supersession must not land after them.
+    let written = false
+    await records.modifyRecord(rotatedRef, async () => {
+      if (this.persistenceRefused(capability) || (stillCurrent !== undefined && !stillCurrent())) return undefined
+      written = true
+      return { kind: 'grant', payload: structuredClone(payload) }
+    })
+    if (!written) throw new Error('Keys Manager is shutting down or the test cleanup was superseded')
     // PR review round 35: the write above is an await, and the commit below is
     // the persisted state write that follows it. Round 36: only the restore
     // holding the pre-close capability may continue past shutdown entry.
-    if (this.persistenceRefused(capability)) throw new Error('Keys Manager is shutting down')
-    await this.commitGrantGeneration(provider, row, payload, rotatedRef)
+    if (this.persistenceRefused(capability) || (stillCurrent !== undefined && !stillCurrent())) {
+      throw new Error('Keys Manager is shutting down or the test cleanup was superseded')
+    }
+    await this.commitGrantGeneration(provider, row, payload, rotatedRef, stillCurrent, capability)
   }
 
   /**
@@ -4785,7 +4828,15 @@ export class KeysManagerService {
     owner: KeyRecord,
     payload: OAuthGrantPayload,
     rotatedRef: string,
+    guard?: () => boolean,
+    capability?: RestoreCapability,
   ): Promise<void> {
+    // PR review round 38: the rotation write that precedes this call is an
+    // await. An attempt superseded meanwhile must not repoint the row or delete
+    // the record it would find here — that record may be a newer window's
+    // already-committed generation — and shutdown must refuse both writes even
+    // when it began after the caller's own check.
+    if (this.persistenceRefused(capability) || (guard !== undefined && !guard())) return
     const current = owner.oauth
     if (current === null) return
     const previousRef = current.grantRef
@@ -4797,6 +4848,13 @@ export class KeysManagerService {
       ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
     }
     if (previousRef !== rotatedRef) {
+      // The row repoint above is synchronous, but the delete is a second write:
+      // re-read both gates immediately before it so a shutdown or a takeover
+      // that landed in between cannot remove a record this attempt never owned.
+      if (this.persistenceRefused(capability) || (guard !== undefined && !guard())) {
+        this.store.touch()
+        return
+      }
       const records = this.credentialRecords()
       try {
         if (records === undefined) throw new Error('The credential store does not support records')
