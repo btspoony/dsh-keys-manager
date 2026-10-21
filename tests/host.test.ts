@@ -12131,3 +12131,133 @@ test('a normal in-window restore puts the previous projection back after an out-
     await h.close()
   }
 })
+
+// ── PR #26 review round 23 ──────────────────────────────────────────────────
+
+// Codex P1 (thread PRRT_kwDOVOL9Bc6usy_c): the plugin can start before the
+// dynamically injected credentials service mounts. Hydration then read no
+// projection and its `finally` marked every provider hydrated, so the startup
+// repair read the empty owner/foreign maps as "the key pool serves" and wrote
+// the broker reference over a persisted OAuth projection. Ownership now stays
+// unknown until a record was actually read, and the mount re-runs the hydration
+// and the repair, so a late mount converges exactly like startup.
+test('a startup repair before the credentials mount binds nothing and the mount converges the route', async () => {
+  const { h, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const bound = (provider: string): unknown => h.settings.valueOf('llm-pi-ai').providers[provider]?.apiKeyEnv
+  try {
+    // Projection-served route: the seeded account's grant is the persisted
+    // projection and a backup API-key row keeps the pool a plausible source —
+    // the exact shape an empty ownership map misreads as "the pool serves".
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    h.credentials.records.set(GRANT_KEY, structuredClone(h.credentials.records.get(grantRef)!))
+    h.settings.valueOf('llm-pi-ai').providers.anthropic = { models: [{ id: 'claude-test-model' }] }
+    // Pool-served route: no projection, one imported key row, and a profile
+    // without a binding yet — the startup repair's own write target.
+    await h.service.adoptProvider('zai-coding-cn')
+    delete h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv
+    const anthropic = h.store.provider('anthropic')!
+    const zai = h.store.provider('zai-coding-cn')!
+    assert.equal(bound('anthropic'), undefined)
+    assert.equal(bound('zai-coding-cn'), undefined)
+
+    // Restart ordering: the credentials service is not mounted yet.
+    let mounted = false
+    const ctx = {
+      ...h.ctx,
+      get(name: string) {
+        if (name === 'credentials') return mounted ? h.credentials.raw : undefined
+        return (h.ctx.get as (key: string) => unknown)(name)
+      },
+    }
+    const restarted = new KeysManagerService(ctx as unknown as HostContext, h.store)
+    ;(restarted as unknown as { hydrationWaitMs: number }).hydrationWaitMs = 20
+    try {
+      await new Promise(resolve => setTimeout(resolve, 60))
+      // Nothing is bound while the record half is unreachable: the projection
+      // behind anthropic was never read, so it cannot be handed to the pool.
+      assert.equal(bound('anthropic'), undefined, 'the startup repair bound a route before its projection could be read')
+      assert.notEqual(bound('anthropic'), anthropic.brokerRef)
+      assert.equal(bound('zai-coding-cn'), undefined, 'the startup repair bound before the credentials mount')
+
+      // The mount lands: the same hydration + repair as startup runs now.
+      mounted = true
+      restarted.attachCredentials(h.credentials.raw)
+      await eventually(() => assert.equal(bound('zai-coding-cn'), zai.brokerRef))
+      // The projection-served route stays off the pool.
+      assert.equal(bound('anthropic'), undefined, 'the mount bound the broker over a persisted projection')
+      assert.equal(
+        (restarted as unknown as { projectionOwnershipKnown: (provider: string) => boolean })
+          .projectionOwnershipKnown('anthropic'),
+        true,
+        'the mounted seam did not converge the projection-served route',
+      )
+    } finally {
+      restarted.detachCredentials(h.credentials.raw)
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+// Codex P2 (thread PRRT_kwDOVOL9Bc6usy_k): a startup hydration read that
+// rejects after a newer activation claimed the projection used to record
+// `ownershipReadFailures` unconditionally — attribution and key selection
+// stopped, and row tests refused with "ownership is still loading". The failure
+// path now obeys the same ownership-generation guard as the hydrated write: a
+// stale failure is ignored, the established owner stays attributed.
+test('a superseded hydration read failure does not clobber a newer ownership claim', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  try {
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.models = [{ id: 'claude-test-model' }]
+    h.credentials.records.set(GRANT_KEY, structuredClone(h.credentials.records.get(grantRef)!))
+    // The startup hydration read parks, then rejects after the newer claim.
+    let releaseRead: (() => void) | undefined
+    const readReleased = new Promise<void>(resolve => { releaseRead = resolve })
+    let parked = false
+    raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY && !parked) {
+        parked = true
+        await readReleased
+        throw new Error('credential store unavailable')
+      }
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const internals = restarted as unknown as {
+      projectionOwnershipKnown: (provider: string) => boolean
+      ownershipReadFailures: Set<string>
+    }
+    await eventually(() => assert.equal(parked, true))
+    // The user activates the account while that read is still in flight: the
+    // claim bumps the provider's ownership generation, and the reconciliation
+    // its projection write echoes reads the live record authoritatively.
+    await restarted.activateAccount('anthropic', rowId)
+    const chains = (restarted as unknown as { grantReconciliations: Map<string, Promise<void>> }).grantReconciliations
+    await eventually(() => assert.equal(chains.get('anthropic'), undefined))
+    // Only now does the parked startup read reject — after the newer claim
+    // already established ownership.
+    releaseRead!()
+    // Let the stale rejection land after every authoritative read of this
+    // claim, so the marker would survive if the guard did not ignore it.
+    await new Promise(resolve => setTimeout(resolve, 60))
+    // The stale failure is discarded: the established owner still answers.
+    await eventually(() => assert.equal(internals.projectionOwnershipKnown('anthropic'), true))
+    assert.equal(internals.ownershipReadFailures.has('anthropic'), false, 'a superseded read failure was recorded')
+    assert.equal(
+      restarted.getState().providers.find(entry => entry.provider === 'anthropic')!
+        .keys.find(key => key.id === rowId)!.projected,
+      true,
+    )
+    h.llm.stream = async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+    const result = await restarted.testKey('anthropic', rowId)
+    assert.equal(result.ok, true, String(result.error))
+    assert.doesNotMatch(String(result.error), /ownership is still loading/)
+  } finally {
+    raw.readRecord = realRead
+    await h.close()
+  }
+})

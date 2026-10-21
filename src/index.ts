@@ -1252,13 +1252,19 @@ export class KeysManagerService {
    * each request waits on its own provider's landing instead.
    */
   private hydrateProjectionOwnership(): Promise<void> {
+    const records = this.credentialRecords()
+    if (records === undefined) {
+      // The credentials service can mount after this plugin (PR review round
+      // 23): nothing was read, so ownership stays UNKNOWN. Settling here marked
+      // every provider hydrated, and the startup repair read the empty
+      // owner/foreign maps as "the key pool serves", binding the broker over a
+      // persisted projection it never saw. attachCredentials re-runs this read
+      // (and the repair) once the record half is reachable.
+      this.warnSubscriptionLost('credentials record access')
+      return Promise.resolve()
+    }
     return (async () => {
       try {
-        const records = this.credentialRecords()
-        if (records === undefined) {
-          this.warnSubscriptionLost('credentials record access')
-          return
-        }
         await Promise.all(Object.values(this.store.providers).map(async providerRecord => {
           const provider = providerRecord.provider
           const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
@@ -1275,6 +1281,10 @@ export class KeysManagerService {
               // PR review round 8: a failed read is not an absent projection.
               // Record it so readiness stays false and no repair binds the
               // broker over a grant this process could not see.
+              // PR review round 23: unless a newer claim landed while this read
+              // was in flight — a stale failure must not mark an established
+              // owner unknown (same generation guard as the hydrated write).
+              if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) return
               this.ownershipReadFailures.add(provider)
               this.warn(`projection ownership hydration could not read ${grantKey}: ${error instanceof Error ? error.message : String(error)}`)
               return
@@ -4782,6 +4792,16 @@ export class KeysManagerService {
     this.credentialOriginals.set(raw, original)
     this.credentialWrappers.set(raw, wrappers)
     if (this.rawCredentials === undefined) this.rawCredentials = raw
+    // The credentials service can mount after this plugin (PR review round 23):
+    // the load-time hydration then read nothing and left ownership unknown, so
+    // the startup repair bound nothing. Re-read the projections now that the
+    // record half is reachable, then repair — the same convergence as startup,
+    // idempotent when the seam was mounted all along. The read lands through
+    // {@link noteProviderHydrated}, so a repair already waiting wakes with it.
+    this.projectionHydration = this.hydrateProjectionOwnership()
+    void this.repairBrokerBindings().catch(error => {
+      this.warn(`broker binding repair after the credentials mount failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   /** Restore the credential provider methods when our fiber unloads. */
