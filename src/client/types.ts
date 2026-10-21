@@ -1,12 +1,13 @@
 /** Browser-half domain and service contracts for the Keys Manager. */
 import type * as React from 'react'
-import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView, TransportAccountStatus, TransportAccountView } from '../domain'
+import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyTestResult, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView, TransportAccountStatus, TransportAccountView } from '../domain'
 
 export type {
   AccountAttemptNotice,
   AccountAttemptPrompt,
   AccountAttemptView,
   KeyStatus,
+  KeyTestResult,
   KeyView,
   ManagerSettings,
   OAuthAccountView,
@@ -51,6 +52,14 @@ export type AckResult =
   | { ok: true; value: null }
   | { ok: false; error: string }
 
+/**
+ * Result of the per-row connection test. The payload is a `KeyTestResult`,
+ * not a `StateView`, so it has its own mapper instead of `call`.
+ */
+export type KeyTestOutcome =
+  | { ok: true; value: KeyTestResult }
+  | { ok: false; error: string }
+
 /** Immutable UI snapshot. */
 export interface ClientSnapshot {
   status: 'idle' | 'loading' | 'ready' | 'error'
@@ -82,6 +91,11 @@ export interface ClientStore {
   activateAccount(provider: string, accountId: string): Promise<ActionOutcome>
   /** Drop one account row and its stored grant payload. */
   removeAccount(provider: string, accountId: string): Promise<ActionOutcome>
+  /**
+   * Send one minimal request with the selected key or account row. The host
+   * never changes health state; the answer only reports the outcome.
+   */
+  testKey(provider: string, keyId: string): Promise<KeyTestOutcome>
   /**
    * Start the `llm-omp-transports/<route>` sign-in; resolves with the attempt
    * view, which the login dialog polls through {@link accountAttempt}.

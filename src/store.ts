@@ -152,6 +152,10 @@ function sanitizeProvider(raw: unknown): ProviderRecord | undefined {
     adapter: source.adapter === 'deepseek' ? 'deepseek' : 'pi-ai',
     brokerRef: typeof source.brokerRef === 'string' ? source.brokerRef : '',
     originalApiKeyEnv: typeof source.originalApiKeyEnv === 'string' && source.originalApiKeyEnv.length > 0 ? source.originalApiKeyEnv : null,
+    // PR review round 41: the adoption takeover debt must survive the file
+    // round-trip; dropping it left a restarted provider managed on its
+    // pre-adoption reference with no way to take it over.
+    ...(source.takeoverPending === true ? { takeoverPending: true } : {}),
     createdProfile: source.createdProfile === true,
     hadProfile: source.hadProfile === true,
     extraId: typeof source.extraId === 'string' ? source.extraId : null,

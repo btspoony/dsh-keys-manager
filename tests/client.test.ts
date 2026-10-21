@@ -169,6 +169,14 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     adopt: '接管 Provider',
     loginPromptSubmit: '提交',
     delete: '删除',
+    testKey: '测试连接',
+    testRunning: '测试中…',
+    testPassed: '连接正常 · {ms} ms',
+    testFailed: '连接失败：{error}',
+    // QC N6: the failure copy resolves real values too, so a deadline or an
+    // answer without a reason is asserted by the text the UI renders.
+    testTimedOut: '测试超时，未收到结果',
+    testFailedUnknown: '测试未完成，未返回原因',
     // Transport account surface (`llm-omp-transports/<route>`): every copy the
     // row renders resolves its real zh value, so the assertions below locate
     // the section, status pill and dialogs by rendered text.
@@ -451,6 +459,434 @@ describe('mutation ordering', () => {
     expect(store.getSnapshot().state?.managedCount).toBe(2)
     expect(store.getSnapshot().error).toBe('update failed')
     expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  // PR #26 review round 12: a dropped mutation view was re-read only from
+  // `stateOutcome` and the row test's `finally`. A queued mutation behind it
+  // that failed drained the queue without reading the dropped change, so the
+  // successful rename stayed invisible until the next tick.
+  test('a dropped mutation view is re-read when the queue drains on a failure', async () => {
+    const state = makeState()
+    const accountA = { ...makeOauthKey(), id: 'k_oauthA', alias: 'Account A', projected: true }
+    const accountB = { ...makeOauthKey(), id: 'k_oauthB', alias: 'Account B' }
+    state.providers[0] = { ...makeOauthProvider(), keys: [accountA, accountB] }
+    // Inside the borrow window the host's route carries B's borrowed grant.
+    const borrowed = structuredClone(state)
+    for (const key of borrowed.providers[0]!.keys) {
+      if (key.id === 'k_oauthA') delete key.projected
+      if (key.id === 'k_oauthB') key.projected = true
+    }
+    // The rename the first mutation performed; its view was dropped, so only a
+    // re-read can put it in the snapshot.
+    const renamed = structuredClone(state)
+    renamed.providers[0]!.keys.find(key => key.id === 'k_oauthA')!.alias = 'Account A renamed'
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    let releaseFailure!: () => void
+    const failureGate = new Promise<void>(resolve => { releaseFailure = resolve })
+    let loads = 0
+    let mutations = 0
+    const harness = makeContext({ ok: true, value: state })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') {
+        loads += 1
+        // The first load is the pre-test snapshot; every later read observes
+        // the rename the dropped mutation performed.
+        return { ok: true, value: loads === 1 ? state : renamed }
+      }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      if (endpoint === 'keysManager/updateKey') {
+        mutations += 1
+        if (mutations === 1) return { ok: true, value: borrowed }
+        await failureGate
+        return { ok: false, error: { message: 'update failed' } }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    expect(loads).toBe(1)
+    const aliasOf = (id: string) =>
+      store.getSnapshot().state?.providers[0]?.keys.find(key => key.id === id)?.alias
+
+    const test = store.testKey('zai-coding-cn', 'k_oauthB')
+    // The first mutation succeeds inside the borrow window; its view is dropped.
+    const first = await store.call('updateKey', { provider: 'zai-coding-cn', keyId: 'k_oauthA', patch: { alias: 'Account A renamed' } })
+    expect(first.ok).toBe(true)
+    // A second mutation queues behind the dropped one and fails once the test
+    // settled: its tail is the only place the queue becomes idle.
+    const second = store.call('updateKey', { provider: 'zai-coding-cn', keyId: 'k_oauthA', patch: { alias: 'x' } })
+    releaseTest({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await test).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    // The window closed, but the queued failure still holds the queue, so the
+    // dropped change is not in the snapshot yet.
+    expect(aliasOf('k_oauthA')).toBe('Account A')
+
+    releaseFailure()
+    expect((await second).ok).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // The failing tail drained the queue, so the dropped view is re-read.
+    expect(loads).toBe(2)
+    expect(aliasOf('k_oauthA')).toBe('Account A renamed')
+  })
+})
+
+
+describe('row test dispatch', () => {
+  // PR #26 review round 8 (P2): the row test went through the mutation queue and
+  // waited behind any pending mutation. Its UI deadline starts at the click, so
+  // a test that ran after the row timed out kept borrowing the route invisibly,
+  // and its late reply looked like a fresh failure.
+  test('a row test is sent at once instead of queueing behind a mutation', async () => {
+    const harness = makeContext()
+    const sent: string[] = []
+    let answerAddKey: ((result: RpcResult) => void) | undefined
+    const parkedAnswer = new Promise<RpcResult>(resolve => { answerAddKey = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      sent.push(endpoint)
+      if (endpoint === 'keysManager/addKey') return await parkedAnswer
+      if (endpoint === 'keysManager/testKey') return { ok: true, value: { ok: true, latencyMs: 7 } }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const pending = store.call('addKey', { provider: 'zai-coding-cn', alias: 'later', value: 'sk-later' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(sent).toEqual(['keysManager/addKey'])
+
+    const outcome = await Promise.race([
+      store.testKey('zai-coding-cn', 'k_aaaaaaaa'),
+      new Promise<'queued'>(resolve => setTimeout(() => resolve('queued'), 50)),
+    ])
+    expect(outcome).not.toBe('queued')
+    if (outcome !== 'queued') expect(outcome).toEqual({ ok: true, value: { ok: true, latencyMs: 7 } })
+    // Observation-only: the mutation keeps the busy slot, no snapshot
+    // replacement, and the row test is never sent a second time.
+    expect(store.getSnapshot().busy).toBe('addKey')
+    expect(sent.filter(endpoint => endpoint === 'keysManager/testKey')).toHaveLength(1)
+
+    answerAddKey!({ ok: true, value: makeState() })
+    await pending
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(sent.filter(endpoint => endpoint === 'keysManager/testKey')).toHaveLength(1)
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+
+  // PR #26 review round 9 (R8-1): a row test borrows the route's projection
+  // while it runs and the host restores the previous owner before answering.
+  // A refresh landing inside that window used to store the borrowed snapshot,
+  // leaving the tested row marked as serving (with its activation disabled)
+  // until the next tick.
+  test('a snapshot taken while a row test borrows the route never lands', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let loads = 0
+    let answerRefresh: ((result: RpcResult) => void) | undefined
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') {
+        loads += 1
+        // The refresh the user starts during the borrow sees the tested row
+        // projected; the test's restore makes that answer stale.
+        if (loads > 1) return await new Promise<RpcResult>(resolve => { answerRefresh = resolve })
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+
+    const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    void store.load()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    answerRefresh!({ ok: true, value: borrowed })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // The borrowed snapshot is dropped; the pre-test snapshot (the route the
+    // test restores) is what the page keeps showing.
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+    expect(store.getSnapshot().busy).toBeNull()
+
+    releaseTest({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await test).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+  })
+
+  // PR #26 review round 10 (I-000178): `load` learned to drop a snapshot taken
+  // inside the borrow window, but a mutation's own StateView comes from that
+  // same window. Renaming another row while B is under test stored
+  // `B.projected = true`, so B kept its "serving" badge and its activation
+  // stayed disabled after the host restored A.
+  test('a mutation view taken while a row test borrows the route never lands', async () => {
+    const state = makeState()
+    const projected = { ...makeOauthKey(), id: 'k_oauthA', alias: 'Account A', projected: true }
+    const tested = { ...makeOauthKey(), id: 'k_oauthB', alias: 'Account B' }
+    state.providers[0] = { ...makeOauthProvider(), keys: [projected, tested] }
+    // Inside the window the host's route carries B's borrowed grant.
+    const borrowed = structuredClone(state)
+    for (const key of borrowed.providers[0]!.keys) {
+      if (key.id === 'k_oauthA') delete key.projected
+      if (key.id === 'k_oauthB') key.projected = true
+    }
+    const harness = makeContext({ ok: true, value: state })
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      if (endpoint === 'keysManager/updateKey') return { ok: true, value: borrowed }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const rowProjected = (id: string) =>
+      store.getSnapshot().state?.providers[0]?.keys.find(key => key.id === id)?.projected
+
+    const test = store.testKey('zai-coding-cn', 'k_oauthB')
+    const rename = await store.call('updateKey', {
+      provider: 'zai-coding-cn',
+      keyId: 'k_oauthA',
+      patch: { alias: 'Account A renamed' },
+    })
+    expect(rename.ok).toBe(true)
+    // The mutation succeeded, but its view belongs to the borrow window: the
+    // tested row is not shown as serving, and the pre-window account still is
+    // (so B's Set active stays enabled).
+    expect(rowProjected('k_oauthB')).toBeUndefined()
+    expect(rowProjected('k_oauthA')).toBe(true)
+
+    releaseTest({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await test).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(rowProjected('k_oauthB')).toBeUndefined()
+    expect(rowProjected('k_oauthA')).toBe(true)
+  })
+
+  // PR #26 review round 24 (P2): the client deadline released the row but also
+  // ended the snapshot isolation while the RPC kept running, so a refresh that
+  // started after it stored the projected test account. The window now lasts
+  // until the RPC actually settles.
+  test('a timed-out row test keeps dropping snapshots until its RPC settles', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      if (endpoint === 'keysManager/deleteKey') return { ok: true, value: borrowed }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      // The deadline releases the row while the host still owes an answer.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await test).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // A refresh started after the deadline belongs to the same borrow window.
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // A state-carrying mutation's view is dropped the same way.
+      const mutation = await store.call('deleteKey', { provider: 'zai-coding-cn', keyId: 'k_aaaaaaaa' })
+      expect(mutation.ok).toBe(true)
+      expect(rowProjected()).toBeUndefined()
+
+      // The RPC settles: the window closes and the deferred read lands.
+      releaseTest({ ok: true, value: { ok: false, latencyMs: 0, error: 'timeout' } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await store.load()
+      expect(rowProjected()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // PR #26 review round 26 (P2): the round-24 window had a fixed cap
+  // (`deadline + 5s`). A row test whose RPC outlived it lost the snapshot
+  // isolation while the host still held the tested projection, so a refresh
+  // could store that projection. The window now lasts until the RPC settles.
+  test('a timed-out row test keeps snapshot isolation past the old cap', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      // The row deadline ends the row while the host still owes an answer.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await test).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // Well past the cap the round-24 code used, the RPC still borrows the
+      // route, so the borrowed snapshot is still dropped.
+      await vi.advanceTimersByTimeAsync(25_000)
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // The RPC settles: the isolation ends and a read lands again.
+      releaseTest({ ok: true, value: { ok: true, latencyMs: 9 } })
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // PR #26 review round 26 (P2): the window is also released by a rejecting
+  // RPC, not by a cap, and the late rejection stays out of the snapshot.
+  test('a timed-out row test keeps snapshot isolation when the RPC rejects', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let failTest!: (error: Error) => void
+    const testAnswer = new Promise<RpcResult>((_resolve, reject) => { failTest = reject })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await test).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+      await vi.advanceTimersByTimeAsync(25_000)
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // The rejected RPC ends the borrow; nothing about it reaches the snapshot.
+      failTest(new Error('route closed'))
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBe(true)
+      expect(store.getSnapshot().error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // PR #26 review round 26 (P2): the isolation release is owned by the request
+  // that opened the window. An older request settling later must not close the
+  // newer window nor invalidate the reads that belong to it.
+  test('an old settled request does not clear a newer test isolation', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    const answers: Array<(result: RpcResult) => void> = []
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') {
+        return await new Promise<RpcResult>(resolve => { answers.push(resolve) })
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const first = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await first).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // A second test starts after the first row already timed out.
+      const second = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await second).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // The older RPC settles first; the newer one still borrows the route.
+      answers[0]!({ ok: true, value: { ok: true, latencyMs: 3 } })
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // Only the newer RPC settling ends the isolation.
+      answers[1]!({ ok: true, value: { ok: false, latencyMs: 0, error: 'timeout' } })
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // PR #26 review round 28 (I-000178 occurrence): the generation used to move
+  // only when the SETTLING request owned the newest token. With A under test and
+  // B started after it, B settled first and moved the generation, a refresh
+  // started during A captured that newer generation, and A's settlement left it
+  // untouched — so a snapshot taken inside A's own borrow installed the borrowed
+  // view after the host had already restored the route.
+  test('a settling test invalidates the snapshots of its own borrow, not only the newest', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    const answers: Array<(result: RpcResult) => void> = []
+    let answerRefresh: ((result: RpcResult) => void) | undefined
+    let loads = 0
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') {
+        loads += 1
+        // The read the test parks is the one taken inside A's borrow.
+        if (loads === 2) return await new Promise<RpcResult>(resolve => { answerRefresh = resolve })
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/testKey') {
+        return await new Promise<RpcResult>(resolve => { answers.push(resolve) })
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+    await store.load()
+    expect(rowProjected()).toBeUndefined()
+
+    const first = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    const second = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // B owns the newest token and settles first.
+    answers[1]!({ ok: true, value: { ok: true, latencyMs: 3 } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // A refresh starts inside A's still-open borrow and captures the generation
+    // B's settlement left behind.
+    const refresh = store.load()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // A settles: not the newest token, but this window is its own.
+    answers[0]!({ ok: true, value: { ok: true, latencyMs: 5 } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    answerRefresh!({ ok: true, value: borrowed })
+    await refresh
+    expect(rowProjected()).toBeUndefined()
+    expect(store.getSnapshot().busy).toBeNull()
+
+    expect(await first).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await second).toEqual({ ok: true, value: { ok: true, latencyMs: 3 } })
   })
 })
 
@@ -1861,6 +2297,114 @@ describe('account ui', () => {
       view.unmount()
     } finally {
       vi.useRealTimers()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('both row menus offer a Test action that reports its outcome inline', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const pending: Array<{ args: unknown; resolve: (value: RpcResult) => void }> = []
+    const harness = makeContext({ ok: true, value: state })
+    const originalCall = harness.ctx.connection.rpc.call.bind(harness.ctx.connection.rpc)
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint !== 'keysManager/testKey') return originalCall(channel, endpoint, payload)
+      return await new Promise<RpcResult>(resolve => { pending.push({ args: (payload as { args: unknown }).args, resolve }) })
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    // An account row test sends the pinned row id and reports its latency inline.
+    const openMenu = (className: string): void => {
+      const row = findByClass(view.nodes, className)[0]!
+      const dots = descendants(view.nodes, row).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+      ;(dots[0]!.props!.onClick as () => void)()
+      view.render()
+    }
+    openMenu('km-account-row')
+    const accountTest = descendants(view.nodes, findByClass(view.nodes, 'km-account-row')[0]!)
+      .filter(node => node.type === 'button' && node.text.includes('测试连接'))
+    expect(accountTest).toHaveLength(1)
+    ;(accountTest[0]!.props!.onClick as () => void)()
+    await view.flush()
+    expect(view.nodes.some(node => node.text === '测试中…')).toBe(true)
+    expect(pending[0]!.args).toEqual({ provider: 'zai-coding-cn', keyId: 'k_oauth9' })
+    pending[0]!.resolve({ ok: true, value: { ok: true, latencyMs: 812 } })
+    await view.flush()
+    expect(view.nodes.some(node => node.text === '连接正常 · 812 ms')).toBe(true)
+
+    // A second row can be tested afterwards; a failure renders its message.
+    openMenu('km-key-row')
+    const keyTest = descendants(view.nodes, findByClass(view.nodes, 'km-key-row')[0]!)
+      .filter(node => node.type === 'button' && node.text.includes('测试连接'))
+    expect(keyTest).toHaveLength(1)
+    ;(keyTest[0]!.props!.onClick as () => void)()
+    await view.flush()
+    expect(pending[1]!.args).toEqual({ provider: 'zai-coding-cn', keyId: 'k_aaaaaaaa' })
+    pending[1]!.resolve({ ok: true, value: { ok: false, latencyMs: 4, error: 'invalid api key' } })
+    await view.flush()
+    expect(view.nodes.some(node => node.text === '连接失败：invalid api key')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a row test that never answers leaves its running state at the client deadline', async () => {
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const harness = makeContext({ ok: true, value: state })
+    const originalCall = harness.ctx.connection.rpc.call.bind(harness.ctx.connection.rpc)
+    harness.ctx.connection.rpc.call = async (channel, endpoint, payload) => {
+      if (endpoint !== 'keysManager/testKey') return originalCall(channel, endpoint, payload)
+      // The host never answers: a lost or wedged RPC.
+      return await new Promise<RpcResult>(() => {})
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    // Only the test's own deadline is faked; the mount harness awaits real
+    // setTimeout(0) ticks, so the fake timers start once rendering is settled.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const row = findByClass(view.nodes, 'km-key-row')[0]!
+      const dots = descendants(view.nodes, row).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+      ;(dots[0]!.props!.onClick as () => void)()
+      view.render()
+      const testItem = descendants(view.nodes, findByClass(view.nodes, 'km-key-row')[0]!)
+        .filter(node => node.type === 'button' && node.text.includes('测试连接'))
+      ;(testItem[0]!.props!.onClick as () => void)()
+      view.render()
+      expect(view.nodes.some(node => node.text === '测试中…')).toBe(true)
+
+      // QC N4: without a client deadline the row stays `running` forever and
+      // its Test action is permanently disabled.
+      await vi.advanceTimersByTimeAsync(120_000)
+      await Promise.resolve()
+      await Promise.resolve()
+      view.render()
+      expect(view.nodes.some(node => node.text === '测试中…')).toBe(false)
+      // QC N6: the failure line never renders an empty detail.
+      expect(view.nodes.some(node => node.text === '连接失败：测试超时，未收到结果')).toBe(true)
+
+      // PR review SF4: the row deadline releases only the row. The store's
+      // serialized mutation queue is released by its own bound, so a lost
+      // answer cannot pin every later mutation behind it.
+      expect(store.getSnapshot().busy).toBe(null)
+      const followUp = store.call('deleteKey', { provider: 'zai-coding-cn', keyId: 'k_aaaaaaaa' })
+      await Promise.resolve()
+      await Promise.resolve()
+      await followUp
+      expect(harness.calls.some(entry => entry.endpoint === 'keysManager/deleteKey')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+      view.unmount()
       setRuntimeContext(null)
     }
   })

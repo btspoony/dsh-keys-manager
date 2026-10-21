@@ -102,6 +102,13 @@ export interface ProviderRecord {
   brokerRef: string
   /** The profile's reference before adoption, restored on release. */
   originalApiKeyEnv: string | null
+  /**
+   * Adoption found a foreign projection serving the route, so it could not
+   * complete its one-time takeover of `originalApiKeyEnv` (PR review round 40).
+   * The debt survives a restart and is settled by the next projection-change
+   * sync; it never authorises an ordinary repair.
+   */
+  takeoverPending?: boolean
   /** True when the profile itself was created by adding an extra provider. */
   createdProfile: boolean
   /** True when a profile existed before adoption. */
@@ -236,6 +243,18 @@ export interface StateView {
    * so a snapshot from a build without transport support still renders.
    */
   transportAccounts?: TransportAccountView[]
+}
+
+/**
+ * Outcome of one per-row connection test: one minimal request through the
+ * provider route, with no health or selection side effects.
+ */
+export interface KeyTestResult {
+  ok: boolean
+  /** Wall-clock time of the request that was actually sent. */
+  latencyMs: number
+  /** Provider failure message, timeout, or the reason no request was sent. */
+  error?: string
 }
 
 /** One curated extra built-in provider. */

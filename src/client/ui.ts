@@ -1,7 +1,7 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView } from './types'
+import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from './format'
@@ -12,7 +12,7 @@ type T = (key: string, params?: Record<string, string | number>) => string
 type Tone = 'success' | 'warn' | 'idle' | 'error'
 type IconName =
   | 'search' | 'plus' | 'dots' | 'chevron' | 'eye' | 'eyeOff' | 'key' | 'check'
-  | 'pause' | 'play' | 'trash' | 'close' | 'refresh' | 'warning' | 'shield' | 'user'
+  | 'pause' | 'play' | 'trash' | 'close' | 'refresh' | 'warning' | 'shield' | 'user' | 'activity'
 
 function cx(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(' ')
@@ -170,6 +170,7 @@ function Icon({ name, size = 16, className }: IconProps): React.ReactElement {
   if (name === 'warning') return h('svg', common, h('path', { d: 'M12 3l9.5 17h-19L12 3zM12 9v5M12 17.2v.1' }))
   if (name === 'shield') return h('svg', common, h('path', { d: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3zM9 12l2 2 4-4' }))
   if (name === 'user') return h('svg', common, h('circle', { cx: 12, cy: 8, r: 3.6 }), h('path', { d: 'M5 20a7 7 0 0114 0' }))
+  if (name === 'activity') return h('svg', common, h('path', { d: 'M3 12h4l2.5-7 4 14 2.5-7h5' }))
   return h('svg', common)
 }
 
@@ -400,6 +401,63 @@ function KeyForm({ provider, onDone, autoFocus = false }: KeyFormProps): React.R
   )
 }
 
+/** Inline state of one row's connection test. */
+interface RowTestState {
+  kind: 'running' | 'passed' | 'failed'
+  latencyMs?: number
+  error?: string
+  /** The client gave up waiting for an answer (QC N4). */
+  timedOut?: boolean
+}
+
+/** Result spans the row's grid columns (the row grids have no full-width cell). */
+const ROW_TEST_STYLE = { gridColumn: '1 / -1', marginTop: '-2px' }
+
+/**
+ * Client-side deadline for one row test. The host bounds its own provider
+ * call at 20 s and may spend a little longer restoring the route, so a lost
+ * or wedged answer must not leave the row's Test action disabled forever
+ * (QC N4).
+ */
+const ROW_TEST_DEADLINE_MS = 30_000
+
+/**
+ * Run one row test and fold the wire answer into the inline state, giving up
+ * at {@link ROW_TEST_DEADLINE_MS} so `running` is always transient (QC N4).
+ */
+async function requestRowTest(store: ClientStore, provider: string, keyId: string): Promise<RowTestState> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<RowTestState>(resolve => {
+    timer = setTimeout(() => resolve({ kind: 'failed', timedOut: true }), ROW_TEST_DEADLINE_MS)
+  })
+  const answer = store.testKey(provider, keyId).then((outcome): RowTestState => {
+    if (!outcome.ok) return { kind: 'failed', error: outcome.error }
+    if (outcome.value.ok) return { kind: 'passed', latencyMs: outcome.value.latencyMs }
+    return { kind: 'failed', ...(outcome.value.error === undefined ? {} : { error: outcome.value.error }) }
+  })
+  try {
+    return await Promise.race([answer, deadline])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+function testLine(test: RowTestState | null, t: T): React.ReactElement | null {
+  if (test === null) return null
+  if (test.kind === 'running') {
+    return h('div', { className: 'km-key-time km-muted', role: 'status', style: ROW_TEST_STYLE }, t('testRunning'))
+  }
+  if (test.kind === 'passed') {
+    return h('div', { className: 'km-key-time', role: 'status', style: ROW_TEST_STYLE }, t('testPassed', { ms: test.latencyMs ?? 0 }))
+  }
+  // QC N6: never render an empty failure detail; a deadline and a wire answer
+  // without a reason each carry their own copy.
+  const detail = test.error !== undefined && test.error.length > 0
+    ? test.error
+    : test.timedOut === true ? t('testTimedOut') : t('testFailedUnknown')
+  return h('div', { className: 'km-key-time km-warn', role: 'status', style: ROW_TEST_STYLE }, t('testFailed', { error: detail }))
+}
+
 interface KeyRowProps {
   provider: ProviderView
   keyRecord: KeyView
@@ -417,6 +475,7 @@ function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
   const [confirm, setConfirm] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [test, setTest] = React.useState<RowTestState | null>(null)
   const rootRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
@@ -465,6 +524,11 @@ function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
     setBusy(false)
     if (!result.ok) setError(result.error)
     else setConfirm(false)
+  }
+
+  async function runTest(): Promise<void> {
+    setTest({ kind: 'running' })
+    setTest(await requestRowTest(runtime.store, provider.provider, key.id))
   }
 
   const cold = key.status === 'cooling' && key.cooldownUntil > now
@@ -529,6 +593,13 @@ function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
           type: 'button',
           className: 'km-menu-item',
           role: 'menuitem',
+          onClick: () => { setMenu(false); void runTest() },
+          disabled: busy || test?.kind === 'running',
+        }, h(Icon, { name: 'activity', size: 15 }), t('testKey')),
+        h('button', {
+          type: 'button',
+          className: 'km-menu-item',
+          role: 'menuitem',
           onClick: () => { setMenu(false); void update({ enabled: !key.enabled }) },
           disabled: busy,
         }, h(Icon, { name: key.enabled ? 'pause' : 'play', size: 15 }), key.enabled ? t('pause') : t('resume')),
@@ -537,6 +608,7 @@ function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
       ) : null,
     ),
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
+    testLine(test, t),
     confirm ? h(Modal, {
       title: t('deleteTitle', { alias: key.alias }),
       onClose: () => setConfirm(false),
@@ -573,6 +645,7 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
   const [confirm, setConfirm] = React.useState(false)
   const [busy, setBusy] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [test, setTest] = React.useState<RowTestState | null>(null)
   const rootRef = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
@@ -606,6 +679,11 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
     setBusy(false)
     if (!result.ok) setError(result.error)
     else setConfirm(false)
+  }
+
+  async function runTest(): Promise<void> {
+    setTest({ kind: 'running' })
+    setTest(await requestRowTest(runtime.store, provider.provider, key.id))
   }
 
   const cold = key.status === 'cooling' && key.cooldownUntil > now
@@ -667,6 +745,13 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
           type: 'button',
           className: 'km-menu-item',
           role: 'menuitem',
+          onClick: () => { setMenu(false); void runTest() },
+          disabled: busy || test?.kind === 'running',
+        }, h(Icon, { name: 'activity', size: 15 }), t('testKey')),
+        h('button', {
+          type: 'button',
+          className: 'km-menu-item',
+          role: 'menuitem',
           onClick: () => { setMenu(false); onReauthenticate() },
           disabled: busy,
         }, h(Icon, { name: 'refresh', size: 15 }), t('accountReauth')),
@@ -675,6 +760,7 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
       ) : null,
     ),
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
+    testLine(test, t),
     confirm ? h(Modal, {
       // SF4: account-specific copy — the grant removal consequence, not a
       // key-deletion/provider-release promise. Step 8: the key-pool
