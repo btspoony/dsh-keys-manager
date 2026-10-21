@@ -154,5 +154,14 @@ vite.config.ts.timestamp-*
 # macOS
 .DS_Store
 
+# Local Morning Star harness artifacts. The harness root is process state
+# (plans, sdd, iterations, reviews, store.db) and stays local; the curated
+# results — specs and knowledge — are tracked so they travel with the code.
+# A directory can only be re-included when its parent is un-ignored, so ignore
+# the children rather than the root.
+.mstar/*
+!.mstar/specs/
+!.mstar/knowledge/
+
 # Local mstar feature worktrees
 /.worktrees/
