@@ -3016,6 +3016,15 @@ export class KeysManagerService {
     // ownership stops being unknown and the binding repair it skipped runs.
     this.noteProjectionReadSucceeded(provider)
     if (record === undefined) {
+      // PR review round 31: a harvest outside this chain can commit and claim
+      // a newer projection while this read is in flight, so the absence above
+      // can already be superseded. The newer claim owns the route and settled
+      // the binding itself: this stale removal decides nothing — no owner
+      // delete, no rebind — it only consumes its own one-shot removal marker.
+      if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) {
+        this.intentionalProjectionRemovals.delete(provider)
+        return
+      }
       // The projection is gone, so nothing foreign serves this route any more
       // (PR review round 3).
       this.foreignProjections.delete(provider)
@@ -5372,7 +5381,7 @@ export class KeysManagerService {
    */
   private async syncBrokerBinding(
     provider: string,
-    options: { takeover?: boolean; write?: boolean; borrow?: boolean } = {},
+    options: { takeover?: boolean; write?: boolean; borrow?: boolean; corrective?: boolean } = {},
   ): Promise<boolean> {
     const record = this.store.provider(provider)
     if (record === undefined) return false
@@ -5432,6 +5441,19 @@ export class KeysManagerService {
     } catch (error) {
       this.bindingWriteRefused(provider, error instanceof Error ? error.message : String(error))
       return false
+    }
+    // The mutation is asynchronous, so the serving source can flip while it
+    // settles: a native OAuth write classified foreign after the gates above
+    // unbinds an already-unbound profile and returns, then this older bind
+    // commits over that projection (PR review round 31). One corrective pass
+    // re-derives the shape from the settled source; the flag keeps it bounded
+    // — a flip inside the correction is left to the next repair, and no
+    // settings echo re-enters this method, so the two passes cannot cycle.
+    if (options.corrective !== true) {
+      const settled = this.store.provider(provider)
+      if (settled !== undefined && this.keyPoolServes(settled) !== (desired !== undefined)) {
+        return this.syncBrokerBinding(provider, { ...options, corrective: true })
+      }
     }
     // The profile matches the serving source now, by construction.
     this.bindingCache.set(provider, 'healthy')

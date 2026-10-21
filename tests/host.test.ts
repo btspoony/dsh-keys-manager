@@ -914,6 +914,82 @@ test('a hand-edited apiKeyEnv is never rewritten by the binding sync', async () 
   }
 })
 
+/** Park the first settings mutation of `h` before it applies, then release it. */
+function parkSettingsMutation(h: Harness): { parked: Promise<void>; release: () => void } {
+  const settings = h.settings
+  const realMutate = settings.mutate.bind(settings)
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let markParked!: () => void
+  const parked = new Promise<void>(resolve => { markParked = resolve })
+  let parkedOnce = false
+  settings.mutate = async (ns: string, ops: any[], revision?: number) => {
+    if (!parkedOnce) {
+      parkedOnce = true
+      markParked()
+      await gate
+    }
+    return realMutate(ns, ops, revision)
+  }
+  return { parked, release }
+}
+
+// Round-31 review (P1): `settings.mutate` is asynchronous, so the serving
+// source can flip after the pre-write gates but before the write commits. A
+// repair can start binding an unbound key-pool route; a native OAuth write is
+// classified foreign and its unbind observes the still-unbound profile as
+// already correct; then the older bind commits — leaving the broker reference
+// over a projection that serves ahead of it, with nothing left to re-derive it.
+
+test('a binding write that settles after the serving source flipped is corrected (P1)', async () => {
+  const h = await harness()
+  try {
+    // Adopted with an empty pool: the route is unbound until a pool row exists.
+    await h.service.adoptProvider('openrouter')
+    const record = h.store.provider('openrouter')!
+    record.keys.push({
+      id: 'k_pool',
+      alias: 'pool',
+      ref: 'KEYSMGR_OPENROUTER_POOL',
+      kind: 'api-key',
+      enabled: true,
+      createdAt: Date.now(),
+      lastUsedAt: 0,
+      cooldownUntil: 0,
+      lastFailureAt: 0,
+      lastFailureCode: '',
+      failureLevel: 0,
+      consecutiveFailures: 0,
+      totalUses: 0,
+      totalFailures: 0,
+      valueMissing: false,
+      importedFrom: null,
+      oauth: null,
+    })
+    h.store.touch()
+    const mutate = parkSettingsMutation(h)
+    // The repair starts binding the pool and parks inside the mutation.
+    const bind = (h.service as unknown as { syncBrokerBinding: (provider: string) => Promise<boolean> })
+      .syncBrokerBinding('openrouter')
+    await mutate.parked
+    // A native OAuth write lands the projection while the bind is in flight.
+    h.credentials.records.set('llm-pi-ai/openrouter', grantPayload({ accountId: 'acc-native', email: 'native@example.com' }))
+    h.credentials.emitRecordUpdated('llm-pi-ai/openrouter')
+    await drainGrantChain(h, 'openrouter')
+    // Its classification saw the still-unbound profile, so it wrote nothing.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.openrouter?.apiKeyEnv, undefined)
+    mutate.release()
+    assert.equal(await bind, true)
+    // The settled state no longer matches the serving source: the broker
+    // reference the older write committed must go.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.openrouter?.apiKeyEnv, undefined)
+    assert.equal(h.credentials.records.has('llm-pi-ai/openrouter'), true)
+    assert.equal(h.service.getState().providers.find(entry => entry.provider === 'openrouter')!.bindingHealthy, true)
+  } finally {
+    await h.close()
+  }
+})
+
 test('release keeps the pre-adoption apiKeyEnv when an oauth row precedes the key', async () => {
   const h = await harness()
   try {
@@ -7049,6 +7125,67 @@ test('a fallback deletion echoed as record-updated stays silent and keeps the ca
     h.credentials.records.delete(GRANT_KEY)
     h.credentials.emitRecordUpdated(GRANT_KEY)
     await eventually(() => assert.match(pendingWarnings(), /removed outside Keys Manager/))
+  } finally {
+    await h.close()
+  }
+})
+
+// Round-31 review (P1): a deletion reconciliation reads the projection from
+// outside the mutation queue, so an OAuth harvest (which claims on the
+// mutation queue) can commit and claim a newer projection while that read is
+// in flight. The read then answers a stale absence; deciding the removal on it
+// deleted the NEWER owner claim and rebound the broker over a projection that
+// was still serving.
+
+test('a deletion read superseded by a newer claim leaves the newer owner and projection alone (P1)', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    const pendingWarnings = (): string =>
+      (h.service as unknown as { warnings: string[] }).warnings.join('\n')
+    await h.service.activateAccount('anthropic', rowId)
+    const other = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-other', email: 'other@example.com', refresh: 'rt-other-value' })
+    // Park the removal echo's read once it has begun. The projection is already
+    // gone, so its snapshot is the stale `undefined` the decision is made on.
+    const raw = h.credentials.raw
+    const realRead = raw.readRecord.bind(raw)
+    let releaseRead!: () => void
+    const gate = new Promise<void>(resolve => { releaseRead = resolve })
+    let markParked!: () => void
+    const parked = new Promise<void>(resolve => { markParked = resolve })
+    let parkedOnce = false
+    raw.readRecord = async (key: string) => {
+      const snapshot = await realRead(key)
+      if (parkedOnce || key !== GRANT_KEY || snapshot !== undefined) return snapshot
+      parkedOnce = true
+      markParked()
+      await gate
+      return snapshot
+    }
+    // Out-of-band removal: the projection is gone when that read starts.
+    h.credentials.records.delete(GRANT_KEY)
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await parked
+    // A sign-in harvest commits a newer projection and claims it while the
+    // deletion's read is still in flight.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-other-value',
+      accountId: 'acc-other',
+      email: 'other@example.com',
+    }))
+    const view = await h.service.beginAccountLogin('anthropic')
+    h.emitEvent('authorization/settled', GRANT_KEY, 'authorized')
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+    releaseRead()
+    await drainGrantChain(h, 'anthropic')
+    // The stale absence decided nothing: the newer claim still owns the route,
+    // its projection still serves, and the broker was not bound over it.
+    assert.equal(h.credentials.records.has(GRANT_KEY), true)
+    const view2 = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(view2.keys.find(key => key.id === other.rowId)!.projected, true)
+    assert.equal(h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!.valueMissing, false)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, undefined)
+    assert.equal(pendingWarnings().includes('removed outside Keys Manager'), false)
   } finally {
     await h.close()
   }
