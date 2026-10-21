@@ -10669,3 +10669,110 @@ test('an addKey during the borrow write cannot persist a broker binding', async 
     await h.close()
   }
 })
+
+// ── PR #26 review round 9 ───────────────────────────────────────────────────
+
+// Review R8-2 (Codex P2): `testKey` captures its row, its credential and the
+// route's serving shape before the first await, so a removal landing inside
+// that window deleted the credential the test was about to send. Removing an
+// account during a *borrowed* test was worse than a stale read: the removal
+// compared its decision against the test's temporary projection, deleted it
+// and demoted every row — disabling an account nobody touched — while the
+// test's restore wrote the removed account's grant back.
+test('removing an account waits for its own connection test', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  try {
+    let enteredTest!: () => void
+    const testEntered = new Promise<void>(resolve => { enteredTest = resolve })
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    const projections: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        projections.push((h.credentials.records.get(GRANT_KEY)?.payload as Record<string, unknown>).refresh as string)
+        enteredTest()
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const testRun = h.service.testKey('anthropic', first.rowId)
+    await testEntered
+    const removal = h.service.removeAccount('anthropic', first.rowId)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(h.store.provider('anthropic')!.keys.some(row => row.id === first.rowId), true,
+      'the account was removed while its own test borrowed the route')
+    assert.deepEqual(projections, ['rt-first'], 'the test never reached its request')
+
+    releaseTest!()
+    assert.equal((await testRun).ok, true)
+    await removal
+    // The test borrowed, then restored the user's projection…
+    assert.deepEqual(projections, ['rt-first'])
+    // …and the removal ran on that restored state, so the account the user did
+    // not touch keeps serving and stays selectable.
+    const remaining = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(remaining.some(row => row.id === first.rowId), false)
+    assert.equal(remaining.find(row => row.id === second.rowId)!.projected, true)
+    assert.equal(h.store.provider('anthropic')!.keys.find(row => row.id === second.rowId)!.valueMissing, false)
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-second')
+    assert.equal(h.credentials.records.has(first.grantRef), false)
+  } finally {
+    releaseTest?.()
+    await h.close()
+  }
+})
+
+// The same window for `deleteKey`, parked before the test's first credential
+// read: the row's credential must not be deleted while the test is about to
+// send it.
+test('deleting a row waits for its connection test', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  let releaseRead: (() => void) | undefined
+  let stallRead = true
+  try {
+    let enteredRead!: () => void
+    const readEntered = new Promise<void>(resolve => { enteredRead = resolve })
+    const readGate = new Promise<void>(resolve => { releaseRead = resolve })
+    raw.readRecord = async (key: string) => {
+      if (stallRead && key === first.grantRef) {
+        stallRead = false
+        enteredRead()
+        await readGate
+      }
+      return await realRead(key)
+    }
+    const sent: Array<boolean> = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      // The request carries the row's grant only while the store still holds it.
+      sent.push(h.credentials.records.has(first.grantRef))
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    const testRun = h.service.testKey('anthropic', first.rowId)
+    await readEntered
+    const removal = h.service.deleteKey('anthropic', first.rowId)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(h.store.provider('anthropic')!.keys.some(row => row.id === first.rowId), true,
+      'the key was deleted while its own test was about to send it')
+    assert.deepEqual(sent, [], 'the test sent its request before the removal settled')
+
+    releaseRead!()
+    assert.equal((await testRun).ok, true)
+    await removal
+    assert.deepEqual(sent, [true], 'the request carried a credential the store no longer held')
+    assert.equal(h.store.provider('anthropic')!.keys.some(row => row.id === first.rowId), false)
+    assert.equal(h.credentials.records.has(first.grantRef), false)
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-second')
+    const remaining = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(remaining.find(row => row.id === second.rowId)!.projected, true)
+  } finally {
+    releaseRead?.()
+    raw.readRecord = realRead
+    await h.close()
+  }
+})

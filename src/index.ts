@@ -3444,6 +3444,39 @@ export class KeysManagerService {
   }
 
   /**
+   * Hold a row/account removal until the provider's running row test settles
+   * (PR review round 9, R8-2).
+   *
+   * `testKey` captures its row, its credential and the route's serving shape
+   * before the first await, so a removal landing inside that window can delete
+   * the credential the test is about to send. For a borrowed OAuth account the
+   * removal is worse than a stale read: it compares its decision against the
+   * test's temporary projection, deletes it and demotes every row, and the
+   * test's own restore then writes the removed account's grant back. The
+   * removal therefore waits for the window instead of racing it. The wait is
+   * bounded by {@link isolationWaitMs} — a test wedged in an untimed seam call
+   * must not park the removal forever — and a provider whose abandoned window
+   * still owns the route's records refuses the removal outright.
+   */
+  private async settleTestBeforeRemoval(provider: string): Promise<void> {
+    const refusal = `A previous connection test for ${provider} is still being cleaned up; try again in a moment.`
+    if (this.cleaningTests.has(provider)) throw new Error(refusal)
+    const pending = this.testsActive.get(provider)
+    if (pending === undefined) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const bound = new Promise<void>(resolve => {
+      timer = setTimeout(resolve, this.isolationWaitMs)
+      timer.unref?.()
+    })
+    try {
+      await Promise.race([pending.then(() => undefined, () => undefined), bound])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+    if (this.cleaningTests.has(provider)) throw new Error(refusal)
+  }
+
+  /**
    * Put the projection back as it was before the test borrowed it, without
    * losing or overwriting anything that changed meanwhile.
    *
@@ -4007,6 +4040,9 @@ export class KeysManagerService {
    */
   removeAccount(provider: string, accountId: string): Promise<StateView> {
     return this.run(async () => {
+      // R8-2: the removal decides against the route's live records, so it must
+      // not run inside a row test's borrow window.
+      await this.settleTestBeforeRemoval(provider)
       const providerRecord = this.store.provider(provider)
       if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
       const index = providerRecord.keys.findIndex(candidate => candidate.id === accountId)
@@ -5039,6 +5075,8 @@ export class KeysManagerService {
   /** Remote: delete one key, releasing the provider when it was the last one. */
   deleteKey(provider: string, keyId: string): Promise<StateView> {
     return this.run(async () => {
+      // R8-2: a test may still be about to send this row's credential.
+      await this.settleTestBeforeRemoval(provider)
       const record = this.store.provider(provider)
       if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
       const index = record.keys.findIndex(candidate => candidate.id === keyId)

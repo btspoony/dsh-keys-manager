@@ -484,6 +484,50 @@ describe('row test dispatch', () => {
     expect(sent.filter(endpoint => endpoint === 'keysManager/testKey')).toHaveLength(1)
     expect(store.getSnapshot().busy).toBeNull()
   })
+
+  // PR #26 review round 9 (R8-1): a row test borrows the route's projection
+  // while it runs and the host restores the previous owner before answering.
+  // A refresh landing inside that window used to store the borrowed snapshot,
+  // leaving the tested row marked as serving (with its activation disabled)
+  // until the next tick.
+  test('a snapshot taken while a row test borrows the route never lands', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let loads = 0
+    let answerRefresh: ((result: RpcResult) => void) | undefined
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') {
+        loads += 1
+        // The refresh the user starts during the borrow sees the tested row
+        // projected; the test's restore makes that answer stale.
+        if (loads > 1) return await new Promise<RpcResult>(resolve => { answerRefresh = resolve })
+        return { ok: true, value: state }
+      }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+
+    const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    void store.load()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    answerRefresh!({ ok: true, value: borrowed })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // The borrowed snapshot is dropped; the pre-test snapshot (the route the
+    // test restores) is what the page keeps showing.
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+    expect(store.getSnapshot().busy).toBeNull()
+
+    releaseTest({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await test).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+  })
 })
 
 

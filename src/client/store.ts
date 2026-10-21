@@ -52,6 +52,13 @@ export function createStore(ctx: ClientContext): ClientStore {
   let loadSequence = 0
   let mutationTail: Promise<unknown> = Promise.resolve()
   let queuedMutations = 0
+  // A row test borrows the route's projection while it runs and the host
+  // restores the previous owner before it answers, so a snapshot taken inside
+  // that window names the tested row as projected. `activeTests` and
+  // `testGeneration` let `load` drop such a snapshot instead of storing it
+  // (PR review round 9, R8-1).
+  let activeTests = 0
+  let testGeneration = 0
   const listeners = new Set<() => void>()
   const emit = (): void => {
     for (const listener of [...listeners]) {
@@ -147,10 +154,18 @@ export function createStore(ctx: ClientContext): ClientStore {
       // Do not let a refresh race a mutation; the UI also disables refresh.
       if (snapshot.busy !== null) return
       const request = ++loadSequence
+      const generation = testGeneration
       update({ busy: 'load', error: options.keepError === true ? snapshot.error : null })
       try {
         const result = await rpc('getState', {})
         if (request !== loadSequence) return
+        // A snapshot that overlapped a row test carries the borrowed
+        // projection; the test's restore already made it stale, so it is
+        // dropped and the pre-test snapshot (the restored route) stays.
+        if (activeTests > 0 || testGeneration !== generation) {
+          update({ busy: null })
+          return
+        }
         if (!result.ok) throw new Error(result.error.message)
         update({ status: 'ready', state: result.value as StateView, now: Date.now(), busy: null, error: null })
       } catch (error) {
@@ -190,12 +205,19 @@ export function createStore(ctx: ClientContext): ClientStore {
       // out and then run the test — borrowing the route's projection — with
       // nobody watching its answer. It sends at once, sets no global busy flag
       // and never replaces the snapshot: the host's answer is observation-only.
+      activeTests += 1
+      testGeneration += 1
       try {
         const result = await withDeadline(rpc('testKey', { provider, keyId }), TEST_KEY_DEADLINE_MS, 'testKey')
         if (!result.ok) throw new Error(result.error.message)
         return testOutcome(result.value)
       } catch (error) {
         return { ok: false, error: messageOf(error) }
+      } finally {
+        activeTests -= 1
+        // Invalidate every snapshot that overlapped the window, including one
+        // that is still in flight when the host restores the route.
+        testGeneration += 1
       }
     },
     tick() {
