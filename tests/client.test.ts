@@ -182,6 +182,12 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // the section, status pill and dialogs by rendered text.
     managed: '已接管',
     available: '可添加 Providers',
+    // Registered so the negative assertions can fail: an unregistered key
+    // renders as the raw key, which none of the copy checks would catch.
+    configured: '已配置',
+    notConfigured: '未配置',
+    transportAccounts: '传输账户',
+    noSearch: '换个关键词试试。',
     managedEmpty: '还没有接管的 Provider。从下方选择一个开始。',
     summaryEmpty: '尚未接管任何 Provider。在插件详情中搜索并接管。',
     summaryText: '已接管 {providers} 个 Provider，共 {keys} 个密钥 · 单会话固定 + Round Robin',
@@ -2546,6 +2552,41 @@ describe('transport account surface', () => {
     expect(inside.filter(node => node.type === 'button').some(node => node.text.includes('接管 Provider'))).toBe(false)
     expect(inside.some(node => node.text.includes('添加密钥'))).toBe(false)
     expect(view.nodes.some(node => node.text === '传输账户')).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the 已接管 section head counts the cards its search leaves', async () => {
+    const state = makeState()
+    // Two managed cards, so a query can select one of several.
+    state.providers = state.providers.map(provider => provider.provider === 'deepinfra' ? { ...provider, managed: true } : provider)
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+
+    const input = findByClass(view.nodes, 'km-search-input')[0]!
+    const search = (value: string): void => {
+      ;(input.props!.onChange as (event: { target: { value: string } }) => void)({ target: { value } })
+      view.render()
+    }
+    const managedSection = (): FlatNode => findByClass(view.nodes, 'km-section')[0]!
+    const headCount = (): string => findByClass(view.nodes, 'km-section-count')[0]!.text
+    const tileCount = (): string => descendants(view.nodes, findByClass(view.nodes, 'km-stat').find(node => node.text.includes('已接管'))!)
+      .find(node => node.type === 'strong')!.text
+
+    search('zai')
+    expect(findByClass(descendants(view.nodes, managedSection()), 'km-provider')).toHaveLength(1)
+    expect(headCount()).toBe('1')
+    // The tile keeps the global total while the section shows what it renders.
+    expect(tileCount()).toBe('2')
+
+    search('nothing-matches-this')
+    expect(findByClass(view.nodes, 'km-provider')).toHaveLength(0)
+    expect(headCount()).toBe('0')
+    expect(view.nodes.some(node => node.text === '换个关键词试试。')).toBe(true)
+    expect(view.nodes.some(node => node.text === '还没有接管的 Provider。从下方选择一个开始。')).toBe(false)
     view.unmount()
     setRuntimeContext(null)
   })

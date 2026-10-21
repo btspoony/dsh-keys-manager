@@ -1535,8 +1535,6 @@ function KeysManagerBody(): React.ReactElement {
     return haystack.includes(normalizedQuery)
   }
   const orphanAccounts = orphanTransportAccounts(providers, transportAccounts).filter(matchesAccount)
-  // One number for the section head and the tile above it.
-  const managedEntries = managedEntryCount(providers, transportAccounts)
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1573,7 +1571,7 @@ function KeysManagerBody(): React.ReactElement {
 
     h('div', { className: 'km-embedded-head' },
       h('div', { className: 'km-summary' },
-        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : managedEntries), h('span', null, t('managed'))),
+        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : managedEntryCount(providers, transportAccounts)), h('span', null, t('managed'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.keyCount ?? 0), h('span', null, t('keys'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.healthyKeyCount ?? 0), h('span', null, t('healthy'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.coolingKeyCount ?? 0), h('span', null, t('cooling'))),
@@ -1614,11 +1612,13 @@ function KeysManagerBody(): React.ReactElement {
     !loading && !failed ? h('section', { className: 'km-section' },
       h('div', { className: 'km-section-head' },
         h('h2', { className: 'km-section-title' }, t('managed')),
-        h('span', { className: 'km-section-count' }, managedEntries),
+        // What is below it, like the available section: the tile above keeps
+        // the global total.
+        h('span', { className: 'km-section-count' }, managed.length + orphanAccounts.length),
       ),
       // The placeholder only when the section renders neither a card nor a row.
       managed.length === 0 && orphanAccounts.length === 0
-        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, t('managedEmpty')))
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, normalizedQuery.length > 0 ? t('noSearch') : t('managedEmpty')))
         : null,
       managed.length > 0
         ? h('div', { className: 'km-provider-list' }, managed.map(provider => h(ProviderCard, {

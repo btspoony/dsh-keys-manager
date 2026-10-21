@@ -158,6 +158,9 @@ function fakeSettings(): any {
     failMutate: false,
     failDescribe: false,
     namespaces,
+    // Every mutation the service attempts, recorded before it can throw, so a
+    // test can assert that a refusal never wrote anything.
+    mutateCalls: [] as Array<{ ns: string; ops: any[]; expectedRevision?: number }>,
     describe() {
       if (this.failDescribe) throw new Error('settings unavailable')
       return namespaces.map(entry => ({
@@ -170,6 +173,7 @@ function fakeSettings(): any {
       }))
     },
     async mutate(ns: string, ops: any[], expectedRevision?: number) {
+      this.mutateCalls.push({ ns, ops, expectedRevision })
       if (this.failMutate) throw new Error('revision conflict')
       const entry = namespaces.find(candidate => candidate.ns === ns)
       if (!entry) throw new Error(`missing namespace ${ns}`)
@@ -9860,6 +9864,7 @@ const TRANSPORT_FLOW = {
 }
 
 const CURSOR_SCOPE = 'llm-omp-transports/cursor'
+const TRANSPORT_NS = 'llm-omp-transports'
 
 /** The grant payload the transports package writes for the cursor route. */
 function cursorGrant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -9939,8 +9944,13 @@ test('a transport route is a plugin route and is never key- or account-adoptable
 test('adopting a transport route is refused before any settings write', async () => {
   const h = await transportHarness()
   try {
+    // Declare the transport namespace: without it the call would abort on a
+    // missing namespace and the no-write assertion below would prove nothing.
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: {}, revision: 1 })
     await assert.rejects(() => h.service.adoptProvider('cursor'), /transport plugin/i)
-    assert.equal(h.settings.valueOf('llm-omp-transports'), undefined)
+    // The refusal lands before the settings layer is asked to write anything.
+    assert.equal(h.settings.mutateCalls.length, 0)
+    assert.deepEqual(h.settings.valueOf(TRANSPORT_NS), {})
     assert.equal(h.store.providers.cursor, undefined)
   } finally {
     await h.close()
