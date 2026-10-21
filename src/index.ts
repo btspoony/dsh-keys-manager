@@ -980,9 +980,14 @@ function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OA
  * could commit — `run` refuses the turn itself. `withdrawn`: the projection was
  * written and then withdrawn, so the caller must not be told the activation
  * succeeded.
+ *
+ * `written` on `aborted` is what the body already persisted when the abort
+ * caught it (F1). Without it an abort between the write and the claim would
+ * leave the activation's grant serving behind a failed call, and the caller
+ * cannot withdraw a record it cannot name.
  */
 type ActivationProjection =
-  | { state: 'aborted' }
+  | { state: 'aborted'; written?: string }
   | { state: 'withdrawn' }
   | { state: 'projected'; written: string; accountId: string; generation: number; grantRef: string }
 
@@ -3674,8 +3679,9 @@ export class KeysManagerService {
     projection: ActivationProjection,
     records: CredentialRecordsLike | undefined,
   ): Promise<void> {
-    if (projection.state !== 'projected' || records === undefined) return
-    const proof = await this.activationProjectionProof(records, provider, projection.written)
+    const written = projection.state === 'withdrawn' ? undefined : projection.written
+    if (written === undefined || records === undefined) return
+    const proof = await this.activationProjectionProof(records, provider, written)
     // Unproven identity is not permission (QC R2): a proof that threw leaves
     // the record and the claim exactly as they are — nothing here may read as
     // "the projection was cleaned up".
@@ -3683,11 +3689,14 @@ export class KeysManagerService {
     // The claim is drawn from its own proof (generation + account id), so a
     // record another writer replaced still retires a claim that has stopped
     // being true. Only a matching record may be deleted.
-    if (this.ownershipGenerations.get(provider) === projection.generation
+    // Only a body that got as far as committing took the claim; an aborted one
+    // never reached `claimProjectionOwner`.
+    if (projection.state === 'projected'
+      && this.ownershipGenerations.get(provider) === projection.generation
       && this.activeAccounts.get(provider) === projection.accountId) {
       this.activeAccounts.delete(provider)
     }
-    if (proof === 'matches') await this.deleteActivationProjection(records, provider)
+    if (proof === 'matches') await this.deleteActivationProjection(records, provider, written)
   }
 
   /**
@@ -3741,24 +3750,25 @@ export class KeysManagerService {
       const written = JSON.stringify(payload)
       this.intentionalProjectionRemovals.delete(provider)
       await records.modifyRecord(projectionKey, () => Promise.resolve({ kind: 'grant', payload }))
-      if (this.hydrationEpoch !== epoch) return { state: 'aborted' }
-      if (this.persistenceRefused()) return { state: 'aborted' }
+      // F1: past this line the projection is persisted, so an abort has to
+      // carry `written` — the caller withdraws exactly that, through the
+      // same proof as the commit rollback, instead of leaving it behind.
+      if (this.hydrationEpoch !== epoch) return { state: 'aborted', written }
+      if (this.persistenceRefused()) return { state: 'aborted', written }
       // A removal that completed while the write was in flight deleted the
       // projection before this write re-created it. Its own cleanup already
       // ran, so the record is withdrawn here through the delete authority
       // rather than deleted blind (MF2).
       if (!this.accountRowIsManaged(provider, row)) {
-        if (await this.activationProjectionProof(records, provider, written) === 'matches') {
-          await this.deleteActivationProjection(records, provider)
-        }
+        await this.deleteActivationProjection(records, provider, written)
         return { state: 'withdrawn' }
       }
       // SF1 post-condition: the projection this activation wrote must still be
       // the record the route serves. A removal that took it (or a native writer
       // that replaced it) while the write was settling is not a success.
       const live = await records.readRecord(projectionKey)
-      if (this.hydrationEpoch !== epoch) return { state: 'aborted' }
-      if (this.persistenceRefused()) return { state: 'aborted' }
+      if (this.hydrationEpoch !== epoch) return { state: 'aborted', written }
+      if (this.persistenceRefused()) return { state: 'aborted', written }
       if (live === undefined
         || live.kind !== 'grant'
         || !isOAuthGrantPayload(live.payload)
@@ -3809,8 +3819,17 @@ export class KeysManagerService {
   private async deleteActivationProjection(
     records: CredentialRecordsLike,
     provider: string,
+    written: string,
   ): Promise<void> {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    // F2: the identity read and the delete cannot be atomic here — the seam has
+    // no compare-and-delete, `deleteRecord(key)` takes no expected payload
+    // (host-types.ts:142, tracked as I-000090). This read immediately before the
+    // delete narrows the window to the seam call itself; a writer that replaces
+    // the record inside it still loses its grant, and that residual needs the
+    // seam CAS, not another read here. Anything but a proven match is left
+    // alone.
+    if (await this.activationProjectionProof(records, provider, written) !== 'matches') return
     const markedAt = Date.now()
     this.intentionalProjectionRemovals.set(provider, markedAt)
     try {

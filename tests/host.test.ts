@@ -5346,6 +5346,104 @@ test('an activation body resumed after close writes no projection and claims not
   }
 })
 
+// QC F1 (P1): shutdown can start while the projection write is in flight. The
+// write then lands after the body was abandoned, so the abort has to name what
+// it persisted and withdraw it — a refused activation must not leave its grant
+// serving behind the failure, nor across a restart.
+
+test('a projection written while shutdown starts is withdrawn instead of left serving after the activation is refused', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  let releaseWrite: (() => void) | undefined
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve })
+  let writeStarted = false
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    if (key === GRANT_KEY && !writeStarted) {
+      writeStarted = true
+      await writeGate
+    }
+    return realModify(key, mutate)
+  }
+  ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 30
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(writeStarted, true))
+    // The store closes while the write is still in flight; the write then lands.
+    await h.service.close()
+    releaseWrite!()
+    await assert.rejects(() => activating, /shutting down/)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the refused activation left its projection serving')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'the refused activation claimed ownership')
+  } finally {
+    releaseWrite?.()
+    await activating.catch(() => {})
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
+// QC F2 (P1): the identity read and the delete are not atomic — the seam has no
+// compare-and-delete (I-000090), so the proof is re-run immediately before the
+// delete. A record a foreign writer replaced in that gap is left alone.
+
+test('a projection replaced between the proof and the delete survives the rollback', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  const service = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
+    grantDrainDeadlineMs: number
+  }
+  const realSync = service.syncBrokerBinding.bind(h.service)
+  let releaseCommit: (() => void) | undefined
+  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
+  let committed = false
+  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
+    const result = await realSync(provider, options)
+    if (provider === 'anthropic' && !committed) {
+      committed = true
+      await commitGate
+    }
+    return result
+  }
+  service.grantDrainDeadlineMs = 30
+  let armed = false
+  let identityReads = 0
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    if (armed && key === GRANT_KEY) {
+      identityReads += 1
+      // The foreign writer lands after the proof, before the delete.
+      if (identityReads === 2) {
+        h.credentials.records.set(GRANT_KEY, {
+          kind: 'grant',
+          payload: { type: 'oauth', refresh: 'rt-foreign', access: 'at-foreign', expires: 1_900_000_000_000, accountId: 'acc-foreign' },
+        })
+      }
+    }
+    return realModify(key, mutate)
+  }
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(committed, true))
+    await h.service.close()
+    armed = true
+    releaseCommit!()
+    await assert.rejects(() => activating, /shutting down/)
+    assert.equal(identityReads >= 2, true, 'the delete ran without a final identity read')
+    const live = h.credentials.records.get(GRANT_KEY) as FakeCredentialRecord | undefined
+    assert.ok(live, 'the rollback deleted a record it no longer owned')
+    assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-foreign')
+  } finally {
+    releaseCommit?.()
+    await activating.catch(() => {})
+    raw.modifyRecord = realModify
+    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    await h.close()
+  }
+})
+
 // QC MF2 (must-fix): the withdrawal goes through the delete authority, not a
 // blind delete. A native writer that repoints the projection between this
 // activation's write and its compensating delete keeps its grant, and that
