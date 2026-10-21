@@ -436,13 +436,24 @@ describe('cursor access resolver', () => {
     expect(store.writes()).toBe(0)
   })
 
-  it('refreshes a grant inside the five-minute window under modifyRecord', async () => {
+  it('serves a grant whose remaining life still exceeds the stored skew', async () => {
+    const now = 1_000_000
+    const store = fakeStore({
+      kind: 'grant',
+      payload: { access: 'fresh-token', refresh: 'refresh-1', expires: now + 5 * 60 * 1000 },
+    })
+
+    await expect(createCursorAccess(store.credentials, { now: () => now })()).resolves.toBe('fresh-token')
+    expect(store.writes()).toBe(0)
+  })
+
+  it('refreshes a grant past the stored skew under modifyRecord', async () => {
     const now = 1_000_000
     const rotated = jwt({ sub: 'workos|acct-9', exp: 2_000_000_000 })
     const { fetch } = stubFetch(() => json({ access_token: rotated }))
     const store = fakeStore({
       kind: 'grant',
-      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now + 60_000, email: 'dev@example.com' },
+      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now - 60_000, email: 'dev@example.com' },
     })
 
     await expect(createCursorAccess(store.credentials, { fetch, now: () => now })()).resolves.toBe(rotated)
@@ -466,7 +477,7 @@ describe('cursor access resolver', () => {
     }
     let record: StoredCredentialRecord | undefined = {
       kind: 'grant',
-      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now + 60_000 },
+      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now - 60_000 },
     }
     const credentials: CredentialRecordsLike = {
       readRecord: async () => record,
@@ -487,7 +498,7 @@ describe('cursor access resolver', () => {
     const credentials: CredentialRecordsLike = {
       readRecord: async () => ({
         kind: 'grant',
-        payload: { access: 'stale-token', refresh: 'refresh-1', expires: now + 60_000 },
+        payload: { access: 'stale-token', refresh: 'refresh-1', expires: now - 60_000 },
       }),
       modifyRecord: async (_key, mutate) => mutate(undefined),
     }
@@ -503,7 +514,7 @@ describe('cursor access resolver', () => {
     const { fetch } = stubFetch(() => json({ shouldLogout: true }))
     const store = fakeStore({
       kind: 'grant',
-      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now + 60_000 },
+      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now - 60_000 },
     })
 
     await expect(createCursorAccess(store.credentials, { fetch, now: () => now })()).rejects.toMatchObject({
@@ -516,7 +527,7 @@ describe('cursor access resolver', () => {
     const { fetch, calls } = stubFetch(() => json({ access_token: AUTH_TOKEN }))
     const store = fakeStore({
       kind: 'grant',
-      payload: { access: 'stale-token', expires: now + 60_000 },
+      payload: { access: 'stale-token', expires: now - 60_000 },
     })
 
     await expect(createCursorAccess(store.credentials, { fetch, now: () => now })()).rejects.toMatchObject({
@@ -540,7 +551,7 @@ describe('cursor access resolver', () => {
     const { fetch, calls } = stubFetch(() => json({ access_token: AUTH_TOKEN }))
     const store = fakeStore({
       kind: 'grant',
-      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now + 60_000 },
+      payload: { access: 'stale-token', refresh: 'refresh-1', expires: now - 60_000 },
     })
     const controller = new AbortController()
 

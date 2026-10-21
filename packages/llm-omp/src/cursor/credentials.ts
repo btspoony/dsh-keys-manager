@@ -4,8 +4,8 @@
  *
  * `ctx.credentials` hands a plugin opaque grant payloads, so this module owns
  * the only reader and writer of the Cursor payload. The adapter asks for an
- * access token once per request; when the stored grant expires within five
- * minutes the resolver refreshes it inside `modifyRecord`, which is the seam's
+ * access token once per request; when the stored grant is already past its
+ * `expires` margin the resolver refreshes it inside `modifyRecord`, the seam's
  * serialized read-modify-write and the only write path. Two processes rotating
  * one refresh token would otherwise lose whichever wrote first.
  *
@@ -22,9 +22,6 @@ import type { CursorFetch } from './auth.js'
 
 /** The record this plugin owns: scope `<plugin name>`, id the provider route. */
 export const CURSOR_CREDENTIAL_KEY = 'llm-omp-transports/cursor'
-
-/** Refresh this long before the token expires, so a request never starts on a dying token. */
-export const CURSOR_REFRESH_WINDOW_MS = 5 * 60 * 1000
 
 /** One stored grant record; the payload is written and read only by this plugin. */
 export interface StoredGrantRecord {
@@ -52,7 +49,7 @@ export interface CursorGrantPayload {
   readonly access: string
   /** Refresh token; absent on a grant that cannot be renewed. */
   readonly refresh?: string
-  /** Epoch ms, JWT `exp` minus the five-minute skew. */
+  /** Epoch ms, JWT `exp` minus the five-minute skew; the skew is the refresh margin. */
   readonly expires: number
   /** Account email, when cursor.com named one. */
   readonly email?: string
@@ -95,8 +92,8 @@ function payloadOf(record: StoredCredentialRecord | undefined): Record<string, u
  * Build the adapter's per-request access resolver.
  *
  * @remarks
- * A fresh grant answers without touching the store's write path. A grant inside
- * the refresh window is renewed under `modifyRecord`: `mutate` re-reads the
+ * A fresh grant answers without touching the store's write path. A grant past
+ * its `expires` margin is renewed under `modifyRecord`: `mutate` re-reads the
  * record it is handed, so a grant another writer already refreshed (or one
  * removed while this turn waited for the lock) is left alone. A `shouldLogout`
  * answer surfaces as `REAUTH_REQUIRED`, which is a dead sign-in rather than a
@@ -116,7 +113,7 @@ export function createCursorAccess(
         'MISSING_CREDENTIAL',
       )
     }
-    if (grant.expires - now() > CURSOR_REFRESH_WINDOW_MS) return grant.access
+    if (grant.expires > now()) return grant.access
 
     const stored = await withCredentialErrors(() =>
       credentials.modifyRecord(CURSOR_CREDENTIAL_KEY, async current => {
@@ -124,7 +121,7 @@ export function createCursorAccess(
         // Removed or replaced while this turn waited for the lock: leave it alone.
         if (live === undefined) return undefined
         // Another process refreshed it between the read and the lock.
-        if (live.expires - now() > CURSOR_REFRESH_WINDOW_MS) return undefined
+        if (live.expires > now()) return undefined
         if (live.refresh === undefined) {
           throw new LlmError(
             `llm-omp-transports: the Cursor grant stored at ${CURSOR_CREDENTIAL_KEY} has no refresh token; sign in again`,
