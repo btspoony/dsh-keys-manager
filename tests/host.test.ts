@@ -2989,59 +2989,69 @@ test('a short-circuiting routing listener still leaves the request step recorded
   }
 })
 
-test('a failover recovery pins the failing step, and only that step consumes it (I-000041)', async () => {
-  // The recovery identity must travel with the failing request, not with a
-  // continuation-local context: the pin is keyed by the error payload's
-  // turn/step, the retry of that step lands on the switched key, and an
-  // unrelated step neither consumes nor inherits the pin (a third key would
-  // otherwise be selectable while the pin is orphaned).
-  const h = await harness()
+test('a failover recovery returns the failing step identity to the retry stream (I-000041)', async () => {
+  // The recovery identity must survive the request boundary: the step is
+  // recorded by the `agent/request` waterfall, the failing attempt reports
+  // through `agent/request-error`, and the retry's `llm/stream` — not a direct
+  // `selectKey` call — must consume that step's pin and land on the alternate.
+  // An unrelated step running in between must neither consume nor inherit it.
+  const h = await pluginHarness()
   try {
-    await h.service.adoptProvider('zai-coding-cn')
-    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
-    await h.service.addKey('zai-coding-cn', 'third', 'sk-third')
-    await h.service.setSettings({ stickySession: false, retryCount: 1 })
-    const provider = h.store.provider('zai-coding-cn')!
-    const [first, second, third] = provider.keys
+    const service = h.service
+    await service.adoptProvider('zai-coding-cn')
+    await service.addKey('zai-coding-cn', 'second', 'sk-second')
+    await service.addKey('zai-coding-cn', 'third', 'sk-third')
+    await service.setSettings({ stickySession: false, retryCount: 1 })
+    const provider = service.store.provider('zai-coding-cn')!
     provider.cursor = 0
+    const [first, second] = provider.keys
     const failure = { code: 'RATE_LIMIT', message: 'busy' }
-    ;(h.service as any).stepAttempts.set('session-recovery\u0000zai-coding-cn\u00002\u00003', {
-      keyId: first.id,
-      retries: 0,
-      at: Date.now(),
-      turn: 2,
-      step: 3,
-      usedManagedKey: true,
-    })
-    const payload = {
+    const step = { turn: 2, step: 3 }
+    const seen: Array<string | undefined> = []
+    const request = (at = step): unknown =>
+      h.emit('agent/request', { agent: { session: { id: 'session-recovery' } }, ...at }, () => ({ provider: 'zai-coding-cn' }))
+    const stream = (): Promise<void> => consume(h.emit('llm/stream', {
       provider: 'zai-coding-cn',
-      turn: 2,
-      step: 3,
+      model: 'model',
+      sessionId: 'session-recovery',
+      messages: [],
+    }, async function* () {
+      // Resolve inside the wrapped scope so the broker marks the attempt as
+      // having used a managed credential.
+      seen.push((await h.credentials.raw.resolve(provider.brokerRef))?.value)
+      yield { type: 'finish', reason: { kind: 'error', failure } }
+    }) as AsyncIterable<unknown>)
+    const fail = (at = step): unknown => h.emit('agent/request-error', {
+      provider: 'zai-coding-cn',
+      ...at,
       failure,
       signal: { aborted: false },
       agent: { session: { id: 'session-recovery' } },
-    } as unknown as RequestErrorPayload
-    // First failure: the step spends its retry budget on the same key.
-    linkFailure(h, 'zai-coding-cn', 'session-recovery', first.id, failure)
-    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    // Second failure: the step fails over to the verified alternate.
-    linkFailure(h, 'zai-coding-cn', 'session-recovery', first.id, failure)
-    assert.deepEqual(await h.service.requestErrorListener(payload, async () => ({ kind: 'retry' as const })), { kind: 'retry' })
-    // The pin carries the failing step's identity and the switched key.
-    const pins = (h.service as any).retryBindings as Map<string, { keyId: string }>
+    }, async () => undefined)
+
+    // Failure one spends the step's retry budget on the key that streamed.
+    await request()
+    await stream()
+    assert.deepEqual(await fail(), { kind: 'retry' })
+    // Failure two fails over and pins the alternate for this very step.
+    await request()
+    await stream()
+    assert.deepEqual(await fail(), { kind: 'retry' })
+    const pins = (service as any).retryBindings as Map<string, { keyId: string }>
     assert.equal(pins.get('session-recovery\u0000zai-coding-cn\u00002\u00003')?.keyId, second.id)
 
-    // An unrelated step neither consumes nor inherits the pin.
-    const other = await h.service.selectKey('zai-coding-cn', 'session-recovery', { turn: 2, step: 4 })
-    assert.notEqual(other.key!.id, second.id)
+    // A concurrent step's stream advances the pool but must not touch the pin.
+    await request({ turn: 2, step: 4 })
+    await stream()
     assert.equal(pins.size, 1)
 
-    // The failing step's retry consumes it and lands on the alternate — never
-    // on the third key, and never back on the cooled key.
-    const retry = await h.service.selectKey('zai-coding-cn', 'session-recovery', { turn: 2, step: 3 })
-    assert.equal(retry.key!.id, second.id)
-    assert.notEqual(retry.key!.id, third.id)
+    // The failing step's retry reaches the alternate through the stream
+    // boundary — not the third key, not the cooled one.
+    await request()
+    await stream()
+    assert.equal(seen.at(-1), 'sk-second')
     assert.equal(pins.size, 0)
+    assert.equal(provider.keys.find(key => key.id === first.id)!.cooldownUntil > 0, true)
   } finally {
     await h.close()
   }
