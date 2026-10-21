@@ -74,6 +74,35 @@ function oauthCapable(provider: ProviderView): boolean {
   return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
 }
 
+/** Where the row tag says a route came from, including legacy snapshots. */
+function originOf(provider: ProviderView): 'dsh' | 'plugin' | 'custom' {
+  return provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
+}
+
+/** Provider-list quick filter. View state only: never written to the store. */
+type ProviderFilter = 'all' | 'builtin' | 'plugin' | 'oauth' | 'transport'
+
+/** Fixed chip set and order (product decision): origin → capability → surface. */
+const FILTER_CHIPS: ReadonlyArray<{ value: ProviderFilter; label: string }> = [
+  { value: 'all', label: 'filterAll' },
+  { value: 'builtin', label: 'filterBuiltin' },
+  { value: 'plugin', label: 'filterPlugin' },
+  { value: 'oauth', label: 'filterOauth' },
+  { value: 'transport', label: 'filterTransport' },
+]
+
+/** One predicate per chip, so a row is never shown under two chips at once. */
+function matchesFilter(provider: ProviderView, filter: ProviderFilter): boolean {
+  switch (filter) {
+    case 'builtin': return originOf(provider) === 'dsh'
+    case 'plugin': return originOf(provider) === 'plugin'
+    case 'oauth': return oauthCapable(provider)
+    // Transport rows are a separate surface: no ProviderView matches it.
+    case 'transport': return false
+    default: return true
+  }
+}
+
 /**
  * Identity line of an OAuth account row: the email, else the provider-side
  * account id, else the provider's display name.
@@ -907,7 +936,7 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
   const keyCount = provider.keyCount
   const warning = provider.warning
   const isExtra = provider.extra
-  const origin = provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
+  const origin = originOf(provider)
   const originLabel = origin === 'plugin' ? t('pluginBuiltin') : origin === 'dsh' ? t('dshBuiltin') : t('customProvider')
   const providerMeta = [
     provider.provider,
@@ -1454,6 +1483,7 @@ function KeysManagerBody(): React.ReactElement {
   const state = snapshot.state
   const now = snapshot.now
   const [query, setQuery] = React.useState('')
+  const [filter, setFilter] = React.useState<ProviderFilter>('all')
   const [showAllAvailable, setShowAllAvailable] = React.useState(false)
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
   const loadedRef = React.useRef(false)
@@ -1481,9 +1511,16 @@ function KeysManagerBody(): React.ReactElement {
     ].filter((value): value is string => Boolean(value)).join(' ').toLowerCase()
     return haystack.includes(normalizedQuery)
   }
-  const managed = providers.filter(provider => provider.managed && matches(provider))
-  const available = providers.filter(provider => !provider.managed && matches(provider))
+  const managed = providers.filter(provider => provider.managed && matchesFilter(provider, filter) && matches(provider))
+  const available = providers.filter(provider => !provider.managed && matchesFilter(provider, filter) && matches(provider))
   const visibleAvailable = showAllAvailable || normalizedQuery.length > 0 ? available : available.slice(0, 12)
+  // Transport rows are not ProviderView rows: only All and Transport reach them.
+  const transportFiltered = filter === 'transport' || filter === 'all'
+  const filterCount = (value: ProviderFilter): number => {
+    if (value === 'all') return providers.length + transportAccounts.length
+    if (value === 'transport') return transportAccounts.length
+    return providers.filter(provider => matchesFilter(provider, value)).length
+  }
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1535,6 +1572,21 @@ function KeysManagerBody(): React.ReactElement {
         }, h(Icon, { name: 'refresh', size: 14 }), t('refresh')),
       ),
     ),
+
+    // Quick filter: single select, view state only, composed with the text
+    // search below. Counts are derived per predicate from the snapshot.
+    !loading && !failed ? h('div', { className: 'km-filters' }, FILTER_CHIPS.map(chip =>
+      h('button', {
+        key: chip.value,
+        type: 'button',
+        className: cx('km-chip', `km-chip-${chip.value}`, filter === chip.value && 'km-chip-on'),
+        'aria-pressed': filter === chip.value,
+        onClick: () => setFilter(chip.value),
+      },
+        h('span', { className: 'km-chip-label' }, t(chip.label)),
+        h('span', { className: 'km-chip-count' }, filterCount(chip.value)),
+      ),
+    )) : null,
 
     h('div', { className: 'km-search' },
       h(Icon, { name: 'search', size: 17, className: 'km-search-icon' }),
@@ -1599,15 +1651,17 @@ function KeysManagerBody(): React.ReactElement {
           : null,
     ) : null,
 
-    !loading && !failed && transportAccounts.length > 0 ? h('section', { className: 'km-section' },
+    !loading && !failed && transportFiltered && (transportAccounts.length > 0 || filter === 'transport') ? h('section', { className: 'km-section' },
       h('div', { className: 'km-section-head' },
         h('h2', { className: 'km-section-title' }, t('transportAccounts')),
         h('span', { className: 'km-section-count' }, transportAccounts.length),
       ),
-      h('div', { className: 'km-provider-list' }, transportAccounts.map(account => h(TransportAccountRow, {
-        key: account.scope,
-        account,
-      }))),
+      transportAccounts.length === 0
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'search', size: 20 }), h('span', null, t('availableEmpty')))
+        : h('div', { className: 'km-provider-list' }, transportAccounts.map(account => h(TransportAccountRow, {
+            key: account.scope,
+            account,
+          }))),
     ) : null,
 
     !loading && !failed ? h('section', { className: 'km-section' }, h(SettingsCard)) : null,
