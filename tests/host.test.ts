@@ -14137,3 +14137,58 @@ test('a pending adoption takeover survives a restart', async () => {
     await h.close()
   }
 })
+
+// PR review round 41: the debt must survive the real load path (the store
+// rebuilds providers through its sanitizer), not just JSON serialization.
+
+test('a pending adoption takeover survives a store reload', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { apiKeyEnv: 'ANTHROPIC_AUTH_TOKEN', models: [{ id: 'claude-test-model' }] }
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-r2', accountId: 'acc-r2', email: 'r2@example.com' }))
+    await h.service.adoptProvider('anthropic')
+    assert.equal(h.store.provider('anthropic')!.takeoverPending, true)
+    await h.store.flush()
+    const reopened = new KeysManagerStore(join(h.dir, 'state.json'))
+    assert.equal(reopened.provider('anthropic')?.takeoverPending, true, 'the load path dropped the takeover debt')
+  } finally {
+    await h.close()
+  }
+})
+
+// PR review round 41: a hydration read parked before a foreign writer replaces
+// the projection must not claim the owner afterwards.
+
+test('a foreign projection observed while hydration is pending is not overwritten', async () => {
+  const h = await harness()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-a', email: 'a@example.com', refresh: 'rt-a' })
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-a', accountId: 'acc-a', email: 'a@example.com' }))
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let parked = false
+    h.credentials.raw.readRecord = async (key: string) => {
+      if (!parked && key === GRANT_KEY) {
+        parked = true
+        await gate
+      }
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx, h.store)
+    restarted.attachSettings(h.settings)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-h', accountId: 'acc-native', email: 'native@example.com' }))
+    await (restarted as unknown as { reconcileGrantRecord: (provider: string, key: string) => Promise<void> })
+      .reconcileGrantRecord('anthropic', GRANT_KEY)
+    release()
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const state = restarted.getState().providers.find(entry => entry.provider === 'anthropic')!
+    assert.equal(state.keys.filter(key => key.projected === true).length, 0, 'a parked hydration read claimed the replaced projection')
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
