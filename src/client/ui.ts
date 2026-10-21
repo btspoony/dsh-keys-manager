@@ -75,6 +75,17 @@ function oauthCapable(provider: ProviderView): boolean {
 }
 
 /**
+ * The set the 已接管 surface renders: managed providers plus transport cards.
+ *
+ * `StateView.managedCount` is the host's managed-only count (a transport route
+ * stays out of it), so every 已接管 number the client renders derives from this
+ * list instead — one number per label, and it agrees with the section.
+ */
+function managedViewCount(providers: ProviderView[]): number {
+  return providers.filter(provider => provider.managed || provider.transport === true).length
+}
+
+/**
  * Identity line of an OAuth account row: the email, else the provider-side
  * account id, else the provider's display name.
  */
@@ -916,9 +927,9 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
     provider.provider,
     // `active`/`configured` are read off the route's profile or the host's
     // provider list, neither of which describes a transport route: its state
-    // is the account row it carries.
+    // is the account row it carries (signed out when the host lists none).
     transport
-      ? transportAccount !== undefined ? t(transportStatusKey(transportAccount.status)) : null
+      ? t(transportStatusKey(transportAccount?.status ?? 'signed-out'))
       : provider.active ? t('active') : provider.configured ? t('configured') : t('notConfigured'),
     provider.api ?? null,
   ].filter((value): value is string => Boolean(value))
@@ -1501,14 +1512,20 @@ function KeysManagerBody(): React.ReactElement {
     return haystack.includes(normalizedQuery)
   }
   // A transport route is a provider card of its own: it groups with the
-  // managed providers (as `managedCount` does), but it is never offered as
-  // addable and never counts toward the key pool.
+  // managed providers (the same set every 已接管 number counts), but it is
+  // never offered as addable and never counts toward the key pool.
   const managed = providers.filter(provider => (provider.managed || provider.transport === true) && matches(provider))
   const available = providers.filter(provider => !provider.managed && provider.transport !== true && matches(provider))
   const visibleAvailable = showAllAvailable || normalizedQuery.length > 0 ? available : available.slice(0, 12)
   // A reported grant whose route has no provider card would otherwise lose its
-  // only sign-in/remove control, so it renders on its own in the same section.
-  const orphanAccounts = transportAccounts.filter(account => !providers.some(provider => provider.provider === account.id))
+  // only sign-in/remove control, so it renders on its own in the same section
+  // and obeys the same search filter.
+  const matchesAccount = (account: TransportAccountView): boolean => {
+    if (normalizedQuery.length === 0) return true
+    const haystack = [account.id, account.scope, account.displayName].join(' ').toLowerCase()
+    return haystack.includes(normalizedQuery)
+  }
+  const orphanAccounts = transportAccounts.filter(account => !providers.some(provider => provider.provider === account.id) && matchesAccount(account))
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1545,7 +1562,7 @@ function KeysManagerBody(): React.ReactElement {
 
     h('div', { className: 'km-embedded-head' },
       h('div', { className: 'km-summary' },
-        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.managedCount ?? 0), h('span', null, t('managed'))),
+        h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : managedViewCount(providers)), h('span', null, t('managed'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.keyCount ?? 0), h('span', null, t('keys'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.healthyKeyCount ?? 0), h('span', null, t('healthy'))),
         h('div', { className: 'km-stat' }, h('strong', null, loading ? '—' : state?.coolingKeyCount ?? 0), h('span', null, t('cooling'))),
@@ -1586,18 +1603,22 @@ function KeysManagerBody(): React.ReactElement {
     !loading && !failed ? h('section', { className: 'km-section' },
       h('div', { className: 'km-section-head' },
         h('h2', { className: 'km-section-title' }, t('managed')),
-        h('span', { className: 'km-section-count' }, managed.length),
+        h('span', { className: 'km-section-count' }, managed.length + orphanAccounts.length),
       ),
-      managed.length === 0
+      // The placeholder only when the section renders neither a card nor a row.
+      managed.length === 0 && orphanAccounts.length === 0
         ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, t('managedEmpty')))
-        : h('div', { className: 'km-provider-list' }, managed.map(provider => h(ProviderCard, {
+        : null,
+      managed.length > 0
+        ? h('div', { className: 'km-provider-list' }, managed.map(provider => h(ProviderCard, {
             key: provider.provider,
             provider,
             now,
             transportAccount: transportAccounts.find(account => account.id === provider.provider),
             expanded: expanded.has(provider.provider),
             onToggle: () => toggle(provider.provider),
-          }))),
+          })))
+        : null,
       orphanAccounts.length > 0
         ? h('div', { className: 'km-provider-list' }, orphanAccounts.map(account => h(TransportAccountRow, {
             key: account.scope,
@@ -1651,8 +1672,9 @@ function KeysManagerCard({ view }: KeysManagerCardProps): React.ReactElement | n
   if (view === 'summary') {
     const state = snapshot.state
     if (state === null) return h('span', { className: 'km-summary-line' }, snapshot.status === 'error' ? t('loadError') : t('loading'))
-    if (state.managedCount === 0) return h('span', { className: 'km-summary-line' }, t('summaryEmpty'))
-    return h('span', { className: 'km-summary-line' }, t('summaryText', { providers: state.managedCount, keys: state.keyCount }))
+    const managed = managedViewCount(state.providers)
+    if (managed === 0) return h('span', { className: 'km-summary-line' }, t('summaryEmpty'))
+    return h('span', { className: 'km-summary-line' }, t('summaryText', { providers: managed, keys: state.keyCount }))
   }
   return h(KeysManagerBody)
 }

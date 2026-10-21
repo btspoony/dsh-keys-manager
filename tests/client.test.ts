@@ -5,7 +5,7 @@ import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
-import { KeysManagerBody } from '../src/client/ui'
+import { KeysManagerBody, KeysManagerCard } from '../src/client/ui'
 import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
 
 function makeState(): StateView {
@@ -180,6 +180,11 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // Transport account surface (`llm-omp-transports/<route>`): every copy the
     // row renders resolves its real zh value, so the assertions below locate
     // the section, status pill and dialogs by rendered text.
+    managed: '已接管',
+    available: '可添加 Providers',
+    managedEmpty: '还没有接管的 Provider。从下方选择一个开始。',
+    summaryEmpty: '尚未接管任何 Provider。在插件详情中搜索并接管。',
+    summaryText: '已接管 {providers} 个 Provider，共 {keys} 个密钥 · 单会话固定 + Round Robin',
     transportTag: '传输',
     pluginBuiltin: '插件内置',
     transportProviderHint: '该路由由传输插件提供，凭证就在本卡片中管理。',
@@ -2512,9 +2517,9 @@ describe('transport account surface', () => {
     const sections = findByClass(view.nodes, 'km-section')
     const sectionTitled = (title: string): FlatNode | undefined => sections
       .find(section => descendants(view.nodes, section).some(node => node.type === 'h2' && node.text === title))
-    const managedSection = sectionTitled('managed')!
+    const managedSection = sectionTitled('已接管')!
     expect(descendants(view.nodes, managedSection).some(node => node.text === 'cursor')).toBe(true)
-    const availableSection = sectionTitled('available')!
+    const availableSection = sectionTitled('可添加 Providers')!
     expect(descendants(view.nodes, availableSection).some(node => node.text === 'cursor')).toBe(false)
 
     const card = providerCard(view.nodes, 'cursor')
@@ -2570,6 +2575,10 @@ describe('transport account surface', () => {
     const inside = descendants(view.nodes, providerCard(view.nodes, 'cursor'))
     expect(inside.some(node => node.text === '该路由由传输插件提供，凭证就在本卡片中管理。')).toBe(true)
     expect(findByClass(inside, 'km-transport-row')).toHaveLength(0)
+    // Signed out, not "not configured": a transport route mounts no profile.
+    const card = providerCard(view.nodes, 'cursor')
+    expect(card.text).toContain('未登录')
+    expect(card.text).not.toContain('未配置')
     view.unmount()
     setRuntimeContext(null)
   })
@@ -2578,6 +2587,7 @@ describe('transport account surface', () => {
     // The grant is host state of its own: a snapshot that omits the route from
     // the provider list must not hide the only control that can remove it.
     const state = makeState()
+    state.providers = []
     state.transportAccounts = [makeTransportAccount()]
     const harness = makeContext({ ok: true, value: state })
     const store = createStore(harness.ctx)
@@ -2588,6 +2598,49 @@ describe('transport account surface', () => {
     expect(rows).toHaveLength(1)
     expect(descendants(view.nodes, rows[0]!).some(node => node.text === 'llm-omp-transports/cursor')).toBe(true)
     expect(view.nodes.some(node => node.text === '传输账户')).toBe(false)
+
+    // The row is part of the section it renders in: it counts in the head and
+    // keeps the placeholder away.
+    const managedSection = findByClass(view.nodes, 'km-section')[0]!
+    expect(descendants(view.nodes, managedSection).some(node => node.text === '已接管')).toBe(true)
+    expect(findByClass(view.nodes, 'km-section-count')[0]!.text).toBe('1')
+    expect(view.nodes.some(node => node.text === '还没有接管的 Provider。从下方选择一个开始。')).toBe(false)
+
+    // The same search that filters provider cards filters the row.
+    const input = findByClass(view.nodes, 'km-search-input')[0]!
+    ;(input.props!.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'nope' } })
+    view.render()
+    expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
+    ;(input.props!.onChange as (event: { target: { value: string } }) => void)({ target: { value: 'llm-omp-transports' } })
+    view.render()
+    expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(1)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a transport-only snapshot counts its card in the 已接管 summary', async () => {
+    const state = makeState()
+    state.providers = [makeTransportProvider()]
+    // The published host field stays managed-only; the client derives the
+    // number from the list the 已接管 surface renders.
+    state.managedCount = 0
+    state.transportAccounts = [makeTransportAccount()]
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const managedStat = findByClass(view.nodes, 'km-stat').find(node => node.text.includes('已接管'))!
+    expect(descendants(view.nodes, managedStat).find(node => node.type === 'strong')!.text).toBe('1')
+    expect(findByClass(view.nodes, 'km-section-count')[0]!.text).toBe('1')
+
+    // The collapsed summary card reads the same number, so a transport-only
+    // install never claims it manages nothing.
+    const summary = mountView(KeysManagerCard, { view: 'summary' })
+    await summary.flush()
+    expect(summary.nodes.some(node => node.text === '已接管 1 个 Provider，共 1 个密钥 · 单会话固定 + Round Robin')).toBe(true)
+    expect(summary.nodes.some(node => node.text.includes('尚未接管任何 Provider'))).toBe(false)
+    summary.unmount()
     view.unmount()
     setRuntimeContext(null)
   })

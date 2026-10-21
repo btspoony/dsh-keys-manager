@@ -5577,9 +5577,9 @@ export class KeysManagerService {
       writable: descriptor.writable && !this.store.readOnly,
       settings: { ...normalizeSettings(this.store.settings) },
       providers: views,
-      // The count matches the set the client groups under 已接管: a transport
-      // route renders as a card there, so the two numbers must agree.
-      managedCount: views.filter(view => view.managed || view.transport === true).length,
+      // Managed only: a transport route renders as a card but stays out of
+      // this published count, the key counts and every key-pool write path.
+      managedCount: views.filter(view => view.managed).length,
       keyCount: allKeys.length,
       healthyKeyCount: allKeys.filter(key => key.status === 'active').length,
       coolingKeyCount: allKeys.filter(key => key.status === 'cooling').length,

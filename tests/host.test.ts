@@ -1969,9 +1969,8 @@ test('a failed credential unset keeps the provider manageable', async () => {
     const record = h.store.provider('zai-coding-cn')!
     assert.notEqual(record, undefined)
     assert.equal(h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv, record.brokerRef)
-    // `managedCount` also counts transport cards, so assert the managed set the
-    // release left behind instead of that combined number.
-    assert.equal(h.service.getState().providers.filter(view => view.managed).length, 1)
+    // A transport entry in the directory must not inflate the managed count.
+    assert.equal(h.service.getState().managedCount, 1)
     h.credentials.raw.failUnset = false
     await h.service.releaseProvider('zai-coding-cn')
     assert.equal(h.store.provider('zai-coding-cn'), undefined)
@@ -9929,8 +9928,9 @@ test('a transport route is a plugin route and is never key- or account-adoptable
     assert.equal(view.accountSupported, false)
     assert.equal(view.managed, false)
     assert.match(view.reason ?? '', /transport plugin/i)
-    // The 已接管 section renders this card, so the host count must include it.
-    assert.equal(state.managedCount, 1)
+    // The card renders in the 已接管 section, but the published count stays
+    // managed-only: the client derives its own number from the provider list.
+    assert.equal(state.managedCount, 0)
   } finally {
     await h.close()
   }
