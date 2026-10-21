@@ -3745,14 +3745,26 @@ export class KeysManagerService {
       // The re-activated grant is the serving credential again, so a broker
       // reference left by the key pool must go (see syncBrokerBinding). A
       // settings refusal does not roll back the committed projection.
-      await this.syncBrokerBinding(provider)
-      // P2-A: the returned view is built AFTER the binding attempt. Building it
-      // inside the turn drained the snapshot before the sync could push its
-      // warning, so a refused binding reported a clean activation while
-      // requests kept using the pool. Remote methods hand back the refreshed
-      // state (addKey/deleteKey precedent), so the client updates in one round
-      // trip — including the warning that says the route is not converged.
-      return this.buildState()
+      //
+      // Both the sync and the returned snapshot run in a second queue turn:
+      // the binding attempt must have happened before the view is built (a
+      // refusal pushes its warning, and building the view inside the write turn
+      // drained it, so the RPC reported a clean activation while requests kept
+      // using the pool), and the snapshot itself is state: taken outside the
+      // queue, another mutation could enter, mutate and be mid-flush while
+      // `buildState` pruned and drained, exposing state that is not durable.
+      // The turn waits for such a mutation to finish or fail first.
+      if (this.closing) {
+        // Shutdown admits no new turn, and it also admits no new mutation, so
+        // nothing can interleave here: converge the binding and build the view
+        // inline rather than refuse an activation whose write already landed.
+        await this.syncBrokerBinding(provider)
+        return this.buildState()
+      }
+      return await this.run(async () => {
+        await this.syncBrokerBinding(provider)
+        return this.buildState()
+      })
     } catch (error) {
       // A rejected flush lands here AFTER the turn resolved its work: `run`
       // does not roll the mutation back (`1789-1800`), so the row is still
@@ -3765,7 +3777,29 @@ export class KeysManagerService {
       // compensation could run is undecidable from this repo — the seam would
       // have to promise it never commits then rejects — so this shape is left
       // as the seam reports it rather than guessed at.
-      if (undo !== undefined) await this.compensateActivationFlush(provider, accountId, prepared!, undo, records!)
+      if (undo !== undefined) {
+        const compensate = (): Promise<void> =>
+          this.compensateActivationFlush(provider, accountId, prepared!, undo!, records!)
+        // Queue-owned failure cleanup: `run` has already released the queue on
+        // this rejection path, so a bare call would race a later mutation's
+        // flush — that mutation could persist the pre-compensation row values
+        // while this restore is still awaiting seam I/O, and the assignment
+        // landing after it would never reach disk. As its own turn, no other
+        // mutation can observe the half-restored state and the turn's flush
+        // makes the undo durable.
+        if (this.closing || this.store.readOnly) {
+          // Fallback, named: the queue refuses turns in both states, and the
+          // projection and row must still be put back. Restore in memory only —
+          // the next successful mutation's flush persists it — rather than skip
+          // the undo and leave a live projection nothing owns.
+          await compensate()
+        } else {
+          // A refused or failed flush of the compensating turn leaves memory
+          // restored; the original error is what the caller must see, and the
+          // next successful flush persists the undo.
+          await this.run(compensate).catch(() => undefined)
+        }
+      }
       throw error
     }
   }
