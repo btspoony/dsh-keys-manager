@@ -973,16 +973,18 @@ function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OA
  *
  * `projected`: the projection this activation wrote is the record the route
  * serves, and the claim it took is still its own — the identity a rollback
- * needs to withdraw exactly that and nothing else. `aborted`: the body stopped
- * (shutdown, read-only store, replaced credential backend) before it could
- * commit — `run` refuses the turn itself. `withdrawn`: the projection was
+ * needs to withdraw exactly that and nothing else. `grantRef` is the row's
+ * generation the projection was built from, so the turn can refuse a row that
+ * was re-created under the same id while the chain ran. `aborted`: the body
+ * stopped (shutdown, read-only store, replaced credential backend) before it
+ * could commit — `run` refuses the turn itself. `withdrawn`: the projection was
  * written and then withdrawn, so the caller must not be told the activation
  * succeeded.
  */
 type ActivationProjection =
   | { state: 'aborted' }
   | { state: 'withdrawn' }
-  | { state: 'projected'; written: string; accountId: string; generation: number }
+  | { state: 'projected'; written: string; accountId: string; generation: number; grantRef: string }
 
 export class KeysManagerService {
   readonly ctx: HostContext
@@ -3600,7 +3602,10 @@ export class KeysManagerService {
         // A withdrawn or aborted projection must never read back as success
         // (QC SF1): the caller would see a StateView for an activation the
         // route does not serve. The verdict is the record's, not the row's.
-        if (projection.state !== 'projected') {
+        // R1: the projection must describe the generation THIS row still names
+        // — a row re-created under the same id while the chain ran belongs to a
+        // different grant, and reporting success for it would serve nothing.
+        if (projection.state !== 'projected' || row.oauth.grantRef !== projection.grantRef) {
           if (this.persistenceRefused()) throw new Error('Keys Manager is shutting down')
           throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
         }
@@ -3642,11 +3647,19 @@ export class KeysManagerService {
     records: CredentialRecordsLike | undefined,
   ): Promise<void> {
     if (projection.state !== 'projected' || records === undefined) return
+    const proof = await this.activationProjectionProof(records, provider, projection.written)
+    // Unproven identity is not permission (QC R2): a proof that threw leaves
+    // the record and the claim exactly as they are — nothing here may read as
+    // "the projection was cleaned up".
+    if (proof === 'unknown') return
+    // The claim is drawn from its own proof (generation + account id), so a
+    // record another writer replaced still retires a claim that has stopped
+    // being true. Only a matching record may be deleted.
     if (this.ownershipGenerations.get(provider) === projection.generation
       && this.activeAccounts.get(provider) === projection.accountId) {
       this.activeAccounts.delete(provider)
     }
-    await this.discardActivationProjection(records, provider, projection.written)
+    if (proof === 'matches') await this.deleteActivationProjection(records, provider)
   }
 
   /**
@@ -3707,7 +3720,9 @@ export class KeysManagerService {
       // ran, so the record is withdrawn here through the delete authority
       // rather than deleted blind (MF2).
       if (!this.accountRowIsManaged(provider, row)) {
-        await this.discardActivationProjection(records, provider, written)
+        if (await this.activationProjectionProof(records, provider, written) === 'matches') {
+          await this.deleteActivationProjection(records, provider)
+        }
         return { state: 'withdrawn' }
       }
       // SF1 post-condition: the projection this activation wrote must still be
@@ -3732,25 +3747,42 @@ export class KeysManagerService {
         written,
         accountId: row.id,
         generation: this.ownershipGenerations.get(provider) ?? 0,
+        grantRef,
       }
     })
   }
 
   /**
-   * Delete the projection an activation wrote and then withdrew, through the
-   * same decide-then-delete proof the demotion path uses (MF2): the byte
-   * comparison runs under the seam's per-key lock against the payload this
-   * activation wrote, so a native writer that replaced the record keeps its
-   * grant. The intentional-removal marker is armed before the delete, so the
-   * deletion's own echo is read as ours instead of as an out-of-band removal.
+   * The delete authority's proof for an activation's own projection, as an
+   * explicit three-valued answer (QC R2): only `matches` may authorize touching
+   * the record. `unknown` is a store failure — a closed seam, an unreadable
+   * record — and proves nothing, so it is never permission.
    */
-  private async discardActivationProjection(
+  private async activationProjectionProof(
     records: CredentialRecordsLike,
     provider: string,
     written: string,
+  ): Promise<'matches' | 'differs' | 'unknown'> {
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    try {
+      return await this.projectionStillMatches(records, projectionKey, written) ? 'matches' : 'differs'
+    } catch (error) {
+      this.warn(`activation projection proof failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      return 'unknown'
+    }
+  }
+
+  /**
+   * Delete one projection an activation just proved it still owns, through the
+   * same guarded shape the demotion path uses (MF2): the intentional-removal
+   * marker is armed before the delete, so the deletion's own echo is read as
+   * ours instead of as an out-of-band removal.
+   */
+  private async deleteActivationProjection(
+    records: CredentialRecordsLike,
+    provider: string,
   ): Promise<void> {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
-    if (!await this.projectionStillMatches(records, projectionKey, written)) return
     const markedAt = Date.now()
     this.intentionalProjectionRemovals.set(provider, markedAt)
     try {

@@ -5556,6 +5556,106 @@ test('a native replacement landing before a refused turn survives the rollback',
   }
 })
 
+// QC R1 (regression): the row the turn resolves must be the generation the
+// projection was built from. A removal + re-add under the same id inside the
+// window the binding sync widens would otherwise be accepted with the removed
+// row's grant and reported as a healthy active account.
+
+test('an activation whose account row is re-created under the same id is refused', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const service = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
+  }
+  const realSync = service.syncBrokerBinding.bind(h.service)
+  let releaseCommit: (() => void) | undefined
+  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
+  let committed = false
+  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
+    const result = await realSync(provider, options)
+    if (provider === 'anthropic' && !committed) {
+      committed = true
+      await commitGate
+    }
+    return result
+  }
+  const original = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(committed, true))
+    await h.service.removeAccount('anthropic', rowId)
+    // The same id comes back on a different grant generation.
+    const recreatedRef = 'keys-manager/anthropic-recreated'
+    h.credentials.records.set(recreatedRef, {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-recreated', access: 'at-recreated', expires: 1_900_000_000_000, accountId: 'acc-9', email: 'dev@example.com' },
+    })
+    const recreated = structuredClone(original) as KeyRecord
+    recreated.ref = recreatedRef
+    recreated.oauth = { ...original.oauth!, grantRef: recreatedRef }
+    h.store.provider('anthropic')!.keys.push(recreated)
+    h.store.touch()
+    releaseCommit!()
+    await assert.rejects(
+      () => activating,
+      /could not be projected/,
+      'an activation for a re-created row reported success',
+    )
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the stale projection survived the refusal')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'the refused activation kept the owner claim')
+  } finally {
+    releaseCommit?.()
+    await activating.catch(() => {})
+    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    await h.close()
+  }
+})
+
+// QC R2: the rollback's proof read is a seam read that can fail (a closed
+// seam, an unreadable record). Unproven identity is not permission: the caller
+// must still get the frozen refusal, and neither the record nor the claim may
+// be touched.
+
+test('a rollback whose proof read throws leaves the projection and the claim untouched', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const service = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: unknown) => Promise<unknown>
+    grantDrainDeadlineMs: number
+  }
+  const realSync = service.syncBrokerBinding.bind(h.service)
+  let releaseCommit: (() => void) | undefined
+  const commitGate = new Promise<void>(resolve => { releaseCommit = resolve })
+  let committed = false
+  service.syncBrokerBinding = async (provider: string, options?: unknown) => {
+    const result = await realSync(provider, options)
+    if (provider === 'anthropic' && !committed) {
+      committed = true
+      await commitGate
+    }
+    return result
+  }
+  service.grantDrainDeadlineMs = 30
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(committed, true))
+    await h.service.close()
+    // The store is unusable from here on: the proof read cannot decide identity.
+    raw.failModifyRecord = true
+    releaseCommit!()
+    await assert.rejects(() => activating, /shutting down/, 'the store error replaced the frozen refusal')
+    assert.equal(h.credentials.records.has(GRANT_KEY), true, 'an unproven projection was deleted')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.get('anthropic'), rowId, 'the claim was withdrawn on unproven identity')
+  } finally {
+    raw.failModifyRecord = false
+    releaseCommit?.()
+    await activating.catch(() => {})
+    delete (h.service as unknown as Record<string, unknown>).syncBrokerBinding
+    await h.close()
+  }
+})
+
 // Round-2 review step 6: the projection owner is surfaced through the
 // state view — the provider names the owning row, and exactly one account
 // row is badged as the projected one.
