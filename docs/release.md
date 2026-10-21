@@ -7,7 +7,9 @@
 CI (`.github/workflows/ci.yml`) runs root typecheck, build, tests, and a
 packed tarball assertion for `lib/index.js`, `lib/client.js`, and
 `bundle/cordis.patch.yml`. It then runs the `dsh-llm-omp-transports`
-workspace package's typecheck, build, tests, and drift-manifest check.
+workspace package's typecheck, build, tests, drift-manifest check, and a
+regenerate-and-diff check on the generated Cursor catalog (row contents, not
+just its provenance header).
 
 The job installs a pinned `@deepseek-ai/dsh` (`0.2.1-rc.2`) before the suite
 and ends with an explicit install/load proof step (`vitest run
