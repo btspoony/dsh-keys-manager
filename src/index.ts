@@ -1195,6 +1195,21 @@ export class KeysManagerService {
    * ({@link projectionOwnershipKnown}) and adoption reads its own projection.
    */
   private hydrationSettled = false
+  /**
+   * Credential-store generation of the ownership hydration (PR review round
+   * 27). A remounted credentials service starts a new pass while the previous
+   * store's reads can still be in flight; their answers describe records the
+   * new backend does not hold, so the epoch gates every write and settle of
+   * the pass that started it.
+   */
+  private hydrationEpoch = 0
+  /**
+   * Whether a credential store was ever attached (PR review round 27). The
+   * first attach is the startup mount and keeps its behaviour; every later one
+   * replaces the credential backend, so the ownership classification loaded
+   * from the previous one is stale and the read restarts from unknown.
+   */
+  private credentialsMounted = false
   /** Providers whose bounded-wait warning already fired (warn once). */
   private readonly hydrationWaitWarned = new Set<string>()
   /** Channels whose lost-subscription warning already fired (warn once). */
@@ -1252,6 +1267,7 @@ export class KeysManagerService {
    * each request waits on its own provider's landing instead.
    */
   private hydrateProjectionOwnership(): Promise<void> {
+    const epoch = this.hydrationEpoch
     const records = this.credentialRecords()
     if (records === undefined) {
       // The credentials service can mount after this plugin (PR review round
@@ -1284,7 +1300,7 @@ export class KeysManagerService {
               // PR review round 23: unless a newer claim landed while this read
               // was in flight — a stale failure must not mark an established
               // owner unknown (same generation guard as the hydrated write).
-              if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) return
+              if (this.hydrationEpoch !== epoch || (this.ownershipGenerations.get(provider) ?? 0) !== generation) return
               this.ownershipReadFailures.add(provider)
               this.warn(`projection ownership hydration could not read ${grantKey}: ${error instanceof Error ? error.message : String(error)}`)
               return
@@ -1300,8 +1316,9 @@ export class KeysManagerService {
               ? matchOwningAccount(provider, accounts, record.payload)
               : undefined
             // A newer activation/login claimed the owner while this read was in
-            // flight: the stale read is discarded, never written over it.
-            if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) return
+            // flight: the stale read is discarded, never written over it. A
+            // remount replaced the whole store: its classification is gone too.
+            if (this.hydrationEpoch !== epoch || (this.ownershipGenerations.get(provider) ?? 0) !== generation) return
             // A concurrent removal may have dropped the row while this read was
             // in flight: never resurrect an owner entry for a row that is gone.
             if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
@@ -1316,20 +1333,41 @@ export class KeysManagerService {
           } finally {
             // This provider's own read is over (owner or not): its requests are
             // attributable now and must not wait behind another provider's
-            // stalled read (round-10 should-fix SF1).
-            this.noteProviderHydrated(provider)
+            // stalled read (round-10 should-fix SF1). A superseded pass does
+            // not report readiness for a store it no longer describes.
+            if (this.hydrationEpoch === epoch) this.noteProviderHydrated(provider)
           }
         }))
       } finally {
         // The read is over (completed or abandoned): from now on no result can
         // land, so every provider is ready — including one whose OAuth rows
         // appear later, which this read could not have projected.
-        this.hydrationSettled = true
-        this.settleHydrationWaits()
+        if (this.hydrationEpoch === epoch) {
+          this.hydrationSettled = true
+          this.settleHydrationWaits()
+        }
       }
     })().catch(error => {
       this.warn(`projection ownership hydration failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+  }
+
+  /**
+   * Drop every ownership fact loaded from a previous credential store (PR
+   * review round 27). The classification is per backend: a record that existed
+   * in the old store says nothing about the remounted one, and a route whose
+   * old store held a managed projection would otherwise stay attributed to
+   * that account and off its surviving key pool. The epoch bump discards a read
+   * still in flight from the replaced store instead of letting its answer land
+   * over the new one; ownership stays unknown until the new pass reads.
+   */
+  private invalidateProjectionOwnership(): void {
+    this.hydrationEpoch += 1
+    this.activeAccounts.clear()
+    this.foreignProjections.clear()
+    this.hydratedProviders.clear()
+    this.ownershipReadFailures.clear()
+    this.hydrationSettled = false
   }
 
   /**
@@ -4792,6 +4830,12 @@ export class KeysManagerService {
     this.credentialOriginals.set(raw, original)
     this.credentialWrappers.set(raw, wrappers)
     if (this.rawCredentials === undefined) this.rawCredentials = raw
+    // A remount replaces the credential backend (PR review round 27): every
+    // projection fact loaded so far describes the previous store, so drop the
+    // classification and restart the ownership read before repairing. The
+    // first mount is startup, whose fresh maps need no invalidation.
+    if (this.credentialsMounted) this.invalidateProjectionOwnership()
+    this.credentialsMounted = true
     // The credentials service can mount after this plugin (PR review round 23):
     // the load-time hydration then read nothing and left ownership unknown, so
     // the startup repair bound nothing. Re-read the projections now that the

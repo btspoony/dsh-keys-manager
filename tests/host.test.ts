@@ -12306,6 +12306,179 @@ test('an addKey with unknown projection ownership does not bind the broker', asy
   }
 })
 
+// ── PR #26 review round 27 ──────────────────────────────────────────────────
+
+// Codex P1 (thread PRRT_kwDOVOL9Bc6utGia): a credentials remount ran another
+// hydration pass without dropping the previous store's classification, so a
+// route store A projected stayed attributed to that account and off its
+// surviving key pool. A foreign record in the new store kept the stale owner
+// too. Attaching a previous store now invalidates ownership and restarts the
+// read before the repair acts on the new backend.
+test('a credentials remount rehydrates ownership instead of reusing the old store classification', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const provider = 'anthropic'
+  const record = h.store.provider(provider)!
+  const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers[provider]?.apiKeyEnv
+  const internals = h.service as unknown as {
+    oauthOwnerFor: (candidate: string) => string | null
+    foreignProjections: Set<string>
+  }
+  const realGet = h.ctx.get.bind(h.ctx)
+  const mount = (next: ReturnType<typeof fakeCredentials>): void => {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = (name: string) =>
+      name === 'credentials' ? next.raw : realGet(name)
+  }
+  try {
+    // Store A projects the managed account. A backup pool row keeps the route
+    // pool-shaped, so only the owner keeps the broker off it.
+    await h.service.activateAccount(provider, rowId)
+    await h.service.addKey(provider, 'backup', 'sk-ant-backup')
+    assert.equal(internals.oauthOwnerFor(provider), rowId)
+    assert.equal(bound(), undefined)
+
+    // Remount: store B still resolves the pool values but holds no projection.
+    const storeB = fakeCredentials(Object.fromEntries(h.credentials.refs))
+    mount(storeB)
+    h.service.detachCredentials(h.credentials.raw)
+    h.service.attachCredentials(storeB.raw)
+
+    // The new store has no projection, so the route converges to its pool with
+    // no attribution left over from store A.
+    await eventually(() => assert.equal(bound(), record.brokerRef))
+    assert.equal(internals.oauthOwnerFor(provider), null, 'the remount kept the old store owner')
+
+    // A record the new store holds but this pool cannot own is foreign: the
+    // route stays unbound, and store A's owner must not survive either.
+    const storeC = fakeCredentials(Object.fromEntries(h.credentials.refs))
+    storeC.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-foreign', accountId: 'acc-other', email: 'other@example.com' }))
+    mount(storeC)
+    h.service.detachCredentials(storeB.raw)
+    h.service.attachCredentials(storeC.raw)
+    await eventually(() => assert.equal(internals.foreignProjections.has(provider), true))
+    await eventually(() => assert.equal(bound(), undefined))
+    assert.equal(internals.oauthOwnerFor(provider), null, 'the remount kept the old store owner')
+  } finally {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = realGet
+    await h.close()
+  }
+})
+
+// Advisor (round 27): clearing on attach is not enough — the replaced store's
+// read can still be in flight when the new one mounts, and its answer describes
+// records the new backend does not hold. The pass carries the store generation
+// it started with, so a late success lands nowhere.
+test('a store-A hydration landing after the remount to store B is discarded', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const provider = 'anthropic'
+  const record = h.store.provider(provider)!
+  const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers[provider]?.apiKeyEnv
+  const internals = h.service as unknown as {
+    oauthOwnerFor: (candidate: string) => string | null
+    foreignProjections: Set<string>
+  }
+  const storeA = h.credentials
+  const realGet = h.ctx.get.bind(h.ctx)
+  const mount = (next: ReturnType<typeof fakeCredentials>): void => {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = (name: string) =>
+      name === 'credentials' ? next.raw : realGet(name)
+  }
+  // Store A projects the managed account, and its next ownership read is parked
+  // so the remount can land while that pass is still in flight.
+  storeA.records.set(GRANT_KEY, grantPayload())
+  const realReadA = storeA.raw.readRecord.bind(storeA.raw)
+  let releaseA: () => void = () => {}
+  const releasedA = new Promise<void>(resolve => { releaseA = resolve })
+  let parked = false
+  storeA.raw.readRecord = async (key: string) => {
+    if (key === GRANT_KEY && !parked) {
+      parked = true
+      await releasedA
+      return structuredClone(storeA.records.get(GRANT_KEY))
+    }
+    return realReadA(key)
+  }
+  try {
+    await h.service.addKey(provider, 'backup', 'sk-ant-backup')
+    h.service.detachCredentials(storeA.raw)
+    h.service.attachCredentials(storeA.raw)
+    await eventually(() => assert.equal(parked, true))
+
+    // Remount: store B resolves the pool values but holds no projection.
+    const storeB = fakeCredentials(Object.fromEntries(storeA.refs))
+    mount(storeB)
+    h.service.detachCredentials(storeA.raw)
+    h.service.attachCredentials(storeB.raw)
+    await eventually(() => assert.equal(bound(), record.brokerRef))
+    assert.equal(internals.oauthOwnerFor(provider), null)
+
+    // Store A's read answers now, with the projection it saw in the replaced
+    // store. It must not repopulate the owner the remount dropped.
+    releaseA()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(internals.oauthOwnerFor(provider), null, 'a late store-A read repopulated the owner')
+    assert.equal(internals.foreignProjections.has(provider), false, 'a late store-A read projected a route the new store does not')
+    assert.equal(bound(), record.brokerRef, 'a late store-A read moved a pool-served route')
+  } finally {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = realGet
+    await h.close()
+  }
+})
+
+// The same pass can fail instead of answering: a failed read means ownership is
+// UNKNOWN (round 8), so a late store-A failure must not mark the new store's
+// route unreadable.
+test('a store-A hydration failure landing after the remount is discarded', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const provider = 'anthropic'
+  const record = h.store.provider(provider)!
+  const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers[provider]?.apiKeyEnv
+  const internals = h.service as unknown as {
+    oauthOwnerFor: (candidate: string) => string | null
+    ownershipReadFailures: Set<string>
+  }
+  const storeA = h.credentials
+  const realGet = h.ctx.get.bind(h.ctx)
+  const mount = (next: ReturnType<typeof fakeCredentials>): void => {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = (name: string) =>
+      name === 'credentials' ? next.raw : realGet(name)
+  }
+  const realReadA = storeA.raw.readRecord.bind(storeA.raw)
+  let releaseA: () => void = () => {}
+  const releasedA = new Promise<void>(resolve => { releaseA = resolve })
+  let parked = false
+  storeA.raw.readRecord = async (key: string) => {
+    if (key === GRANT_KEY && !parked) {
+      parked = true
+      await releasedA
+      throw new Error('credential store unavailable')
+    }
+    return realReadA(key)
+  }
+  try {
+    await h.service.addKey(provider, 'backup', 'sk-ant-backup')
+    h.service.detachCredentials(storeA.raw)
+    h.service.attachCredentials(storeA.raw)
+    await eventually(() => assert.equal(parked, true))
+
+    const storeB = fakeCredentials(Object.fromEntries(storeA.refs))
+    mount(storeB)
+    h.service.detachCredentials(storeA.raw)
+    h.service.attachCredentials(storeB.raw)
+    await eventually(() => assert.equal(bound(), record.brokerRef))
+    assert.equal(internals.ownershipReadFailures.has(provider), false)
+
+    // A's failure lands against the store it started on: the new store's
+    // successful read stands, and ownership stays known.
+    releaseA()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(internals.ownershipReadFailures.has(provider), false, 'a late store-A failure marked the new store unread')
+    await eventually(() => assert.equal(bound(), record.brokerRef))
+  } finally {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = realGet
+    await h.close()
+  }
+})
+
 // ── PR #26 review round 25 ──────────────────────────────────────────────────
 
 // Advisor: the round-24 gate only saw the entry snapshot. `mutateSettings`
