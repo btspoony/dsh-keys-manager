@@ -19,12 +19,59 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 - 既有 Models 提供商卡片内出现"由 Keys Manager 托管"徽标。
 - 额外内置提供商以普通 `llm-pi-ai` 路由安装。
 - 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，凭据与 API key 并存管理。
+- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——目前是 Cursor（`cursor`）。
 
 ### 额外提供商
 
-`src/providers.ts` 收录 35 个精选提供商（原有 21 个、上一版本新增 13 个，以及本次新增的 CoreWeave Serverless Inference）；例如 SiliconFlow、智谱编码套餐、Cline Pass、Ollama Cloud、Alibaba Token Plan (CN)。目录源自 [oh-my-pi](https://github.com/can1357/oh-my-pi)（MIT）。只有当随附 DSH 目录尚未声明该 route id 时才会新增条目（例如 `meta`、`typesafe` 不会重复提供）；与既有端点共享 base URL、但凭据身份不同的提供商会按设计保留。
+这 35 个额外提供商收录自
+[oh-my-pi](https://github.com/can1357/oh-my-pi) 的提供商目录（MIT）。
 
-CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中：该值在添加时读取一次，并作为静态 `OpenAI-Project` 请求头写进路由档案。缺少该变量会拒绝添加。要更改项目值，请先在 Keys Manager 中**释放（停止接管）该提供商**，再以新的 `COREWEAVE_PROJECT` 值重启 DSH，然后再次添加该提供商。释放时会移除本插件写入、且仍与当前环境变量值相等的 `OpenAI-Project` 值；无法归属的值会保留，并在界面警告中报告；手写的 header 若恰好等于环境变量值，也会按同一规则被移除。插件创建的档案会在下次添加时被移除并重建，接管的档案则保留并重新接管；两种情况都只补齐档案尚未声明的 header，从不覆盖已存储的值。
+<details>
+<summary>全部 35 个额外提供商</summary>
+
+| 提供商 | Route id | API key 环境变量 |
+|---|---|---|
+| DeepInfra | `deepinfra` | `DEEPINFRA_API_KEY` |
+| Novita | `novita` | `NOVITA_API_KEY` |
+| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| SambaNova | `sambanova` | `SAMBANOVA_API_KEY` |
+| Qianfan | `qianfan` | `QIANFAN_API_KEY` |
+| GMI Cloud | `gmi-cloud` | `GMI_API_KEY` |
+| Synthetic | `synthetic` | `SYNTHETIC_API_KEY` |
+| ZenMux | `zenmux` | `ZENMUX_API_KEY` |
+| Kilo Gateway | `kilo` | `KILO_API_KEY` |
+| NanoGPT | `nanogpt` | `NANO_GPT_API_KEY` |
+| Venice AI | `venice` | `VENICE_API_KEY` |
+| AIML API | `aimlapi` | `AIMLAPI_API_KEY` |
+| AI& | `aiand` | `AIAND_API_KEY` |
+| Helmcode | `helmcode` | `HELMCODE_API_KEY` |
+| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` |
+| MiniMax Coding (Global) | `minimax-code` | `MINIMAX_CODE_API_KEY` |
+| MiniMax Coding (CN) | `minimax-code-cn` | `MINIMAX_CODE_CN_API_KEY` |
+| Umans AI Coding Plan | `umans` | `UMANS_AI_CODING_PLAN_API_KEY` |
+| Sakana AI | `sakana` | `SAKANA_API_KEY` |
+| CoralBricks | `coralbricks` | `CORAL_API_KEY` |
+| Wafer Serverless | `wafer-serverless` | `WAFER_SERVERLESS_API_KEY` |
+| Alibaba Token Plan | `alibaba-token-plan` | `ALIBABA_TOKEN_PLAN_API_KEY` |
+| Alibaba Token Plan (CN) | `alibaba-token-plan-cn` | `BAILIAN_TOKEN_PLAN_API_KEY` |
+| Charm Hyper | `charm-hyper` | `CHARM_HYPER_API_KEY`, `HYPER_API_KEY` |
+| LiteLLM Proxy | `litellm` | `LITELLM_API_KEY` |
+| SiliconFlow | `siliconflow` | `SILICONFLOW_API_KEY` |
+| SiliconFlow (CN) | `siliconflow-cn` | `SILICONFLOW_CN_API_KEY` |
+| Zhipu Coding Plan | `zhipu-coding-plan` | `ZHIPU_API_KEY` |
+| Abliteration | `abliteration` | `ABLITERATION_API_KEY`, `ABLIT_KEY` |
+| ClinePass | `cline-pass` | `CLINE_API_KEY` |
+| Command Code | `commandcode` | `COMMAND_CODE_API_KEY`, `COMMANDCODE_API_KEY` |
+| CoreWeave Serverless Inference | `coreweave` | `COREWEAVE_API_KEY` |
+| Fire Pass | `firepass` | `FIREPASS_API_KEY` |
+| Ollama Cloud | `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
+| Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
+
+列出两个变量时二者皆可接受，第一个为主变量。
+
+CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中。
+
+</details>
 
 ## 快速开始
 
@@ -39,6 +86,8 @@ CoreWeave Serverless Inference 需要在添加该提供商**之前**，把 `CORE
 ```sh
 dsh plugin --profile web add dsh-keys-manager
 ```
+
+安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责 Cursor 的线协议。
 
 ### 安装 —— 本地检出
 
@@ -72,6 +121,15 @@ dsh plugin --profile web link .
 增量 1 的真实模型是：**API key 构成选择环**——会话粘滞、轮询选择、重试切换与冷却都作用在该提供商的 API key 之间；**每个提供商由一条被投影的 OAuth 授权服务**——被投影的账户直接响应请求，同时只保留一个活跃授权。按账户排名（在多个账户间轮换或分流）是后续工作。账户行上的计数只反映该账户自身的成功与失败，不代表按账户的流量拆分。被投影的授权失败（过期或刷新被拒）时，该账户进入冷却：支持 key 池的路由会回落到该提供商的 key 池；仅有 OAuth 的路由没有 API-key 池，将停止服务，直到重新登录账户。恢复方式是从账户菜单手动重新登录。
 
 添加账户只把提供商签发的授权存进 Harness 凭据存储（挂在账户的 `grantRef` 之下）；管理器状态里只存引用与非敏感元数据（邮箱、账户 ID、过期时间）——与 API key 相同的无明文布局。
+
+### Cursor 传输
+
+Cursor 由随附的 `dsh-llm-omp-transports` 组件在独立 `cursor` 路由上提供。它不经过 pi-ai key 池：该路由在 `llm-omp-transports/cursor` 只保留一条授权，并在凭据 seam 上自动刷新。
+
+- 模型来自固定的 `@oh-my-pi/pi-catalog@18.12.3` 表（123 行），构建时生成进传输包。路由支持文本与推理流，并把工具调用交给 DSH 的工具循环。
+- 在 Keys Manager 页面的 **传输账户**（`Transport accounts`）区块登录：浏览器页面加轮询。账户行显示身份、有效期与状态；授权过期或被拒后需要手动重新登录。
+- 暂不转发图片。路由按纯文本宣告输入，遇到图片块以类型化错误拒绝，而不是静默丢弃。
+- 该客户端是非官方实现，会呈现 Cursor 厂商内部的 OAuth 身份。依赖它之前请阅读[传输包文档](packages/llm-omp/README.md)，风险与限制列在那里。
 
 ### 选择与故障策略
 
@@ -118,6 +176,17 @@ $DSH_HOME/keys-manager/state.json
 
 其余 DSH 目录路由都提供 API key 凭据。同时支持 OAuth 的提供商（Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI）仍可经其 API key 路径管理，其 OAuth 登录则以 [OAuth 账户](#oauth-账户)形式提供。
 
+## 仓库布局
+
+本仓库是 pnpm workspace，包含两个已发布包：
+
+| 路径 | npm 包 | 职责 |
+|---|---|---|
+| 根目录 | `dsh-keys-manager` | Host 插件、Keys Manager Web 客户端、bundle patch |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor（及后续）传输组件 |
+
+根包把传输包声明为依赖，因此已发布的 Keys Manager tarball 会拉取传输包，而不是把它 vendor 进来。传输包独立版本化，详见[发布](docs/release.zh-CN.md)。
+
 ## 文档
 
 | 文档 | 内容 |
@@ -125,6 +194,7 @@ $DSH_HOME/keys-manager/state.json
 | [开发](docs/development.zh-CN.md) | 构建与开发工作流、仓库布局 |
 | [发布](docs/release.zh-CN.md) | CI 检查与 npm 发布流程 |
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含延后提供商 |
+| [传输包（英文）](packages/llm-omp/README.md) | Cursor 传输：支持状态、风险、构建/测试与发布 |
 
 英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
 

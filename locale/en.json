@@ -27,5 +27,15 @@
   "loginReady": "Signed in.",
   "deleteAccountTitle": "Delete account “{alias}”?",
   "deleteAccountBody": "This removes the account’s stored OAuth grant from the credential store. If it is the active account, the provider route stops serving it and falls back to its API-key pool; the provider stays managed.",
-  "deleteAccountBodyNoKeys": "This removes the account’s stored OAuth grant from the credential store. This route has no API-key pool, so it stops serving requests until an account is signed in again."
+  "deleteAccountBodyNoKeys": "This removes the account’s stored OAuth grant from the credential store. This route has no API-key pool, so it stops serving requests until an account is signed in again.",
+  "transportAccounts": "Transport accounts",
+  "transportTag": "Transport",
+  "transportSignIn": "Sign in",
+  "transportExpires": "Expires {time}",
+  "transportStatusActive": "Active",
+  "transportStatusExpired": "Token expired",
+  "transportStatusNeedsReauth": "Sign in again",
+  "transportStatusSignedOut": "Not signed in",
+  "transportRemoveTitle": "Remove the {name} transport account?",
+  "transportRemoveBody": "This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service."
 }

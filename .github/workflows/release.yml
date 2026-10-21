@@ -156,6 +156,61 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Publish dsh-llm-omp-transports to npm
+        run: |
+          set -euo pipefail
+          # The transport package versions independently of dsh-keys-manager:
+          # publish its own package.json version and skip when that exact
+          # version is already on npm, so a release re-run (or a root release
+          # that does not bump the transport) stays idempotent. Ownership is
+          # tested by ancestry, not equality: an already-published transport
+          # version is normally published from an ancestor of the release
+          # commit (a documented --skip-transport root release leaves the
+          # transport version behind while HEAD moves), while a version
+          # squatted by a foreign publisher names a commit outside this
+          # repository's history. The root step keeps its equality test
+          # because its version is bumped on every release.
+          PKG_DIR="packages/llm-omp"
+          PKG_VERSION="$(node -p "require('./${PKG_DIR}/package.json').version")"
+          if npm view "dsh-llm-omp-transports@${PKG_VERSION}" version >/dev/null 2>&1; then
+            PUBLISHED_SHA="$(npm view "dsh-llm-omp-transports@${PKG_VERSION}" gitHead 2>/dev/null || true)"
+            LOCAL_SHA="$(git rev-parse HEAD)"
+            if [ -z "$PUBLISHED_SHA" ]; then
+              echo "::error::dsh-llm-omp-transports@${PKG_VERSION} is already published without a gitHead; refusing to tag a possibly different commit."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$PUBLISHED_SHA" HEAD; then
+              echo "::error::dsh-llm-omp-transports@${PKG_VERSION} was published from ${PUBLISHED_SHA}, which is not an ancestor of ${LOCAL_SHA}; refusing to tag a foreign version."
+              exit 1
+            fi
+            echo "dsh-llm-omp-transports@${PKG_VERSION} is already published from ${PUBLISHED_SHA} (an ancestor of ${LOCAL_SHA}); skipping."
+            exit 0
+          fi
+          # npm publish runs the package's own prepack (pnpm run build), which
+          # needs the workspace devDependencies installed by the step above.
+          # The "./" prefix is required: a bare path is read as a GitHub
+          # shorthand (owner/repo), not a folder.
+          #
+          # Prerelease dist-tag: the root step's rule — a version containing
+          # '-' publishes to the prerelease-prefix tag (text between the first
+          # '-' and the first '.' after it -> "alpha") instead of the default
+          # `latest`, so a transport prerelease cannot overwrite `latest` and
+          # consumers opting into the tag can install it. Formal X.Y.Z versions
+          # publish without --tag.
+          if [[ "${PKG_VERSION}" == *-* ]]; then
+            PRETAG="${PKG_VERSION#*-}"
+            PRETAG="${PRETAG%%.*}"
+            # Same guard as the root step: a hand-edited package.json version
+            # must not be able to move `latest`.
+            if [[ "$PRETAG" == "latest" || ! "$PRETAG" =~ ^[a-z][a-z0-9-]*$ ]]; then
+              echo "::error::Invalid prerelease dist-tag '${PRETAG}' for dsh-llm-omp-transports@${PKG_VERSION}."
+              exit 1
+            fi
+            npm publish "./${PKG_DIR}" --provenance --access public --tag "$PRETAG"
+          else
+            npm publish "./${PKG_DIR}" --provenance --access public
+          fi
+
       - name: Publish to npm
         if: steps.npm-version.outputs.exists != 'true'
         env:
@@ -176,6 +231,13 @@ jobs:
           # --provenance is explicitly requested: it makes sigstore signing
           # deterministic under OIDC trusted publishing (matches the sibling
           # dsh-llm-fallbacks release workflow).
+          #
+          # Pack with pnpm first: the published manifest declares
+          # `dsh-llm-omp-transports` as `workspace:^`, and npm has no pnpm
+          # workspace context, so `npm publish` on the directory would ship the
+          # raw protocol spec. `pnpm pack` rewrites it to a semver range.
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+          TARBALL="$RUNNER_TEMP/dsh-keys-manager-${VERSION}.tgz"
           if [[ "${VERSION}" == *-* ]]; then
             PRETAG="${VERSION#*-}"
             PRETAG="${PRETAG%%.*}"
@@ -185,9 +247,9 @@ jobs:
               echo "::error::Invalid prerelease dist-tag '${PRETAG}' for ${VERSION}."
               exit 1
             fi
-            npm publish --provenance --access public --tag "$PRETAG"
+            npm publish "$TARBALL" --provenance --access public --tag "$PRETAG"
           else
-            npm publish --provenance --access public
+            npm publish "$TARBALL" --provenance --access public
           fi
 
       - name: Configure git identity
@@ -241,6 +303,22 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; skipping tag creation."
+            exit 0
+          fi
+          git tag -a -m "Release ${TAG}" "$TAG"
+          git push origin "$TAG"
+
+      - name: Create + push dsh-llm-omp-transports tag
+        run: |
+          set -euo pipefail
+          # The transports package versions independently of dsh-keys-manager,
+          # so tag the exact version this release publishes (or already had on
+          # npm) under the package name. The version comes from the release
+          # commit's package.json — the same file the publish step read.
+          PKG_VERSION="$(node -p "require('./packages/llm-omp/package.json').version")"
+          TAG="dsh-llm-omp-transports@${PKG_VERSION}"
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "Tag $TAG already exists; skipping tag creation."
             exit 0
           fi

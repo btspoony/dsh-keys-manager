@@ -1,0 +1,4 @@
+{"type":"start"}
+{"type":"toolcall_start","contentIndex":0,"partial":{"role":"assistant","model":"claude-4.5-sonnet","api":"cursor-agent","provider":"cursor","stopReason":"stop","timestamp":1760000000000,"content":[{"type":"toolCall","id":"call-wire-1","name":"lookup_doc","arguments":{"query":"hello"}}],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0}}}
+{"type":"toolcall_end","contentIndex":0,"toolCall":{"type":"toolCall","id":"call-wire-1","name":"lookup_doc","arguments":{"query":"hello"}}}
+{"type":"done","reason":"stop","message":{"role":"assistant","model":"claude-4.5-sonnet","api":"cursor-agent","provider":"cursor","stopReason":"stop","timestamp":1760000000000,"content":[{"type":"toolCall","id":"call-wire-1","name":"lookup_doc","arguments":{"query":"hello"}}],"usage":{"input":100,"output":6,"cacheRead":0,"cacheWrite":0,"totalTokens":106}}}

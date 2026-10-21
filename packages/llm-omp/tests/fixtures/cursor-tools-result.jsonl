@@ -1,0 +1,6 @@
+{"type":"start"}
+{"type":"text_start","contentIndex":0}
+{"type":"text_delta","contentIndex":0,"delta":"The document "}
+{"type":"text_delta","contentIndex":0,"delta":"says hello."}
+{"type":"text_end","contentIndex":0,"content":"The document says hello."}
+{"type":"done","reason":"stop","message":{"role":"assistant","model":"claude-4.5-sonnet","api":"cursor-agent","provider":"cursor","stopReason":"stop","timestamp":1760000000001,"content":[{"type":"text","text":"The document says hello."}],"usage":{"input":140,"output":8,"cacheRead":20,"cacheWrite":0,"totalTokens":168}}}

@@ -359,6 +359,8 @@ function fakeAuthorization(flows: Array<{ key: string; label: string; methods: A
   return {
     flows,
     failBegin: undefined as Error | undefined,
+    /** True while the seam refuses a withdraw because a commit is in flight. */
+    committing: false,
     beganRequests: [] as Array<Record<string, unknown>>,
     /** The single in-flight begin, for tests to settle by hand. */
     pending: undefined as undefined | { request: Record<string, unknown>; resolve: (outcome: { status: string }) => void; reject: (error: Error) => void },
@@ -374,12 +376,23 @@ function fakeAuthorization(flows: Array<{ key: string; label: string; methods: A
       if (this.failBegin !== undefined) return Promise.reject(this.failBegin)
       return new Promise((resolve, reject) => {
         this.pending = { request, resolve: resolve as (outcome: { status: string }) => void, reject: reject as (error: Error) => void }
+        // The real seam withdraws the attempt when the caller's signal aborts:
+        // it settles `cancelled` without waiting for the flow, and it does so
+        // asynchronously, so a flow that commits at the same moment can still
+        // resolve `authorized` first.
+        const signal = request.signal as AbortSignal | undefined
+        signal?.addEventListener('abort', () => {
+          // The real seam does not withdraw an attempt that is already
+          // committing; the pending promise resolves only once the commit does.
+          if (this.committing) return
+          queueMicrotask(() => resolve({ status: 'cancelled' }))
+        }, { once: true })
       })
     },
   }
 }
 
-async function harness(): Promise<Harness> {
+async function harness(flows?: Array<{ key: string; label: string; methods: Array<{ id: string; label: string }> }>): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'keys-manager-host-'))
   const store = new KeysManagerStore(join(dir, 'state.json'))
   const credentials = fakeCredentials({
@@ -390,7 +403,9 @@ async function harness(): Promise<Harness> {
   })
   const settings = fakeSettings()
   const llm = fakeLlm()
-  const authorization = fakeAuthorization()
+  // The pi-ai flow set is the default; a transport test passes its own list
+  // (the transports package registers its flows on the same seam).
+  const authorization = flows === undefined ? fakeAuthorization() : fakeAuthorization(flows)
   const eventListeners = new Map<string, Array<(...args: unknown[]) => unknown>>()
   const ctx = {
     llm,
@@ -7819,6 +7834,9 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
       'removeAccount',
       // Task 2: the per-row connection test rides the same Remote surface.
       'testKey',
+      'beginTransportLogin',
+      'activateTransportAccount',
+      'removeTransportAccount',
     ])
     const params = (method: string): string[] =>
       invocations.find(invocation => invocation.method === method)!.parameters.map(parameter => parameter.name)
@@ -7829,6 +7847,11 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
     assert.deepEqual(params('activateAccount'), ['provider', 'accountId'])
     assert.deepEqual(params('removeAccount'), ['provider', 'accountId'])
     assert.deepEqual(params('testKey'), ['provider', 'keyId'])
+    // Transport routes are addressed by route only; the attempt is polled
+    // through the same accountAttempt record the pi-ai dialog uses.
+    assert.deepEqual(params('beginTransportLogin'), ['provider'])
+    assert.deepEqual(params('activateTransportAccount'), ['provider'])
+    assert.deepEqual(params('removeTransportAccount'), ['provider'])
     // Every registered invocation names a real service method, so the
     // gateway's `service[invocation.method]` dispatch cannot drift from the
     // registry (typertRemote binds the service instance directly).
@@ -9138,6 +9161,76 @@ test('an abandoned test whose borrow write lands after the deadline keeps the pr
   }
 })
 
+/* ------------------------------------------------------------------------- *
+ * Transport accounts (`llm-omp-transports/<route>`)
+ *
+ * The transports package owns the record, the flow and the adapter that reads
+ * it. Keys Manager lists/activates/removes the account beside the pi-ai pool
+ * and must never route it through that pool: no `llm-pi-ai/<route>` record and
+ * no `providers.<route>` profile may appear from any of these actions.
+ * ------------------------------------------------------------------------- */
+
+/** The flow the llm-omp-transports package registers for its cursor route. */
+const TRANSPORT_FLOW = {
+  key: 'llm-omp-transports/cursor',
+  label: 'Cursor',
+  methods: [{ id: 'oauth', label: 'Sign in with Cursor' }],
+}
+
+const CURSOR_SCOPE = 'llm-omp-transports/cursor'
+
+/** The grant payload the transports package writes for the cursor route. */
+function cursorGrant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    access: 'cursor-access',
+    refresh: 'cursor-refresh',
+    expires: Date.now() + 3_600_000,
+    email: 'dev@cursor.example',
+    accountId: 'user_1',
+    ...overrides,
+  }
+}
+
+function transportHarness(): Promise<Harness> {
+  return harness([...piAiFlows(), TRANSPORT_FLOW])
+}
+
+/** A transport action may never write into the pi-ai pool. */
+function assertNoPiAiProjection(h: Harness): void {
+  assert.equal(h.credentials.records.has('llm-pi-ai/cursor'), false)
+  assert.equal((h.settings.valueOf('llm-pi-ai') as { providers: Record<string, unknown> }).providers.cursor, undefined)
+}
+
+test('lists the cursor transport account from its own grant record', async () => {
+  const h = await transportHarness()
+  try {
+    const payload = cursorGrant()
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload })
+    await h.service.refreshTransportAccounts()
+
+    const state = h.service.buildState()
+    assert.deepEqual(state.transportAccounts, [{
+      id: 'cursor',
+      scope: CURSOR_SCOPE,
+      displayName: 'Cursor',
+      email: 'dev@cursor.example',
+      accountId: 'user_1',
+      expiresAt: payload.expires,
+      status: 'active',
+      active: true,
+    }])
+    // The row is additive beside the pi-ai pool, not part of it.
+    assert.equal(state.providers.some(provider => provider.provider === 'cursor'), false)
+    // The snapshot never carries the grant payload itself.
+    const text = JSON.stringify(state)
+    assert.ok(!text.includes('cursor-access'))
+    assert.ok(!text.includes('cursor-refresh'))
+    assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a fenced provider is cleaned up by the next test attempt', async () => {
   const { h, first, second } = await harnessWithTwoProjectedAccounts()
   let releaseTest: (() => void) | undefined
@@ -9300,6 +9393,49 @@ test('a key added during the window converges the binding at window end', async 
     assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef)
   } finally {
     releaseTest?.()
+    await h.close()
+  }
+})
+
+test('a transport row reports active, expired, needs-reauth and signed-out', async () => {
+  const h = await transportHarness()
+  const rowOf = async (): Promise<{ status?: string; active?: boolean }> => {
+    await h.service.refreshTransportAccounts()
+    return h.service.buildState().transportAccounts?.[0] ?? {}
+  }
+  const statusOf = async (): Promise<string | undefined> => (await rowOf()).status
+  try {
+    // A route with a registered flow but no record still gets a row, so the
+    // UI can offer the sign-in that writes it.
+    assert.equal(await statusOf(), 'signed-out')
+
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    const live = await rowOf()
+    assert.equal(live.status, 'active')
+    assert.equal(live.active, true)
+
+    // Expired but refreshable: the route's adapter renews it on the next
+    // request, but the stored grant is not the live credential right now.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant({ expires: Date.now() - 1000 }) })
+    const expired = await rowOf()
+    assert.equal(expired.status, 'expired')
+    assert.equal(expired.active, false)
+
+    // Expired with no refresh token: only a new sign-in restores service.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant({ expires: Date.now() - 1000, refresh: undefined }) })
+    assert.equal(await statusOf(), 'needs-reauth')
+    assert.equal((await rowOf()).active, false)
+
+    // A record this manager cannot read is not a usable grant either.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access' } })
+    assert.equal(await statusOf(), 'needs-reauth')
+    assert.equal((await rowOf()).active, false)
+
+    h.credentials.records.delete(CURSOR_SCOPE)
+    assert.equal(await statusOf(), 'signed-out')
+    assert.equal((await rowOf()).active, false)
+    assertNoPiAiProjection(h)
+  } finally {
     await h.close()
   }
 })
@@ -10452,6 +10588,31 @@ test('a superseded cleanup cannot clear the owner of a projection removed during
   }
 })
 
+test('the transport sign-in begins on llm-omp-transports/cursor and harvests nothing', async () => {
+  const h = await transportHarness()
+  try {
+    const attempt = await h.service.beginTransportLogin('cursor')
+    assert.equal(attempt.status, 'pending')
+    assert.equal(attempt.provider, 'cursor')
+    const request = h.authorization.beganRequests.at(-1)!
+    assert.equal(request.key, CURSOR_SCOPE)
+    assert.equal(request.method, 'oauth')
+    // A second begin while one is pending resumes the same attempt.
+    assert.equal((await h.service.beginTransportLogin('cursor')).id, attempt.id)
+
+    // The transports flow commits its own grant, then settles.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    assert.equal(h.service.accountAttempt(attempt.id)?.status, 'ready')
+    assert.equal(h.service.buildState().transportAccounts?.[0]?.status, 'active')
+    assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
 // Review should-fix: the same dead fence on the foreign-payload branch. A
 // superseded attempt that reads a native record must not clear the owner a newer
 // window holds.
@@ -10606,6 +10767,21 @@ test('a finish chunk without a completion reason is not a pass', async () => {
   }
 })
 
+test('a transport flow begins with its own method id, not the pi-ai oauth literal', async () => {
+  // The scope prefix is the whole cross-package contract; the method id belongs
+  // to the transports package's flow.
+  const h = await harness([
+    ...piAiFlows(),
+    { key: CURSOR_SCOPE, label: 'Cursor', methods: [{ id: 'cursor-device', label: 'Sign in with Cursor' }] },
+  ])
+  try {
+    await h.service.beginTransportLogin('cursor')
+    assert.equal(h.authorization.beganRequests.at(-1)!.method, 'cursor-device')
+  } finally {
+    await h.close()
+  }
+})
+
 // Review P2: the borrow marker was registered after the projection write was
 // awaited, so a mutation landing while that write was in flight derived a
 // binding from the pre-borrow world: on an unbound route it bound the broker
@@ -10670,6 +10846,21 @@ test('an addKey during the borrow write cannot persist a broker binding', async 
   }
 })
 
+test('a cancelled transport sign-in settles without an account', async () => {
+  const h = await transportHarness()
+  try {
+    const attempt = await h.service.beginTransportLogin('cursor')
+    h.authorization.pending!.resolve({ status: 'cancelled' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    assert.equal(h.service.accountAttempt(attempt.id)?.status, 'cancelled')
+    assert.equal(h.service.buildState().transportAccounts?.[0]?.status, 'signed-out')
+    assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
 // ── PR #26 review round 9 ───────────────────────────────────────────────────
 
 // Review R8-2 (Codex P2): `testKey` captures its row, its credential and the
@@ -10720,6 +10911,30 @@ test('removing an account waits for its own connection test', async () => {
     assert.equal(h.credentials.records.has(first.grantRef), false)
   } finally {
     releaseTest?.()
+    await h.close()
+  }
+})
+
+test('removing a transport account withdraws the pending sign-in and stays removed', async () => {
+  const h = await transportHarness()
+  try {
+    const attempt = await h.service.beginTransportLogin('cursor')
+    // The browser flow had already reached its commit when the removal ran:
+    // the grant lands after the abort, exactly as a commit already in flight
+    // can. The account was deleted, so that write must not recreate it.
+    const request = h.authorization.beganRequests.at(-1)!
+    ;(request.signal as AbortSignal).addEventListener('abort', () => {
+      h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    }, { once: true })
+
+    const state = await h.service.removeTransportAccount('cursor')
+
+    assert.equal(h.credentials.records.has(CURSOR_SCOPE), false)
+    assert.equal(state.transportAccounts?.[0]?.status, 'signed-out')
+    assert.equal(state.transportAccounts?.[0]?.active, false)
+    assert.equal(h.service.accountAttempt(attempt.id)?.status, 'cancelled')
+    assertNoPiAiProjection(h)
+  } finally {
     await h.close()
   }
 })
@@ -10777,6 +10992,30 @@ test('deleting a row waits for its connection test', async () => {
   }
 })
 
+test('a removal withdraws a commit that outlived another settle path', async () => {
+  const h = await transportHarness()
+  try {
+    await h.service.beginTransportLogin('cursor')
+    // The seam is mid-commit, so it ignores the withdraw and `begin` stays
+    // pending; the prune timeout settles the attempt record meanwhile.
+    h.authorization.committing = true
+    h.service.pruneTransient(Date.now() + 365 * 24 * 60 * 60 * 1000)
+
+    const removal = h.service.removeTransportAccount('cursor')
+    // The commit lands after the removal's abort, as a late authorization can.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    h.authorization.pending!.resolve({ status: 'authorized' })
+    const state = await removal
+
+    assert.equal(h.credentials.records.has(CURSOR_SCOPE), false)
+    assert.equal(state.transportAccounts?.[0]?.status, 'signed-out')
+    assert.equal(state.transportAccounts?.[0]?.active, false)
+    assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
 // ── PR #26 review round 10 ──────────────────────────────────────────────────
 
 // Review I-000179 (round 10): `removeAccount` and `deleteKey` coordinated with
@@ -10830,6 +11069,20 @@ test('releasing a provider waits for a parked row test', async () => {
     assert.equal(h.credentials.refs.has(target.ref), false)
   } finally {
     releaseProbe?.()
+    await h.close()
+  }
+})
+
+test('activating a transport account re-reads the grant and writes nothing', async () => {
+  const h = await transportHarness()
+  try {
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    const state = await h.service.activateTransportAccount('cursor')
+
+    assert.equal(state.transportAccounts?.[0]?.status, 'active')
+    assert.deepEqual([...h.credentials.records.keys()], [CURSOR_SCOPE])
+    assertNoPiAiProjection(h)
+  } finally {
     await h.close()
   }
 })
@@ -10917,6 +11170,24 @@ test('a release is refused while a probe outlives the isolation deadline', async
   }
 })
 
+test('removing a transport account deletes only its own record', async () => {
+  const h = await transportHarness()
+  try {
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    h.credentials.records.set('llm-pi-ai/anthropic', { kind: 'grant', payload: { type: 'oauth', refresh: 'r', access: 'a' } })
+
+    const state = await h.service.removeTransportAccount('cursor')
+
+    assert.equal(h.credentials.records.has(CURSOR_SCOPE), false)
+    // Another package's record — and the pi-ai projection — stay untouched.
+    assert.equal(h.credentials.records.has('llm-pi-ai/anthropic'), true)
+    assert.equal(state.transportAccounts?.[0]?.status, 'signed-out')
+    assert.equal(state.transportAccounts?.[0]?.active, false)
+  } finally {
+    await h.close()
+  }
+})
+
 // ── PR #26 review round 12 ──────────────────────────────────────────────────
 
 // Review must-fix: `settleTestBeforeRemoval` waits only for a test that already
@@ -10956,6 +11227,25 @@ test('a test starting during a release is refused instead of re-projecting the r
     }
   } finally {
     held.release()
+    await h.close()
+  }
+})
+
+test('a transport record echoed by the seam refreshes the list instead of a pi-ai reconciliation', async () => {
+  const h = await transportHarness()
+  try {
+    // An out-of-band commit (another surface's sign-in) reaches the manager
+    // only through the seam's post-commit fan-out.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: cursorGrant() })
+    h.credentials.emitRecordUpdated(CURSOR_SCOPE)
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const state = h.service.buildState()
+    assert.equal(state.transportAccounts?.[0]?.status, 'active')
+    // Not "native management of the route": this manager owns the account row.
+    assert.deepEqual(state.warnings, [])
+    assertNoPiAiProjection(h)
+  } finally {
     await h.close()
   }
 })

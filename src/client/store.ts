@@ -258,6 +258,15 @@ export function createStore(ctx: ClientContext): ClientStore {
         refreshDroppedState()
       }
     },
+    beginTransportLogin(route: string): Promise<AccountAttemptResult> {
+      return send('beginTransportLogin', { provider: route }, attemptOutcome)
+    },
+    activateTransportAccount(route: string): Promise<ActionOutcome> {
+      return send('activateTransportAccount', { provider: route }, stateOutcome)
+    },
+    removeTransportAccount(route: string): Promise<ActionOutcome> {
+      return send('removeTransportAccount', { provider: route }, stateOutcome)
+    },
     tick() {
       update({ now: Date.now() })
       // Cooldown statuses and summary counters are derived on the Host. Refresh

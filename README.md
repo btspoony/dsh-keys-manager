@@ -23,33 +23,60 @@ manager.
 - Extra built-in providers installed as ordinary `llm-pi-ai` routes.
 - OAuth account sign-in for seven pi-ai-backed providers, stored beside
   the API keys.
+- A companion transport component for providers the vendored pi-ai cannot
+  speak — Cursor (`cursor`) today — installed with the plugin.
 
 ### Extra providers
 
-`src/providers.ts` contains a curated catalog of 35 extra providers — 21 from
-the original catalog, 13 added in the previous release, and CoreWeave
-Serverless Inference added now. Examples include SiliconFlow, Zhipu coding
-plan, Cline Pass, Ollama Cloud, and Alibaba Token Plan (CN). The catalog is
-derived from [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider
-catalog (MIT).
-An extra id is added only when the shipped DSH catalog does not already
-declare that route id (for example, `meta` and `typesafe` are not
-duplicated); same-endpoint providers with distinct credential identities
-are kept by design.
+This catalog of 35 extra providers comes from
+[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
 
-CoreWeave Serverless Inference needs `COREWEAVE_PROJECT=<team>/<project>` in
-the DSH process environment **before** the provider is added: the value is
-read once and stored as a static `OpenAI-Project` request header on the route
-profile, so a missing variable refuses the add. To change the project value,
-first **release the provider** from Keys Manager, then restart DSH with the
-new `COREWEAVE_PROJECT` value and add the provider again. Release removes the
-`OpenAI-Project` value this plugin wrote while it still equals the current
-environment value; a value it cannot attribute is kept and reported in the UI
-warnings, and a hand-written header that happens to equal the environment
-value is removed by the same rule. A profile the plugin created is removed
-and recreated on the next add, while an adopted profile is kept and
-re-adopted; in both cases the plugin only fills a declared header the profile
-does not already carry and never overwrites a stored value.
+<details>
+<summary>All 35 extra providers</summary>
+
+| Provider | Route id | API key env |
+|---|---|---|
+| DeepInfra | `deepinfra` | `DEEPINFRA_API_KEY` |
+| Novita | `novita` | `NOVITA_API_KEY` |
+| StepFun | `stepfun` | `STEPFUN_API_KEY` |
+| SambaNova | `sambanova` | `SAMBANOVA_API_KEY` |
+| Qianfan | `qianfan` | `QIANFAN_API_KEY` |
+| GMI Cloud | `gmi-cloud` | `GMI_API_KEY` |
+| Synthetic | `synthetic` | `SYNTHETIC_API_KEY` |
+| ZenMux | `zenmux` | `ZENMUX_API_KEY` |
+| Kilo Gateway | `kilo` | `KILO_API_KEY` |
+| NanoGPT | `nanogpt` | `NANO_GPT_API_KEY` |
+| Venice AI | `venice` | `VENICE_API_KEY` |
+| AIML API | `aimlapi` | `AIMLAPI_API_KEY` |
+| AI& | `aiand` | `AIAND_API_KEY` |
+| Helmcode | `helmcode` | `HELMCODE_API_KEY` |
+| Alibaba Coding Plan | `alibaba-coding-plan` | `ALIBABA_CODING_PLAN_API_KEY` |
+| MiniMax Coding (Global) | `minimax-code` | `MINIMAX_CODE_API_KEY` |
+| MiniMax Coding (CN) | `minimax-code-cn` | `MINIMAX_CODE_CN_API_KEY` |
+| Umans AI Coding Plan | `umans` | `UMANS_AI_CODING_PLAN_API_KEY` |
+| Sakana AI | `sakana` | `SAKANA_API_KEY` |
+| CoralBricks | `coralbricks` | `CORAL_API_KEY` |
+| Wafer Serverless | `wafer-serverless` | `WAFER_SERVERLESS_API_KEY` |
+| Alibaba Token Plan | `alibaba-token-plan` | `ALIBABA_TOKEN_PLAN_API_KEY` |
+| Alibaba Token Plan (CN) | `alibaba-token-plan-cn` | `BAILIAN_TOKEN_PLAN_API_KEY` |
+| Charm Hyper | `charm-hyper` | `CHARM_HYPER_API_KEY`, `HYPER_API_KEY` |
+| LiteLLM Proxy | `litellm` | `LITELLM_API_KEY` |
+| SiliconFlow | `siliconflow` | `SILICONFLOW_API_KEY` |
+| SiliconFlow (CN) | `siliconflow-cn` | `SILICONFLOW_CN_API_KEY` |
+| Zhipu Coding Plan | `zhipu-coding-plan` | `ZHIPU_API_KEY` |
+| Abliteration | `abliteration` | `ABLITERATION_API_KEY`, `ABLIT_KEY` |
+| ClinePass | `cline-pass` | `CLINE_API_KEY` |
+| Command Code | `commandcode` | `COMMAND_CODE_API_KEY`, `COMMANDCODE_API_KEY` |
+| CoreWeave Serverless Inference | `coreweave` | `COREWEAVE_API_KEY` |
+| Fire Pass | `firepass` | `FIREPASS_API_KEY` |
+| Ollama Cloud | `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
+| Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
+
+Where two variables are listed, either is accepted; the first is the primary.
+
+CoreWeave Serverless Inference also needs `COREWEAVE_PROJECT=<team>/<project>` in the DSH process environment before it is added.
+
+</details>
 
 ## Quick start
 
@@ -69,6 +96,12 @@ Harness page afterwards so the browser half is fetched.
 ```sh
 dsh plugin --profile web add dsh-keys-manager
 ```
+
+Installing `dsh-keys-manager` installs two bundle components. The published
+package depends on `dsh-llm-omp-transports`, so one install resolves both npm
+packages, and the plugin page lists both `dsh-keys-manager` and
+`llm-omp-transports`. Enable both: the manager owns credentials and routing,
+the transport component owns the Cursor wire protocol.
 
 ### Install — local checkout
 
@@ -138,6 +171,25 @@ Adding an account stores only the provider-issued grant in the Harness
 credential store, behind the account's `grantRef`; the manager state keeps
 the reference plus non-sensitive metadata (email, account id, expiry) — the
 same secret-free layout as API keys.
+
+### Cursor transport
+
+Cursor is served by the companion `dsh-llm-omp-transports` component on its
+own `cursor` route. It does not run through the pi-ai key pool: the route
+keeps exactly one grant at `llm-omp-transports/cursor`, refreshed
+automatically on the credential seam.
+
+- Models come from the pinned `@oh-my-pi/pi-catalog@18.12.3` table (123 rows),
+  generated into the transport at build time. The route streams text and
+  reasoning, and hands tool calls to DSH's tool loop.
+- Sign in from the **Transport accounts** section of the Keys Manager page: a
+  browser page plus a poll. The row shows identity, expiry and status; after an
+  expired or rejected grant, re-login is manual.
+- Images are not forwarded yet. The route advertises text-only input and
+  refuses image blocks with a typed error instead of dropping them.
+- The client is unofficial and presents Cursor's vendor-internal OAuth
+  identity. Read the [transports package docs](packages/llm-omp/README.md)
+  before relying on it; the risks and limits are listed there.
 
 ### Selection and failure policy
 
@@ -210,6 +262,19 @@ also support OAuth (Anthropic, GitHub Copilot, Kimi Coding, OpenAI Codex,
 OpenRouter, Radius, xAI) remain manageable through their API-key path, and
 their OAuth sign-in is available as [OAuth accounts](#oauth-accounts).
 
+## Repository layout
+
+This repository is a pnpm workspace with two published packages:
+
+| Path | npm package | Role |
+|---|---|---|
+| root | `dsh-keys-manager` | Host plugin, Keys Manager Web client, bundle patch |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor (and future) transport component |
+
+The root package declares the transports package as a dependency, so the
+published Keys Manager tarball pulls the transport in rather than vendoring
+it. The transport versions independently; see [Release](docs/release.md).
+
 ## Documentation
 
 | Doc | Content |
@@ -217,6 +282,7 @@ their OAuth sign-in is available as [OAuth accounts](#oauth-accounts).
 | [Development](docs/development.md) | build and dev workflow, repository layout |
 | [Release](docs/release.md) | CI checks and the npm release flow |
 | [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
+| [Transports package](packages/llm-omp/README.md) | Cursor transport: support status, risks, build/test, release |
 
 Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
 files in `docs/` — [开发](docs/development.zh-CN.md) ·
