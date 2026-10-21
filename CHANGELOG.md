@@ -13,6 +13,7 @@ All notable changes to dsh-keys-manager are documented here. Assembled from `.ch
 - Tool calls are projected from DSH into the transport and unresolved calls hand off to DSH's tool loop; transport-resolved native frames are not re-dispatched.
 - Cursor sign-in uses a PKCE flow with poll and refresh, and a generated 123-row model table comes from a pinned catalog.
 - The install now mounts two components (the plugin detail page lists both), and the keys manager lists, activates, removes and re-authenticates the resulting Cursor accounts beside the pi-ai pool.
+- Key and account rows gain a Test action that runs one real request through the LLM seam and reports whether that credential serves the route, without touching health, cursor or binding state.
 
 ### Changed
 
@@ -21,12 +22,12 @@ All notable changes to dsh-keys-manager are documented here. Assembled from `.ch
 ### Fixed
 
 - An OAuth-served route no longer fails with `MISSING_CREDENTIAL`: a broker reference is written only while the key pool actually serves the route, so pi-ai can reach its own grant, and a broken binding left by an earlier version is healed at startup.
-- Key and account rows gain a Test action that runs one real request through the LLM seam and reports whether that credential serves the route, without touching health, cursor or binding state.
 - A login harvest that aborts because the attempt already settled now demotes the pi-ai projection it had written, so the route stops serving a superseded grant instead of staying bound to it.
 
 ### Docs
 
-- README documents the Desktop/Web install path and lists the extra providers in a collapsible table.
+- README documents the Desktop/Web install path.
+- README lists the extra providers in a collapsible table.
 
 ## [0.2.1] - 2026-10-20
 
