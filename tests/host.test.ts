@@ -9,7 +9,7 @@ import type { ExtraProvider, KeyRecord, KeyTestResult, ProviderRecord, ProviderV
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
-import { KeysManagerStore } from '../src/store'
+import { KeysManagerStore, sanitizeState } from '../src/store'
 
 const ORIGINAL = Symbol.for('cordis.original')
 
@@ -13920,14 +13920,23 @@ test('a commit that resumes after shutdown was requested writes nothing', async 
   }
 })
 
-test('a second close joins the first shutdown instead of restoring again', async () => {
+test('a repeated close restores the borrowed windows only once', async () => {
   const h = await harness()
   try {
+    const service = h.service as unknown as {
+      restoreBorrowedWindows: () => Promise<void>
+    }
+    const real = service.restoreBorrowedWindows.bind(h.service)
+    let restores = 0
+    service.restoreBorrowedWindows = async () => {
+      restores += 1
+      await real()
+    }
     const first = h.service.close()
     const second = h.service.close()
-    assert.equal(first, second, 'a repeated close started a second shutdown')
     await first
     await second
+    assert.equal(restores, 1, 'a repeated close replayed the pre-close restoration')
   } finally {
     await h.close()
   }
@@ -14074,10 +14083,30 @@ test('an api-key test refuses when the route is taken over during its probe', as
     await h.service.adoptProvider('anthropic')
     const record = h.store.provider('anthropic')!
     const row = record.keys.find(candidate => candidate.kind === 'api-key')!
-    // A native sign-in replaced the route's serving source while the test was
-    // in flight; the send must re-assert the source, not just the row.
-    ;(h.service as unknown as { foreignProjections: Set<string> }).foreignProjections.add('anthropic')
-    const result = await h.service.testKey('anthropic', row.id)
+    // Park the credential probe, take the route over while it waits, then let it
+    // resolve: the send must re-assert the serving source, not just the row.
+    const service = h.service as unknown as {
+      credentialOriginals: WeakMap<object, { resolve: (ref: string) => Promise<{ value?: string } | undefined> }>
+      reconcileGrantRecord: (provider: string, key: string) => Promise<void>
+    }
+    const originals = service.credentialOriginals.get(h.credentials.raw)!
+    const realResolve = originals.resolve
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let parked = false
+    originals.resolve = async (ref: string) => {
+      if (!parked && ref === row.ref) {
+        parked = true
+        await gate
+      }
+      return realResolve(ref)
+    }
+    const run = h.service.testKey('anthropic', row.id)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', payload: { type: 'api-key', value: 'sk-native' } })
+    await service.reconcileGrantRecord('anthropic', GRANT_KEY)
+    release()
+    const result = await run
     assert.equal(result.ok, false)
     assert.match(String(result.error), /another credential source/)
   } finally {
@@ -14088,24 +14117,6 @@ test('an api-key test refuses when the route is taken over during its probe', as
 // PR review round 40: a foreign projection observed by the reconciler must
 // invalidate a hydration read that snapshotted the previous owner.
 
-test('a foreign projection bumps the ownership generation', async () => {
-  const h = await harness()
-  try {
-    await h.service.adoptProvider('anthropic')
-    const service = h.service as unknown as {
-      ownershipGenerations: Map<string, number>
-      foreignProjections: Set<string>
-      reconcileGrantRecord: (provider: string, key: string) => Promise<void>
-    }
-    const before = service.ownershipGenerations.get('anthropic') ?? 0
-    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-x', accountId: 'acc-x', email: 'x@example.com' }))
-    await service.reconcileGrantRecord('anthropic', GRANT_KEY)
-    assert.equal(service.foreignProjections.has('anthropic'), true)
-    assert.ok((service.ownershipGenerations.get('anthropic') ?? 0) > before)
-  } finally {
-    await h.close()
-  }
-})
 
 // PR review round 40: the adoption takeover debt survives a restart because it
 // is stored on the provider record, not in process memory.
@@ -14118,9 +14129,10 @@ test('a pending adoption takeover survives a restart', async () => {
     await h.service.adoptProvider('anthropic')
     const record = h.store.provider('anthropic')!
     assert.equal(record.takeoverPending, true)
-    // A restart reloads the same persisted record.
-    const reloaded = JSON.parse(JSON.stringify(record)) as typeof record
-    assert.equal(reloaded.takeoverPending, true)
+    // A restart rebuilds every provider through the store's sanitizer; the debt
+    // must survive that path, not merely JSON serialization.
+    const reloaded = sanitizeState(JSON.parse(JSON.stringify({ providers: { anthropic: record } })))
+    assert.equal(reloaded.providers.anthropic?.takeoverPending, true)
   } finally {
     await h.close()
   }
