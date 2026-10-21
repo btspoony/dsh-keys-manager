@@ -310,6 +310,16 @@ function fakeLlm(): any {
           settingsPath: ['providers', 'cloudflare-workers-ai'],
           nativeAuth: { env: ['CLOUDFLARE_API_KEY', 'CLOUDFLARE_ACCOUNT_ID'], oauth: false },
         },
+        // The transports package registers its cursor route as configurable
+        // with an empty Config schema, so its namespace never appears in
+        // `settings.describe()`. The entry is here so the route's verdict is
+        // derived from `settingsNs`, not from a mounted namespace.
+        {
+          provider: 'cursor',
+          displayName: 'Cursor',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'cursor'],
+        },
       ]
     },
     listProviders() {
@@ -9890,13 +9900,43 @@ test('lists the cursor transport account from its own grant record', async () =>
       status: 'active',
       active: true,
     }])
-    // The row is additive beside the pi-ai pool, not part of it.
-    assert.equal(state.providers.some(provider => provider.provider === 'cursor'), false)
+    // The route is a provider card of its own, but never a pi-ai pool member:
+    // no managed record and no key row behind it.
+    const cursor = state.providers.find(provider => provider.provider === 'cursor')
+    assert.equal(cursor?.managed, false)
+    assert.equal(cursor?.keys.length, 0)
     // The snapshot never carries the grant payload itself.
     const text = JSON.stringify(state)
     assert.ok(!text.includes('cursor-access'))
     assert.ok(!text.includes('cursor-refresh'))
     assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a transport route is a plugin route and is never key- or account-adoptable', async () => {
+  const h = await transportHarness()
+  try {
+    const view = h.service.buildState().providers.find(provider => provider.provider === 'cursor')
+    assert.ok(view !== undefined)
+    assert.equal(view.origin, 'plugin')
+    assert.equal(view.transport, true)
+    assert.equal(view.supported, false)
+    assert.equal(view.accountSupported, false)
+    assert.equal(view.managed, false)
+    assert.match(view.reason ?? '', /Transport accounts/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('adopting a transport route is refused before any settings write', async () => {
+  const h = await transportHarness()
+  try {
+    await assert.rejects(() => h.service.adoptProvider('cursor'), /Transport accounts/)
+    assert.equal(h.settings.valueOf('llm-omp-transports'), undefined)
+    assert.equal(h.store.providers.cursor, undefined)
   } finally {
     await h.close()
   }

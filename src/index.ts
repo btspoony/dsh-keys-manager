@@ -5428,6 +5428,11 @@ export class KeysManagerService {
       const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, entry.settingsPath))
       const managed = this.store.provider(entry.provider)
       const extra = EXTRA_PROVIDER_MAP.get(entry.provider)
+      // A transport route names its own credential record and registers no
+      // settings namespace, so the profile/capability read below can only
+      // describe the route wrongly: it is neither a DSH route nor key-pool
+      // capable, and it is never adoptable.
+      const transport = entry.settingsNs === TRANSPORT_CREDENTIAL_SCOPE
       const oauthFlow = this.oauthFlowAvailable(entry.provider)
       const caps = capabilityOf(entry, profile, oauthFlow)
       const support: ProviderSupport = { supported: caps.keys, ...(caps.reason === undefined ? {} : { reason: caps.reason }) }
@@ -5445,14 +5450,17 @@ export class KeysManagerService {
         provider: entry.provider,
         displayName: extra?.name ?? entry.displayName ?? entry.provider,
         source: extra !== undefined ? 'extra' : 'dsh',
-        origin: extra !== undefined ? 'plugin' : entry.declared === true ? 'custom' : 'dsh',
+        origin: extra !== undefined || transport ? 'plugin' : entry.declared === true ? 'custom' : 'dsh',
         managed: managed !== undefined,
         createdProfile: managed?.createdProfile ?? false,
         configured: active.has(entry.provider) || profile !== undefined,
         active: active.has(entry.provider),
-        supported: support.supported,
-        ...(support.reason === undefined ? {} : { reason: support.reason }),
-        accountSupported: accountSupport.supported,
+        supported: transport ? false : support.supported,
+        ...(transport
+          ? { reason: 'This route is served by a transport plugin credential; manage it in Transport accounts.' }
+          : support.reason === undefined ? {} : { reason: support.reason }),
+        accountSupported: transport ? false : accountSupport.supported,
+        ...(transport ? { transport: true } : {}),
         settingsNs: entry.settingsNs,
         settingsPath: [...entry.settingsPath],
         apiKeyEnv,
@@ -5930,6 +5938,12 @@ export class KeysManagerService {
       if (entry === undefined) {
         if (extra !== undefined) throw new Error('This extra provider needs a key; add it from the extra-provider section')
         throw new Error(`Provider "${provider}" is not registered by any adapter`)
+      }
+      // A transport route's credential is the record its own adapter reads, so
+      // adopting it would bind a profile nothing serves (and its namespace is
+      // not even mounted). Refuse before any settings read or write.
+      if (entry.settingsNs === TRANSPORT_CREDENTIAL_SCOPE) {
+        throw new Error(`Provider "${provider}" is served by a transport plugin; manage its account in Transport accounts`)
       }
       const descriptor = this.describeSettings()
       const namespace = this.namespace(descriptor, entry.settingsNs)

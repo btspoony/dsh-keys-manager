@@ -157,6 +157,7 @@ const zh = {
       // Transport accounts (llm-omp-transports/<route>): managed beside the
       // pi-ai pool, so the copy never promises a key-pool fallback.
       transportAccounts: '传输账户',
+      transportProviderHint: '该路由由传输插件提供，凭证就在本卡片中管理。',
       transportTag: '传输',
       transportSignIn: '登录',
       transportExpires: '有效期至 {time}',
@@ -323,6 +324,7 @@ const en = {
       deleteAccountBodyNoKeys: 'This removes the account’s stored OAuth grant from the credential store. This route has no API-key pool, so it stops serving requests until an account is signed in again.',
       // Transport accounts — same values as locale/en.json.
       transportAccounts: 'Transport accounts',
+      transportProviderHint: 'Served by a transport plugin: its credential is managed inside this card.',
       transportTag: 'Transport',
       transportSignIn: 'Sign in',
       transportExpires: 'Expires {time}',
