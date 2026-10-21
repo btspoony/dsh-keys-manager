@@ -12997,3 +12997,259 @@ test('a grant chain that resumes after close writes nothing', { timeout: 10_000 
     await h.close()
   }
 })
+
+// ── PR #26 review round 32 ──────────────────────────────────────────────────
+
+// Round 32 (Codex P1, must-fix): `reconcileGrantRecord` awaited its projection
+// read without the credential-store epoch, so an echo of the store a remount
+// replaced could land against the new backend. Its "no projection" answer
+// erased the foreign classification the new store's own read had established
+// and rebound the profile to the key pool over that store's native grant.
+test("an old store's echo cannot change the new store's ownership or binding", async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const provider = 'anthropic'
+  const record = h.store.provider(provider)!
+  const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers[provider]?.apiKeyEnv
+  const internals = h.service as unknown as {
+    oauthOwnerFor: (candidate: string) => string | null
+    foreignProjections: Set<string>
+  }
+  const storeA = h.credentials
+  const realGet = h.ctx.get.bind(h.ctx)
+  const mount = (next: ReturnType<typeof fakeCredentials>): void => {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = (name: string) =>
+      name === 'credentials' ? next.raw : realGet(name)
+  }
+  const realReadA = storeA.raw.readRecord.bind(storeA.raw)
+  let releaseA: () => void = () => {}
+  const releasedA = new Promise<void>(resolve => { releaseA = resolve })
+  let parked = false
+  storeA.raw.readRecord = async (key: string) => {
+    if (key === GRANT_KEY && !parked) {
+      parked = true
+      await releasedA
+    }
+    return realReadA(key)
+  }
+  try {
+    await h.service.addKey(provider, 'backup', 'sk-ant-backup')
+    await eventually(() => assert.equal(bound(), record.brokerRef))
+    // The echo arrives on store A and parks in its record read. Store A holds
+    // no projection, so its answer will be "removed".
+    h.emitEvent('credentials/record-updated', GRANT_KEY)
+    await eventually(() => assert.equal(parked, true))
+
+    // Remount: store B holds a grant this pool does not own (another account),
+    // so its route serves natively and must stay unbound.
+    const storeB = fakeCredentials(Object.fromEntries(storeA.refs))
+    storeB.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-foreign', accountId: 'acc-other', email: 'other@example.com' }))
+    mount(storeB)
+    h.service.detachCredentials(storeA.raw)
+    h.service.attachCredentials(storeB.raw)
+    await eventually(() => assert.equal(internals.foreignProjections.has(provider), true))
+    await eventually(() => assert.equal(internals.oauthOwnerFor(provider), null))
+    await eventually(() => assert.equal(bound(), undefined))
+
+    // Store A's answer lands now, against a store the manager no longer reads:
+    // it decides nothing.
+    releaseA()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(internals.foreignProjections.has(provider), true, "an old store's echo erased the new store's foreign classification")
+    assert.equal(internals.oauthOwnerFor(provider), null, "an old store's echo claimed ownership of the new store")
+    assert.equal(bound(), undefined, "an old store's echo bound the broker over the new store's native grant")
+  } finally {
+    ;(h.ctx as unknown as { get: (name: string) => unknown }).get = realGet
+    storeA.raw.readRecord = realReadA
+    releaseA()
+    await h.close()
+  }
+})
+
+// Round 32 (Codex P1, must-fix): the late reconcile an abandoned window's
+// cleanup starts ran under its own deadline and checked the attempt only after
+// returning. A phase that overran its deadline, was superseded by the next
+// attempt (which released the provider) and resumed after a NEW test borrowed
+// the same account, wrote its old `previous` projection over that newer
+// window's borrow. The attempt fence now covers the phase, its restore and the
+// binding sync, checked at every write decision.
+test('a superseded late reconcile writes nothing after a newer window borrows the account', { timeout: 15_000 }, async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  const provider = 'anthropic'
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  const internals = h.service as unknown as {
+    scheduleGrantReconciliation: <T>(candidate: string, body: () => Promise<T>) => Promise<T>
+    cleaningTests: Set<string>
+  }
+  const realSchedule = internals.scheduleGrantReconciliation.bind(h.service)
+  let inChain = false
+  let releaseFirst!: () => void
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
+  let releaseSecond!: () => void
+  const secondGate = new Promise<void>(resolve => { releaseSecond = resolve })
+  let firstEntered!: () => void
+  const firstEnteredGate = new Promise<void>(resolve => { firstEntered = resolve })
+  let secondEntered!: () => void
+  const secondEnteredGate = new Promise<void>(resolve => { secondEntered = resolve })
+  let releaseCleanup!: () => void
+  const cleanupGate = new Promise<void>(resolve => { releaseCleanup = resolve })
+  let cleanupParked!: () => void
+  const cleanupParkedGate = new Promise<void>(resolve => { cleanupParked = resolve })
+  let releaseLate!: () => void
+  const lateGate = new Promise<void>(resolve => { releaseLate = resolve })
+  let lateParked!: () => void
+  const lateParkedGate = new Promise<void>(resolve => { lateParked = resolve })
+  let parkLateRead = false
+  let cleanupParkedOnce = false
+  let testRequests = 0
+  try {
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testRequests += 1
+        if (testRequests === 1) {
+          firstEntered()
+          await firstGate
+        } else {
+          secondEntered()
+          await secondGate
+        }
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    internals.scheduleGrantReconciliation = <T>(candidate: string, body: () => Promise<T>): Promise<T> =>
+      realSchedule(candidate, async () => {
+        inChain = true
+        try {
+          return await body()
+        } finally {
+          inChain = false
+        }
+      })
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 200
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    // Attempt 1's restore write is parked briefly, so the settlement lands while
+    // the cleanup is still running (the round-28 ordering): that is what makes
+    // the cleanup own the late write. Its own late reconcile write is parked for
+    // good once the cleanup resumes, so the phase overruns its deadline.
+    // The late phase's own read is the one parked: a read made INSIDE the
+    // provider's grant chain (a rotation echo) is passed through, or the newer
+    // window's borrow would be queued behind it forever.
+    h.credentials.raw.readRecord = async (key: string) => {
+      if (key === GRANT_KEY && parkLateRead && !inChain) {
+        parkLateRead = false
+        lateParked()
+        await lateGate
+      }
+      return realRead(key)
+    }
+    h.credentials.raw.modifyRecord = async (key: string, mutate: any) => {
+      const result = await realModify(key, mutate)
+      if (key === GRANT_KEY && internals.cleaningTests.has(provider) && !cleanupParkedOnce) {
+        cleanupParkedOnce = true
+        cleanupParked()
+        await cleanupGate
+      }
+      return result
+    }
+
+    const firstRun = h.service.testKey(provider, first.rowId)
+    await firstEnteredGate
+    // The watchdog abandoned the window; its cleanup put the user's projection
+    // (`rt-second`) back and now parks inside that restore.
+    await cleanupParkedGate
+    // The wedged request settles while the cleanup runs: the settlement asks the
+    // cleanup to reconcile the late write, and the test returns.
+    releaseFirst()
+    const firstResult = await firstRun
+    assert.equal(firstResult.ok, false)
+    assert.match(String(firstResult.error), /abandoned/)
+    // The cleanup continues, starts the late reconcile, and that phase's write is
+    // parked here — past its deadline, so it is superseded and gives up.
+    parkLateRead = true
+    releaseCleanup()
+    await lateParkedGate
+    await new Promise(resolve => setTimeout(resolve, 300))
+    assert.equal(liveProjectionRefresh(h), 'rt-second', 'attempt 1 did not restore the user projection')
+
+    // A new test attempt recovers the fenced provider (attempt 2), releases it
+    // and then borrows the same account again. Its own request is held for the
+    // rest of this test, so it must not run under the short isolation bound.
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 5_000
+    const secondRun = h.service.testKey(provider, first.rowId)
+    await secondEnteredGate
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-first'))
+
+    // The superseded late phase resumes now: it must leave the newer window's
+    // borrow alone.
+    releaseLate()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(
+      liveProjectionRefresh(h),
+      'rt-first',
+      "a superseded late reconcile wrote its old previous projection over the newer test window's borrow",
+    )
+
+    releaseSecond()
+    const secondResult = await secondRun
+    assert.equal(secondResult.ok, true)
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
+  } finally {
+    internals.scheduleGrantReconciliation = realSchedule
+    h.credentials.raw.modifyRecord = realModify
+    h.credentials.raw.readRecord = realRead
+    releaseFirst?.()
+    releaseSecond?.()
+    releaseCleanup?.()
+    releaseLate?.()
+    await h.close()
+  }
+})
+
+// Round 32 (advisor on round 31 item 2): the corrective pass was a single
+// retry, so a serving source that changed AGAIN while that write settled left
+// the profile on the source it no longer justified. The correction is now a
+// bounded retry chain: every settled write re-derives the serving source and
+// writes only what the newest one justifies.
+test('a serving-source flip during the corrective write is chased to the final source', async () => {
+  const h = await harness()
+  const provider = 'anthropic'
+  try {
+    await h.service.adoptProvider(provider)
+    await h.service.addKey(provider, 'pool', 'sk-ant-pool')
+    const record = h.store.provider(provider)!
+    const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers[provider].apiKeyEnv
+    const internals = h.service as unknown as {
+      syncBrokerBinding: (candidate: string, options?: Record<string, unknown>) => Promise<boolean>
+      foreignProjections: Set<string>
+    }
+    // Bound, but the serving source is a foreign projection: this call is the
+    // unbind direction.
+    h.settings.valueOf('llm-pi-ai').providers[provider].apiKeyEnv = record.brokerRef
+    internals.foreignProjections.add(provider)
+
+    // The serving source flips while each write settles: the unbind lands and
+    // the pool starts serving; the corrective bind lands and a foreign
+    // projection takes the route again. Only a bounded retry ends on the value
+    // the FINAL source justifies.
+    const realMutate = h.settings.mutate.bind(h.settings)
+    let writes = 0
+    h.settings.mutate = async (ns: string, ops: any[], revision?: number) => {
+      await realMutate(ns, ops, revision)
+      writes += 1
+      if (writes === 1) internals.foreignProjections.delete(provider)
+      if (writes === 2) internals.foreignProjections.add(provider)
+    }
+    try {
+      assert.equal(await internals.syncBrokerBinding(provider), true)
+    } finally {
+      h.settings.mutate = realMutate
+    }
+    assert.equal(writes, 3, 'the corrective write was not re-derived after the serving source changed again')
+    assert.equal(bound(), undefined, 'the profile kept a binding the final serving source does not justify')
+    assert.equal(internals.foreignProjections.has(provider), true)
+  } finally {
+    await h.close()
+  }
+})

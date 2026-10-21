@@ -165,6 +165,14 @@ const KEY_TEST_CLEANUP_DEADLINE_MS = 2_000
  * not need it, and shutdown must not hang on it.
  */
 const GRANT_DRAIN_DEADLINE_MS = 2_000
+/**
+ * How many times one binding decision is re-derived after its write settled on
+ * a serving source that has moved again (PR review round 32). The write itself
+ * is asynchronous, so each settled profile can already describe a source a
+ * newer classification replaced; a small bound chases that without letting a
+ * genuinely flapping route spawn an unbounded write chain.
+ */
+const BINDING_CORRECTION_LIMIT = 3
 
 /** The error-like `name` of an unknown thrown value, if it carries one. */
 function errorNameOf(value: unknown): string | undefined {
@@ -2997,6 +3005,11 @@ export class KeysManagerService {
     // credential write-back plus a binding sync, so persistence is refused
     // once shutdown started.
     if (this.closing) return
+    // PR review round 32: a remount replaces the credential backend while this
+    // body awaits its read, and the answer then describes records the new store
+    // does not hold. The epoch gates every decision below — owner, foreign
+    // marker, readiness and the binding sync — exactly like the hydration pass.
+    const epoch = this.hydrationEpoch
     const records = this.credentialRecords()
     if (records === undefined) return
     const providerRecord = this.store.provider(provider)
@@ -3011,6 +3024,7 @@ export class KeysManagerService {
     // the same generation guard load-time hydration applies.
     const generation = this.ownershipGenerations.get(provider) ?? 0
     const record = await records.readRecord(key)
+    if (this.hydrationEpoch !== epoch) return
     // PR review round 13: this read is authoritative for the provider's
     // projection, so it answers what a failed startup hydration could not —
     // ownership stops being unknown and the binding repair it skipped runs.
@@ -3172,6 +3186,10 @@ export class KeysManagerService {
     const previousRef = owner.oauth!.grantRef
     await records.modifyRecord(rotatedRef, () =>
       Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
+    // PR review round 32: the write above landed in the store this body started
+    // on; a remount since then makes every following decision (the owner
+    // cleanup, the generation commit) describe the replaced backend.
+    if (this.hydrationEpoch !== epoch) return
     // C6-1 post-write revalidation: a removal that landed while the write
     // was in flight already deleted its own record, so the generation just
     // written must be compensated or it outlives the account. The removed
@@ -3194,6 +3212,9 @@ export class KeysManagerService {
     // distinct record is deleted: in the same-ref case the write landed on
     // the row's own current record and must stay.
     const stillCurrent = await this.rotationStillCurrent(records, provider, key, rotatedRef, claimedGeneration)
+    // PR review round 32: the staleness probe is an await; the store may have
+    // been replaced under it.
+    if (this.hydrationEpoch !== epoch) return
     if (!stillCurrent) {
       if (rotatedRef !== previousRef) {
         // R5-MF1: the staleness probe is awaited, and a settled harvest can
@@ -3652,7 +3673,7 @@ export class KeysManagerService {
     // hands the route back: a failure keeps the fence for the next attempt.
     if (window.lateReconcileRequested) {
       window.lateReconcileRequested = false
-      const late = await this.withinCleanupDeadline(() => this.reconcileLateWindowProjection(window, true))
+      const late = await this.withinCleanupDeadline(() => this.reconcileLateWindowProjection(window, true, stillCurrent))
       if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
       if (late !== undefined) return late
     }
@@ -3744,7 +3765,11 @@ export class KeysManagerService {
    * provider's fence, which the default guards would read as a competing
    * cleanup and skip.
    */
-  private async reconcileLateWindowProjection(window: RowTestWindow, ownsFence = false): Promise<string | undefined> {
+  private async reconcileLateWindowProjection(
+    window: RowTestWindow,
+    ownsFence = false,
+    stillCurrent?: () => boolean,
+  ): Promise<string | undefined> {
     const facts = window.facts
     if (facts === undefined) return undefined
     const provider = window.provider
@@ -3762,11 +3787,16 @@ export class KeysManagerService {
       const active = this.testsActive.get(provider)
       if (active !== undefined && active !== window.test) return undefined
     }
-    const failure = await this.restoreProjection(facts.records, provider, window.row, facts.key, facts.previous, facts.borrowed, undefined, true)
+    // PR review round 32: the phase runs under its own deadline, so the attempt
+    // that started it can already be superseded when it resumes — the restore
+    // and the binding sync are both gated on that attempt identity, not merely
+    // checked by the caller afterwards.
+    const failure = await this.restoreProjection(facts.records, provider, window.row, facts.key, facts.previous, facts.borrowed, stillCurrent, true)
     if (failure !== undefined) {
       this.warn(`the late projection write of the abandoned connection test for ${provider} could not be reconciled: ${failure}`)
       return failure
     }
+    if (stillCurrent !== undefined && !stillCurrent()) return undefined
     await this.syncBindingAfterProjectionChange(provider)
     return undefined
   }
@@ -5381,7 +5411,7 @@ export class KeysManagerService {
    */
   private async syncBrokerBinding(
     provider: string,
-    options: { takeover?: boolean; write?: boolean; borrow?: boolean; corrective?: boolean } = {},
+    options: { takeover?: boolean; write?: boolean; borrow?: boolean; correction?: number } = {},
   ): Promise<boolean> {
     const record = this.store.provider(provider)
     if (record === undefined) return false
@@ -5445,14 +5475,17 @@ export class KeysManagerService {
     // The mutation is asynchronous, so the serving source can flip while it
     // settles: a native OAuth write classified foreign after the gates above
     // unbinds an already-unbound profile and returns, then this older bind
-    // commits over that projection (PR review round 31). One corrective pass
-    // re-derives the shape from the settled source; the flag keeps it bounded
-    // — a flip inside the correction is left to the next repair, and no
-    // settings echo re-enters this method, so the two passes cannot cycle.
-    if (options.corrective !== true) {
+    // commits over that projection (PR review round 31). Each settled write
+    // therefore re-derives the shape from the live source, and the correction
+    // itself retries — bounded — because the source can move again while the
+    // corrective write settles (PR review round 32). The counter, not a flag,
+    // keeps a genuinely flapping route from cycling: past the bound the next
+    // repair pass owns it.
+    const correction = options.correction ?? 0
+    if (correction < BINDING_CORRECTION_LIMIT) {
       const settled = this.store.provider(provider)
       if (settled !== undefined && this.keyPoolServes(settled) !== (desired !== undefined)) {
-        return this.syncBrokerBinding(provider, { ...options, corrective: true })
+        return this.syncBrokerBinding(provider, { ...options, correction: correction + 1 })
       }
     }
     // The profile matches the serving source now, by construction.
