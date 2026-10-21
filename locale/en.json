@@ -3,6 +3,11 @@
     "title": "Keys Manager",
     "description": "Multiple API keys per provider with sticky sessions, round-robin selection, retry failover, cooldown recovery, and searchable extra providers."
   },
+  "filterAll": "All",
+  "filterBuiltin": "Built-in",
+  "filterPlugin": "Plugin",
+  "filterOauth": "OAuth-capable",
+  "filterTransport": "Transport",
   "addAccount": "Add account",
   "adoptAccountTitle": "Sign in with an OAuth account to use this provider.",
   "accountIdentity": "Account",
