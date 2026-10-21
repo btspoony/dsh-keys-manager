@@ -27,6 +27,17 @@ function messageOf(error: unknown): string {
  */
 const TEST_KEY_DEADLINE_MS = 30_000
 
+/**
+ * Bound on how long a timed-out row test keeps the snapshot isolation while its
+ * RPC is still open (PR review round 24). The host restores the route when the
+ * answer lands, not when this client stops waiting, so the window has to
+ * outlive the deadline; past this point the host's own test window (its 20 s
+ * request timeout plus the 5 s ordinary-request wait margin) has closed even
+ * for a late answer, so a lost one cannot freeze every later snapshot for the
+ * life of the page.
+ */
+const TEST_KEY_ISOLATION_MS = TEST_KEY_DEADLINE_MS + 5_000
+
 /** Resolve with `work`'s value, or reject once `ms` passed without it. */
 async function withDeadline<T>(work: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -242,13 +253,17 @@ export function createStore(ctx: ClientContext): ClientStore {
       // and never replaces the snapshot: the host's answer is observation-only.
       activeTests += 1
       testGeneration += 1
-      try {
-        const result = await withDeadline(rpc('testKey', { provider, keyId }), TEST_KEY_DEADLINE_MS, 'testKey')
-        if (!result.ok) throw new Error(result.error.message)
-        return testOutcome(result.value)
-      } catch (error) {
-        return { ok: false, error: messageOf(error) }
-      } finally {
+      const request = rpc('testKey', { provider, keyId })
+      // The deadline releases only the row: the snapshot isolation lasts until
+      // the RPC actually settles, because the host may still project the tested
+      // account while it runs (PR review round 24). The bound keeps a lost
+      // answer from retaining the window forever.
+      let released = false
+      let isolation: ReturnType<typeof setTimeout> | undefined
+      const release = (): void => {
+        if (released) return
+        released = true
+        if (isolation !== undefined) clearTimeout(isolation)
         activeTests -= 1
         // Invalidate every snapshot that overlapped the window, including one
         // that is still in flight when the host restores the route.
@@ -256,6 +271,15 @@ export function createStore(ctx: ClientContext): ClientStore {
         // The host has put the route back by now, so a mutation view dropped
         // inside the window can be read again without its borrowed projection.
         refreshDroppedState()
+      }
+      isolation = setTimeout(release, TEST_KEY_ISOLATION_MS)
+      void request.then(release, release)
+      try {
+        const result = await withDeadline(request, TEST_KEY_DEADLINE_MS, 'testKey')
+        if (!result.ok) throw new Error(result.error.message)
+        return testOutcome(result.value)
+      } catch (error) {
+        return { ok: false, error: messageOf(error) }
       }
     },
     beginTransportLogin(route: string): Promise<AccountAttemptResult> {

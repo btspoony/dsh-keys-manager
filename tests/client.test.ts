@@ -663,6 +663,53 @@ describe('row test dispatch', () => {
     expect(rowProjected('k_oauthB')).toBeUndefined()
     expect(rowProjected('k_oauthA')).toBe(true)
   })
+
+  // PR #26 review round 24 (P2): the client deadline released the row but also
+  // ended the snapshot isolation while the RPC kept running, so a refresh that
+  // started after it stored the projected test account. The window now lasts
+  // until the RPC actually settles.
+  test('a timed-out row test keeps dropping snapshots until its RPC settles', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      if (endpoint === 'keysManager/deleteKey') return { ok: true, value: borrowed }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      // The deadline releases the row while the host still owes an answer.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await test).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // A refresh started after the deadline belongs to the same borrow window.
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // A state-carrying mutation's view is dropped the same way.
+      const mutation = await store.call('deleteKey', { provider: 'zai-coding-cn', keyId: 'k_aaaaaaaa' })
+      expect(mutation.ok).toBe(true)
+      expect(rowProjected()).toBeUndefined()
+
+      // The RPC settles: the window closes and the deferred read lands.
+      releaseTest({ ok: true, value: { ok: false, latencyMs: 0, error: 'timeout' } })
+      await Promise.resolve()
+      await Promise.resolve()
+      await store.load()
+      expect(rowProjected()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 

@@ -5229,6 +5229,11 @@ export class KeysManagerService {
     if (options.write === false && profile === undefined) return true
     const current = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : undefined
     const desired = this.keyPoolServes(record) ? record.brokerRef : undefined
+    // Binding is a guess while this process cannot attribute the projection:
+    // the empty owner/foreign maps otherwise read as "the pool serves" and
+    // overwrite a persisted grant nobody could see (PR review round 24). The
+    // unbind direction is the safe one and still runs.
+    if (desired !== undefined && !this.projectionOwnershipKnown(provider)) return false
     if (current === desired) return true
     if (desired === undefined) {
       // Never strip a value Keys Manager did not write: a user hand-edit and

@@ -12261,3 +12261,47 @@ test('a superseded hydration read failure does not clobber a newer ownership cla
     await h.close()
   }
 })
+
+// ── PR #26 review round 24 ──────────────────────────────────────────────────
+
+// Codex P1 (thread PRRT_kwDOVOL9Bc6us5rU): `syncBrokerBinding` derived its
+// direction from the owner/foreign maps, which are empty while a provider's
+// projection read failed — so an `addKey` on an unbound profile bound the
+// broker over a persisted projection this process could not read. Binding now
+// requires known ownership; the unbind direction still runs.
+test('an addKey with unknown projection ownership does not bind the broker', async () => {
+  const h = await harness()
+  const grantKey = 'llm-pi-ai/zai-coding-cn'
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const record = h.store.provider('zai-coding-cn')!
+    const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv
+    assert.equal(bound(), record.brokerRef, 'the key pool was not bound at adoption')
+    // Restart shape: the profile is unbound, a persisted OAuth projection owns
+    // the route, and this process cannot read that projection.
+    delete h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv
+    h.credentials.records.set(grantKey, { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native', access: 'at-native' } })
+    h.credentials.raw.failReadRecordRefs.add(grantKey)
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const internals = restarted as unknown as {
+      projectionOwnershipKnown: (provider: string) => boolean
+      foreignProjections: Set<string>
+    }
+    await eventually(() => assert.equal(internals.projectionOwnershipKnown('zai-coding-cn'), false))
+
+    await restarted.addKey('zai-coding-cn', 'backup', 'sk-zai-backup')
+
+    assert.equal(bound(), undefined, 'addKey bound the broker while projection ownership was unknown')
+
+    // An authoritative read answers: ownership is known, the unowned projection
+    // stays the serving source, and the binding converges with no write.
+    h.credentials.raw.failReadRecordRefs.delete(grantKey)
+    h.emitEvent('credentials/record-updated', grantKey)
+    await eventually(() => assert.equal(internals.projectionOwnershipKnown('zai-coding-cn'), true))
+    await eventually(() => assert.equal(internals.foreignProjections.has('zai-coding-cn'), true))
+    assert.equal(bound(), undefined, 'the converged route bound the broker over its projection')
+  } finally {
+    h.credentials.raw.failReadRecordRefs.delete(grantKey)
+    await h.close()
+  }
+})
