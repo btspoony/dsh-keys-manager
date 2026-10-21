@@ -1510,6 +1510,9 @@ export class KeysManagerService {
       timer = setTimeout(() => {
         wake(false)
       }, ms)
+      // I-000116: a request waiting on hydration must not hold the process
+      // open for the rest of the wait; every exit path still clears it.
+      timer.unref?.()
       live.add(onLanded)
     })
   }

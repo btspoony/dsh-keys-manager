@@ -7965,6 +7965,64 @@ test('a timed-out hydration wait retains nothing per request (R10 SF2)', async (
   }
 })
 
+// I-000116: the per-request wait timer is a bare `setTimeout`, so a request
+// waiting on hydration kept the whole process alive for the rest of the wait.
+// The wait must not hold the event loop: the timer is unref'd on creation while
+// every cleanup path (late landing, timeout) still clears it.
+
+test('a hydration wait timer does not keep the process alive (I-000116)', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-unref', email: 'dev@example.com' })
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) return new Promise<FakeCredentialRecord | undefined>(() => {})
+      return realRead(key)
+    }
+    try {
+      const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+      const seam = restarted as unknown as { hydrationWaitMs: number }
+      seam.hydrationWaitMs = 250
+      // Observe what the wait timer itself does: wrap the handle the wait
+      // creates and record whether `unref` was reached before it expired.
+      const realSetTimeout = globalThis.setTimeout
+      const timers: { ms: number | undefined; unrefCalled: boolean }[] = []
+      globalThis.setTimeout = ((callback: (...args: never[]) => void, ms?: number, ...args: never[]) => {
+        const handle = realSetTimeout(callback, ms, ...args) as unknown as { unref?: () => void }
+        const record = { ms, unrefCalled: false }
+        timers.push(record)
+        const unref = handle.unref?.bind(handle)
+        handle.unref = () => {
+          record.unrefCalled = true
+          unref?.()
+        }
+        return handle as unknown as ReturnType<typeof setTimeout>
+      }) as unknown as typeof setTimeout
+      try {
+        await consume(restarted.streamListener(
+          { provider: 'anthropic', model: 'model', sessionId: 'session-unref', messages: [] },
+          async function* () {
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          } as any,
+        ))
+      } finally {
+        globalThis.setTimeout = realSetTimeout
+      }
+      const waitTimers = timers.filter(candidate => candidate.ms === seam.hydrationWaitMs)
+      assert.ok(waitTimers.length > 0, 'the request exercised the bounded hydration wait')
+      assert.deepEqual(
+        waitTimers.map(candidate => candidate.unrefCalled),
+        waitTimers.map(() => true),
+        'the hydration wait timer is unref\'d, so it holds no process reference',
+      )
+    } finally {
+      h.credentials.raw.readRecord = realRead
+    }
+  } finally {
+    await h.close()
+  }
+})
+
 // PR review round 13: hydration used to skip every provider that holds no
 // OAuth rows, so a native grant persisted under `llm-pi-ai/<provider>` on a
 // key-only managed route stayed invisible to the startup repair — which then
