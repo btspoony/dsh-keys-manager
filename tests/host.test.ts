@@ -11779,3 +11779,119 @@ for (const { label, stored: nativeRecord } of ADOPTED_FOREIGN_PROJECTIONS) {
     }
   })
 }
+
+// ── PR #26 review round 19 ──────────────────────────────────────────────────
+
+// I-000182: the echo reconciliation recorded the authoritative read and then
+// returned early for a provider that holds no OAuth row, before the api-key /
+// unrecognized-payload classification that sets the foreign marker. The queued
+// binding repair then read the pool as the serving source and kept the broker
+// reference over the native credential this route actually resolves. A present
+// record is classified before that early return now.
+test('a key-only provider reconciled onto a native api-key record is foreign', async () => {
+  const h = await harness()
+  const key = 'llm-pi-ai/zai-coding-cn'
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const record = h.store.provider('zai-coding-cn')!
+    const bound = (): unknown => h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv
+    assert.equal(bound(), record.brokerRef, 'the key pool was not bound at adoption')
+    // A native writer takes the route over while this process cannot read any
+    // projection: startup ownership stays unknown and nothing is repaired.
+    h.credentials.records.set(key, { kind: 'api-key', key: 'sk-native-route' })
+    const native = structuredClone(h.credentials.records.get(key))
+    h.credentials.raw.failReadRecordRefs.add(key)
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const internals = restarted as unknown as {
+      foreignProjections: Set<string>
+      projectionOwnershipKnown: (provider: string) => boolean
+      keyPoolServes: (candidate: ProviderRecord) => boolean
+    }
+    await eventually(() => assert.equal(internals.projectionOwnershipKnown('zai-coding-cn'), false))
+
+    // The seam answers again: the first authoritative read sees the native
+    // api-key record, so the route is classified and the skipped repair runs.
+    h.credentials.raw.failReadRecordRefs.delete(key)
+    h.emitEvent('credentials/record-updated', key)
+
+    await eventually(() => assert.equal(internals.foreignProjections.has('zai-coding-cn'), true))
+    await eventually(() => assert.equal(bound(), undefined, 'the broker reference was kept over the native record'))
+    assert.equal(internals.projectionOwnershipKnown('zai-coding-cn'), true)
+    assert.equal(internals.keyPoolServes(record), false, 'the pool still counts as the serving source')
+    assert.deepEqual(h.credentials.records.get(key), native, 'the reconcile rewrote the native record')
+    assert.match(restarted.getState().warnings.join('\n'), /natively managed API-key credential/)
+  } finally {
+    h.credentials.raw.failReadRecordRefs.delete(key)
+    await h.close()
+  }
+})
+
+// I-000179 (late restore): the watchdog's cleanup can hand the route back and
+// release the provider while the abandoned request is still parked, so the
+// account whose projection the window captured can be deleted before that
+// request settles. The late reconcile then compared against `previous`, whose
+// row no longer matched anything, so nothing rejected the write and the route
+// was handed a deleted account's credential. The restore now requires the
+// previous owner to still be managed, leaves the live record alone and reports
+// that the borrow could not be undone.
+test('a late abandoned-window restore does not restore a deleted owner', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        await testGate
+        // The adapter ignored the abort and rewrote the borrowed projection
+        // after the cleanup had already handed the route back.
+        await h.credentials.raw.modifyRecord(GRANT_KEY, () => Promise.resolve(grantPayload({
+          refresh: 'rt-first-refreshed',
+          access: 'at-refreshed',
+          accountId: 'acc-first',
+          email: 'first@example.com',
+        })))
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    // The watchdog put the user's projection back and released the provider…
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
+    await eventually(() => assert.equal(
+      (h.service as unknown as { cleaningTests: Set<string> }).cleaningTests.has('anthropic'),
+      false,
+    ))
+    // …so the previous owner can be deleted before the wedged request settles.
+    await h.service.removeAccount('anthropic', second.rowId)
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the demotion left the removed account projected')
+
+    releaseTest?.()
+    const result = await testRun!
+
+    // The late write is reconciled: the deleted account's credential is NOT
+    // put back…
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-first-refreshed'))
+    assert.equal(h.credentials.records.has(second.grantRef), false, 'the deleted account was re-projected')
+    // …the newer generation is still written back to the tested row…
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === first.rowId)!
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-first-refreshed').digest('hex').slice(0, 12))
+    assert.equal(row.oauth!.grantRef, rotatedRef)
+    assert.ok(h.credentials.records.has(rotatedRef))
+    // …and the route reports that its borrow could not be undone.
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /abandoned/)
+    assert.match(h.service.getState().warnings.join('\n'), /is no longer managed/)
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

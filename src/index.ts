@@ -2938,12 +2938,18 @@ export class KeysManagerService {
       return
     }
     // I-000125 marker hygiene: the removal branch above is the marker's ONLY
-    // consumer, so it must run before this early return. A provider that holds
-    // no OAuth row cannot be demoted (nothing to mark and nobody to warn), but
+    // consumer, so nothing may return before it. A provider that holds no
+    // OAuth row cannot be demoted (nothing to mark and nobody to warn), but
     // its own removal echo still lands here — returning first would leave the
     // marker armed for its whole TTL and mask a genuine out-of-band removal of
     // the projection that serves a row added inside that window.
-    if (accounts.length === 0) return
+    // PR review round 19 (I-000182): the classification below runs for a
+    // key-only provider too. An early return on `accounts.length === 0` left
+    // the foreign marker unset while the native api-key / unrecognized record
+    // still served the route ahead of the broker, so the queued binding repair
+    // treated the pool as the serving source and bound/kept the broker
+    // reference over it. With no OAuth row the unowned-grant branch below
+    // classifies a valid grant the same way.
     if (record.kind === 'api-key') {
       // Native api-key management took the route over: the manager no
       // longer owns any projection here.
@@ -3545,7 +3551,7 @@ export class KeysManagerService {
     if (this.cleaningTests.has(provider)) return
     const active = this.testsActive.get(provider)
     if (active !== undefined && active !== window.test) return
-    const failure = await this.restoreProjection(facts.records, provider, window.row, facts.key, facts.previous, facts.borrowed)
+    const failure = await this.restoreProjection(facts.records, provider, window.row, facts.key, facts.previous, facts.borrowed, undefined, true)
     if (failure !== undefined) {
       this.warn(`the late projection write of the abandoned connection test for ${provider} could not be reconciled: ${failure}`)
       return
@@ -4023,6 +4029,11 @@ export class KeysManagerService {
    * Put the projection back as it was before the test borrowed it, without
    * losing or overwriting anything that changed meanwhile.
    *
+   * `late` marks the abandoned window's settlement, after the watchdog's
+   * cleanup already released the provider: a removal no longer waits for this
+   * test, so the pre-test projection's owning row may be gone by the time this
+   * runs and must not be projected again (PR review round 19).
+   *
    * The decision is compare-by-payload against the borrowed grant: only a
    * live record that still carries it — or a refresh-rotated version of it
    * that {@link matchOwningAccount} attributes to the tested row — is
@@ -4045,6 +4056,7 @@ export class KeysManagerService {
     previous: CredentialRecordLike | undefined,
     borrowed: OAuthGrantPayload,
     stillCurrent?: () => boolean,
+    late?: boolean,
   ): Promise<string | undefined> {
     let live: CredentialRecordLike | undefined
     try {
@@ -4134,6 +4146,20 @@ export class KeysManagerService {
     if (previousOwner?.id === row.id) {
       this.reconcileProjectionOwner(provider, live)
       return undefined
+    }
+    // PR review round 19 (I-000179 late restore): only a late restore can find
+    // its pre-test projection's owner gone — the watchdog's cleanup released
+    // the provider, so a removal no longer waited for this test and `rows` no
+    // longer matches that payload, leaving nothing else to reject the write.
+    // Restoring it would serve a deleted account's credential. An in-window
+    // restore is protected by settleTestBeforeRemoval and keeps restoring a
+    // pre-test projection no pool row owns (a foreign grant it borrowed over).
+    if (late === true && (previousOwner === undefined || !this.accountRowIsManaged(provider, previousOwner))) {
+      if (superseded()) return takeover
+      this.reconcileProjectionOwner(provider, live)
+      const message = `The credential projection at ${key} was not restored after the test: the account whose grant it carried is no longer managed. The route keeps whichever credential those records hold now.`
+      this.pushWarning(message)
+      return message
     }
     // The record this restore left in place: the tail reconciles the owner map
     // against the live record, never against the payload it hoped to restore
