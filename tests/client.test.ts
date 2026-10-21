@@ -199,10 +199,11 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     filterTransport: '传输',
     availableEmpty: '没有匹配的 Provider。',
     // Managed section: its empty body distinguishes "none exist" from "the
-    // active chip hides them", so both values resolve real copy.
+    // active chip or the query hides them", so all values resolve real copy.
     managed: '已接管',
     managedEmpty: '还没有接管的 Provider。从下方选择一个开始。',
     managedFilteredEmpty: '当前筛选下没有已接管的 Provider。',
+    noSearch: '换个关键词试试。',
     cancel: '取消',
     deleteConfirm: '确认删除',
     deleting: '删除中…',
@@ -2886,6 +2887,42 @@ describe('provider quick filter', () => {
         .toEqual(second.state.providers.map(provider => provider.provider).sort())
     } finally {
       second.view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a query that empties the managed list says so under All too', async () => {
+    const { view, state } = await mountFiltered()
+    try {
+      // All is the default chip, so this is the untinted page plus a search.
+      expect(state.providers.some(provider => provider.managed)).toBe(true)
+      typeQuery(view, 'no-such-provider')
+      const managedSection = section(view, '已接管')
+      expect(findByClass(descendants(view.nodes, managedSection), 'km-provider')).toHaveLength(0)
+      const empty = findByClass(descendants(view.nodes, managedSection), 'km-empty')[0]
+      // The query hides the rows; "nothing is managed" would be false.
+      expect(empty?.text).toBe('换个关键词试试。')
+      expect(empty?.text).not.toBe('还没有接管的 Provider。从下方选择一个开始。')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a query hiding a chip-matching row takes the query copy, not the chip copy', async () => {
+    const { view } = await mountFiltered()
+    try {
+      selectChip(view, 'plugin')
+      // `blocked-route` matches this chip but not the query, so the chip is not
+      // what empties the list.
+      typeQuery(view, 'no-such-provider')
+      const managedSection = section(view, '已接管')
+      expect(findByClass(descendants(view.nodes, managedSection), 'km-provider')).toHaveLength(0)
+      const empty = findByClass(descendants(view.nodes, managedSection), 'km-empty')[0]
+      expect(empty?.text).toBe('换个关键词试试。')
+      expect(empty?.text).not.toBe('当前筛选下没有已接管的 Provider。')
+    } finally {
+      view.unmount()
       setRuntimeContext(null)
     }
   })

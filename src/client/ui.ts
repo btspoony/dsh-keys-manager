@@ -1524,9 +1524,11 @@ function KeysManagerBody(): React.ReactElement {
     if (value === 'transport') return transportAccounts.length
     return searchable.filter(provider => matchesFilter(provider, value)).length
   }
-  // The managed list can be empty because nothing is managed or because the
-  // active chip (or query) hides rows; say which rather than claiming none exist.
-  const managedHiddenByFilter = filter !== 'all' && providers.some(provider => provider.managed)
+  // The managed list can be empty because nothing is managed, or because the
+  // query or the active chip hides rows that exist; the empty body says which.
+  // The query branch wins in the renderer, so this predicate needs only the
+  // chip term: with a query present the query copy is shown regardless.
+  const managedHiddenByChip = filter !== 'all' && providers.some(provider => provider.managed)
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1622,7 +1624,7 @@ function KeysManagerBody(): React.ReactElement {
         h('span', { className: 'km-section-count' }, managed.length),
       ),
       managed.length === 0
-        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, managedHiddenByFilter ? t('managedFilteredEmpty') : t('managedEmpty')))
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, normalizedQuery.length > 0 ? t('noSearch') : managedHiddenByChip ? t('managedFilteredEmpty') : t('managedEmpty')))
         : h('div', { className: 'km-provider-list' }, managed.map(provider => h(ProviderCard, {
             key: provider.provider,
             provider,
