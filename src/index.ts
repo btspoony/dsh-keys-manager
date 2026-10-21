@@ -2992,6 +2992,11 @@ export class KeysManagerService {
    * removal is allowed to complete while the write is in flight.
    */
   private async reconcileGrantRecord(provider: string, key: string): Promise<void> {
+    // PR review round 30: the shutdown drain abandons a chain that has not
+    // settled, and this body resumes after `close()`. Its whole result is a
+    // credential write-back plus a binding sync, so persistence is refused
+    // once shutdown started.
+    if (this.closing) return
     const records = this.credentialRecords()
     if (records === undefined) return
     const providerRecord = this.store.provider(provider)
@@ -3670,6 +3675,11 @@ export class KeysManagerService {
    * borrowed projection.
    */
   private async cleanupTestWindow(window: RowTestWindow, stillCurrent?: () => boolean): Promise<string | undefined> {
+    // PR review round 30: the watchdog can abandon this window during or after
+    // shutdown. Every step below writes (credential record, binding, state), so
+    // the cleanup is refused instead of landing after `close()`; the process is
+    // going away, which leaves the borrowed projection as the store holds it.
+    if (this.closing) return 'Keys Manager is shutting down; the test cleanup was skipped'
     // QC fix wave 3 (W-001): a re-read cannot tell the pre-borrow payload from
     // a write that has not landed yet, so the cleanup first waits for the
     // borrow/binding mutations this window started. Past the caller's deadline
@@ -3974,6 +3984,12 @@ export class KeysManagerService {
         result = this.abandonedTestResult()
         return
       }
+      if (this.closing) {
+        // PR review round 30: shutdown abandons the chain parked here, so the
+        // borrow write below must not land after `close()`.
+        result = this.shutdownTestResult()
+        return
+      }
       // PR review round 12: both reads above are awaits, so a removal can have
       // deleted the provider or this row while they were in flight (a test that
       // registered and one that did not are covered: the marker refuses the
@@ -4037,6 +4053,12 @@ export class KeysManagerService {
           latencyMs: 0,
           error: `The grant could not be projected for the test: ${error instanceof Error ? error.message : String(error)}`,
         }
+        return
+      }
+      if (this.closing) {
+        // PR review round 30: the borrow write settled after shutdown started,
+        // so no binding release, request or restore may follow it.
+        result = this.shutdownTestResult()
         return
       }
       if (borrowRefused) {
@@ -4123,7 +4145,13 @@ export class KeysManagerService {
         // released; a failed reconcile keeps the fence (the existing
         // borrow-could-not-be-undone path).
         window.settled = true
-        if (window.cleaned) {
+        if (this.closing) {
+          // PR review round 30: the shutdown drain abandoned this chain; the
+          // restore and the binding sync below are persistence, and the store
+          // is closed already. Nothing is written, so the borrowed projection
+          // stays as the credential store holds it.
+          restoreFailure ??= this.shutdownTestResult().error
+        } else if (window.cleaned) {
           // QC fix wave 2: this window was abandoned and its cleanup already
           // ran (or is running) under the watchdog. Restoring from this
           // promise's own pre-test snapshot now would race whatever state the
@@ -4164,6 +4192,15 @@ export class KeysManagerService {
       ok: false,
       latencyMs: 0,
       error: `The connection test was abandoned after ${this.isolationWaitMs}ms and its borrowed credential was cleaned up; run the test again.`,
+    }
+  }
+
+  /** The refusal a chain reports when shutdown refuses its persistence. */
+  private shutdownTestResult(): KeyTestResult {
+    return {
+      ok: false,
+      latencyMs: 0,
+      error: 'Keys Manager is shutting down; the connection test did not finish and its cleanup was skipped.',
     }
   }
 
@@ -5445,6 +5482,10 @@ export class KeysManagerService {
    * triggered them; the next repair pass retries.
    */
   private async syncBindingAfterProjectionChange(provider: string): Promise<void> {
+    // PR review round 30: this body is chained behind a hydration read that can
+    // land after `close()` has drained the chains; the binding write it ends in
+    // is persistence, so shutdown refuses it.
+    if (this.closing) return
     try {
       await this.syncBrokerBinding(provider)
     } catch (error) {

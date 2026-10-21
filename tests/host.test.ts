@@ -12768,3 +12768,95 @@ test('close resolves under the drain bound while a test request never settles', 
     await h.close()
   }
 })
+
+// ── PR #26 review round 30 ──────────────────────────────────────────────────
+
+// Round 29 stopped shutdown from waiting on an abandoned grant chain, but the
+// chain still runs to completion afterwards: its row-test cleanup restores the
+// borrowed projection and re-syncs the route binding, which used to write a
+// credential record and the settings document into a manager that had already
+// closed. Persistence is now refused as soon as shutdown started, so the
+// resumed chain leaves every store untouched and rejects nothing.
+test('a grant chain that resumes after close writes nothing', { timeout: 10_000 }, async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        // The adapter ignores the abort the test timeout raised: this request
+        // only settles once the test releases it, after close() returned.
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    // No watchdog abandonment: the window is still unowned when the chain
+    // resumes, so its own cleanup is the one that would write after close.
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 2_000
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    // Count only the persistence calls that happen after close().
+    const raw = h.credentials.raw as {
+      modifyRecord: (...args: any[]) => Promise<unknown>
+      deleteRecord: (...args: any[]) => Promise<void>
+    }
+    const writes = { modify: 0, delete: 0 }
+    let counting = false
+    const modifyRecord = raw.modifyRecord.bind(raw)
+    raw.modifyRecord = async (...args: any[]) => {
+      if (counting) writes.modify += 1
+      return await modifyRecord(...args)
+    }
+    const deleteRecord = raw.deleteRecord.bind(raw)
+    raw.deleteRecord = async (...args: any[]) => {
+      if (counting) writes.delete += 1
+      return await deleteRecord(...args)
+    }
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+
+    let expired: ReturnType<typeof setTimeout> | undefined
+    const closed = await Promise.race([
+      h.service.close().then(() => true),
+      new Promise<boolean>(resolve => {
+        expired = setTimeout(() => resolve(false), 1_000)
+      }),
+    ])
+    clearTimeout(expired)
+    assert.equal(closed, true, 'close() waited for a grant chain whose request never settles')
+
+    // What close() left behind is the baseline the resumed chain may not move.
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')
+    const revision = namespace.revision
+    const records = JSON.stringify([...h.credentials.records])
+    const state = JSON.stringify(h.store.state)
+    const file = await readFile(h.store.file, 'utf8')
+    counting = true
+
+    releaseTest?.()
+    await testRun
+    // The abandoned window's settlement retries run off the test promise.
+    await new Promise<void>(resolve => { setTimeout(resolve, 50) })
+
+    assert.deepEqual(rejections, [], 'the abandoned chain rejected after close()')
+    assert.equal(writes.modify + writes.delete, 0, 'a credential record was written after close()')
+    assert.equal(JSON.stringify([...h.credentials.records]), records, 'a credential record changed after close()')
+    assert.equal(namespace.revision, revision, 'the settings document was mutated after close()')
+    assert.equal(JSON.stringify(h.store.state), state, 'the provider state was mutated after close()')
+    assert.equal(await readFile(h.store.file, 'utf8'), file, 'the state document was rewritten after close()')
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
