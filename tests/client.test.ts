@@ -710,6 +710,131 @@ describe('row test dispatch', () => {
       vi.useRealTimers()
     }
   })
+
+  // PR #26 review round 26 (P2): the round-24 window had a fixed cap
+  // (`deadline + 5s`). A row test whose RPC outlived it lost the snapshot
+  // isolation while the host still held the tested projection, so a refresh
+  // could store that projection. The window now lasts until the RPC settles.
+  test('a timed-out row test keeps snapshot isolation past the old cap', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      // The row deadline ends the row while the host still owes an answer.
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await test).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // Well past the cap the round-24 code used, the RPC still borrows the
+      // route, so the borrowed snapshot is still dropped.
+      await vi.advanceTimersByTimeAsync(25_000)
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // The RPC settles: the isolation ends and a read lands again.
+      releaseTest({ ok: true, value: { ok: true, latencyMs: 9 } })
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // PR #26 review round 26 (P2): the window is also released by a rejecting
+  // RPC, not by a cap, and the late rejection stays out of the snapshot.
+  test('a timed-out row test keeps snapshot isolation when the RPC rejects', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    let failTest!: (error: Error) => void
+    const testAnswer = new Promise<RpcResult>((_resolve, reject) => { failTest = reject })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const test = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await test).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+      await vi.advanceTimersByTimeAsync(25_000)
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // The rejected RPC ends the borrow; nothing about it reaches the snapshot.
+      failTest(new Error('route closed'))
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBe(true)
+      expect(store.getSnapshot().error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // PR #26 review round 26 (P2): the isolation release is owned by the request
+  // that opened the window. An older request settling later must not close the
+  // newer window nor invalidate the reads that belong to it.
+  test('an old settled request does not clear a newer test isolation', async () => {
+    const state = makeState()
+    const borrowed = structuredClone(state)
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext({ ok: true, value: state })
+    const answers: Array<(result: RpcResult) => void> = []
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: borrowed }
+      if (endpoint === 'keysManager/testKey') {
+        return await new Promise<RpcResult>(resolve => { answers.push(resolve) })
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    const rowProjected = () => store.getSnapshot().state?.providers[0]?.keys[0]?.projected
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const first = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await first).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // A second test starts after the first row already timed out.
+      const second = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(await second).toEqual({ ok: false, error: 'testKey did not answer within 30s' })
+
+      // The older RPC settles first; the newer one still borrows the route.
+      answers[0]!({ ok: true, value: { ok: true, latencyMs: 3 } })
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBeUndefined()
+
+      // Only the newer RPC settling ends the isolation.
+      answers[1]!({ ok: true, value: { ok: false, latencyMs: 0, error: 'timeout' } })
+      await vi.advanceTimersByTimeAsync(0)
+      await store.load()
+      expect(rowProjected()).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 
