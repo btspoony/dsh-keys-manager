@@ -197,6 +197,10 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     filterPlugin: '插件',
     filterOauth: '支持 OAuth',
     filterTransport: '传输',
+    // Unattributed request chip: the label and its explanation resolve the real
+    // copy, so the row is asserted by what it renders.
+    unattributed: '{n} 无归属',
+    unattributedHint: '该路由在归属读取尚未落地（或已失败）期间应答的请求数；读取完成归属后清零。',
     availableEmpty: '没有匹配的 Provider。',
     cancel: '取消',
     deleteConfirm: '确认删除',
@@ -2804,6 +2808,47 @@ describe('provider quick filter', () => {
       selectChip(view, 'all')
       expect(providerNames(view).sort()).toEqual(state.providers.map(provider => provider.provider).sort())
       expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(state.transportAccounts!.length)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+})
+
+// I-000120 / D8 / compass `## Acceptance Criteria`: a request served without an
+// attributed account shows as a per-provider chip on the provider row, absent
+// at zero, with the fixed explanation as both `title` and `aria-label` (a
+// `title` alone is invisible to keyboard and screen-reader users).
+
+describe('unattributed request chip', () => {
+  const hint = '该路由在归属读取尚未落地（或已失败）期间应答的请求数；读取完成归属后清零。'
+
+  test('the chip copy exists in both dictionaries and mirrors locale/*.json', () => {
+    expectLocaleParity(['unattributed', 'unattributedHint'])
+  })
+
+  test('the provider row shows the count only above zero, with the same sentence as title and aria-label', async () => {
+    const state = makeState()
+    state.providers[0]!.unattributedRequests = 3
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    try {
+      // One chip, on the only row whose count is above zero.
+      const chips = findByClass(view.nodes, 'km-unattributed')
+      expect(chips).toHaveLength(state.providers.filter(provider => (provider.unattributedRequests ?? 0) > 0).length)
+      const chip = chips[0]!
+      expect(chip.text).toBe('3 无归属')
+      expect(chip.props?.title).toBe(hint)
+      expect(chip.props?.['aria-label']).toBe(hint)
+
+      // A row that carries no count renders exactly as before.
+      const zeroRow = findByClass(view.nodes, 'km-provider').find(card =>
+        descendants(view.nodes, card).some(node => node.text === 'DeepInfra'),
+      )!
+      expect(findByClass(descendants(view.nodes, zeroRow), 'km-unattributed')).toHaveLength(0)
     } finally {
       view.unmount()
       setRuntimeContext(null)

@@ -1038,6 +1038,17 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         ),
       ),
       h('span', { className: 'km-provider-side' },
+        // I-000120 / D8: requests this route served without an attributed
+        // account. Rendered only above zero; the explanation is the same
+        // sentence for `title` and `aria-label` because `title` alone is
+        // invisible to keyboard and screen-reader users (compass copy).
+        (provider.unattributedRequests ?? 0) > 0
+          ? h('span', {
+              className: 'km-tag km-tag-warn km-unattributed',
+              title: t('unattributedHint'),
+              'aria-label': t('unattributedHint'),
+            }, t('unattributed', { n: provider.unattributedRequests ?? 0 }))
+          : null,
         managed
           ? h('span', { className: 'km-count' }, countText(t, keyCount, 'providerKeyOne', 'providerKeys'))
           : h('span', { className: 'km-count km-muted' }, adoptable ? t('unmanaged') : t('unsupported')),

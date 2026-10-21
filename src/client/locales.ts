@@ -11,6 +11,10 @@ const zh = {
       filterPlugin: '插件',
       filterOauth: '支持 OAuth',
       filterTransport: '传输',
+      // Unattributed requests (I-000120, D8): the compass's fixed copy, shared
+      // with the filter plan's dictionary task — one pair, never a second.
+      unattributed: '{n} 无归属',
+      unattributedHint: '该路由在归属读取尚未落地（或已失败）期间应答的请求数；读取完成归属后清零。',
       managed: '已接管',
       available: '可添加 Providers',
       managedEmpty: '还没有接管的 Provider。从下方选择一个开始。',
@@ -183,6 +187,8 @@ const en = {
       filterPlugin: 'Plugin',
       filterOauth: 'OAuth-capable',
       filterTransport: 'Transport',
+      unattributed: '{n} unattributed',
+      unattributedHint: 'Requests this route served with no account owner because its ownership read had not landed (or had failed). The count clears when a read attributes the route.',
       managed: 'Managed',
       available: 'Available providers',
       managedEmpty: 'No managed providers yet. Adopt one below to start.',

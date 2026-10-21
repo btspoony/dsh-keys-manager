@@ -197,6 +197,12 @@ export interface ProviderView {
   status: ProviderStatus
   keys: KeyView[]
   warning?: string
+  /**
+   * Requests this route served before its ownership read decided which
+   * account serves it (`I-000120`, D8). Process-local and additive: an older
+   * snapshot without the field still renders, and zero keeps it absent.
+   */
+  unattributedRequests?: number
 }
 
 /** Health state a transport account row renders. */

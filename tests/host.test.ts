@@ -8023,6 +8023,104 @@ test('a hydration wait timer does not keep the process alive (I-000116)', async 
   }
 })
 
+// I-000120 / D8: a request served without an account owner is counted per
+// provider in the state view, not only warned about once per provider. Both
+// causes converge on the same `false` from `awaitProjectionOwnership`: the
+// ownership read had not landed (bounded wait expired) and the read had failed.
+
+test('a timed-out hydration wait counts one unattributed request per served stream and a late landing clears it', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-unattributed', email: 'dev@example.com' })
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let releaseHydration: (() => void) | undefined
+  const hydrationGate = new Promise<void>(resolve => { releaseHydration = resolve })
+  let stallHydration = true
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (stallHydration && key === GRANT_KEY) await hydrationGate
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    ;(restarted as unknown as { hydrationWaitMs: number }).hydrationWaitMs = 15
+    const unattributed = (): number =>
+      restarted.getState().providers.find(entry => entry.provider === 'anthropic')!.unattributedRequests ?? 0
+    assert.equal(unattributed(), 0, 'no request has been served yet')
+
+    let served = 0
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await consume(restarted.streamListener(
+        { provider: 'anthropic', model: 'model', sessionId: `session-unattributed-${attempt}`, messages: [] },
+        async function* () {
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        } as any,
+      ))
+      served += 1
+      assert.equal(unattributed(), served, 'one increment per request served without an attributed account')
+    }
+
+    // The read lands: this provider is attributable now, so the count clears.
+    stallHydration = false
+    releaseHydration?.()
+    await eventually(() => assert.equal(unattributed(), 0))
+  } finally {
+    stallHydration = false
+    releaseHydration?.()
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+test('a failed hydration read counts every later request fast, and only an authoritative read clears it', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-failed', email: 'dev@example.com' })
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let failGrantReads = true
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (failGrantReads && key === GRANT_KEY) throw new Error('credential store unavailable')
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const seam = restarted as unknown as { hydrationWaitMs: number }
+    // A failed read answers false immediately instead of spending this bound.
+    seam.hydrationWaitMs = 500
+    const unattributed = (): number =>
+      restarted.getState().providers.find(entry => entry.provider === 'anthropic')!.unattributedRequests ?? 0
+
+    let served = 0
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const startedAt = Date.now()
+      await consume(restarted.streamListener(
+        { provider: 'anthropic', model: 'model', sessionId: `session-failed-${attempt}`, messages: [] },
+        async function* () {
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        } as any,
+      ))
+      served += 1
+      assert.ok(Date.now() - startedAt < seam.hydrationWaitMs / 2, 'the failed read was answered without spending the wait budget')
+      assert.equal(unattributed(), served, 'every later request is unattributed and counts again')
+    }
+
+    // Only a later read that decides the route's attribution clears the count.
+    failGrantReads = false
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => assert.equal(unattributed(), 0))
+
+    // The route is attributable now, so serving it again does not count.
+    await consume(restarted.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-failed-cleared', messages: [] },
+      async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any,
+    ))
+    assert.equal(unattributed(), 0)
+  } finally {
+    failGrantReads = false
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
 // PR review round 13: hydration used to skip every provider that holds no
 // OAuth rows, so a native grant persisted under `llm-pi-ai/<provider>` on a
 // key-only managed route stayed invisible to the startup repair — which then
