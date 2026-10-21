@@ -102,6 +102,13 @@ export interface ProviderRecord {
   brokerRef: string
   /** The profile's reference before adoption, restored on release. */
   originalApiKeyEnv: string | null
+  /**
+   * Adoption found a foreign projection serving the route, so it could not
+   * complete its one-time takeover of `originalApiKeyEnv` (PR review round 40).
+   * The debt survives a restart and is settled by the next projection-change
+   * sync; it never authorises an ordinary repair.
+   */
+  takeoverPending?: boolean
   /** True when the profile itself was created by adding an extra provider. */
   createdProfile: boolean
   /** True when a profile existed before adoption. */

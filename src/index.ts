@@ -1002,13 +1002,6 @@ export class KeysManagerService {
   /** The one shutdown this manager runs; a later close() joins it (round 38). */
   private closePromise: Promise<void> | undefined
   /**
-   * Providers whose adoption found a foreign projection serving the route and
-   * therefore could not complete its one-time takeover (PR review round 40).
-   * The debt is settled by the projection-change sync when that foreign record
-   * goes away; it never authorises an ordinary repair.
-   */
-  private readonly pendingAdoptionTakeovers = new Set<string>()
-  /**
    * The pre-close restoration is running (PR review round 37). Only inside it
    * — set when {@link restoreBorrowedWindows} starts and cleared in its
    * `finally`, the cleanup deadline included — does the module-private
@@ -5820,10 +5813,16 @@ export class KeysManagerService {
     try {
       // PR review round 40: adoption keeps the pre-adoption reference while a
       // foreign projection serves the route and records that it still owes the
-      // takeover. Only that debt lets this sync pass `takeover`, and only once;
-      // `originalApiKeyEnv` alone proves nothing about a later repair.
-      const takeover = this.pendingAdoptionTakeovers.delete(provider)
-      await this.syncBrokerBinding(provider, { takeover })
+      // takeover on the provider record (so the debt survives a restart). Only
+      // that recorded debt lets this sync pass `takeover`, and it is cleared
+      // once the bind lands; `originalApiKeyEnv` alone proves nothing.
+      const record = this.store.provider(provider)
+      const takeover = record?.takeoverPending === true
+      const bound = await this.syncBrokerBinding(provider, { takeover })
+      if (takeover && bound && record !== undefined) {
+        record.takeoverPending = false
+        this.store.touch()
+      }
     } catch (error) {
       this.warn(`could not re-derive the pi-ai binding for ${provider} after its projection changed: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -5984,7 +5983,7 @@ export class KeysManagerService {
         // A foreign projection serves the route, so this adoption binds
         // nothing; the pre-adoption reference it kept may only be taken over
         // when that projection disappears (round 40).
-        this.pendingAdoptionTakeovers.add(provider)
+        record.takeoverPending = true
       }
       if (ownershipRead === 'unknown') {
         // Ownership stays unknown and nothing was bound; a later authoritative

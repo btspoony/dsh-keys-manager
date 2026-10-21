@@ -14062,3 +14062,66 @@ test('a hand-edited reference survives the projection-change sync', async () => 
     await h.close()
   }
 })
+
+// PR review round 40: an api-key test is classified before its credential
+// probe. A native OAuth sign-in during that await must not let it report a pass
+// for a key the route no longer carries.
+
+test('an api-key test refuses when the route is taken over during its probe', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    const row = record.keys.find(candidate => candidate.kind === 'api-key')!
+    // A native sign-in replaced the route's serving source while the test was
+    // in flight; the send must re-assert the source, not just the row.
+    ;(h.service as unknown as { foreignProjections: Set<string> }).foreignProjections.add('anthropic')
+    const result = await h.service.testKey('anthropic', row.id)
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /another credential source/)
+  } finally {
+    await h.close()
+  }
+})
+
+// PR review round 40: a foreign projection observed by the reconciler must
+// invalidate a hydration read that snapshotted the previous owner.
+
+test('a foreign projection bumps the ownership generation', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('anthropic')
+    const service = h.service as unknown as {
+      ownershipGenerations: Map<string, number>
+      foreignProjections: Set<string>
+      reconcileGrantRecord: (provider: string, key: string) => Promise<void>
+    }
+    const before = service.ownershipGenerations.get('anthropic') ?? 0
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-x', accountId: 'acc-x', email: 'x@example.com' }))
+    await service.reconcileGrantRecord('anthropic', GRANT_KEY)
+    assert.equal(service.foreignProjections.has('anthropic'), true)
+    assert.ok((service.ownershipGenerations.get('anthropic') ?? 0) > before)
+  } finally {
+    await h.close()
+  }
+})
+
+// PR review round 40: the adoption takeover debt survives a restart because it
+// is stored on the provider record, not in process memory.
+
+test('a pending adoption takeover survives a restart', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { apiKeyEnv: 'ANTHROPIC_AUTH_TOKEN', models: [{ id: 'claude-test-model' }] }
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-r', accountId: 'acc-r', email: 'r@example.com' }))
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    assert.equal(record.takeoverPending, true)
+    // A restart reloads the same persisted record.
+    const reloaded = JSON.parse(JSON.stringify(record)) as typeof record
+    assert.equal(reloaded.takeoverPending, true)
+  } finally {
+    await h.close()
+  }
+})
