@@ -1,6 +1,5 @@
 ---
 category: Fixed
 ---
-- Activating an account no longer holds the global mutation queue while it reads and writes the OAuth credential, so a slow credential store cannot delay unrelated key or settings changes; the activation's errors, returned state and cooldown reset are unchanged.
-- An activation that is refused (shutdown, read-only state, or a provider or account that disappeared mid-flight) now rolls back the credential projection it committed instead of leaving it behind, and never deletes a projection another writer replaced.
-
+- Activating an account no longer holds the global mutation queue while it reads the OAuth credential, so a slow credential store cannot delay unrelated key or settings changes; the activation's errors, returned state and cooldown reset are unchanged.
+- An activation now writes its credential projection only while the route still serves the value it read, and never deletes a grant another writer replaced. A rejected state flush puts the projection back — removing it only when the activation created it — so a refused activation leaves nothing behind.
