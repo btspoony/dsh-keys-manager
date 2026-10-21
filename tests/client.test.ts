@@ -1363,6 +1363,32 @@ function makeSelectAttemptView(options: Array<{ id: string; label: string }>): A
   return { ...makeAttemptView(), prompt: { kind: 'select', message: 'Choose the account to continue with', options } }
 }
 
+/**
+ * Parity for one key set: present and non-empty in every registered locale,
+ * translated rather than copied, and identical to the packaged
+ * locale/*.json copy the host loads.
+ */
+function expectLocaleParity(keys: readonly string[]): LocaleDicts {
+  const harness = makeContext()
+  apply(harness.ctx)
+  const dicts = harness.dictionaries.value
+  expect(dicts).toBeDefined()
+  const enJson = JSON.parse(readFileSync(new URL('../locale/en.json', import.meta.url), 'utf8')) as Record<string, string>
+  const zhJson = JSON.parse(readFileSync(new URL('../locale/zh.json', import.meta.url), 'utf8')) as Record<string, string>
+  for (const key of keys) {
+    expect(typeof dicts!.en[key]).toBe('string')
+    expect(typeof dicts!.zh[key]).toBe('string')
+    expect(dicts!.en[key]!.length).toBeGreaterThan(0)
+    expect(dicts!.zh[key]!.length).toBeGreaterThan(0)
+    expect(dicts!.zh[key]).not.toBe(dicts!.en[key])
+    // The packaged copy the host loads is a second source of the same value.
+    expect(dicts!.en[key]).toBe(enJson[key])
+    expect(dicts!.zh[key]).toBe(zhJson[key])
+  }
+  for (const cleanup of harness.cleanups.reverse()) cleanup()
+  return dicts!
+}
+
 describe('account ui', () => {
   beforeAll(() => {
     // The node test environment has no DOM; modal effects only need the
@@ -2434,27 +2460,11 @@ describe('transport account surface', () => {
   ] as const
 
   test('the transport copy exists in both dictionaries and mirrors locale/*.json', () => {
-    const harness = makeContext()
-    apply(harness.ctx)
-    const dicts = harness.dictionaries.value
-    expect(dicts).toBeDefined()
-    const enJson = JSON.parse(readFileSync(new URL('../locale/en.json', import.meta.url), 'utf8')) as Record<string, string>
-    const zhJson = JSON.parse(readFileSync(new URL('../locale/zh.json', import.meta.url), 'utf8')) as Record<string, string>
-    for (const key of TRANSPORT_KEYS) {
-      expect(typeof dicts!.en[key]).toBe('string')
-      expect(typeof dicts!.zh[key]).toBe('string')
-      expect(dicts!.en[key]!.length).toBeGreaterThan(0)
-      expect(dicts!.zh[key]!.length).toBeGreaterThan(0)
-      expect(dicts!.zh[key]).not.toBe(dicts!.en[key])
-      // The packaged copy the host loads is a second source of the same value.
-      expect(dicts!.en[key]).toBe(enJson[key])
-      expect(dicts!.zh[key]).toBe(zhJson[key])
-    }
-    expect(dicts!.en.transportExpires).toContain('{time}')
-    expect(dicts!.zh.transportExpires).toContain('{time}')
-    expect(dicts!.en.transportRemoveTitle).toContain('{name}')
-    expect(dicts!.zh.transportRemoveTitle).toContain('{name}')
-    for (const cleanup of harness.cleanups.reverse()) cleanup()
+    const dicts = expectLocaleParity(TRANSPORT_KEYS)
+    expect(dicts.en.transportExpires).toContain('{time}')
+    expect(dicts.zh.transportExpires).toContain('{time}')
+    expect(dicts.en.transportRemoveTitle).toContain('{name}')
+    expect(dicts.zh.transportRemoveTitle).toContain('{name}')
   })
 
   test('a transport account renders in its own section with identity, scope and status', async () => {
@@ -2675,6 +2685,10 @@ describe('provider quick filter', () => {
     await view.flush()
     return { view, state }
   }
+
+  test('the chip copy exists in both dictionaries and mirrors locale/*.json', () => {
+    expectLocaleParity(['filterAll', 'filterBuiltin', 'filterPlugin', 'filterOauth', 'filterTransport'])
+  })
 
   test('no filter selected keeps the whole list and shows one chip per predicate', async () => {
     const { view, state } = await mountFiltered()
