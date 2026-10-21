@@ -13253,3 +13253,62 @@ test('a serving-source flip during the corrective write is chased to the final s
     await h.close()
   }
 })
+
+// ── PR #26 review round 33 ──────────────────────────────────────────────────
+
+// Codex P1: `close()` set `closing` first, and that guard is exactly what makes
+// `cleanupTestWindow` refuse — so the only identity-checked restoration never
+// ran for a test whose request ignores the abort. The tested account stayed
+// projected (and the binding the borrow released stayed released) after
+// unload, and the next startup served it. Shutdown now puts every outstanding
+// borrow back before it stops accepting writes.
+test('close restores the projection and binding a borrowed test left behind', { timeout: 10_000 }, async () => {
+  const h = await harness()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    // The pre-test state: the pool serves the route, nothing is projected.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef)
+    const gate = new Promise<void>(resolve => { releaseTest = resolve })
+    let entered!: () => void
+    const enteredGate = new Promise<void>(resolve => { entered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        entered()
+        // The adapter ignores the abort the test timeout raised: this request
+        // never settles on its own.
+        await gate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    testRun = h.service.testKey('anthropic', account.rowId)
+    await enteredGate
+    // The borrow landed: the tested account is projected and the binding the
+    // route had (the pool) was released for the window.
+    assert.equal(liveProjectionRefresh(h), 'rt-only')
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, undefined)
+
+    await h.service.close()
+
+    // Shutdown put the pre-test state back: no projection, and the binding
+    // named the source that serves the route again.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the tested account stayed projected after close')
+    assert.equal(
+      h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv,
+      record.brokerRef,
+      'the restored binding does not name the restored serving source',
+    )
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

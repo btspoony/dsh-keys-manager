@@ -1018,6 +1018,13 @@ export class KeysManagerService {
    */
   private readonly testsActive = new Map<string, Promise<KeyTestResult>>()
   /**
+   * Every row test window that has not been released yet, by provider (PR
+   * review round 33). Shutdown restores each window's borrowed projection
+   * before `closing` refuses the in-window cleanup, so the map outlives
+   * {@link testsActive} for a window whose request never settles.
+   */
+  private readonly testWindows = new Map<string, RowTestWindow>()
+  /**
    * Upper bound on one ordinary request's wait for an in-flight row test
    * (QC B3). Injectable so tests can exercise the bound quickly.
    */
@@ -1621,6 +1628,10 @@ export class KeysManagerService {
 
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
   async close(): Promise<void> {
+    // PR review round 33: `closing` refuses the in-window cleanup, so every
+    // outstanding borrow is put back first. A test whose request ignores the
+    // abort otherwise leaves the tested account projected past unload.
+    await this.restoreBorrowedWindows()
     this.closing = true
     this.settledDisposer?.()
     this.settledDisposer = undefined
@@ -1640,6 +1651,61 @@ export class KeysManagerService {
     // echo must not write a grant record into a manager that is shutting down.
     await this.drainGrantReconciliations()
     await this.store.close()
+  }
+
+  /**
+   * Put every outstanding window's borrowed projection back before shutdown
+   * closes the store (PR review round 33).
+   *
+   * `close()` sets `closing`, which refuses {@link cleanupTestWindow} — the one
+   * identity-checked restoration — so a test whose request ignores the abort
+   * used to leave the tested account projected and the binding it released
+   * released, past unload and into the next startup. Each window's captured
+   * facts are restored through the same compare-by-payload path as the late
+   * reconcile, under one cleanup bound and the attempt fence (a superseded
+   * attempt writes nothing), and a window that released the binding re-syncs it
+   * against the restored serving source.
+   *
+   * The request itself is never waited for — an adapter can still rewrite the
+   * projection after its restore — so a restoration that cannot finish in the
+   * bound warns once and leaves the state to the next startup's hydration.
+   */
+  private async restoreBorrowedWindows(): Promise<void> {
+    for (const window of [...this.testWindows.values()]) {
+      const facts = window.facts
+      if (facts === undefined) continue
+      const attempt = (this.cleanupAttempts.get(window.provider) ?? 0) + 1
+      this.cleanupAttempts.set(window.provider, attempt)
+      const stillCurrent = (): boolean => this.cleanupAttempts.get(window.provider) === attempt
+      const failure = await this.withinCleanupDeadline(async () => {
+        // QC fix wave 3 (W-001): a borrow or binding release still in flight
+        // reads as the pre-borrow payload, so the restore would call the route
+        // clean and let the write land afterwards.
+        await this.awaitWindowMutations(window)
+        // The window is still outstanding, so this is an in-window restore (not
+        // the late one): the attempt fence is the only identity it needs.
+        const restored = await this.restoreProjection(
+          facts.records,
+          window.provider,
+          window.row,
+          facts.key,
+          facts.previous,
+          facts.borrowed,
+          stillCurrent,
+        )
+        if (restored !== undefined) return restored
+        if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
+        if (!window.releasedBinding) return undefined
+        // QC B4: the borrow released the profile's binding, so the restored
+        // serving source must be written back to it.
+        return await this.syncBrokerBinding(window.provider, { borrow: true })
+          ? undefined
+          : 'the route credential binding could not be restored'
+      })
+      if (failure !== undefined) {
+        this.warn(`shutdown could not put the borrowed credential for ${window.provider} back (${failure}); the projection stays as the store holds it and the next startup's hydration restores it`)
+      }
+    }
   }
 
   /**
@@ -3516,6 +3582,9 @@ export class KeysManagerService {
     })
     window.test = test
     this.testsActive.set(provider, test)
+    // PR review round 33: registered with the lock, because shutdown restores
+    // this window's borrow even when the test promise never settles.
+    this.testWindows.set(provider, window)
     // The guard holds the whole test as a promise, not just a membership
     // flag: `streamListener` awaits it so no ordinary request is served by —
     // or attributed to — the grant an OAuth row test has borrowed. An api-key
@@ -3535,6 +3604,7 @@ export class KeysManagerService {
     } finally {
       clearTimeout(watchdog)
       if (this.testsActive.get(provider) === test) this.testsActive.delete(provider)
+      if (this.testWindows.get(provider)?.test === test) this.testWindows.delete(provider)
       // PR review MF1: a window whose cleanup could not put the route back
       // (normal path or watchdog) keeps its isolation entry until a recovery
       // attempt succeeds, so ordinary traffic is never served by the borrowed
@@ -3686,6 +3756,9 @@ export class KeysManagerService {
     if (this.testsActive.get(window.provider) === window.test) this.testsActive.delete(window.provider)
     if (this.testsInFlight.get(window.provider) === window.test) this.testsInFlight.delete(window.provider)
     if (this.abandonedWindows.get(window.provider) === window) this.abandonedWindows.delete(window.provider)
+    // PR review round 33: a released window is no longer outstanding, so
+    // shutdown does not restore over the newer window's borrow.
+    if (this.testWindows.get(window.provider) === window) this.testWindows.delete(window.provider)
     window.held = false
     this.cleaningTests.delete(window.provider)
   }
