@@ -45,5 +45,7 @@
   "transportStatusNeedsReauth": "Sign in again",
   "transportStatusSignedOut": "Not signed in",
   "transportRemoveTitle": "Remove the {name} transport account?",
-  "transportRemoveBody": "This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service."
+  "transportRemoveBody": "This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service.",
+  "filterGroup": "Filters",
+  "transportEmpty": "No transport accounts yet."
 }

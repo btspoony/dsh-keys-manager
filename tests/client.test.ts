@@ -181,6 +181,7 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // row renders resolves its real zh value, so the assertions below locate
     // the section, status pill and dialogs by rendered text.
     transportAccounts: '传输账户',
+    transportEmpty: '还没有传输账户。',
     transportTag: '传输',
     transportSignIn: '登录',
     transportExpires: '有效期至 {time}',
@@ -197,6 +198,7 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     filterPlugin: '插件',
     filterOauth: '支持 OAuth',
     filterTransport: '传输',
+    filterGroup: '筛选',
     // Unattributed request chip: the label and its explanation resolve the real
     // copy, so the row is asserted by what it renders.
     unattributed: '{n} 无归属',
@@ -2694,6 +2696,10 @@ describe('provider quick filter', () => {
     expectLocaleParity(['managedFilteredEmpty'])
   })
 
+  test('the chip group label exists in both dictionaries and mirrors locale/*.json', () => {
+    expectLocaleParity(['filterGroup'])
+  })
+
   test('no filter selected keeps the whole list and shows one chip per predicate', async () => {
     const { view, state } = await mountFiltered()
     try {
@@ -2773,8 +2779,9 @@ describe('provider quick filter', () => {
       setRuntimeContext(null)
     }
 
-    // The same chip with zero transport rows: head, count and the existing
-    // empty copy, so no new string is invented for the empty filter.
+    // The same chip with zero transport rows: head, count and the transport's
+    // own empty copy — the list is not empty because a search excluded rows, so
+    // the "no matching providers" sentence would name a search that never ran.
     const emptyState = filterState()
     emptyState.transportAccounts = []
     const harness = makeContext({ ok: true, value: emptyState })
@@ -2787,7 +2794,7 @@ describe('provider quick filter', () => {
       expect(sectionTitles(emptyView)).toContain('传输账户')
       const head = section(emptyView, '传输账户')
       expect(findByClass(descendants(emptyView.nodes, head), 'km-section-count')[0]?.text).toBe('0')
-      expect(findByClass(descendants(emptyView.nodes, head), 'km-empty')[0]?.text).toBe('没有匹配的 Provider。')
+      expect(findByClass(descendants(emptyView.nodes, head), 'km-empty')[0]?.text).toBe('还没有传输账户。')
     } finally {
       emptyView.unmount()
       setRuntimeContext(null)
@@ -2944,7 +2951,7 @@ describe('unattributed request chip', () => {
     expectLocaleParity(['unattributed', 'unattributedHint'])
   })
 
-  test('the provider row shows the count only above zero, with the same sentence as title and aria-label', async () => {
+  test('the provider row shows the count only above zero, with the hint as title and the count in its name', async () => {
     const state = makeState()
     state.providers[0]!.unattributedRequests = 3
     const harness = makeContext({ ok: true, value: state })
@@ -2959,7 +2966,9 @@ describe('unattributed request chip', () => {
       const chip = chips[0]!
       expect(chip.text).toBe('3 无归属')
       expect(chip.props?.title).toBe(hint)
-      expect(chip.props?.['aria-label']).toBe(hint)
+      // The visible label is the accessible name, so the count survives it;
+      // an `aria-label` carrying only the hint would replace the number.
+      expect(chip.props?.['aria-label']).toBeUndefined()
 
       // A row that carries no count renders exactly as before.
       const zeroRow = findByClass(view.nodes, 'km-provider').find(card =>

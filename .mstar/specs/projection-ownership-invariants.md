@@ -25,20 +25,34 @@ conditions that implementation has to keep satisfying.
   when a read actually decides the route's attribution. Counting in the hydration failure path
   instead of the per-request serving path counts events, not requests.
 
-## 2. A queue window owns state, a per-provider chain owns credentials
+## 2. The queue owns state and the projection write; credential I/O stays off it
 
 - The mutation queue turn is the only place that may write manager state, and `buildState` belongs
   inside it: it is not a pure read (it prunes bindings/attempts and destructively drains warnings).
-- Credential read → projection write → owner claim → broker binding sync belong on the
-  **per-provider reconciliation chain**, which is also where rotation and the reconcile echo run.
-  Holding the queue across credential I/O stalls unrelated mutations.
-- Splitting the two creates windows the single turn used to close, and each needs an explicit
-  fence:
-  - **Shutdown**: every `await` in a chain body re-checks closing/persistence refusal and the
-    remount epoch. A body resumed after the drain deadline returns without writing or claiming.
-  - **Removal**: a removal runs on the queue, not the chain, so the body proves the row is still
-    managed before projecting, and compensates after writing.
-  - **Post-commit refusal**: a refusal *after* the chain committed must roll back, and only what
+- **The projection write is a queue turn too**, together with the owner claim and the row writes.
+  Removal runs on the same queue, so the compare-and-write and the removal are mutually exclusive
+  by construction; moving the write onto the per-provider chain would make "prove, then delete"
+  two operations with a window between them — that was the wave-1 P1.
+- **Credential I/O is what stays off unrelated work**, not the state writes: the grant read happens
+  before the turn, and the compare itself is bounded by the seam's per-key lock (the
+  `modifyRecord` body) rather than by the queue's duration. Holding the queue across the read is
+  what stalled unrelated mutations.
+- A second turn runs the **broker binding sync and builds the returned snapshot**. Both are state:
+  a binding refusal must be visible in the state the caller receives (building the view inside the
+  write turn drained the warning first), and `buildState` prunes and drains, so it must not run
+  while another mutation is mid-flush.
+- **The flush compensation is its own turn.** A rejected turn's `run` has already released the
+  queue, so an unowned compensation races whatever mutation comes next: that mutation can flush
+  the pre-compensation row, and the restore landing afterwards never reaches disk. When the queue
+  refuses turns (shutdown entry, unreadable state file) the undo runs in memory only, and the next
+  successful mutation persists it — named here because it is a real, accepted gap.
+- Each seam needs an explicit fence:
+  - **Shutdown**: every `await` inside these bodies re-checks closing/persistence refusal and the
+    remount epoch, and the last two steps above run inline only when `closing` already blocks new
+    turns and new mutations.
+  - **Removal**: a removal runs on the queue, so the body proves the row is still managed before
+    projecting, and compensates after writing.
+  - **Post-commit refusal**: a refusal *after* the write committed must roll back, and only what
     this activation proves it owns: withdraw the claim only on exact generation + account
     identity, delete the record only through the delete authority's payload proof, and treat an
     **unprovable** identity (`unknown`) as permission for nothing.
