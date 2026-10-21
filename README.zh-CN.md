@@ -194,9 +194,10 @@ $DSH_HOME/keys-manager/state.json
 | [开发](docs/development.zh-CN.md) | 构建与开发工作流、仓库布局 |
 | [发布](docs/release.zh-CN.md) | CI 检查与 npm 发布流程 |
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含延后提供商 |
+| [路线图](docs/roadmap.zh-CN.md) | 依据未完成 issues 排出的计划：池质量、覆盖、体验、发布 |
 | [传输包（英文）](packages/llm-omp/README.md) | Cursor 传输：支持状态、风险、构建/测试与发布 |
 
-英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
+英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md) · [Roadmap](docs/roadmap.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
 
 ## 许可证
 

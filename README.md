@@ -282,11 +282,13 @@ it. The transport versions independently; see [Release](docs/release.md).
 | [Development](docs/development.md) | build and dev workflow, repository layout |
 | [Release](docs/release.md) | CI checks and the npm release flow |
 | [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
+| [Roadmap](docs/roadmap.md) | ordered plan across the open issues: pool quality, coverage, UX, release |
 | [Transports package](packages/llm-omp/README.md) | Cursor transport: support status, risks, build/test, release |
 
 Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
 files in `docs/` — [开发](docs/development.zh-CN.md) ·
-[发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md).
+[发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md) ·
+[路线图](docs/roadmap.zh-CN.md).
 Current design boundaries at a glance:
 [Known limits](docs/known-limits.md).
 
