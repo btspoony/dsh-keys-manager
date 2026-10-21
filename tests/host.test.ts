@@ -5790,6 +5790,50 @@ test('a binding sync whose claim lands before the settings write is not written'
   }
 })
 
+// D2: the takeover debt is cleared only after `syncBrokerBinding` resolves,
+// and a claim that lands inside that awaited write means the binding this sync
+// committed no longer describes the route's owner. The recheck is what keeps
+// the debt armed for the next repair pass instead of recording a takeover that,
+// by the time it is recorded, belonged to a superseded generation.
+
+test('a takeover whose claim lands during the bind keeps its pending debt', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    const record = h.store.provider('anthropic')!
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    await h.service.activateAccount('anthropic', rowId)
+    await h.service.fallbackToKeys('anthropic')
+    await drainGrantChain(h, 'anthropic')
+    delete h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv
+    record.takeoverPending = true
+    const internals = h.service as unknown as {
+      ownershipGenerations: Map<string, number>
+      syncBindingAfterProjectionChange: (provider: string) => Promise<void>
+    }
+    const realMutate = h.settings.mutate.bind(h.settings)
+    h.settings.mutate = async (ns: string, ops: unknown[], expected?: number) => {
+      const result = await realMutate(ns, ops, expected)
+      // The claim lands after the bind committed but before the sync records
+      // that the takeover debt is settled.
+      internals.ownershipGenerations.set('anthropic', (internals.ownershipGenerations.get('anthropic') ?? 0) + 1)
+      return result
+    }
+    try {
+      await internals.syncBindingAfterProjectionChange('anthropic')
+    } finally {
+      h.settings.mutate = realMutate
+    }
+    assert.equal(
+      h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv,
+      record.brokerRef,
+      'the bind did not land, so the debt is not the thing under test',
+    )
+    assert.equal(record.takeoverPending, true, 'the takeover debt was cleared for a superseded generation')
+  } finally {
+    await h.close()
+  }
+})
+
 // P1-B: an api-key projection carries its secret in `key`/`env` with no
 // `payload`. A compare limited to `kind` + `payload` would read a rotated native
 // credential as unchanged and overwrite it.

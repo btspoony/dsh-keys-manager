@@ -3265,7 +3265,6 @@ export class KeysManagerService {
         // with the state the removal created, so the surviving pool serves
         // through the broker instead of pi-ai's bare credential (PR review
         // round 2).
-        if (this.ownershipSuperseded(provider, generation)) return
         await this.syncBindingAfterProjectionChange(provider)
         return
       }
@@ -3286,7 +3285,6 @@ export class KeysManagerService {
       // only an owned one (PR review round 3): a native writer can replace the
       // managed projection first and delete it later, leaving the pool to
       // serve an unbound profile.
-      if (this.ownershipSuperseded(provider, generation)) return
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
@@ -5207,9 +5205,11 @@ export class KeysManagerService {
       ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
     }
     if (previousRef !== rotatedRef) {
-      // The row repoint above is synchronous, but the delete is a second write:
-      // re-read both gates immediately before it so a shutdown or a takeover
-      // that landed in between cannot remove a record this attempt never owned.
+      // Defence in depth, not a reachable window: no await separates the guard
+      // above from the delete below, so neither a shutdown nor a takeover can
+      // land in between. The re-check is kept because it is the condition the
+      // delete depends on and a future await inserted here would otherwise
+      // silently remove a record this attempt never owned.
       if (this.persistenceRefused(capability) || (guard !== undefined && !guard())) {
         this.store.touch()
         return
@@ -5217,6 +5217,11 @@ export class KeysManagerService {
       const records = this.credentialRecords()
       try {
         if (records === undefined) throw new Error('The credential store does not support records')
+        // Declared residual: this delete is an await with no expected-payload
+        // CAS (`deleteRecord(key)` takes only the key), so a claim landing
+        // inside it can still remove the same-ref record an activation just
+        // wrote. Post-delete compensation is out of scope here; closing it
+        // needs a seam-level compare-and-delete.
         await records.deleteRecord(previousRef)
       } catch (error) {
         this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
@@ -6095,15 +6100,17 @@ export class KeysManagerService {
     if (options.ownershipGeneration !== undefined
       && this.ownershipSuperseded(provider, options.ownershipGeneration)) return false
     try {
-      // The entry gate above read a snapshot; ownership can turn unknown while
-      // this write re-reads its descriptor (PR review round 25). Binding is a
-      // guess then, so the gate closes again at the last point before the
+      // The entry gate above read a snapshot, and ownership can turn unknown
+      // while this write re-reads its descriptor (PR review round 25). Binding
+      // is a guess then, so the gate closes again at the last point before the
       // mutation. Unbinding stays allowed.
-      // `mutateSettings` re-reads its descriptor before writing, so the gate
-      // above is not the last point: the stamp travels into its `stillWrites`
-      // predicate, which runs immediately before `settings.mutate`. A claim
-      // that landed in the descriptor re-read must not leave this binding
-      // behind — it describes the classification that claim replaced.
+      // That last point is `mutateSettings`' `stillWrites` predicate: it is
+      // evaluated synchronously between the descriptor re-read and
+      // `settings.mutate` (no await between them), and the mutate itself passes
+      // the descriptor's revision as an expected-revision CAS, so a takeover
+      // that changed the namespace in between makes the write fail instead of
+      // landing stale state. A claim the predicate sees must not leave this
+      // binding behind — it describes the classification that claim replaced.
       const stamp = options.ownershipGeneration
       const written = await this.mutateSettings(
         record.settingsNs,
@@ -6206,10 +6213,13 @@ export class KeysManagerService {
     // land after `close()` has drained the chains; the binding write it ends in
     // is persistence, so shutdown refuses it.
     if (this.closing) return
-    // The own-generation stamp: `syncBrokerBinding` awaits before it writes
-    // settings, and a claim landing in that window would make the binding
-    // describe the pre-claim classification. Every caller is covered here
-    // rather than at the call sites.
+    // The own-generation stamp: this sync must not commit a binding derived
+    // from a classification a newer claim replaced. It travels into
+    // `syncBrokerBinding`, whose `stillWrites` predicate is the last point
+    // before the settings write and runs synchronously right before a
+    // revision-CAS'd mutate; the only window left is that write call itself,
+    // which fails on a revision mismatch rather than committing stale state.
+    // Every caller is covered here rather than at the call sites.
     const generation = this.ownershipGenerations.get(provider) ?? 0
     try {
       // PR review round 40: adoption keeps the pre-adoption reference while a
