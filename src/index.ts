@@ -5782,14 +5782,32 @@ export class KeysManagerService {
         deferred.push(provider)
         continue
       }
-      await this.syncBrokerBinding(provider, { write: false })
+      await this.repairBinding(provider)
     }
     for (const provider of deferred) {
       // An OAuth provider whose own read has not landed is never repaired
       // from a guessed shape; the read is bounded, so a provider that never
       // answers only skips itself.
       if (!await this.awaitProjectionOwnership(provider)) continue
-      await this.syncBrokerBinding(provider, { write: false })
+      await this.repairBinding(provider)
+    }
+  }
+
+  /**
+   * One provider's repair pass (PR review round 42). A recorded adoption
+   * takeover debt is settled here only when the authoritative readiness says
+   * no projection serves the route — the case a restart leaves behind when the
+   * foreign record disappeared while the process was down.
+   */
+  private async repairBinding(provider: string): Promise<void> {
+    const record = this.store.provider(provider)
+    const takeover = record?.takeoverPending === true
+      && !this.foreignProjections.has(provider)
+      && this.oauthOwnerFor(provider) === null
+    const bound = await this.syncBrokerBinding(provider, { write: false, takeover })
+    if (takeover && bound && record !== undefined) {
+      record.takeoverPending = false
+      this.store.touch()
     }
   }
 

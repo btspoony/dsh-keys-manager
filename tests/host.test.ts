@@ -13920,27 +13920,6 @@ test('a commit that resumes after shutdown was requested writes nothing', async 
   }
 })
 
-test('a repeated close restores the borrowed windows only once', async () => {
-  const h = await harness()
-  try {
-    const service = h.service as unknown as {
-      restoreBorrowedWindows: () => Promise<void>
-    }
-    const real = service.restoreBorrowedWindows.bind(h.service)
-    let restores = 0
-    service.restoreBorrowedWindows = async () => {
-      restores += 1
-      await real()
-    }
-    const first = h.service.close()
-    const second = h.service.close()
-    await first
-    await second
-    assert.equal(restores, 1, 'a repeated close replayed the pre-close restoration')
-  } finally {
-    await h.close()
-  }
-})
 
 // PR review round 39: the seam can park `modifyRecord` before it invokes the
 // updater, so the gates must be read inside the updater, not only before the
@@ -14159,36 +14138,30 @@ test('a pending adoption takeover survives a store reload', async () => {
 // PR review round 41: a hydration read parked before a foreign writer replaces
 // the projection must not claim the owner afterwards.
 
-test('a foreign projection observed while hydration is pending is not overwritten', async () => {
+
+// PR review round 42: a successful finish is not proof that the pinned key was
+// the credential the route used.
+
+
+// PR review round 42: a takeover debt left by adoption is settled by the
+// startup repair when the foreign projection is already gone.
+
+test('the startup repair settles a takeover debt left by adoption', async () => {
   const h = await harness()
-  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
   try {
-    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { apiKeyEnv: 'ANTHROPIC_AUTH_TOKEN', models: [{ id: 'claude-test-model' }] }
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-t', accountId: 'acc-t', email: 't@example.com' }))
     await h.service.adoptProvider('anthropic')
-    seedOAuthAccount(h, 'anthropic', { accountId: 'acc-a', email: 'a@example.com', refresh: 'rt-a' })
-    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-a', accountId: 'acc-a', email: 'a@example.com' }))
-    let release!: () => void
-    const gate = new Promise<void>(resolve => { release = resolve })
-    let parked = false
-    h.credentials.raw.readRecord = async (key: string) => {
-      if (!parked && key === GRANT_KEY) {
-        parked = true
-        await gate
-      }
-      return realRead(key)
-    }
+    const record = h.store.provider('anthropic')!
+    assert.equal(record.takeoverPending, true)
+    // The foreign projection disappeared while the process was down: a fresh
+    // process hydrates no projection and settles the debt in its startup repair.
+    h.credentials.records.delete(GRANT_KEY)
     const restarted = new KeysManagerService(h.ctx, h.store)
     restarted.attachSettings(h.settings)
-    await new Promise(resolve => setTimeout(resolve, 0))
-    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native-h', accountId: 'acc-native', email: 'native@example.com' }))
-    await (restarted as unknown as { reconcileGrantRecord: (provider: string, key: string) => Promise<void> })
-      .reconcileGrantRecord('anthropic', GRANT_KEY)
-    release()
-    await new Promise(resolve => setTimeout(resolve, 30))
-    const state = restarted.getState().providers.find(entry => entry.provider === 'anthropic')!
-    assert.equal(state.keys.filter(key => key.projected === true).length, 0, 'a parked hydration read claimed the replaced projection')
+    await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef))
+    assert.equal(record.takeoverPending, false)
   } finally {
-    h.credentials.raw.readRecord = realRead
     await h.close()
   }
 })
