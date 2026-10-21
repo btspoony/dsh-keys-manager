@@ -11895,3 +11895,55 @@ test('a late abandoned-window restore does not restore a deleted owner', async (
     await h.close()
   }
 })
+
+// I-000179 negative control: the owner-row guard is scoped to the late window
+// because only an abandoned window loses the removal coordination
+// (settleTestBeforeRemoval). An in-window restore still puts the captured
+// pre-test projection back, even when the previous owner's row is spliced out
+// of the store while the test runs (an out-of-band writer the coordinator never
+// sees). Applying the guard unconditionally would silently change normal borrow
+// undoing: the route would keep the tested account's grant and report a refusal.
+test('a normal in-window restore puts the previous projection back after an out-of-band owner removal', async () => {
+  const { h, first, second } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    // The window is open and the tested account's grant is the live
+    // projection; `second` serves the route and owns `previous`.
+    assert.equal(liveProjectionRefresh(h), 'rt-first')
+    // A removal coordinator would wait for this test, so the previous owner's
+    // row is spliced out directly — an out-of-band store writer.
+    const keys = h.store.provider('anthropic')!.keys
+    keys.splice(keys.findIndex(row => row.id === second.rowId), 1)
+    h.store.touch()
+
+    releaseTest?.()
+    const result = await testRun!
+
+    // The window settles normally, not through the watchdog…
+    assert.equal(result.ok, true)
+    assert.equal(result.error, undefined)
+    // …the captured `previous` projection is written back…
+    assert.equal(liveProjectionRefresh(h), 'rt-second')
+    assert.equal(h.credentials.records.has(second.grantRef), true)
+    // …and the late-only owner guard never fires on this path.
+    assert.doesNotMatch(h.service.getState().warnings.join('\n'), /is no longer managed/)
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
