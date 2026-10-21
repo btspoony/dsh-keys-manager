@@ -3793,13 +3793,15 @@ export class KeysManagerService {
       // Captured with the baseline, before the turn claims the route: the
       // compensation has to put back the classification that matches the
       // record it restores, and only this snapshot still knows it.
-      classification: live !== undefined && (live.kind !== 'grant' || !isOAuthGrantPayload(live.payload))
-        // A native record (an api-key credential, an unrecognized payload)
-        // serves the route whether or not a reconcile had classified it yet.
+      // Any present record the pool does not own is foreign (the same rule the
+      // reconciler applies): a native api-key credential or an unrecognized
+      // payload by shape, a grant no row claims because nothing here serves it.
+      // `none` is therefore only the absent-baseline case.
+      classification: live !== undefined && (owner === undefined || live.kind !== 'grant' || !isOAuthGrantPayload(live.payload))
         ? { state: 'foreign' }
         : owner !== undefined
           ? { state: 'owned', rowId: owner }
-          : this.foreignProjections.has(provider) ? { state: 'foreign' } : { state: 'none' },
+          : { state: 'none' },
     }
   }
 
@@ -3869,12 +3871,15 @@ export class KeysManagerService {
       row.cooldownUntil = undo.cooldownUntil
       this.store.touch()
     }
-    // Only a compensation that still owns the generation may reclassify: a
-    // newer claim already settled what serves the route.
-    if (this.ownershipGenerations.get(provider) !== undo.generation) return
     const outcome = prepared.baseline.state === 'absent'
       ? await this.deleteActivationProjection(records, provider, prepared.written)
       : await this.restoreActivationProjection(records, provider, prepared)
+    // Both helpers awaited, so the classification below decides after the same
+    // read the guard above made before it: a claim that landed inside that I/O
+    // already settled what serves the route, and overwriting it would revert a
+    // newer owner or mark its route foreign. No await separates this check from
+    // the writes in the switch.
+    if (this.ownershipSuperseded(provider, undo.generation)) return
     switch (outcome) {
       case 'ours':
         // The activation's projection is still the live record, so its claim
