@@ -14019,3 +14019,46 @@ test('a rotation write parked before its updater persists nothing after shutdown
     await h.close()
   }
 })
+
+// PR review round 40: adoption keeps the pre-adoption reference while a foreign
+// projection serves the route. When that projection disappears, the binding
+// must take the reference over — a plain sync treats it as a hand edit.
+
+test('a foreign projection that disappears lets the adopted pool take the reference over', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { apiKeyEnv: 'ANTHROPIC_AUTH_TOKEN', models: [{ id: 'claude-test-model' }] }
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native', accountId: 'acc-native', email: 'native@example.com' }))
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, 'ANTHROPIC_AUTH_TOKEN')
+    assert.equal(h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.bindingHealthy, false)
+    // The native projection is removed; the imported pool is now the only source.
+    h.credentials.records.delete(GRANT_KEY)
+    // The seam's removal echo is what clears the foreign marker and re-derives
+    // the binding; drive the same reconciler the seam calls.
+    await (h.service as unknown as { reconcileGrantRecord: (provider: string, key: string) => Promise<void> })
+      .reconcileGrantRecord('anthropic', GRANT_KEY)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef)
+  } finally {
+    await h.close()
+  }
+})
+
+// PR review round 40: a hand-edited reference is still never overwritten by the
+// same takeover path.
+
+test('a hand-edited reference survives the projection-change sync', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('anthropic')
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = 'MY_OWN_REF'
+    const record = h.store.provider('anthropic')!
+    assert.notEqual(record.brokerRef, 'MY_OWN_REF')
+    await (h.service as unknown as { syncBindingAfterProjectionChange: (provider: string) => Promise<void> })
+      .syncBindingAfterProjectionChange('anthropic')
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, 'MY_OWN_REF')
+  } finally {
+    await h.close()
+  }
+})

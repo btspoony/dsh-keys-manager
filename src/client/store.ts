@@ -152,7 +152,8 @@ export function createStore(ctx: ClientContext): ClientStore {
   /** Re-read the state a dropped mutation view would have installed, once safe. */
   const refreshDroppedState = (): void => {
     if (!stateDropped || activeTests > 0 || snapshot.busy !== null) return
-    stateDropped = false
+    // The flag is cleared by the successful read, not here: a load that fails
+    // (or is superseded) must leave the recovery pending for the next tail.
     void store.load({ keepError: true })
   }
 
@@ -203,6 +204,8 @@ export function createStore(ctx: ClientContext): ClientStore {
         }
         if (!result.ok) throw new Error(result.error.message)
         update({ status: 'ready', state: result.value as StateView, now: Date.now(), busy: null, error: null })
+        // A landed read satisfies any dropped-state recovery (round 40).
+        stateDropped = false
       } catch (error) {
         if (request !== loadSequence) return
         update({ status: snapshot.state !== null ? snapshot.status : 'error', busy: null, error: messageOf(error) })

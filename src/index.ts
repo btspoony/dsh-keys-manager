@@ -1002,6 +1002,13 @@ export class KeysManagerService {
   /** The one shutdown this manager runs; a later close() joins it (round 38). */
   private closePromise: Promise<void> | undefined
   /**
+   * Providers whose adoption found a foreign projection serving the route and
+   * therefore could not complete its one-time takeover (PR review round 40).
+   * The debt is settled by the projection-change sync when that foreign record
+   * goes away; it never authorises an ordinary repair.
+   */
+  private readonly pendingAdoptionTakeovers = new Set<string>()
+  /**
    * The pre-close restoration is running (PR review round 37). Only inside it
    * — set when {@link restoreBorrowedWindows} starts and cleared in its
    * `finally`, the cleanup deadline included — does the module-private
@@ -3239,6 +3246,9 @@ export class KeysManagerService {
       // A live record Keys Manager does not own still serves ahead of the
       // broker reference, so the pool is not the route's source (round 3).
       this.foreignProjections.add(provider)
+      // A pending hydration read of the previous owner is now stale: the
+      // route serves a record this pool does not own (round 40).
+      this.noteProjectionCommitted(provider)
       this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
       // pi-ai resolves the broker reference before this record, so a route
       // left bound would keep serving the pool (PR review round 4).
@@ -3250,6 +3260,7 @@ export class KeysManagerService {
       // owner entry so failure attribution and demotion never fire on it.
       this.activeAccounts.delete(provider)
       this.foreignProjections.add(provider)
+      this.noteProjectionCommitted(provider)
       this.pushWarning(`The ${provider} OAuth record holds an unrecognized payload; Keys Manager left it untouched.`)
       await this.syncBindingAfterProjectionChange(provider)
       return
@@ -3267,6 +3278,7 @@ export class KeysManagerService {
       // live record keeps the pool from claiming the route (round 3).
       this.activeAccounts.delete(provider)
       this.foreignProjections.add(provider)
+      this.noteProjectionCommitted(provider)
       this.pushWarning(`An OAuth account for ${provider} is managed natively outside Keys Manager and is not part of the account pool.`)
       await this.syncBindingAfterProjectionChange(provider)
       return
@@ -4136,6 +4148,16 @@ export class KeysManagerService {
         ok: false,
         latencyMs: 0,
         error: probe.failed ? `Could not read credential ${row.ref}` : 'The stored credential is missing',
+      }
+    }
+    // PR review round 40: a native OAuth sign-in (or a demotion) can change the
+    // route's serving source while the probe is parked. Sending now would test a
+    // key the request does not carry, so refuse instead of reporting a false pass.
+    if (this.oauthOwnerFor(provider) !== null || this.foreignProjections.has(provider)) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: `The ${provider} route is now served by another credential source; run the test again once it settles.`,
       }
     }
     return await this.runTestRequest(provider, model, {
@@ -5796,7 +5818,12 @@ export class KeysManagerService {
     // is persistence, so shutdown refuses it.
     if (this.closing) return
     try {
-      await this.syncBrokerBinding(provider)
+      // PR review round 40: adoption keeps the pre-adoption reference while a
+      // foreign projection serves the route and records that it still owes the
+      // takeover. Only that debt lets this sync pass `takeover`, and only once;
+      // `originalApiKeyEnv` alone proves nothing about a later repair.
+      const takeover = this.pendingAdoptionTakeovers.delete(provider)
+      await this.syncBrokerBinding(provider, { takeover })
     } catch (error) {
       this.warn(`could not re-derive the pi-ai binding for ${provider} after its projection changed: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -5952,6 +5979,12 @@ export class KeysManagerService {
       if (ownershipRead === 'known' && !bound && this.keyPoolServes(record)) {
         await this.rollbackAdoption(record, imported)
         throw new Error(`The ${provider} profile refused the credential binding write; the adoption was rolled back. Repair the profile in Models and adopt again.`)
+      }
+      if (ownershipRead === 'known' && this.foreignProjections.has(provider) && record.originalApiKeyEnv !== null) {
+        // A foreign projection serves the route, so this adoption binds
+        // nothing; the pre-adoption reference it kept may only be taken over
+        // when that projection disappears (round 40).
+        this.pendingAdoptionTakeovers.add(provider)
       }
       if (ownershipRead === 'unknown') {
         // Ownership stays unknown and nothing was bound; a later authoritative
