@@ -13569,3 +13569,113 @@ test('a test cleanup parked across close writes nothing', { timeout: 10_000 }, a
     await h.close()
   }
 })
+
+// ── PR #26 review round 36 ──────────────────────────────────────────────────
+
+// Round 35 refused the cleanup's writes once `closing` was up, but
+// `restoreProjection` still read only that flag. `close()` runs its pre-close
+// restoration with `shutdownRequested` up and `closing` down, so a cleanup that
+// parked in the restore's record re-read resumed inside that window and ran its
+// compare-by-payload write and its removal. The restoration now carries a
+// module-private capability, and every other writer — this parked continuation
+// included — is refused from the moment shutdown starts.
+test('a stale continuation cannot write during the pre-close restoration', { timeout: 10_000 }, async () => {
+  const h = await harness()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  let releaseRestore: (() => void) | undefined
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  let counting = false
+  const writes = { modify: 0, delete: 0 }
+  raw.modifyRecord = async (...args: any[]) => {
+    if (counting) writes.modify += 1
+    return await realModify(...args)
+  }
+  raw.deleteRecord = async (...args: any[]) => {
+    if (counting) writes.delete += 1
+    return await realDelete(...args)
+  }
+  type WindowInternals = {
+    facts?: { records: any; key: string; previous: unknown; borrowed: unknown }
+    row: unknown
+  }
+  const internals = h.service as unknown as {
+    restoreBorrowedWindows: () => Promise<void>
+    restoreProjection: (...args: any[]) => Promise<string | undefined>
+    testWindows: Map<string, WindowInternals>
+  }
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const record = h.store.provider('anthropic')!
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    // The pre-test state: the pool serves the route, nothing is projected.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    const gate = new Promise<void>(resolve => { releaseTest = resolve })
+    let entered!: () => void
+    const enteredGate = new Promise<void>(resolve => { entered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      entered()
+      // The adapter ignores the abort the test timeout raised: this request
+      // never settles, so its window is still outstanding at shutdown.
+      await gate
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    testRun = h.service.testKey('anthropic', account.rowId)
+    await enteredGate
+    // The borrow landed: the tested account is projected (the pre-test state
+    // had no projection at all).
+    assert.equal(liveProjectionRefresh(h), 'rt-only')
+
+    // Park the pre-close restoration and start shutdown: `shutdownRequested` is
+    // up from `close()`'s entry, `closing` only after the restoration returns.
+    const restore = internals.restoreBorrowedWindows.bind(h.service)
+    let enteredRestore!: () => void
+    const restoreGate = new Promise<void>(resolve => { enteredRestore = resolve })
+    const restoreParked = new Promise<void>(resolve => { releaseRestore = resolve })
+    internals.restoreBorrowedWindows = async () => {
+      enteredRestore()
+      await restoreParked
+      return restore()
+    }
+    const closing = h.service.close()
+    await enteredRestore
+
+    // The window is still outstanding, so the borrow is what the store holds.
+    const window = internals.testWindows.get('anthropic')!
+    const facts = window.facts!
+    const records = JSON.stringify([...h.credentials.records])
+    counting = true
+    const stale = await internals.restoreProjection(facts.records, 'anthropic', window.row, facts.key, facts.previous, facts.borrowed)
+    counting = false
+
+    assert.deepEqual(rejections, [], 'the parked continuation rejected inside the window')
+    assert.equal(writes.modify + writes.delete, 0, 'a stale continuation wrote a credential record inside the pre-close window')
+    assert.equal(JSON.stringify([...h.credentials.records]), records, 'a stale continuation changed a credential record inside the pre-close window')
+    assert.match(String(stale), /shutting down/i)
+
+    // The authorized restoration still finishes the job.
+    releaseRestore!()
+    await closing
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the pre-close restoration did not put the borrow back')
+    assert.equal(
+      h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv,
+      record.brokerRef,
+      'the pre-close restoration did not put the binding back',
+    )
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    releaseRestore?.()
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

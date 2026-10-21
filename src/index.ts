@@ -85,6 +85,14 @@ const SERVICE = 'keysManager'
 const NAMESPACE = 'keysManager'
 const BROKER_PREFIX = 'KEYSMGR_'
 const ORIGINAL = Symbol.for('cordis.original')
+/**
+ * The capability `close()`'s pre-close restoration writes under (PR review
+ * round 36). A module-private token, not a boolean a caller can pass: no
+ * cleanup, watchdog or late reconcile can hold it, so the restoration is the
+ * only writer allowed while `shutdownRequested` is up.
+ */
+const PRE_CLOSE_RESTORE = Symbol('keys-manager.pre-close restore')
+type RestoreCapability = typeof PRE_CLOSE_RESTORE
 const MAX_SWITCHES = 6
 const ATTEMPT_TTL_MS = 60 * 60 * 1000
 /** A retry pin only lives for this long; an expired pin is treated as absent. */
@@ -1637,10 +1645,12 @@ export class KeysManagerService {
   /**
    * Whether a continuation that resumes from an await must stop writing
    * (PR review round 35). `shutdownRequested` is up for `close()`'s own
-   * pre-close restoration, which writes by design and never consults this.
+   * pre-close restoration, which writes by design: it alone carries the
+   * module-private {@link PRE_CLOSE_RESTORE} capability (round 36), so a
+   * continuation that resumes inside that window is still refused.
    */
-  private persistenceRefused(): boolean {
-    return this.closing || this.shutdownRequested
+  private persistenceRefused(capability?: RestoreCapability): boolean {
+    return (this.closing || this.shutdownRequested) && capability !== PRE_CLOSE_RESTORE
   }
 
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
@@ -1704,7 +1714,8 @@ export class KeysManagerService {
         // clean and let the write land afterwards.
         await this.awaitWindowMutations(window)
         // The window is still outstanding, so this is an in-window restore (not
-        // the late one): the attempt fence is the only identity it needs.
+        // the late one): the attempt fence is the only identity it needs. This
+        // is also the one writer that holds the pre-close capability.
         const restored = await this.restoreProjection(
           facts.records,
           window.provider,
@@ -1713,6 +1724,8 @@ export class KeysManagerService {
           facts.previous,
           facts.borrowed,
           stillCurrent,
+          false,
+          PRE_CLOSE_RESTORE,
         )
         if (restored !== undefined) return restored
         if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
@@ -4465,6 +4478,7 @@ export class KeysManagerService {
     borrowed: OAuthGrantPayload,
     stillCurrent?: () => boolean,
     late?: boolean,
+    capability?: RestoreCapability,
   ): Promise<string | undefined> {
     let live: CredentialRecordLike | undefined
     try {
@@ -4482,11 +4496,12 @@ export class KeysManagerService {
     // and the binding sync — is gated on it.
     const superseded = (): boolean => stillCurrent !== undefined && !stillCurrent()
     const takeover = 'a newer cleanup attempt took over this provider'
-    // PR review round 35: the re-read above is an await a cleanup can park in
-    // across `close()`. Only `closing` is read here: shutdown's own pre-close
-    // restoration is a writer by design and runs before that flag goes up.
+    // PR review round 36: the re-read above is an await a cleanup can park in
+    // across `close()`, so every write decision refuses persistence from the
+    // moment shutdown starts — unless the caller is the pre-close restoration,
+    // which is the only holder of that capability.
     const shutdown = 'Keys Manager is shutting down; the test cleanup was skipped'
-    if (this.closing) return shutdown
+    if (this.persistenceRefused(capability)) return shutdown
     // PR review round 8: the fence is checked in each branch that writes the
     // owner map, instead of once before every branch. The pre-branch check ran
     // after the only await, so it pre-empted the branch fences below and made
@@ -4521,9 +4536,9 @@ export class KeysManagerService {
         // PR review round 8: this branch's write-back starts an awaited write,
         // so it checks the attempt fence where it is about to write.
         if (superseded()) return takeover
-        if (this.closing) return shutdown
+        if (this.persistenceRefused(capability)) return shutdown
         try {
-          await this.writeBackRotation(provider, row, liveGrant!)
+          await this.writeBackRotation(provider, row, liveGrant!, capability)
         } catch (error) {
           // The live projection is the only copy of the rotated payload:
           // overwriting it with the pre-test payload would strand the account
@@ -4603,7 +4618,7 @@ export class KeysManagerService {
         await records.modifyRecord(key, async current => {
           // A superseded attempt, or a cleanup the shutdown overtook, leaves
           // the record exactly as it found it.
-          if (superseded() || this.closing) return undefined
+          if (superseded() || this.persistenceRefused(capability)) return undefined
           if (current === undefined) return undefined
           const currentGrant = current.kind === 'grant' && isOAuthGrantPayload(current.payload)
             ? current.payload
@@ -4615,7 +4630,7 @@ export class KeysManagerService {
           return undefined
         })
         if (superseded()) return takeover
-        if (this.closing) return shutdown
+        if (this.persistenceRefused(capability)) return shutdown
         if (decidedAgainst === undefined || !await this.projectionStillMatches(records, key, decidedAgainst)) {
           const liveAfter = await records.readRecord(key)
           // PR review round 6: this reconcile follows an awaited re-read; a
@@ -4624,7 +4639,7 @@ export class KeysManagerService {
           if (superseded()) return takeover
           // PR review round 35: the re-read is the cleanup's last await before
           // it would write; a shutdown that began under it stops the restore.
-          if (this.closing) return shutdown
+          if (this.persistenceRefused(capability)) return shutdown
           this.reconcileProjectionOwner(provider, liveAfter)
           // Already gone: the route has no projection, which is the state the
           // test found. Anything else is a grant this test may not remove —
@@ -4637,7 +4652,7 @@ export class KeysManagerService {
         }
         // The projection this test borrowed may already be a newer window's.
         if (superseded()) return takeover
-        if (this.closing) return shutdown
+        if (this.persistenceRefused(capability)) return shutdown
         await records.deleteRecord(key)
       } else {
         // QC N2: the compare travels with the write, so a foreign payload
@@ -4648,7 +4663,7 @@ export class KeysManagerService {
         left = await records.modifyRecord(key, current => {
           // A superseded attempt, or a cleanup the shutdown overtook, leaves
           // the record exactly as it found it.
-          if (superseded() || this.closing) return Promise.resolve(current)
+          if (superseded() || this.persistenceRefused(capability)) return Promise.resolve(current)
           const currentGrant = current !== undefined && current.kind === 'grant' && isOAuthGrantPayload(current.payload)
             ? current.payload
             : undefined
@@ -4658,7 +4673,7 @@ export class KeysManagerService {
           return Promise.resolve(testLeft ? snapshot : current)
         })
         if (superseded()) return takeover
-        if (this.closing) return shutdown
+        if (this.persistenceRefused(capability)) return shutdown
       }
     } catch (error) {
       // The store still holds what the re-read saw: keep the owner map on
@@ -4714,7 +4729,12 @@ export class KeysManagerService {
    * decision, including the echo-specific generation guards, so only the
    * write-back semantics live here.
    */
-  private async writeBackRotation(provider: string, row: KeyRecord, payload: OAuthGrantPayload): Promise<void> {
+  private async writeBackRotation(
+    provider: string,
+    row: KeyRecord,
+    payload: OAuthGrantPayload,
+    capability?: RestoreCapability,
+  ): Promise<void> {
     const records = this.credentialRecords()
     if (records === undefined) throw new Error('The credential store does not support records')
     if (row.oauth === null) throw new Error(`Key "${row.id}" is not an OAuth account`)
@@ -4722,8 +4742,9 @@ export class KeysManagerService {
     const rotatedRef = accountRef(provider, hash)
     await records.modifyRecord(rotatedRef, () => Promise.resolve({ kind: 'grant', payload: structuredClone(payload) }))
     // PR review round 35: the write above is an await, and the commit below is
-    // the persisted state write that follows it.
-    if (this.closing) throw new Error('Keys Manager is shutting down')
+    // the persisted state write that follows it. Round 36: only the restore
+    // holding the pre-close capability may continue past shutdown entry.
+    if (this.persistenceRefused(capability)) throw new Error('Keys Manager is shutting down')
     await this.commitGrantGeneration(provider, row, payload, rotatedRef)
   }
 
