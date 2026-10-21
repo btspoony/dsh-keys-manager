@@ -1169,9 +1169,10 @@ export class KeysManagerService {
   private readonly hydrationWaiters = new Map<string, Set<() => void>>()
   /**
    * True once the load-time hydration read is over (round-10 SF1). From then
-   * on no provider's read can land, so attribution is known for every provider
-   * — including one adopted after the read, whose OAuth rows did not exist
-   * when the projection was looked for.
+   * on no hydration read can land. It is NOT evidence that a given provider's
+   * projection was read (PR review round 17): a provider adopted after the
+   * snapshot was never in it, so readiness is decided per provider
+   * ({@link projectionOwnershipKnown}) and adoption reads its own projection.
    */
   private hydrationSettled = false
   /** Providers whose bounded-wait warning already fired (warn once). */
@@ -1425,14 +1426,21 @@ export class KeysManagerService {
    * round 3). Every managed provider's projection is read at hydration (a
    * key-only pool can be overridden by a persisted native grant, PR review
    * round 13), so the rule is the same for all of them: this provider's own
-   * read landed, a claim already owns it, or the whole read is over.
+   * read landed, or a claim already owns it.
+   *
+   * The process-wide settled flag is deliberately NOT part of this rule (PR
+   * review round 17): a provider adopted after the snapshot was never read by
+   * it, so "hydration is over" says nothing about THAT route's projection.
+   * Adoption reads it itself ({@link readAdoptionProjection}) and an extra
+   * provider's profile is created by its own call, so every managed provider
+   * still answers through its own marker.
    */
   private projectionOwnershipKnown(providerId: string): boolean {
     if (this.store.provider(providerId) === undefined) return true
     // A failed read is unknown even after the whole hydration settled: the
     // settled flag says no read can land, not that this one answered.
     if (this.ownershipReadFailures.has(providerId)) return false
-    return this.hydrationSettled || this.hydratedProviders.has(providerId) || this.activeAccounts.has(providerId)
+    return this.hydratedProviders.has(providerId) || this.activeAccounts.has(providerId)
   }
 
   /**
@@ -5282,25 +5290,78 @@ export class KeysManagerService {
       }
       this.store.providers[provider] = record
       this.rebuildBrokerMap()
+      // PR review round 17: this provider was not in the startup hydration
+      // snapshot, so its projection is read HERE, before the first binding
+      // sync. Without the read, "not in the snapshot" looked exactly like "no
+      // projection" and the sync bound the pool over the route's native grant.
+      const ownershipRead = await this.readAdoptionProjection(provider)
       // The binding follows the serving credential, never the route's ability
       // to hold keys: an OAuth-only route (`caps.keys === false`, no key row)
       // keeps its profile unbound so pi-ai reaches the stored grant, while a
       // route with an imported API key binds through the one authority.
       // Adoption is the only caller allowed to take over the pre-adoption
       // reference it recorded as `originalApiKeyEnv`.
-      const bound = await this.syncBrokerBinding(provider, { takeover: true })
-      if (!bound) {
-        // A refused write left the route recorded as managed with an imported
-        // key while the profile still names the pre-adoption reference — a
-        // state no later repair may touch (it cannot tell that value from a
-        // hand edit). Undo the adoption entirely instead (PR review round 2).
+      const bound = ownershipRead
+        ? await this.syncBrokerBinding(provider, { takeover: true })
+        : false
+      // A refused write the pool's serving shape required leaves a state no
+      // later repair may touch (it cannot tell that value from a hand edit), so
+      // undo the adoption entirely (PR review round 2). A foreign projection or
+      // an unreadable one needs no write: the profile is not the pool's to
+      // rewrite, and the adoption itself is complete.
+      if (ownershipRead && !bound && this.keyPoolServes(record)) {
         await this.rollbackAdoption(record, imported)
         throw new Error(`The ${provider} profile refused the credential binding write; the adoption was rolled back. Repair the profile in Models and adopt again.`)
+      }
+      if (!ownershipRead) {
+        // Ownership stays unknown and nothing was bound; a later authoritative
+        // read clears the marker and re-derives the binding.
+        this.pushWarning(`The ${provider} route was adopted, but its stored credential could not be read; its models profile was left unbound until the credential store answers.`)
       }
       if (hit !== undefined) this.pushWarning(`Imported the existing credential ${hit.ref}.`)
       this.store.touch()
       return this.buildState()
     })
+  }
+
+  /**
+   * Read and classify one provider's live projection at adoption (PR review
+   * round 17) — the same read hydration does, for the one route hydration
+   * cannot cover: a provider that did not exist when the snapshot was taken.
+   *
+   * An adoption owns no account row yet, so any live record is one no row of
+   * this pool owns: a native api-key, an unrecognized payload, and a grant left
+   * behind by a released account all serve the route ahead of the broker
+   * reference, so the route is marked foreign and the pool is not bound over it
+   * (PR review rounds 3–4). An absent record clears any stale marker: the pool
+   * may serve. A failed read is not an absent projection (round 8): ownership
+   * stays unknown, so nothing may be bound and no repair touches the route
+   * until an authoritative read answers ({@link noteProjectionReadSucceeded}).
+   *
+   * Returns false for that failure; the adoption itself is kept — there is no
+   * write to roll back, and only the binding is undecided.
+   */
+  private async readAdoptionProjection(provider: string): Promise<boolean> {
+    const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    const records = this.credentialRecords()
+    if (records === undefined) {
+      this.ownershipReadFailures.add(provider)
+      this.warn(`projection ownership for ${provider} could not be read during adoption: the credential store is unavailable`)
+      return false
+    }
+    let record: Awaited<ReturnType<CredentialRecordsLike['readRecord']>>
+    try {
+      record = await records.readRecord(grantKey)
+    } catch (error) {
+      this.ownershipReadFailures.add(provider)
+      this.warn(`projection ownership for ${provider} could not be read during adoption: ${error instanceof Error ? error.message : String(error)}`)
+      return false
+    }
+    this.ownershipReadFailures.delete(provider)
+    this.noteProviderHydrated(provider)
+    if (record === undefined) this.foreignProjections.delete(provider)
+    else this.foreignProjections.add(provider)
+    return true
   }
 
   /**
@@ -5451,6 +5512,10 @@ export class KeysManagerService {
         record.keys.push(key)
         this.store.providers[extraId] = record
         this.rebuildBrokerMap()
+        // Readiness is per provider now (PR review round 17): this route was
+        // created here and its binding is written by this very call, so no
+        // snapshot will ever read it.
+        this.noteProviderHydrated(extraId)
         this.store.touch()
         return this.buildState()
       }
@@ -5501,6 +5566,9 @@ export class KeysManagerService {
       }
       this.store.providers[extraId] = record
       this.rebuildBrokerMap()
+      // Same as the take-over branch above: the profile and its binding are
+      // this call's own write, so the route is attributable immediately.
+      this.noteProviderHydrated(extraId)
       this.store.touch()
       return this.buildState()
     })

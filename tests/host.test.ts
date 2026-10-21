@@ -73,6 +73,8 @@ function fakeCredentials(initial: Record<string, string> = {}): {
     failRefs: new Set<string>(),
     failModifyRecord: false,
     failDeleteRecord: false,
+    /** Credential keys whose record read rejects (PR review round 17). */
+    failReadRecordRefs: new Set<string>(),
     /** Simulated readRecord latency, for harvest-timing tests (SF1). */
     readRecordDelayMs: 0,
     async resolve(ref: string) {
@@ -93,6 +95,7 @@ function fakeCredentials(initial: Record<string, string> = {}): {
     },
     async readRecord(key: string): Promise<FakeCredentialRecord | undefined> {
       assertRecordKey(key)
+      if (raw.failReadRecordRefs.has(key)) throw new Error('credential store unavailable')
       // Resolve across a microtask hop: the real credential store reads
       // async I/O, so the echo handler's continuation always resumes after
       // any pending microtasks. The old same-tick resolution encoded an
@@ -11636,6 +11639,68 @@ test('a row deleted out of band between the captures and the borrow refuses the 
     assert.equal(borrows.has('anthropic'), false, 'the refused borrow left its marker behind')
   } finally {
     h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+// ── PR #26 review round 17 ──────────────────────────────────────────────────
+
+// Review must-fix: readiness was process-wide, so a provider that did not exist
+// when hydration ran looked exactly like one whose read found no projection.
+// Adoption then bound the pool over the route's native grant. The projection is
+// read per provider now, and adoption reads it before the first binding sync.
+test('a provider adopted after startup hydration does not bind over its native projection', async () => {
+  const h = await harness()
+  try {
+    // The startup snapshot only covers providers that were already managed;
+    // this route's native sign-in landed after that read.
+    await eventually(() => assert.equal((h.service as unknown as { hydrationSettled: boolean }).hydrationSettled, true))
+    h.credentials.records.set('llm-pi-ai/zai-coding-cn', {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-native', access: 'at-native' },
+    })
+    const native = structuredClone(h.credentials.records.get('llm-pi-ai/zai-coding-cn'))
+
+    await h.service.adoptProvider('zai-coding-cn')
+
+    const record = h.store.provider('zai-coding-cn')!
+    assert.equal(record.keys.length, 1, 'the pooled credential was not imported')
+    const profile = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    assert.equal(profile.apiKeyEnv, 'ZAI_CODING_CN_API_KEY',
+      'adoption bound the broker over a native projection it never read')
+    assert.notEqual(profile.apiKeyEnv, record.brokerRef)
+    assert.deepEqual(h.credentials.records.get('llm-pi-ai/zai-coding-cn'), native,
+      'the native grant was replaced by the adoption')
+  } finally {
+    await h.close()
+  }
+})
+
+// Review must-fix: a projection read that rejects is not an absent projection.
+// Adoption keeps the route managed (there is nothing to roll back), but it must
+// bind nothing over a projection this process could not see, and ownership must
+// stay unknown until an authoritative read answers.
+test('an adopted provider with a failed projection read does not bind', async () => {
+  const h = await harness()
+  try {
+    await eventually(() => assert.equal((h.service as unknown as { hydrationSettled: boolean }).hydrationSettled, true))
+    h.credentials.raw.failReadRecordRefs.add('llm-pi-ai/zai-coding-cn')
+
+    const state = await h.service.adoptProvider('zai-coding-cn')
+
+    const record = h.store.provider('zai-coding-cn')!
+    assert.equal(record.keys.length, 1, 'the failed read rolled the adoption back')
+    const profile = h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    assert.equal(profile.apiKeyEnv, 'ZAI_CODING_CN_API_KEY', 'the broker was bound over an unreadable projection')
+    assert.notEqual(profile.apiKeyEnv, record.brokerRef)
+    assert.equal(
+      (h.service as unknown as { projectionOwnershipKnown: (provider: string) => boolean }).projectionOwnershipKnown('zai-coding-cn'),
+      false,
+      'a failed projection read was reported as known ownership',
+    )
+    assert.match(state.warnings.join('\n'), /could not be read/)
+  } finally {
+    h.credentials.raw.failReadRecordRefs.delete('llm-pi-ai/zai-coding-cn')
     await h.close()
   }
 })
