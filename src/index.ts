@@ -3228,7 +3228,7 @@ export class KeysManagerService {
     // so the binding is released for the test window through the one authority
     // and restored at window end (see runOAuthRowTest).
     const borrowBinding = row.kind === 'oauth' && bound
-    if (row.kind !== 'oauth') return await this.runApiKeyRowTest(provider, row, model)
+    if (row.kind !== 'oauth') return await this.runApiKeyRowTest(provider, row, model, window)
     // The window records what this test borrows, so the watchdog can put the
     // route back exactly as the test's own finally would (QC fix wave 2).
     window.borrowBinding = borrowBinding
@@ -3258,8 +3258,17 @@ export class KeysManagerService {
   }
 
   /** One request pinned to the row's API-key literal. */
-  private async runApiKeyRowTest(provider: string, row: KeyRecord, model: string): Promise<KeyTestResult> {
+  private async runApiKeyRowTest(provider: string, row: KeyRecord, model: string, window: RowTestWindow): Promise<KeyTestResult> {
     const probe = await this.probeKey(row.ref)
+    // PR review round 10 (I-000179): the probe is an untimed seam call, so the
+    // window can be abandoned — and a release, refused or not, can have
+    // removed the row — while the test is parked here. Re-assert both right
+    // before the send: a late probe result must not send a deleted literal.
+    if (window.cleaned) return this.abandonedTestResult()
+    const live = this.store.provider(provider)
+    if (live === undefined || !live.keys.some(candidate => candidate.id === row.id)) {
+      return { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could send` }
+    }
     if (probe.hit === undefined) {
       return {
         ok: false,
@@ -3456,24 +3465,33 @@ export class KeysManagerService {
    * removal therefore waits for the window instead of racing it. The wait is
    * bounded by {@link isolationWaitMs} — a test wedged in an untimed seam call
    * must not park the removal forever — and a provider whose abandoned window
-   * still owns the route's records refuses the removal outright.
+   * still owns the route's records refuses the removal outright. A wait that
+   * hits its own bound refuses too (PR review round 10, I-000179): proceeding
+   * would delete the credential the parked test is about to send. The user can
+   * retry once the abandoned window has been cleaned up.
    */
   private async settleTestBeforeRemoval(provider: string): Promise<void> {
     const refusal = `A previous connection test for ${provider} is still being cleaned up; try again in a moment.`
     if (this.cleaningTests.has(provider)) throw new Error(refusal)
     const pending = this.testsActive.get(provider)
     if (pending === undefined) return
+    let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const bound = new Promise<void>(resolve => {
       timer = setTimeout(resolve, this.isolationWaitMs)
       timer.unref?.()
     })
     try {
-      await Promise.race([pending.then(() => undefined, () => undefined), bound])
+      await Promise.race([pending.then(() => { settled = true }, () => { settled = true }), bound])
     } finally {
       if (timer !== undefined) clearTimeout(timer)
     }
     if (this.cleaningTests.has(provider)) throw new Error(refusal)
+    if (!settled) {
+      throw new Error(
+        `A connection test for ${provider} did not settle within ${this.isolationWaitMs}ms, so the removal was refused rather than delete a credential its request may still carry; try again in a moment.`,
+      )
+    }
   }
 
   /**
@@ -5196,6 +5214,10 @@ export class KeysManagerService {
   private async releaseLocked(provider: string): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) return
+    // PR review round 10 (I-000179): release is a removal path too — it deletes
+    // every managed credential below, so it holds the same window coordination
+    // as removeAccount/deleteKey instead of racing a running row test.
+    await this.settleTestBeforeRemoval(provider)
     // Round-2 review step 4: releasing a provider revokes its in-flight
     // sign-in attempts. A login whose seam flow is aborted can no longer
     // harvest rows for a provider that is no longer managed (the harvest

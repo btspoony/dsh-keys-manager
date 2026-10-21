@@ -528,6 +528,55 @@ describe('row test dispatch', () => {
     expect(await test).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
     expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
   })
+
+  // PR #26 review round 10 (I-000178): `load` learned to drop a snapshot taken
+  // inside the borrow window, but a mutation's own StateView comes from that
+  // same window. Renaming another row while B is under test stored
+  // `B.projected = true`, so B kept its "serving" badge and its activation
+  // stayed disabled after the host restored A.
+  test('a mutation view taken while a row test borrows the route never lands', async () => {
+    const state = makeState()
+    const projected = { ...makeOauthKey(), id: 'k_oauthA', alias: 'Account A', projected: true }
+    const tested = { ...makeOauthKey(), id: 'k_oauthB', alias: 'Account B' }
+    state.providers[0] = { ...makeOauthProvider(), keys: [projected, tested] }
+    // Inside the window the host's route carries B's borrowed grant.
+    const borrowed = structuredClone(state)
+    for (const key of borrowed.providers[0]!.keys) {
+      if (key.id === 'k_oauthA') delete key.projected
+      if (key.id === 'k_oauthB') key.projected = true
+    }
+    const harness = makeContext({ ok: true, value: state })
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      if (endpoint === 'keysManager/updateKey') return { ok: true, value: borrowed }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    const rowProjected = (id: string) =>
+      store.getSnapshot().state?.providers[0]?.keys.find(key => key.id === id)?.projected
+
+    const test = store.testKey('zai-coding-cn', 'k_oauthB')
+    const rename = await store.call('updateKey', {
+      provider: 'zai-coding-cn',
+      keyId: 'k_oauthA',
+      patch: { alias: 'Account A renamed' },
+    })
+    expect(rename.ok).toBe(true)
+    // The mutation succeeded, but its view belongs to the borrow window: the
+    // tested row is not shown as serving, and the pre-window account still is
+    // (so B's Set active stays enabled).
+    expect(rowProjected('k_oauthB')).toBeUndefined()
+    expect(rowProjected('k_oauthA')).toBe(true)
+
+    releaseTest({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await test).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(rowProjected('k_oauthB')).toBeUndefined()
+    expect(rowProjected('k_oauthA')).toBe(true)
+  })
 })
 
 

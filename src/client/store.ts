@@ -59,6 +59,10 @@ export function createStore(ctx: ClientContext): ClientStore {
   // (PR review round 9, R8-1).
   let activeTests = 0
   let testGeneration = 0
+  // The generation the running mutation captured, and whether its view was
+  // dropped because it was built inside a borrow window (PR review round 10).
+  let mutationGeneration = 0
+  let stateDropped = false
   const listeners = new Set<() => void>()
   const emit = (): void => {
     for (const listener of [...listeners]) {
@@ -93,6 +97,7 @@ export function createStore(ctx: ClientContext): ClientStore {
     update({ busy: method, error: null })
     const run = async (): Promise<T | { ok: false; error: string }> => {
       ++loadSequence // invalidate a load that started before this mutation
+      mutationGeneration = testGeneration
       try {
         const result = await rpc(method, args)
         if (!result.ok) throw new Error(result.error.message)
@@ -116,9 +121,31 @@ export function createStore(ctx: ClientContext): ClientStore {
   /** Accept a StateView-carrying mutation: refresh the snapshot with it. */
   const stateOutcome = (value: unknown): ActionOutcome => {
     const state = value as StateView
+    // PR review round 10 (I-000178): a mutation that lands inside a row test's
+    // borrow window answers with the tested row projected, exactly like the
+    // refresh `load` already refuses (R8-1) — the host restores the route
+    // before the window closes, so the view is stale on arrival. Installing it
+    // would leave the tested row marked as serving with its activation
+    // disabled. Keep the mutation's real change by re-reading once no test
+    // borrows the route, instead of resurrecting that view.
+    const borrowed = activeTests > 0 || testGeneration !== mutationGeneration
+    if (borrowed) {
+      if (queuedMutations === 1) update({ busy: null, error: null })
+      else update({ error: null })
+      stateDropped = true
+      refreshDroppedState()
+      return { ok: true, value: state }
+    }
     if (queuedMutations === 1) update({ status: 'ready', state, now: Date.now(), busy: null, error: null })
     else update({ status: 'ready', state, now: Date.now(), error: null })
     return { ok: true, value: state }
+  }
+
+  /** Re-read the state a dropped mutation view would have installed, once safe. */
+  const refreshDroppedState = (): void => {
+    if (!stateDropped || activeTests > 0 || snapshot.busy !== null) return
+    stateDropped = false
+    void store.load({ keepError: true })
   }
 
   /** Read-only RPC (polling): never queues, never touches the snapshot. */
@@ -144,7 +171,7 @@ export function createStore(ctx: ClientContext): ClientStore {
     }
   }
 
-  return {
+  const store: ClientStore = {
     getSnapshot: () => snapshot,
     subscribe(listener: () => void) {
       listeners.add(listener)
@@ -218,6 +245,9 @@ export function createStore(ctx: ClientContext): ClientStore {
         // Invalidate every snapshot that overlapped the window, including one
         // that is still in flight when the host restores the route.
         testGeneration += 1
+        // The host has put the route back by now, so a mutation view dropped
+        // inside the window can be read again without its borrowed projection.
+        refreshDroppedState()
       }
     },
     tick() {
@@ -231,4 +261,5 @@ export function createStore(ctx: ClientContext): ClientStore {
       update({ error: null })
     },
   }
+  return store
 }

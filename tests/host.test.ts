@@ -10776,3 +10776,114 @@ test('deleting a row waits for its connection test', async () => {
     await h.close()
   }
 })
+
+// ── PR #26 review round 10 ──────────────────────────────────────────────────
+
+// Review I-000179 (round 10): `removeAccount` and `deleteKey` coordinated with
+// a running row test, but `releaseProvider → releaseLocked →
+// deleteManagedCredentials` did not. A release landing on a parked probe
+// deleted the api-key literal the test was about to send.
+test('releasing a provider waits for a parked row test', async () => {
+  const h = await harness()
+  let releaseProbe: (() => void) | undefined
+  let stall = true
+  try {
+    // A window long enough that the release cannot win the bound.
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 2_000
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].models = [{ id: 'zai-test-model' }]
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    const realProbe = (h.service as unknown as { probeKey: (ref: string) => Promise<unknown> }).probeKey.bind(h.service)
+    let enteredProbe!: () => void
+    const probeEntered = new Promise<void>(resolve => { enteredProbe = resolve })
+    const gate = new Promise<void>(resolve => { releaseProbe = resolve })
+    ;(h.service as unknown as { probeKey: (ref: string) => Promise<unknown> }).probeKey = async (ref: string) => {
+      if (stall && ref === target.ref) {
+        stall = false
+        enteredProbe()
+        await gate
+      }
+      return await realProbe(ref)
+    }
+    const sent: Array<string | undefined> = []
+    h.llm.stream = (options: Record<string, any>) => {
+      sent.push(h.credentials.refs.get(target.ref))
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+
+    const testRun = h.service.testKey('zai-coding-cn', target.id)
+    await probeEntered
+    const release = h.service.releaseProvider('zai-coding-cn')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.notEqual(h.store.provider('zai-coding-cn'), undefined,
+      'the provider was released while its own test was about to send')
+    assert.equal(h.credentials.refs.has(target.ref), true, 'the release deleted the literal the test was about to send')
+    assert.deepEqual(sent, [], 'the test sent its request before the release settled')
+
+    releaseProbe!()
+    assert.equal((await testRun).ok, true)
+    await release
+    assert.deepEqual(sent, ['sk-existing-zai'], 'the request carried a credential the store no longer held')
+    assert.equal(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.credentials.refs.has(target.ref), false)
+  } finally {
+    releaseProbe?.()
+    await h.close()
+  }
+})
+
+// The same window past its bound: the removal must refuse instead of deleting
+// the credential, and the abandoned probe must not send when it finally answers
+// (I-000179).
+test('a release is refused while a probe outlives the isolation deadline', async () => {
+  const h = await harness()
+  let releaseProbe: (() => void) | undefined
+  let stall = true
+  try {
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 50
+    await h.service.adoptProvider('zai-coding-cn')
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].models = [{ id: 'zai-test-model' }]
+    const target = h.store.provider('zai-coding-cn')!.keys[0]!
+    const realProbe = (h.service as unknown as { probeKey: (ref: string) => Promise<unknown> }).probeKey.bind(h.service)
+    let enteredProbe!: () => void
+    const probeEntered = new Promise<void>(resolve => { enteredProbe = resolve })
+    const gate = new Promise<void>(resolve => { releaseProbe = resolve })
+    ;(h.service as unknown as { probeKey: (ref: string) => Promise<unknown> }).probeKey = async (ref: string) => {
+      if (stall && ref === target.ref) {
+        stall = false
+        enteredProbe()
+        await gate
+      }
+      return await realProbe(ref)
+    }
+    let requests = 0
+    h.llm.stream = (options: Record<string, any>) => {
+      requests += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+
+    const testRun = h.service.testKey('zai-coding-cn', target.id)
+    await probeEntered
+    await assert.rejects(
+      () => h.service.releaseProvider('zai-coding-cn'),
+      /did not settle within|still being cleaned up/,
+    )
+    // Refused, not partially applied: the row and its literal are still there.
+    assert.notEqual(h.store.provider('zai-coding-cn'), undefined)
+    assert.equal(h.credentials.refs.has(target.ref), true)
+
+    releaseProbe!()
+    const result = await testRun
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /abandoned/)
+    assert.equal(requests, 0, 'a probe that outlived its window still sent a request')
+  } finally {
+    releaseProbe?.()
+    await h.close()
+  }
+})
