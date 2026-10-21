@@ -1222,12 +1222,15 @@ export class KeysManagerService {
    * order is preserved so the older observation can never commit after the
    * newer one and leave the row on a stale generation.
    *
-   * Round-8 finding I-000106: activation joins the same chain. The only
-   * writer of `row.oauth.grantRef` is {@link reconcileGrantRecord}, which runs
-   * outside the mutation queue, so activation's record read and its projection
-   * write must be mutually exclusive with that writer — otherwise a rotation
-   * landing between them leaves the projection on a generation the row no
-   * longer names.
+   * Round-8 finding I-000106 assumed activation would join this chain. It does
+   * not: activation runs its compare-and-write inside the mutation queue turn,
+   * and the only writer of `row.oauth.grantRef` is {@link reconcileGrantRecord},
+   * which runs outside that queue. The fence is therefore a generation re-check
+   * on both sides of the write — before it (the row must still name the
+   * generation that was read) and after it (a rotation commit can land inside
+   * the seam's compare-and-write await, which only reads the projection key).
+   * Chain members are the echo reconciler, the key-test borrow and adoption
+   * classification.
    */
   private readonly grantReconciliations = new Map<string, Promise<void>>()
   /**

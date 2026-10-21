@@ -47,8 +47,13 @@ conditions that implementation has to keep satisfying.
   refuses turns (shutdown entry, unreadable state file) the undo runs in memory only, and the next
   successful mutation persists it — named here because it is a real, accepted gap.
 - Each seam needs an explicit fence:
-  - **Shutdown**: every `await` inside these bodies re-checks closing/persistence refusal and the
-    remount epoch, and the last two steps above run inline only when `closing` already blocks new
+  - **Shutdown**: the fences differ by owner, because the queue and the chain give different
+    guarantees. A queue turn needs no post-`await` shutdown check: `close()` drains the queue before
+    it closes the store, so a turn that starts in time always finishes, and refusing *after* the
+    write is what used to manufacture an orphan. A per-provider chain body has no such drain — the
+    chain is awaited on a deadline — so every `await` in a chain body re-checks closing/persistence
+    refusal and the remount epoch, and a body resumed after the deadline returns without writing or
+    claiming. The second and third steps above run inline only when `closing` already blocks new
     turns and new mutations.
   - **Removal**: a removal runs on the queue, so the body proves the row is still managed before
     projecting, and compensates after writing.
