@@ -192,6 +192,32 @@ export interface ProviderView {
   warning?: string
 }
 
+/** Health state a transport account row renders. */
+export type TransportAccountStatus = 'active' | 'expired' | 'needs-reauth' | 'signed-out'
+
+/**
+ * One `llm-omp-transports/<route>` account held beside the pi-ai pool.
+ *
+ * A transport route keeps exactly one grant record, so a row is either that
+ * record's secret-free view or the route's signed-out placeholder. It never
+ * carries the grant payload itself, and it is never part of a pi-ai
+ * projection: the transports package's own adapter resolves the record.
+ */
+export interface TransportAccountView {
+  /** Provider route the grant serves, e.g. 'cursor'. */
+  id: string
+  /** The credential record holding the grant, e.g. 'llm-omp-transports/cursor'. */
+  scope: string
+  displayName: string
+  email?: string
+  accountId?: string
+  /** Epoch ms when the access token expires. */
+  expiresAt?: number
+  status: TransportAccountStatus
+  /** Derived from {@link status}: true only while it is `'active'`. */
+  active: boolean
+}
+
 /** Complete manager snapshot the UI renders. */
 export interface StateView {
   now: number
@@ -205,6 +231,11 @@ export interface StateView {
   pausedKeyCount: number
   bindingsCount: number
   warnings: string[]
+  /**
+   * Transport accounts managed beside the pi-ai pool. Additive and optional,
+   * so a snapshot from a build without transport support still renders.
+   */
+  transportAccounts?: TransportAccountView[]
 }
 
 /** One curated extra built-in provider. */

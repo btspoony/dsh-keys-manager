@@ -1,11 +1,12 @@
 import { beforeAll, describe, expect, test, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
 import React from 'react'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
 import { KeysManagerBody } from '../src/client/ui'
-import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, RpcResult, Runtime, StateView } from '../src/client/types'
+import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
 
 function makeState(): StateView {
   return {
@@ -168,6 +169,22 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     adopt: '接管 Provider',
     loginPromptSubmit: '提交',
     delete: '删除',
+    // Transport account surface (`llm-omp-transports/<route>`): every copy the
+    // row renders resolves its real zh value, so the assertions below locate
+    // the section, status pill and dialogs by rendered text.
+    transportAccounts: '传输账户',
+    transportTag: '传输',
+    transportSignIn: '登录',
+    transportExpires: '有效期至 {time}',
+    transportStatusActive: '正常',
+    transportStatusExpired: '令牌已过期',
+    transportStatusNeedsReauth: '需重新登录',
+    transportStatusSignedOut: '未登录',
+    transportRemoveTitle: '移除 {name} 传输账户？',
+    transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。',
+    cancel: '取消',
+    deleteConfirm: '确认删除',
+    deleting: '删除中…',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
@@ -580,6 +597,49 @@ describe('oauth account store', () => {
 })
 
 
+describe('transport account store', () => {
+  function makeTransportAttempt(): AccountAttemptView {
+    return { id: 'la_2_cd', provider: 'cursor', status: 'pending', notices: [], createdAt: 3, updatedAt: 4 }
+  }
+
+  test('transport wrappers post the route and adopt the returned state', async () => {
+    const harness = makeContext()
+    const sent: Array<{ endpoint: string; payload: unknown }> = []
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      sent.push({ endpoint, payload })
+      if (endpoint === 'keysManager/getState') return { ok: true, value: makeState() }
+      if (endpoint === 'keysManager/beginTransportLogin') return { ok: true, value: makeTransportAttempt() }
+      const state = makeState()
+      state.transportAccounts = [{
+        id: 'cursor',
+        scope: 'llm-omp-transports/cursor',
+        displayName: 'Cursor',
+        status: 'active',
+        active: true,
+      }]
+      return { ok: true, value: state }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    const begun = await store.beginTransportLogin('cursor')
+    expect(begun.ok).toBe(true)
+    if (begun.ok) expect(begun.value?.id).toBe('la_2_cd')
+    expect(sent.at(-1)).toEqual({ endpoint: 'keysManager/beginTransportLogin', payload: { args: { provider: 'cursor' } } })
+
+    const activated = await store.activateTransportAccount('cursor')
+    expect(activated.ok).toBe(true)
+    expect(sent.at(-1)).toEqual({ endpoint: 'keysManager/activateTransportAccount', payload: { args: { provider: 'cursor' } } })
+    expect(store.getSnapshot().state?.transportAccounts?.[0]?.status).toBe('active')
+
+    const removed = await store.removeTransportAccount('cursor')
+    expect(removed.ok).toBe(true)
+    expect(sent.at(-1)).toEqual({ endpoint: 'keysManager/removeTransportAccount', payload: { args: { provider: 'cursor' } } })
+    expect(store.getSnapshot().busy).toBeNull()
+  })
+})
+
+
 /**
  * Minimal React test renderer for the no-DOM vitest environment.
  *
@@ -812,6 +872,25 @@ function makeOauthProvider(): ProviderView {
     nativeAuth: { env: ['ZAI_CODING_CN_API_KEY'], oauth: true },
     keys: [makeOauthKey(), makeState().providers[0]!.keys[0]!],
   }
+}
+
+/** One `llm-omp-transports/<route>` row as the host projects it. */
+function makeTransportAccount(overrides: Partial<TransportAccountView> = {}): TransportAccountView {
+  return {
+    id: 'cursor',
+    scope: 'llm-omp-transports/cursor',
+    displayName: 'Cursor',
+    email: 'dev@cursor.example',
+    accountId: 'user_1',
+    expiresAt: Date.now() + 3_600_000,
+    status: 'active',
+    active: true,
+    ...overrides,
+  }
+}
+
+function makeTransportAttemptView(): AccountAttemptView {
+  return { id: 'la_2_cd', provider: 'cursor', status: 'pending', notices: [], createdAt: 3, updatedAt: 4 }
 }
 
 function makeAttemptView(): AccountAttemptView {
@@ -1784,5 +1863,172 @@ describe('account ui', () => {
       vi.useRealTimers()
       setRuntimeContext(null)
     }
+  })
+})
+
+
+describe('transport account surface', () => {
+  const TRANSPORT_KEYS = [
+    'transportAccounts',
+    'transportTag',
+    'transportSignIn',
+    'transportExpires',
+    'transportStatusActive',
+    'transportStatusExpired',
+    'transportStatusNeedsReauth',
+    'transportStatusSignedOut',
+    'transportRemoveTitle',
+    'transportRemoveBody',
+  ] as const
+
+  test('the transport copy exists in both dictionaries and mirrors locale/*.json', () => {
+    const harness = makeContext()
+    apply(harness.ctx)
+    const dicts = harness.dictionaries.value
+    expect(dicts).toBeDefined()
+    const enJson = JSON.parse(readFileSync(new URL('../locale/en.json', import.meta.url), 'utf8')) as Record<string, string>
+    const zhJson = JSON.parse(readFileSync(new URL('../locale/zh.json', import.meta.url), 'utf8')) as Record<string, string>
+    for (const key of TRANSPORT_KEYS) {
+      expect(typeof dicts!.en[key]).toBe('string')
+      expect(typeof dicts!.zh[key]).toBe('string')
+      expect(dicts!.en[key]!.length).toBeGreaterThan(0)
+      expect(dicts!.zh[key]!.length).toBeGreaterThan(0)
+      expect(dicts!.zh[key]).not.toBe(dicts!.en[key])
+      // The packaged copy the host loads is a second source of the same value.
+      expect(dicts!.en[key]).toBe(enJson[key])
+      expect(dicts!.zh[key]).toBe(zhJson[key])
+    }
+    expect(dicts!.en.transportExpires).toContain('{time}')
+    expect(dicts!.zh.transportExpires).toContain('{time}')
+    expect(dicts!.en.transportRemoveTitle).toContain('{name}')
+    expect(dicts!.zh.transportRemoveTitle).toContain('{name}')
+    for (const cleanup of harness.cleanups.reverse()) cleanup()
+  })
+
+  test('a transport account renders in its own section with identity, scope and status', async () => {
+    const state = makeState()
+    state.transportAccounts = [makeTransportAccount()]
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+
+    expect(view.nodes.some(node => node.text === '传输账户')).toBe(true)
+    expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(1)
+    const row = findByClass(view.nodes, 'km-transport-row')[0]!
+    const inside = descendants(view.nodes, row)
+    expect(inside.some(node => node.text === 'dev@cursor.example')).toBe(true)
+    // The scope is the record identity, never its payload.
+    expect(inside.some(node => node.text === 'llm-omp-transports/cursor')).toBe(true)
+    expect(inside.some(node => node.text === '传输')).toBe(true)
+    const pills = findByClass(inside, 'km-status')
+    expect(pills).toHaveLength(1)
+    expect(pills[0]!.text).toBe('正常')
+    expect(inside.some(node => node.text.includes('有效期至'))).toBe(true)
+    // A transport row is a sibling section, never a row inside a provider card.
+    for (const card of findByClass(view.nodes, 'km-provider')) {
+      const rowInCard = descendants(view.nodes, card)
+        .some(node => String((node.props?.className as string | undefined) ?? '').split(/\s+/).includes('km-transport-row'))
+      expect(rowInCard).toBe(false)
+    }
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a snapshot without transport accounts renders no transport section', async () => {
+    // Additive host field: an older host build keeps rendering exactly as before.
+    const harness = makeContext()
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
+    expect(view.nodes.some(node => node.text === '传输账户')).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a signed-out transport route starts its own sign-in flow through the shared dialog', async () => {
+    const state = makeState()
+    state.transportAccounts = [makeTransportAccount({
+      status: 'signed-out',
+      active: false,
+      email: undefined,
+      accountId: undefined,
+      expiresAt: undefined,
+    })]
+    let loginPayload: unknown
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginTransportLogin') {
+        loginPayload = payload
+        return { ok: true, value: makeTransportAttemptView() }
+      }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makeTransportAttemptView() }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+
+    const row = findByClass(view.nodes, 'km-transport-row')[0]!
+    const inside = descendants(view.nodes, row)
+    expect(inside.some(node => node.text === '未登录')).toBe(true)
+    const signIn = descendants(view.nodes, row).filter(node => node.type === 'button' && node.text.includes('登录'))
+    expect(signIn).toHaveLength(1)
+    // No "Set active": the stored grant already is the route's live credential,
+    // so an activation control would be a no-effect button.
+    expect(descendants(view.nodes, row).filter(node => node.text === '设为当前')).toHaveLength(0)
+    ;(signIn[0]!.props!.onClick as () => void)()
+    await view.flush()
+
+    // The route is the only argument; the flow key is the host's business.
+    expect(loginPayload).toEqual({ args: { provider: 'cursor' } })
+    // The pi-ai dialog is reused: it polls the same attempt record.
+    expect(view.nodes.some(node => node.text === '等待授权…')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('removing a transport account confirms, then deletes only that route', async () => {
+    const state = makeState()
+    state.transportAccounts = [makeTransportAccount()]
+    const harness = makeContext({ ok: true, value: state })
+    let removed: unknown
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/removeTransportAccount') {
+        removed = payload
+        const next = makeState()
+        next.transportAccounts = []
+        return { ok: true, value: next }
+      }
+      return { ok: true, value: state }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+
+    const row = findByClass(view.nodes, 'km-transport-row')[0]!
+    const del = descendants(view.nodes, row).filter(node => node.type === 'button' && node.text === '删除')
+    expect(del).toHaveLength(1)
+    ;(del[0]!.props!.onClick as () => void)()
+    view.render()
+    const copy = findByClass(view.nodes, 'km-modal-copy')[0]
+    expect(copy).toBeDefined()
+    expect(copy!.text).toContain('路由自身不会重建它')
+
+    const confirm = findButtons(view.nodes, '确认删除')[0]
+    expect(confirm).toBeDefined()
+    ;(confirm!.props!.onClick as () => void)()
+    await view.flush()
+    expect(removed).toEqual({ args: { provider: 'cursor' } })
+    // The refreshed state no longer carries the row.
+    expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
+    view.unmount()
+    setRuntimeContext(null)
   })
 })

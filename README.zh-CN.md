@@ -19,6 +19,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 - 既有 Models 提供商卡片内出现"由 Keys Manager 托管"徽标。
 - 额外内置提供商以普通 `llm-pi-ai` 路由安装。
 - 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，凭据与 API key 并存管理。
+- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——目前是 Cursor（`cursor`）。
 
 ### 额外提供商
 
@@ -86,6 +87,8 @@ CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<
 dsh plugin --profile web add dsh-keys-manager
 ```
 
+安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责 Cursor 的线协议。
+
 ### 安装 —— 本地检出
 
 ```sh
@@ -118,6 +121,15 @@ dsh plugin --profile web link .
 增量 1 的真实模型是：**API key 构成选择环**——会话粘滞、轮询选择、重试切换与冷却都作用在该提供商的 API key 之间；**每个提供商由一条被投影的 OAuth 授权服务**——被投影的账户直接响应请求，同时只保留一个活跃授权。按账户排名（在多个账户间轮换或分流）是后续工作。账户行上的计数只反映该账户自身的成功与失败，不代表按账户的流量拆分。被投影的授权失败（过期或刷新被拒）时，该账户进入冷却：支持 key 池的路由会回落到该提供商的 key 池；仅有 OAuth 的路由没有 API-key 池，将停止服务，直到重新登录账户。恢复方式是从账户菜单手动重新登录。
 
 添加账户只把提供商签发的授权存进 Harness 凭据存储（挂在账户的 `grantRef` 之下）；管理器状态里只存引用与非敏感元数据（邮箱、账户 ID、过期时间）——与 API key 相同的无明文布局。
+
+### Cursor 传输
+
+Cursor 由随附的 `dsh-llm-omp-transports` 组件在独立 `cursor` 路由上提供。它不经过 pi-ai key 池：该路由在 `llm-omp-transports/cursor` 只保留一条授权，并在凭据 seam 上自动刷新。
+
+- 模型来自固定的 `@oh-my-pi/pi-catalog@18.12.3` 表（123 行），构建时生成进传输包。路由支持文本与推理流，并把工具调用交给 DSH 的工具循环。
+- 在 Keys Manager 页面的 **传输账户**（`Transport accounts`）区块登录：浏览器页面加轮询。账户行显示身份、有效期与状态；授权过期或被拒后需要手动重新登录。
+- 暂不转发图片。路由按纯文本宣告输入，遇到图片块以类型化错误拒绝，而不是静默丢弃。
+- 该客户端是非官方实现，会呈现 Cursor 厂商内部的 OAuth 身份。依赖它之前请阅读[传输包文档](packages/llm-omp/README.md)，风险与限制列在那里。
 
 ### 选择与故障策略
 
@@ -164,6 +176,17 @@ $DSH_HOME/keys-manager/state.json
 
 其余 DSH 目录路由都提供 API key 凭据。同时支持 OAuth 的提供商（Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI）仍可经其 API key 路径管理，其 OAuth 登录则以 [OAuth 账户](#oauth-账户)形式提供。
 
+## 仓库布局
+
+本仓库是 pnpm workspace，包含两个已发布包：
+
+| 路径 | npm 包 | 职责 |
+|---|---|---|
+| 根目录 | `dsh-keys-manager` | Host 插件、Keys Manager Web 客户端、bundle patch |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor（及后续）传输组件 |
+
+根包把传输包声明为依赖，因此已发布的 Keys Manager tarball 会拉取传输包，而不是把它 vendor 进来。传输包独立版本化，详见[发布](docs/release.zh-CN.md)。
+
 ## 文档
 
 | 文档 | 内容 |
@@ -171,6 +194,7 @@ $DSH_HOME/keys-manager/state.json
 | [开发](docs/development.zh-CN.md) | 构建与开发工作流、仓库布局 |
 | [发布](docs/release.zh-CN.md) | CI 检查与 npm 发布流程 |
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含延后提供商 |
+| [传输包（英文）](packages/llm-omp/README.md) | Cursor 传输：支持状态、风险、构建/测试与发布 |
 
 英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
 

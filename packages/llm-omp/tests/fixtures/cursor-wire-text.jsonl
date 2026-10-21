@@ -1,0 +1,4 @@
+{"kind":"text","text":"Hello "}
+{"kind":"text","text":"from the wire"}
+{"kind":"turnEnded","usage":{"inputTokens":1200,"outputTokens":34,"cacheReadTokens":20,"cacheWriteTokens":0}}
+{"kind":"end"}

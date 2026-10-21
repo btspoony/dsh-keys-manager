@@ -1,0 +1,10 @@
+{"type":"start"}
+{"type":"thinking_start","contentIndex":0}
+{"type":"thinking_delta","contentIndex":0,"delta":"The user "}
+{"type":"thinking_delta","contentIndex":0,"delta":"greets me."}
+{"type":"thinking_end","contentIndex":0,"content":"The user greets me."}
+{"type":"text_start","contentIndex":1}
+{"type":"text_delta","contentIndex":1,"delta":"Hello "}
+{"type":"text_delta","contentIndex":1,"delta":"from Cursor"}
+{"type":"text_end","contentIndex":1,"content":"Hello from Cursor"}
+{"type":"done","reason":"stop","message":{"role":"assistant","model":"claude-4.5-sonnet","api":"cursor-agent","provider":"cursor","stopReason":"stop","timestamp":1760000000000,"content":[{"type":"thinking","thinking":"The user greets me."},{"type":"text","text":"Hello from Cursor"}],"usage":{"input":1200,"output":34,"cacheRead":800,"cacheWrite":0,"totalTokens":2034,"reasoningTokens":12}}}

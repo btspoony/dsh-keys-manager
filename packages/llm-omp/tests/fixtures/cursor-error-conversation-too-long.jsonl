@@ -1,0 +1,2 @@
+{"type":"start"}
+{"type":"error","reason":"error","error":{"role":"assistant","model":"claude-4.5-sonnet","api":"cursor-agent","provider":"cursor","stopReason":"error","timestamp":1760000000000,"content":[],"usage":{"input":12,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":12},"errorMessage":"Cursor CONVERSATION_TOO_LONG: the conversation exceeds the model context window","errorStatus":413}}

@@ -1,0 +1,6 @@
+# Mounts the llm-omp-transports transport plugin when this package is installed on its
+# own. It owns the `cursor` (later `devin`, …) LLM routes and the
+# `llm-omp-transports/<provider>` credential scope.
+- insert:
+    - id: llm-omp-transports
+      name: 'dsh-llm-omp-transports'

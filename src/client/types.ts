@@ -1,6 +1,6 @@
 /** Browser-half domain and service contracts for the Keys Manager. */
 import type * as React from 'react'
-import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView } from '../domain'
+import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView, TransportAccountStatus, TransportAccountView } from '../domain'
 
 export type {
   AccountAttemptNotice,
@@ -13,6 +13,8 @@ export type {
   ProviderStatus,
   ProviderView,
   StateView,
+  TransportAccountStatus,
+  TransportAccountView,
 }
 
 /** Locale dictionaries registered under the plugin namespace. */
@@ -80,6 +82,15 @@ export interface ClientStore {
   activateAccount(provider: string, accountId: string): Promise<ActionOutcome>
   /** Drop one account row and its stored grant payload. */
   removeAccount(provider: string, accountId: string): Promise<ActionOutcome>
+  /**
+   * Start the `llm-omp-transports/<route>` sign-in; resolves with the attempt
+   * view, which the login dialog polls through {@link accountAttempt}.
+   */
+  beginTransportLogin(route: string): Promise<AccountAttemptResult>
+  /** Re-read one transport route's stored grant (activation writes nothing). */
+  activateTransportAccount(route: string): Promise<ActionOutcome>
+  /** Delete one transport route's grant record. */
+  removeTransportAccount(route: string): Promise<ActionOutcome>
   tick(): void
   dismissError(): void
 }

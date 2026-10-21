@@ -1,0 +1,4 @@
+{"kind":"requestContext"}
+{"kind":"exec","name":"lookup_doc","toolName":"lookup_doc","toolCallId":"call-wire-1","args":{"query":"hello"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":6,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

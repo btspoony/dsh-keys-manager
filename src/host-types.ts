@@ -130,6 +130,24 @@ export interface CredentialRecordsLike {
   deleteRecord(key: string): Promise<void>
 }
 
+/**
+ * The grant payload the llm-omp transports package writes at
+ * `llm-omp-transports/<route>`. Keys Manager only reads it (list/status) and
+ * deletes the whole record; the payload stays owned by its writer, so this is
+ * a structural shape (the package exports no runtime type for it without
+ * pulling its transport code in).
+ */
+export interface TransportGrantLike {
+  /** Bearer token the route's adapter sends. */
+  access: string
+  /** Refresh token; absent on a grant that cannot be renewed. */
+  refresh?: string
+  /** Epoch ms when the access token expires. */
+  expires: number
+  email?: string
+  accountId?: string
+}
+
 /** One path-addressed settings edit. */
 export type SettingsPathOp =
   | { op: 'set'; path: readonly string[]; value: unknown }

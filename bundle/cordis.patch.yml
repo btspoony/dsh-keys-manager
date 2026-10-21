@@ -1,5 +1,8 @@
-# Mounts the Keys Manager Host plugin. The Client half is declared by
-# package.json#dsh.client and is served from lib/client.js.
+# Mounts the Keys Manager Host plugin plus its second component, the
+# llm-omp-transports transport package. The Client half is declared by package.json#dsh.client and
+# is served from lib/client.js.
 - insert:
     - id: dsh-keys-manager
       name: 'dsh-keys-manager'
+    - id: llm-omp-transports
+      name: 'dsh-llm-omp-transports'
