@@ -12706,3 +12706,65 @@ test('a bind whose ownership turns unknown before the settings write is not writ
     await h.close()
   }
 })
+
+// ── PR #26 review round 29 ──────────────────────────────────────────────────
+
+// Codex P1: `close()` drained every provider's grant chain, and one chain body
+// carries the row test's own provider request. An adapter that ignores the
+// abort keeps that request pending after the watchdog restored and fenced the
+// borrowed credential, so the chain never settled and shutdown hung on it
+// forever. The drain is now bounded: past the deadline the pending chain is
+// abandoned, one warning is logged, and the store still closes.
+test('close resolves under the drain bound while a test request never settles', { timeout: 10_000 }, async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        testEntered()
+        // The adapter ignores the abort the test timeout raised: this request
+        // never settles, so the chain it runs in never settles either.
+        await testGate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    const logged: string[] = []
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = message => {
+      logged.push(message)
+    }
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    let settled = false
+    void testRun.then(() => { settled = true }, () => { settled = true })
+
+    let expired: ReturnType<typeof setTimeout> | undefined
+    const closed = await Promise.race([
+      h.service.close().then(() => true),
+      new Promise<boolean>(resolve => {
+        expired = setTimeout(() => resolve(false), 1_000)
+      }),
+    ])
+    clearTimeout(expired)
+
+    assert.equal(closed, true, 'close() waited for a grant chain whose request never settles')
+    // The chain really was pending: the regression proves nothing if the
+    // request had settled on its own.
+    assert.equal(settled, false, 'the parked request settled before the drain expired')
+    assert.equal(
+      logged.filter(message => /grant reconciliation/.test(message)).length,
+      1,
+      `expected exactly one drain warning, got: ${logged.join(' | ')}`,
+    )
+  } finally {
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

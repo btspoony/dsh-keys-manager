@@ -156,6 +156,15 @@ const KEY_TEST_ISOLATION_WAIT_MS = KEY_TEST_TIMEOUT_MS + 5_000
  * unreconciled credential surface.
  */
 const KEY_TEST_CLEANUP_DEADLINE_MS = 2_000
+/**
+ * Hard bound on the shutdown drain of the per-provider grant chains (PR review
+ * round 29). A chain body carries the row test's own provider request, and an
+ * adapter that ignores the abort signal keeps that request pending after the
+ * watchdog already restored the borrowed credential, so the chain may never
+ * settle. Past this bound the pending chain is abandoned: process teardown does
+ * not need it, and shutdown must not hang on it.
+ */
+const GRANT_DRAIN_DEADLINE_MS = 2_000
 
 /** The error-like `name` of an unknown thrown value, if it carries one. */
 function errorNameOf(value: unknown): string | undefined {
@@ -1039,6 +1048,8 @@ export class KeysManagerService {
   private readonly abandonedWindows = new Map<string, RowTestWindow>()
   /** Hard bound on one abandoned window's cleanup. Injectable for tests. */
   private testCleanupDeadlineMs = KEY_TEST_CLEANUP_DEADLINE_MS
+  /** Hard bound on the shutdown drain of the grant chains. Injectable for tests. */
+  private grantDrainDeadlineMs = GRANT_DRAIN_DEADLINE_MS
   /** Providers whose isolation-deadline warning already fired (warn once). */
   private readonly isolationWaitWarned = new Set<string>()
   /** Interactive sign-in attempts, by attempt id. */
@@ -1619,8 +1630,33 @@ export class KeysManagerService {
     // Round-9 P1: the per-provider reconciliation chains are independent of
     // the mutation queue, so drain them before the store closes — a queued
     // echo must not write a grant record into a manager that is shutting down.
-    await Promise.allSettled([...this.grantReconciliations.values()])
+    await this.drainGrantReconciliations()
     await this.store.close()
+  }
+
+  /**
+   * Drain the grant chains under a hard bound (PR review round 29).
+   *
+   * The work is not cancelled — the credential seam offers no cancellation and
+   * a wedged provider request may never settle — it is only stopped from
+   * holding shutdown: the chain past the deadline is abandoned, and its late
+   * write can only land in a store that is closing anyway.
+   */
+  private async drainGrantReconciliations(): Promise<void> {
+    // The drain never rejects: a chain failure is that chain's own result.
+    const drained = Promise.allSettled([...this.grantReconciliations.values()]).then(() => false)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const deadline = new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(true), this.grantDrainDeadlineMs)
+      timer.unref?.()
+    })
+    try {
+      if (await Promise.race([drained, deadline])) {
+        this.warn('shutdown stopped waiting for a grant reconciliation still held by a connection test request that never settled')
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
   }
 
   /** Push a user-facing warning that rides the next state response. */
