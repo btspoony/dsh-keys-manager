@@ -5312,21 +5312,35 @@ test('a removal landing during a parked activation read leaves no projection rec
 
 test('an activation body resumed after close writes no projection and claims nothing', async () => {
   const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
   const park = parkGrantRead(h, grantRef)
+  // QA-F1: count the projection writes the abandoned body attempts AFTER the
+  // store closed. Without this the case cannot tell "the body never wrote"
+  // from "the body wrote and the refusal's rollback deleted it".
+  let closed = false
+  let projectionWritesAfterClose = 0
+  raw.modifyRecord = async (key: string, mutate: unknown) => {
+    if (closed && key === GRANT_KEY) projectionWritesAfterClose += 1
+    return realModify(key, mutate)
+  }
   ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 30
   const activating = h.service.activateAccount('anthropic', rowId)
   try {
     await eventually(() => assert.equal(park.parked(), true))
     // The drain gives up on the parked body and closes the store.
     await h.service.close()
+    closed = true
     park.release()
     await assert.rejects(() => activating, /shutting down/)
+    assert.equal(projectionWritesAfterClose, 0, 'an abandoned body attempted a projection write after shutdown')
     assert.equal(h.credentials.records.has(GRANT_KEY), false, 'a resumed body wrote the projection into a closing store')
     const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
     assert.equal(owners.has('anthropic'), false, 'a resumed body claimed ownership')
   } finally {
     park.release()
     await activating.catch(() => {})
+    raw.modifyRecord = realModify
     park.restore()
     await h.close()
   }
