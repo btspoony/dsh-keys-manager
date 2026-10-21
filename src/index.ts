@@ -1217,6 +1217,13 @@ export class KeysManagerService {
    * (PR review round 4): it serves the route, so the startup repair must not
    * bind the broker over it.
    *
+   * EVERY managed provider's projection is read (PR review round 13), not
+   * only those with OAuth rows: a key-only pool can be overridden by a
+   * native grant persisted for the same route, and a skipped read left the
+   * startup repair free to bind the broker over it. The reads run
+   * concurrently so one provider's stalled read cannot delay another
+   * provider's own readiness (round 9).
+   *
    * Returns its own completion (round-8 finding I-000108), and the returned
    * promise is already caught, so a failed hydration degrades to "no owner"
    * instead of wedging every request. Request attribution does not subscribe
@@ -1231,10 +1238,9 @@ export class KeysManagerService {
           this.warnSubscriptionLost('credentials record access')
           return
         }
-        for (const providerRecord of Object.values(this.store.providers)) {
+        await Promise.all(Object.values(this.store.providers).map(async providerRecord => {
           const provider = providerRecord.provider
           const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
-          if (accounts.length === 0) continue
           try {
             const grantKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
             // Generation tag (round-3 finding 3): the read below is awaited, and
@@ -1250,20 +1256,21 @@ export class KeysManagerService {
               // broker over a grant this process could not see.
               this.ownershipReadFailures.add(provider)
               this.warn(`projection ownership hydration could not read ${grantKey}: ${error instanceof Error ? error.message : String(error)}`)
-              continue
+              return
             }
             // No record: nothing projects this route, so the pool may serve it.
-            if (record === undefined) continue
+            if (record === undefined) return
             // A live record this pool cannot interpret — a native api-key, an
-            // unrecognized payload — serves the route ahead of any broker
-            // reference exactly like an unowned grant, so it is classified as
-            // foreign below (PR review round 4).
+            // unrecognized payload, or (for a key-only pool) any grant at all —
+            // serves the route ahead of any broker reference exactly like an
+            // unowned grant, so it is classified as foreign below (PR review
+            // rounds 4 and 13).
             const owner = record.kind === 'grant' && isOAuthGrantPayload(record.payload)
               ? matchOwningAccount(provider, accounts, record.payload)
               : undefined
             // A newer activation/login claimed the owner while this read was in
             // flight: the stale read is discarded, never written over it.
-            if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) continue
+            if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) return
             // A concurrent removal may have dropped the row while this read was
             // in flight: never resurrect an owner entry for a row that is gone.
             if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
@@ -1281,7 +1288,7 @@ export class KeysManagerService {
             // stalled read (round-10 should-fix SF1).
             this.noteProviderHydrated(provider)
           }
-        }
+        }))
       } finally {
         // The read is over (completed or abandoned): from now on no result can
         // land, so every provider is ready — including one whose OAuth rows
@@ -1304,6 +1311,21 @@ export class KeysManagerService {
     if (waiters === undefined) return
     this.hydrationWaiters.delete(provider)
     for (const wake of [...waiters]) wake()
+  }
+
+  /**
+   * An authoritative projection read answered for this provider, so a failed
+   * startup hydration no longer leaves ownership unknown (PR review round 13:
+   * the marker used to survive until a restart — no attribution, no key
+   * selection, and row tests refused with "ownership is still loading"). The
+   * binding re-derive is queued behind the reconciliation that proved the
+   * read: its attribution decides the route's serving shape, and the startup
+   * repair was skipped while that shape was unknown.
+   */
+  private noteProjectionReadSucceeded(provider: string): void {
+    if (!this.ownershipReadFailures.delete(provider)) return
+    this.noteProviderHydrated(provider)
+    void this.scheduleGrantReconciliation(provider, () => this.syncBindingAfterProjectionChange(provider))
   }
 
   /** Release every provider's readiness wait when hydration cannot proceed. */
@@ -1372,10 +1394,10 @@ export class KeysManagerService {
    * Wait (bounded) until projection-ownership hydration can attribute this
    * request, and report whether it did.
    *
-   * A provider without OAuth rows can never own a projection, so it never
-   * waits — a stalled read for some other provider must not delay it
-   * (round-9 should-fix: this used to gate every managed provider, API-key-
-   * only ones included).
+   * Readiness is decided PER PROVIDER (round-10 should-fix SF1): every managed
+   * provider's own projection read lands independently (PR review round 13), so
+   * a provider whose read has landed needs no wait and a stalled read for
+   * another provider cannot delay this one.
    *
    * Returns false when the bound elapsed first. The caller then treats
    * attribution as unknown (no owner) and keeps key state untouched: a
@@ -1383,13 +1405,6 @@ export class KeysManagerService {
    * repeat the I-000108 corruption. The hydration promise is not cancelled,
    * so a late result still lands under the generation guard and later
    * requests are attributed normally.
-   *
-   * Readiness is decided PER PROVIDER (round-10 should-fix SF1). Hydration
-   * writes owners progressively, so racing the one global promise would
-   * discard an owner this provider already confirmed just because another
-   * provider's read stalled. A provider whose own read has landed — with an
-   * owner or with none — is ready without waiting, and the "unknown" fallback
-   * is confined to the requested provider's own unresolved read.
    */
   private async awaitProjectionOwnership(providerId: string): Promise<boolean> {
     if (this.projectionOwnershipKnown(providerId)) return true
@@ -1407,18 +1422,16 @@ export class KeysManagerService {
   /**
    * Whether this provider's projection ownership can already be decided
    * without waiting (round-10 SF1, made the single readiness rule by PR review
-   * round 3). A provider without OAuth rows can never own a projection and is
-   * ready at once; an OAuth provider is ready once its own read landed, a
-   * claim already owns it, or the whole read is over.
+   * round 3). Every managed provider's projection is read at hydration (a
+   * key-only pool can be overridden by a persisted native grant, PR review
+   * round 13), so the rule is the same for all of them: this provider's own
+   * read landed, a claim already owns it, or the whole read is over.
    */
   private projectionOwnershipKnown(providerId: string): boolean {
-    const provider = this.store.provider(providerId)
-    if (provider === undefined) return true
+    if (this.store.provider(providerId) === undefined) return true
     // A failed read is unknown even after the whole hydration settled: the
     // settled flag says no read can land, not that this one answered.
     if (this.ownershipReadFailures.has(providerId)) return false
-    const hasOauthRows = provider.keys.some(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
-    if (!hasOauthRows) return true
     return this.hydrationSettled || this.hydratedProviders.has(providerId) || this.activeAccounts.has(providerId)
   }
 
@@ -2874,6 +2887,10 @@ export class KeysManagerService {
     // the same generation guard load-time hydration applies.
     const generation = this.ownershipGenerations.get(provider) ?? 0
     const record = await records.readRecord(key)
+    // PR review round 13: this read is authoritative for the provider's
+    // projection, so it answers what a failed startup hydration could not —
+    // ownership stops being unknown and the binding repair it skipped runs.
+    this.noteProjectionReadSucceeded(provider)
     if (record === undefined) {
       // The projection is gone, so nothing foreign serves this route any more
       // (PR review round 3).
@@ -3483,6 +3500,38 @@ export class KeysManagerService {
   }
 
   /**
+   * Reconcile the projection once an abandoned window's request finally
+   * settles (PR review round 13).
+   *
+   * The watchdog's cleanup can complete before the wedged request resumes: an
+   * adapter that ignored the abort then refreshes and rewrites the borrowed
+   * grant, and the abandoned window used to skip cleanup on settlement — so
+   * the tested account stayed projected over the restored one and served
+   * ordinary traffic. The shared compare-by-payload restore is idempotent and
+   * only touches a projection this test left (the borrowed grant or a
+   * rotation of the tested row): a foreign payload survives, and a newer
+   * generation is written back to the tested row before the pre-test
+   * projection is restored.
+   */
+  private async reconcileLateWindowProjection(window: RowTestWindow): Promise<void> {
+    const facts = window.facts
+    if (facts === undefined) return
+    const provider = window.provider
+    // A cleanup that is still running — or one that gave up and left the
+    // provider fenced — owns the route: its own attempt reads the late state
+    // and reconciles it, and this late promise must not race it.
+    if (this.cleaningTests.has(provider)) return
+    const active = this.testsActive.get(provider)
+    if (active !== undefined && active !== window.test) return
+    const failure = await this.restoreProjection(facts.records, provider, window.row, facts.key, facts.previous, facts.borrowed)
+    if (failure !== undefined) {
+      this.warn(`the late projection write of the abandoned connection test for ${provider} could not be reconciled: ${failure}`)
+      return
+    }
+    await this.syncBindingAfterProjectionChange(provider)
+  }
+
+  /**
    * Record one in-flight window mutation before it is awaited (QC fix wave 3,
    * W-001). The normalized promise never rejects: the mutation's own outcome
    * belongs to the code awaiting it, while the cleanup only needs to know when
@@ -3723,7 +3772,22 @@ export class KeysManagerService {
       // QC fix wave 3 (W-001): the write is recorded before it is awaited, so
       // a cleanup that runs while it is still in flight waits for it instead
       // of re-reading the pre-borrow payload and calling the route clean.
-      const borrowWrite = records.modifyRecord(projectionKey, () => Promise.resolve({ kind: 'grant', payload: structuredClone(borrowed) }))
+      // PR review round 13: the pre-borrow read is awaited, so a native or
+      // manager sign-in can commit a newer projection before this write runs.
+      // The write is therefore a compare-and-swap against the record it
+      // captured: borrowing over that sign-in — and restoring the stale
+      // `previous` at window end — would drop it for good.
+      let borrowRefused = false
+      const borrowWrite = records.modifyRecord(projectionKey, current => {
+        const unchanged = previous === undefined
+          ? current === undefined
+          : current !== undefined && JSON.stringify(current) === JSON.stringify(previous)
+        if (!unchanged) {
+          borrowRefused = true
+          return Promise.resolve(undefined)
+        }
+        return Promise.resolve({ kind: 'grant', payload: structuredClone(borrowed) })
+      })
       this.recordWindowMutation(window, borrowWrite)
       try {
         await borrowWrite
@@ -3736,6 +3800,23 @@ export class KeysManagerService {
           latencyMs: 0,
           error: `The grant could not be projected for the test: ${error instanceof Error ? error.message : String(error)}`,
         }
+        return
+      }
+      if (borrowRefused) {
+        // The projection belongs to a newer writer, so this window borrowed
+        // nothing and has nothing to restore. An abandoned window's cleanup
+        // owns the fence and the marker.
+        if (!window.cleaned) {
+          window.facts = undefined
+          this.testBindingBorrows.delete(provider)
+          result = {
+            ok: false,
+            latencyMs: 0,
+            error: `The credential projection for ${provider} changed while the test was starting; the test did not borrow it. Run the test again.`,
+          }
+          return
+        }
+        result = this.abandonedTestResult()
         return
       }
       if (window.cleaned) {
@@ -3806,6 +3887,11 @@ export class KeysManagerService {
           // route carries by then, so the late settlement writes nothing and
           // reports the failure its own result cannot claim.
           restoreFailure = this.abandonedTestResult().error
+          // PR review round 13: the abandoned request may itself have
+          // refreshed and rewritten the borrowed projection after that
+          // cleanup ran. Reconcile that late write against what the window
+          // found before the route counts as handed back.
+          await this.reconcileLateWindowProjection(window)
         } else {
           const restored = await this.cleanupTestWindow(window)
           if (restoreFailure === undefined) restoreFailure = restored
@@ -6299,10 +6385,9 @@ export class KeysManagerService {
               // Attribution must wait for it — otherwise this request selects
               // and mutates a key cursor even though pi-ai serves the stored
               // grant, and an OAuth failure is classified as externally
-              // authenticated. Round-9 should-fix: the wait is bounded and is
-              // skipped entirely for providers that hold no OAuth rows, so a
-              // stalled credential read can neither wedge this request nor
-              // delay an API-key-only provider.
+              // authenticated. Round-9 should-fix: the wait is bounded per
+              // provider, so a stalled credential read can neither wedge this
+              // request nor delay a provider whose own read already landed.
               const hydrated = await service.awaitProjectionOwnership(providerId)
               // Round-5 finding C4: while a projection exists, pi-ai serves
               // the stored grant and never consults the broker, so selecting

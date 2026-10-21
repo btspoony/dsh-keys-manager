@@ -7556,8 +7556,9 @@ test('a provider without OAuth rows is not delayed by another provider\'s stalle
           yield { type: 'finish', reason: { kind: 'stop' } }
         } as any,
       ))
-      // No OAuth rows means no projection can serve this provider, so it must
-      // not wait for hydration (let alone its bound).
+      // Each provider's own projection read lands independently (PR review
+      // round 13), so this route must not wait for anthropic's stalled read —
+      // let alone its bound.
       assert.ok(Date.now() - startedAt < 400, `the API-key-only request waited ${Date.now() - startedAt}ms`)
       // It still selected (and marked) a key from the pool as before.
       assert.ok(h.store.provider('deepseek-official')!.keys[0]!.lastUsedAt > 0)
@@ -7696,6 +7697,90 @@ test('a timed-out hydration wait retains nothing per request (R10 SF2)', async (
       h.credentials.raw.readRecord = realRead
     }
   } finally {
+    await h.close()
+  }
+})
+
+// PR review round 13: hydration used to skip every provider that holds no
+// OAuth rows, so a native grant persisted under `llm-pi-ai/<provider>` on a
+// key-only managed route stayed invisible to the startup repair — which then
+// bound the broker reference over it and took the grant out of service.
+// Ownership must be decided from the projection for EVERY managed provider.
+
+test('a key-only provider with a persisted native grant stays unbound after startup', async () => {
+  const h = await harness()
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    await h.service.addKey('anthropic', 'route-key', 'sk-ant-route-key')
+    const record = h.store.provider('anthropic')!
+    // The route is served by its API-key pool: a broker-bound profile.
+    assert.ok(record.keys.length > 0)
+    assert.ok(record.keys.every(row => row.kind === 'api-key'), 'the route holds no OAuth rows')
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, record.brokerRef)
+    // A native sign-in persisted its own grant for the same route.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native', accountId: 'acc-native', email: 'native@example.com' }))
+
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 80))
+
+    // The live projection still serves the route, so the startup repair must
+    // not bind the broker over it…
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, undefined)
+    // …and the native grant is untouched and remains the route's credential.
+    assert.equal(liveProjectionRefresh(h), 'rt-native')
+    assert.equal(restarted.getState().providers.find(entry => entry.provider === 'anthropic')!.bindingHealthy, true)
+  } finally {
+    await h.close()
+  }
+})
+
+// PR review round 13: a transient startup read failure pinned ownership
+// unknown for the life of the process, even after a later reconciliation read
+// the projection successfully: no attribution, no key selection, and every
+// row test refused with "ownership is still loading". An authoritative read
+// must clear the failure.
+
+test('a successful reconciliation clears a failed hydration read', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let failGrantReads = true
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'].models = [{ id: 'claude-test-model' }]
+    // A key row makes the broker-bound profile observable before the restart.
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    const brokerRef = h.store.provider('anthropic')!.brokerRef
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    // The startup hydration cannot read the projection at all.
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (failGrantReads && key === GRANT_KEY) throw new Error('credential store unavailable')
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    ;(restarted as unknown as { hydrationWaitMs: number }).hydrationWaitMs = 20
+    await new Promise(resolve => setTimeout(resolve, 40))
+    // Nothing was repaired from a guessed shape: the profile still binds the
+    // pool while the projection is unread.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, brokerRef)
+
+    // A later record-updated reconciliation reads the projection successfully.
+    failGrantReads = false
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await eventually(() => {
+      const rows = restarted.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+      assert.equal(rows.find(row => row.id === rowId)!.projected, true)
+    })
+    // The binding converges on the now-known projection…
+    await eventually(() => assert.equal(h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv, undefined))
+    // …and the row test no longer refuses with an ownership that is "loading".
+    h.llm.stream = (options: Record<string, any>) => restarted.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    const result = await restarted.testKey('anthropic', rowId)
+    assert.doesNotMatch(String(result.error), /ownership is still loading/)
+    assert.equal(result.ok, true)
+  } finally {
+    h.credentials.raw.readRecord = realRead
     await h.close()
   }
 })
@@ -8202,6 +8287,56 @@ test('a native grant landing during the projection cleanup survives the test', a
     // The borrow could not be removed, so the test reports a failure.
     assert.equal(result.ok, false)
     assert.match(String(result.error), /changed during the test/)
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+// PR review round 13: the borrow write is a compare-and-swap against the
+// record the pre-borrow read captured. A native or manager sign-in that
+// commits a newer projection between that read and the write used to be
+// overwritten by the borrow — and the window's cleanup then restored the
+// stale pre-borrow payload, dropping the sign-in for good.
+
+test('a native sign-in landing before the borrow write is not overwritten', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let armed = false
+  let landed = false
+  let calls = 0
+  try {
+    await drainGrantChain(h, 'anthropic')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    armed = true
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+    // The pre-borrow read returns the user's projection, then the native
+    // sign-in commits a new grant before the borrow's write runs.
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      const record = await realRead(key)
+      if (armed && !landed && key === GRANT_KEY) {
+        landed = true
+        h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-native', accountId: 'acc-native', email: 'native@example.com' }))
+      }
+      return record
+    }
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(landed, true, 'the native sign-in landed inside the borrow window')
+    assert.equal(result.ok, false)
+    // The borrow refused instead of overwriting the newer projection…
+    assert.match(String(result.error), /changed while the test was starting/)
+    // …so the native grant survives and nothing was sent for the tested row.
+    assert.equal(liveProjectionRefresh(h), 'rt-native')
+    assert.equal(calls, 0)
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.notEqual(rows.find(row => row.id === first.rowId)!.projected, true)
   } finally {
     h.credentials.raw.readRecord = realRead
     await h.close()
@@ -8974,7 +9109,15 @@ test('an abandoned oauth test restores the binding it released', async () => {
   }
 })
 
-test('a late-settling abandoned test does not restore a stale projection', async () => {
+// PR review round 13: an OAuth adapter that ignores the abort can refresh the
+// borrowed grant AFTER the watchdog's cleanup already restored the user's
+// projection and released the provider. The abandoned window then skipped its
+// cleanup when the request finally settled, leaving the tested account
+// projected and serving ordinary traffic. The settlement now reconciles the
+// late write: the newer generation is written back to the tested row and the
+// route is projected back to what the test found.
+
+test('an abandoned test reconciles the projection its late request rewrote', async () => {
   const { h, first } = await harnessWithTwoProjectedAccounts()
   let releaseTest: (() => void) | undefined
   let testRun: Promise<KeyTestResult> | undefined
@@ -8982,33 +9125,47 @@ test('a late-settling abandoned test does not restore a stale projection', async
     const testGate = new Promise<void>(resolve => { releaseTest = resolve })
     let testEntered!: () => void
     const entered = new Promise<void>(resolve => { testEntered = resolve })
+    const ordinaryStarted: Array<string | undefined> = []
     h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
       if (options.maxTokens === 1) {
         testEntered()
         await testGate
+        // The adapter ignored the abort and rewrote the borrowed projection
+        // past the cleanup that already put the user's projection back.
+        await h.credentials.raw.modifyRecord(GRANT_KEY, () => Promise.resolve(grantPayload({
+          refresh: 'rt-first-refreshed',
+          access: 'at-refreshed',
+          accountId: 'acc-first',
+          email: 'first@example.com',
+        })))
+        yield { type: 'finish', reason: { kind: 'stop' } }
+        return
       }
+      ordinaryStarted.push(liveProjectionRefresh(h))
       yield { type: 'finish', reason: { kind: 'stop' } }
     } as any)
     ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
 
     testRun = h.service.testKey('anthropic', first.rowId)
     await entered
-    assert.equal(liveProjectionRefresh(h), 'rt-first')
+    // The watchdog already restored the user's projection before the late
+    // write, so the late write is what puts the tested grant in service.
     await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
-    // A writer lands a newer generation of the tested account's grant after the
-    // window was abandoned but before the wedged request settles.
-    h.credentials.records.set(GRANT_KEY, grantPayload({
-      refresh: 'rt-first-rotated',
-      access: 'at-rotated',
-      accountId: 'acc-first',
-      email: 'first@example.com',
-    }))
     releaseTest?.()
     const result = await testRun!
-    // The abandoned test must not write its stale pre-test snapshot over the
-    // newer projection…
-    assert.equal(liveProjectionRefresh(h), 'rt-first-rotated')
-    // …and it may not report the pass the wedged request eventually produced.
+
+    // The settlement reconciles the late write away from the tested account…
+    await eventually(() => assert.equal(liveProjectionRefresh(h), 'rt-second'))
+    // …without losing the newer generation: it was written back to the row.
+    const row = h.store.provider('anthropic')!.keys.find(key => key.id === first.rowId)!
+    const rotatedRef = accountRef('anthropic', createHash('sha256').update('rt-first-refreshed').digest('hex').slice(0, 12))
+    assert.equal(row.oauth!.grantRef, rotatedRef)
+    assert.ok(h.credentials.records.has(rotatedRef))
+    // Ordinary traffic is served by the user's account, never by the account
+    // the abandoned test borrowed.
+    await consume(h.llm.stream({ provider: 'anthropic', model: 'claude-test-model', messages: [], maxTokens: 64 }))
+    assert.deepEqual(ordinaryStarted, ['rt-second'])
+    // The wedged request never reports the pass it eventually produced.
     assert.equal(result.ok, false)
     assert.match(String(result.error), /abandoned/)
   } finally {
