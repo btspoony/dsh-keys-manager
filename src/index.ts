@@ -1272,6 +1272,15 @@ export class KeysManagerService {
   private credentialsMounted = false
   /** Providers whose bounded-wait warning already fired (warn once). */
   private readonly hydrationWaitWarned = new Set<string>()
+  /**
+   * Requests each provider served without an attributed account (`I-000120`,
+   * D8): the ownership read had not landed, or it had failed. Counted at the
+   * one per-request serving site (`wrapStream`), never in the hydration pass —
+   * a failed read serves no request, it only makes later requests unattributed.
+   * Cleared only when a later read decides the route's attribution; process-
+   * local, never persisted and never on the warnings channel.
+   */
+  private readonly unattributedRequests = new Map<string, number>()
   /** Channels whose lost-subscription warning already fired (warn once). */
   private readonly subscriptionLostWarnings = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
@@ -1341,7 +1350,13 @@ export class KeysManagerService {
     }
     return (async () => {
       try {
-        await Promise.all(Object.values(this.store.providers).map(async providerRecord => {
+        // allSettled, never all: under `all`, a rejection from any single
+        // provider task settles this awaited pass at once, so the finally below
+        // flips `hydrationSettled` while the other providers' reads are still
+        // in flight and `awaitProjectionOwnership` calls them ready. No task
+        // body can reject today (the read error is caught inside it), so this
+        // is a structural guard — do not flip it back for style.
+        await Promise.allSettled(Object.values(this.store.providers).map(async providerRecord => {
           const provider = providerRecord.provider
           const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
           try {
@@ -1395,7 +1410,12 @@ export class KeysManagerService {
             // attributable now and must not wait behind another provider's
             // stalled read (round-10 should-fix SF1). A superseded pass does
             // not report readiness for a store it no longer describes.
-            if (this.hydrationEpoch === epoch) this.noteProviderHydrated(provider)
+            if (this.hydrationEpoch === epoch) {
+              // A landed read decided this route's attribution; a failed one
+              // decided nothing and never clears the count (I-000120).
+              if (!this.ownershipReadFailures.has(provider)) this.unattributedRequests.delete(provider)
+              this.noteProviderHydrated(provider)
+            }
           }
         }))
       } finally {
@@ -1452,6 +1472,9 @@ export class KeysManagerService {
    * repair was skipped while that shape was unknown.
    */
   private noteProjectionReadSucceeded(provider: string): void {
+    // This read decided the route's attribution, so a count of requests served
+    // without one no longer describes it (I-000120).
+    this.unattributedRequests.delete(provider)
     if (!this.ownershipReadFailures.delete(provider)) return
     this.noteProviderHydrated(provider)
     void this.scheduleGrantReconciliation(provider, () => this.syncBindingAfterProjectionChange(provider))
@@ -1504,6 +1527,9 @@ export class KeysManagerService {
       timer = setTimeout(() => {
         wake(false)
       }, ms)
+      // I-000116: a request waiting on hydration must not hold the process
+      // open for the rest of the wait; every exit path still clears it.
+      timer.unref?.()
       live.add(onLanded)
     })
   }
@@ -1599,6 +1625,8 @@ export class KeysManagerService {
     this.activeAccounts.set(provider, accountId)
     this.foreignProjections.delete(provider)
     this.noteProjectionCommitted(provider)
+    // The route has an owner now, so requests are attributed from here on.
+    this.unattributedRequests.delete(provider)
   }
 
   /**
@@ -5412,6 +5440,16 @@ export class KeysManagerService {
     this.pruneAttempts(now)
   }
 
+  /**
+   * Project one provider's unattributed-request count into its row. Additive
+   * and optional (`I-000120`): a row with no count spreads nothing, so an
+   * older snapshot and a healthy store render exactly as before.
+   */
+  private unattributedView(provider: string): { unattributedRequests?: number } {
+    const count = this.unattributedRequests.get(provider) ?? 0
+    return count > 0 ? { unattributedRequests: count } : {}
+  }
+
   /** Build the complete UI state. */
   buildState(): StateView {
     const now = Date.now()
@@ -5471,6 +5509,7 @@ export class KeysManagerService {
         status: managed !== undefined ? statusOfProvider(managed.keys, now) : 'unmanaged',
         keys,
         ...(warning === undefined ? {} : { warning }),
+        ...this.unattributedView(entry.provider),
       })
       seen.add(entry.provider)
     }
@@ -5511,6 +5550,7 @@ export class KeysManagerService {
         status: managed !== undefined ? statusOfProvider(managed.keys, now) : 'unmanaged',
         keys,
         ...(managed === undefined ? {} : { warning: 'This extra provider is managed but its pi-ai route is not registered. Check the provider profile in Models.' }),
+        ...this.unattributedView(extra.id),
       })
       seen.add(extra.id)
     }
@@ -5549,6 +5589,7 @@ export class KeysManagerService {
         status: statusOfProvider(managed.keys, now),
         keys,
         warning: 'This provider route is not currently registered. Check its profile in Models.',
+        ...this.unattributedView(managed.provider),
       })
       seen.add(managed.provider)
     }
@@ -6084,6 +6125,7 @@ export class KeysManagerService {
       return 'superseded'
     }
     this.ownershipReadFailures.delete(provider)
+    this.unattributedRequests.delete(provider)
     this.noteProviderHydrated(provider)
     if (record === undefined) this.foreignProjections.delete(provider)
     else this.foreignProjections.add(provider)
@@ -7213,6 +7255,13 @@ export class KeysManagerService {
               // provider, so a stalled credential read can neither wedge this
               // request nor delay a provider whose own read already landed.
               const hydrated = await service.awaitProjectionOwnership(providerId)
+              // I-000120 / D8: this request is served without an attribution, and
+              // this is the only site that counts one. Both causes — the bounded
+              // wait expired, or the read had already failed — arrive here as the
+              // same `false`; the hydration pass itself never counts.
+              if (!hydrated) {
+                service.unattributedRequests.set(providerId, (service.unattributedRequests.get(providerId) ?? 0) + 1)
+              }
               // Round-5 finding C4: while a projection exists, pi-ai serves
               // the stored grant and never consults the broker, so selecting
               // a key here would only mutate unused key state (cursor,

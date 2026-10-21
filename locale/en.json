@@ -8,6 +8,8 @@
   "filterPlugin": "Plugin",
   "filterOauth": "OAuth-capable",
   "filterTransport": "Transport",
+  "unattributed": "{n} unattributed",
+  "unattributedHint": "Requests this route served with no account owner because its ownership read had not landed (or had failed). The count clears when a read attributes the route.",
   "addAccount": "Add account",
   "adoptAccountTitle": "Sign in with an OAuth account to use this provider.",
   "accountIdentity": "Account",
