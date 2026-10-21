@@ -18,8 +18,8 @@ automatically.
 The repository is a pnpm workspace: the root is the `dsh-keys-manager` plugin
 and `packages/llm-omp` is the separately published
 `dsh-llm-omp-transports` component. The root depends on the transport package
-rather than vendoring it, and the transport versions and releases on its own
-line.
+rather than vendoring it, and both packages are released together from one
+version: release prep writes the same version to both manifests.
 
 - The transport's build must precede its own tests: the drift gate imports the
   built `lib/omp/cursor.mjs`. CI runs root typecheck/build/test first, then

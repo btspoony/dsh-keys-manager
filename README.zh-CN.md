@@ -185,7 +185,7 @@ $DSH_HOME/keys-manager/state.json
 | 根目录 | `dsh-keys-manager` | Host 插件、Keys Manager Web 客户端、bundle patch |
 | `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor（及后续）传输组件 |
 
-根包把传输包声明为依赖，因此已发布的 Keys Manager tarball 会拉取传输包，而不是把它 vendor 进来。传输包独立版本化，详见[发布](docs/release.zh-CN.md)。
+根包把传输包声明为依赖，因此已发布的 Keys Manager tarball 会拉取传输包，而不是把它 vendor 进来。两个包一起发布且版本号一致，详见[发布](docs/release.zh-CN.md)。
 
 ## 文档
 

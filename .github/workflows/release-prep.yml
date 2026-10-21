@@ -1,22 +1,19 @@
 name: Release prep
 
 # Manual entry point: Actions → "Release prep" → Run workflow (optionally pass
-# an explicit X.Y.Z or X.Y.Z-prerelease, e.g. 0.1.1-alpha.1). Bumps
-# package.json (+ lockfile sync), validates the build, and opens a
-# `release v<version>` PR. Merging that PR runs the Release workflow, which
-# publishes dsh-keys-manager@<version> (formal versions to `latest`, prereleases to
-# their prerelease dist-tag), pushes tag v<version>, and creates the GitHub
+# an explicit X.Y.Z or X.Y.Z-prerelease, e.g. 0.1.1-alpha.1). Writes that one
+# version to both package.json files (+ lockfile sync), validates the build,
+# and opens a `release v<version>` PR. Merging that PR runs the Release
+# workflow, which publishes dsh-keys-manager@<version> and
+# dsh-llm-omp-transports@<version> (formal versions to `latest`, prereleases
+# to their prerelease dist-tag), pushes both tags, and creates the GitHub
 # Release.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Target version (e.g. 0.2.0, or 0.1.1-alpha.1 for a prerelease). Leave empty for auto patch bump."
-        required: false
-        type: string
-      transport_version:
-        description: "dsh-llm-omp-transports version (X.Y.Z or X.Y.Z-prerelease). Leave empty to auto patch bump it; pass 'skip' to leave the transport package unchanged."
+        description: "Target version (e.g. 0.2.0, or 0.1.1-alpha.1 for a prerelease). Leave empty for auto patch bump. Both published packages carry this version."
         required: false
         type: string
 
@@ -79,35 +76,21 @@ jobs:
 
       - name: Bump version
         id: ver
-        env:
-          # Pass the free-form input through the environment: interpolating it
-          # into the script would allow shell injection from the dispatch form.
-          TRANSPORT_INPUT: ${{ inputs.transport_version }}
         run: |
           set -euo pipefail
           V="${{ steps.want.outputs.version }}"
-          T="$TRANSPORT_INPUT"
-          # The transport package versions independently: empty bumps its patch
-          # line, "skip" leaves it untouched, anything else is passed through
-          # and validated by the script (including the derived dist-tag).
-          ARGS=()
-          case "$T" in
-            "") ;;
-            skip) ARGS+=(--skip-transport) ;;
-            *) ARGS+=(--transport "$T") ;;
-          esac
+          # One version drives both published packages: the helper writes it to
+          # the root and to packages/llm-omp/package.json.
           if [ "$V" = "auto" ]; then
-            OUT="$(node scripts/prepare-release.mjs "${ARGS[@]}")"
+            OUT="$(node scripts/prepare-release.mjs)"
           else
-            OUT="$(node scripts/prepare-release.mjs "${ARGS[@]}" "$V")"
+            OUT="$(node scripts/prepare-release.mjs "$V")"
           fi
           echo "$OUT"
           # The script prints one KEY=value line per fact; capture each line
           # whole instead of stripping a prefix from the multi-line output.
           VERSION="$(printf '%s\n' "$OUT" | sed -n 's/^VERSION=//p')"
-          TRANSPORT_VERSION="$(printf '%s\n' "$OUT" | sed -n 's/^TRANSPORT_VERSION=//p')"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "transport_version=${TRANSPORT_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Sync lockfile
         run: pnpm install --lockfile-only
@@ -187,7 +170,6 @@ jobs:
           # pull-requests/issues write for GITHUB_TOKEN.
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.ver.outputs.version }}
-          TRANSPORT_VERSION: ${{ steps.ver.outputs.transport_version }}
         run: |
           set -euo pipefail
           BRANCH="release/v${VERSION}"
@@ -195,10 +177,7 @@ jobs:
           {
             cat /tmp/notes.md
             echo
-            echo "Merging this PR tags v${VERSION} and publishes dsh-keys-manager@${VERSION} via the Release workflow."
-            if [ -n "${TRANSPORT_VERSION}" ]; then
-              echo "It also publishes dsh-llm-omp-transports@${TRANSPORT_VERSION} when that version is not already on npm, and tags dsh-llm-omp-transports@${TRANSPORT_VERSION}."
-            fi
+            echo "Merging this PR tags v${VERSION} and publishes dsh-keys-manager@${VERSION} and dsh-llm-omp-transports@${VERSION} via the Release workflow."
           } > /tmp/pr-body.md
           if gh pr view "$BRANCH" >/dev/null 2>&1; then
             STATE="$(gh pr view "$BRANCH" --json state --jq .state)"

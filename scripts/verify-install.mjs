@@ -80,8 +80,8 @@ try {
   await access(transportsTarball)
 
   // A packed workspace dependency must be a registry range, not `workspace:^`.
-  // The transport versions independently, so the expected range follows its
-  // current manifest instead of a pinned literal.
+  // The transports package ships from the same release version, so the
+  // expected range follows its manifest rather than a pinned literal.
   const expectedRange = `^${transports.version}`
   const packed = JSON.parse((await run('tar', ['-xzOf', rootTarball, 'package/package.json'])).stdout)
   const pinned = packed.dependencies?.[TRANSPORTS]

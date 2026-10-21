@@ -157,21 +157,29 @@ jobs:
           fi
 
       - name: Publish dsh-llm-omp-transports to npm
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          # The transport package versions independently of dsh-keys-manager:
-          # publish its own package.json version and skip when that exact
-          # version is already on npm, so a release re-run (or a root release
-          # that does not bump the transport) stays idempotent. Ownership is
-          # tested by ancestry, not equality: an already-published transport
-          # version is normally published from an ancestor of the release
-          # commit (a documented --skip-transport root release leaves the
-          # transport version behind while HEAD moves), while a version
-          # squatted by a foreign publisher names a commit outside this
-          # repository's history. The root step keeps its equality test
-          # because its version is bumped on every release.
+          # Both packages carry the same version (release-prep writes one
+          # version to both package.json files), but the transport publishes
+          # first and the root publish can still fail afterwards, so a re-run
+          # must skip an already-published transport version. Ownership is
+          # tested by ancestry, not equality: the recorded commit is an
+          # ancestor of this run's merge commit, while a version squatted by a
+          # foreign publisher names a commit outside this repository's
+          # history. The root step keeps its equality test because its
+          # version is bumped on every release.
           PKG_DIR="packages/llm-omp"
           PKG_VERSION="$(node -p "require('./${PKG_DIR}/package.json').version")"
+          # Both packages ship from one version; prep writes both manifests,
+          # but a release PR edited after preparation must not publish a
+          # transport version that disagrees with the one the title and the
+          # root manifest resolved.
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "::error::packages/llm-omp/package.json is ${PKG_VERSION}, but this release is ${VERSION}. Re-run Release prep instead of hand-editing the transport manifest."
+            exit 1
+          fi
           if npm view "dsh-llm-omp-transports@${PKG_VERSION}" version >/dev/null 2>&1; then
             PUBLISHED_SHA="$(npm view "dsh-llm-omp-transports@${PKG_VERSION}" gitHead 2>/dev/null || true)"
             LOCAL_SHA="$(git rev-parse HEAD)"
@@ -312,8 +320,8 @@ jobs:
       - name: Create + push dsh-llm-omp-transports tag
         run: |
           set -euo pipefail
-          # The transports package versions independently of dsh-keys-manager,
-          # so tag the exact version this release publishes (or already had on
+          # The transports package ships from the same version as the root, so
+          # tag the exact version this release publishes (or already had on
           # npm) under the package name. The version comes from the release
           # commit's package.json — the same file the publish step read.
           PKG_VERSION="$(node -p "require('./packages/llm-omp/package.json').version")"

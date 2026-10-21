@@ -12,18 +12,18 @@ CI（`.github/workflows/ci.yml`）先运行根包 typecheck、build、测试，�
 
 发布由 PR 驱动：
 
-1. Actions → **Release prep** → Run workflow。版本留空表示自动 patch 升级，或传入 `X.Y.Z` / `X.Y.Z-prerelease`。传输包版本可选：留空表示按其独立版本线自动 patch 升级，传入 `X.Y.Z` / `X.Y.Z-prerelease` 可固定版本，传入 `skip` 则不升级该包。
-2. 工作流升级两个 `package.json` 版本（传输包独立升级）、从 git log 更新根包 `CHANGELOG.md`、校验构建，并打开 `release v<version>` PR。
-3. 合并发布 PR。**Release** 工作流把 `dsh-keys-manager@<version>` 与 `dsh-llm-omp-transports@<传输包版本>` 以 provenance 发布到 npm（传输包版本若已从本仓库历史中的提交发布则跳过）、推送 `v<version>` 与包名标签 `dsh-llm-omp-transports@<传输包版本>`，并创建 GitHub Release。
+1. Actions → **Release prep** → Run workflow。版本留空表示自动 patch 升级，或传入 `X.Y.Z` / `X.Y.Z-prerelease`。两个发布包共用这一个版本号。
+2. 工作流把同一个版本号写入两个 `package.json`、从 git log 更新根包 `CHANGELOG.md`、校验构建，并打开 `release v<version>` PR。
+3. 合并发布 PR。**Release** 工作流把 `dsh-keys-manager@<version>` 与 `dsh-llm-omp-transports@<version>` 以 provenance 发布到 npm（传输包版本若已从本仓库历史中的提交发布则跳过）、推送 `v<version>` 与包名标签 `dsh-llm-omp-transports@<version>`，并创建 GitHub Release。
 
 ## 传输包
 
-`packages/llm-omp` 随同一个发布 PR 发布 `dsh-llm-omp-transports`，但走独立版本线。根包依赖它，因此 `pnpm pack` 会把 `workspace:^` 改写成 semver 范围，已发布的根包 tarball 要求对应的传输包版本。
+`packages/llm-omp` 随同一个发布 PR 发布 `dsh-llm-omp-transports`，版本与根包一致。根包依赖它，因此 `pnpm pack` 会把 `workspace:^` 改写成 semver 范围，已发布的根包 tarball 要求对应的传输包版本。
 
-- `scripts/prepare-release.mjs` 每次运行都会 patch 升级传输包版本。`--transport X.Y.Z` 或 `--transport X.Y.Z-prerelease` 固定版本（dist-tag 由后缀派生），`--skip-transport` 保持不动，`--dry-run` 只校验并打印两个包的版本与标签、不写文件。工作流把同样的选择暴露为可选的 `transport_version` 输入（`skip`、`X.Y.Z` 或 `X.Y.Z-prerelease`）。
+- `scripts/prepare-release.mjs` 把解析出的版本写入两个 `package.json`，两个包不会漂移；`--dry-run` 只校验并打印两个包的版本与标签、不写文件。发布 prep 只暴露一个 `version` 输入。
 - 传输包没有生成的 changelog。`CHANGELOG.md` 及其 `## [<version>]` 小节只属于根包；传输包由自己的 README 与 git 历史描述。
-- `release.yml` 在传输包的确切 `package.json` 版本已发布、且其记录的提交是本仓库历史中的祖先（ancestor）时跳过发布，因此重跑或只发布根包都是幂等的；记录的提交不属于本仓库历史时该步骤失败。打标签步骤总会确保 `dsh-llm-omp-transports@<version>` 存在。
-- 传输包预发布版本与根包使用同样的派生 dist-tag 规则（`X.Y.Z-alpha.1` → `alpha`），不会移动 `latest`；release prep 只拒绝派生出非法 tag 的预发布版本。
+- `release.yml` 在传输包的确切 `package.json` 版本已发布、且其记录的提交是本仓库历史中的祖先（ancestor）时跳过发布，因此根包发布失败后重跑是幂等的；记录的提交不属于本仓库历史时该步骤失败。打标签步骤总会确保 `dsh-llm-omp-transports@<version>` 存在。
+- 两个包的预发布版本使用同样的派生 dist-tag 规则（`X.Y.Z-alpha.1` → `alpha`），不会移动 `latest`；release prep 拒绝派生出非法 tag 的预发布版本。
 
 ## npm 发布
 
