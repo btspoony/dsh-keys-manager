@@ -11456,3 +11456,128 @@ test('a transport record echoed by the seam refreshes the list instead of a pi-a
     await h.close()
   }
 })
+
+// ── PR #26 review round 15 ──────────────────────────────────────────────────
+
+// Review must-fix: `testKey` read the removal marker only at entry and then
+// awaited the abandoned-window recovery — and that cleanup is exactly what
+// lifts the fence a removal's own precheck reads. A removal starting inside
+// the await passed its precheck (no fence, no registered test), parked in its
+// grant deletion, and the resumed attempt registered, read the still-present
+// grant, passed the ownership re-check and borrowed: the account being
+// removed was projected again and the request carried it. The attempt now
+// re-reads the markers after the recovery await, and the borrow-time assertion
+// refuses a row whose retirement already started.
+test('a removal started during the recovery await refuses the test instead of re-projecting the account', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  let removal: Promise<StateView> | undefined
+  let removalStarted = false
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  const held = holdDeleteRecord(h, first.grantRef)
+  let slowReads = false
+  const projectionWrites: string[] = []
+  try {
+    const testGate = new Promise<void>(resolve => { releaseTest = resolve })
+    let testEntered!: () => void
+    const entered = new Promise<void>(resolve => { testEntered = resolve })
+    let requests = 0
+    let testCalls = 0
+    h.llm.stream = (options: Record<string, any>) => {
+      requests += 1
+      return h.service.streamListener(options as any, async function* () {
+        if (options.maxTokens === 1) {
+          testCalls += 1
+          if (testCalls === 1) {
+            testEntered()
+            await testGate
+          }
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 50
+    // The interleaving point: this warning is logged after the recovery
+    // cleanup lifted the fence and before the attempt that awaited it
+    // registers. A removal started here passes its own precheck and parks in
+    // the account's grant deletion.
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = message => {
+      const text = String(message)
+      if (removalStarted || !/was cleaned up on the next attempt/.test(text)) return
+      removalStarted = true
+      removal = h.service.removeAccount('anthropic', first.rowId)
+    }
+    h.credentials.raw.modifyRecord = async (
+      key: string,
+      mutate: (current: FakeCredentialRecord | undefined) => Promise<FakeCredentialRecord | undefined>,
+    ) => realModify(key, async (current: FakeCredentialRecord | undefined) => {
+      const replacement = await mutate(current)
+      if (key === GRANT_KEY && replacement !== undefined) projectionWrites.push(JSON.stringify(replacement.payload))
+      return replacement
+    })
+
+    testRun = h.service.testKey('anthropic', first.rowId)
+    await entered
+    // From here the abandoned window's cleanup cannot reach its deadline: the
+    // projection read outlasts it, so the fence can only clear once the seam
+    // answers in time again.
+    slowReads = true
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (slowReads && key === GRANT_KEY) await new Promise(resolve => setTimeout(resolve, 120))
+      return realRead(key)
+    }
+    await new Promise(resolve => setTimeout(resolve, 300))
+    // The wedged test settles while the seam is still slow, so the retry its
+    // settlement triggers fails too and only a new attempt can clear the fence.
+    releaseTest?.()
+    await testRun
+    await new Promise(resolve => setTimeout(resolve, 400))
+    // The seam answers in time again: the attempt entering now clears the
+    // fence, and the removal interleaves inside that await.
+    slowReads = false
+    h.credentials.raw.readRecord = realRead
+    // The fence this attempt clears is the only abandoned window left; the
+    // attempt itself must not be abandoned by the deadline above.
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 2_000
+    requests = 0
+    projectionWrites.length = 0
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+    assert.equal(removalStarted, true, 'the removal never interleaved with the recovery await')
+    // Parked in the account's grant deletion: the removal won its precheck
+    // before this attempt registered.
+    await held.started
+
+    assert.equal(result.ok, false)
+    assert.equal(requests, 0, 'the test sent a request while the account was being removed')
+    assert.match(String(result.error), /being removed/)
+    assert.deepEqual(
+      projectionWrites.filter(payload => payload.includes('rt-first')),
+      [],
+      'the test re-projected the account the removal is deleting',
+    )
+
+    held.release()
+    await removal
+    // The removal finished: the removed account stays removed and nothing
+    // projected it on the way out.
+    assert.equal(h.credentials.records.has(first.grantRef), false)
+    assert.equal(h.store.provider('anthropic')!.keys.some(row => row.id === first.rowId), false)
+    assert.equal((h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh, 'rt-second')
+    for (const record of h.credentials.records.values()) {
+      assert.notEqual((record.payload as Record<string, unknown> | undefined)?.refresh, 'rt-first')
+    }
+  } finally {
+    slowReads = false
+    h.credentials.raw.readRecord = realRead
+    h.credentials.raw.modifyRecord = realModify
+    releaseTest?.()
+    held.release()
+    await removal?.catch(() => undefined)
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

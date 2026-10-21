@@ -3312,6 +3312,20 @@ export class KeysManagerService {
         return { ok: false, latencyMs: 0, error: 'A previous test is still being cleaned up' }
       }
     }
+    // PR review round 15: the recovery above awaits the abandoned window's
+    // cleanup, and that cleanup is what lifts the fence a removal's own
+    // precheck reads. A removal beginning inside that await therefore passes
+    // its precheck (no fence, no registered test), parks in its credential
+    // deletion, and this attempt would register, read the still-present grant
+    // and re-project the account the removal is deleting. The entry check
+    // cannot cover the await, so the markers are read again here.
+    if (this.removalsInProgress.has(provider) || this.retiringAccounts.has(row)) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: `Provider "${provider}" is being removed; run the connection test again once the removal finishes.`,
+      }
+    }
     // Concurrent tests would race the projection save/restore; one at a time
     // per provider is enough for a per-row action and keeps the restore exact
     // (QC N7: the lock covers both row kinds, the isolation guard only the
@@ -3758,9 +3772,19 @@ export class KeysManagerService {
       // registered and one that did not are covered: the marker refuses the
       // latter, this re-check the former). Never write the borrow — and never
       // re-project the removed account's grant — on that state.
+      // PR review round 15: the existence check alone still holds while a
+      // removal is deleting credentials (the row is spliced only after its
+      // grant delete), so the row's retirement mark is part of the assertion.
+      // The provider-wide marker is deliberately not read here: a removal that
+      // began while this test is registered waits for it in
+      // {@link settleTestBeforeRemoval} and is the designed handshake, while
+      // the row mark is only set by a removal that already passed that check.
       const live = this.store.provider(provider)
-      if (live === undefined || !live.keys.some(candidate => candidate.id === row.id)) {
-        result = { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could borrow it` }
+      const removing = this.retiringAccounts.has(row)
+      if (removing || live === undefined || !live.keys.some(candidate => candidate.id === row.id)) {
+        result = removing
+          ? { ok: false, latencyMs: 0, error: `Provider "${provider}" is being removed; the test did not borrow its credential` }
+          : { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could borrow it` }
         return
       }
       // QC fix wave 2: record the borrow before the write, so an abandoned
