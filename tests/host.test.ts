@@ -5790,6 +5790,121 @@ test('a binding sync whose claim lands before the settings write is not written'
   }
 })
 
+// P1 (queue-owned compensation): `run` releases the queue before its
+// rejection reaches the caller, so a bare compensation raced whatever mutation
+// came next — that mutation flushed the pre-compensation row, and the restore
+// landing afterwards never reached disk. As its own turn, a later mutation
+// observes the restored row and the turn's flush makes the undo durable.
+
+test('a failed activation compensates under the queue so a later mutation sees the restored row', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  const internals = h.service as unknown as {
+    run: <T>(operation: () => Promise<T>) => Promise<T>
+  }
+  const raw = h.credentials.raw
+  const realDelete = raw.deleteRecord.bind(raw)
+  let releaseDelete: (() => void) | undefined
+  const deleteGate = new Promise<void>(resolve => { releaseDelete = resolve })
+  let deleteParked = false
+  raw.deleteRecord = async (key: string) => {
+    if (key === GRANT_KEY && !deleteParked) {
+      deleteParked = true
+      await deleteGate
+    }
+    return realDelete(key)
+  }
+  // The compensation's seam I/O is where a later mutation used to squeeze in.
+  h.credentials.records.delete(GRANT_KEY)
+  row.valueMissing = true
+  row.cooldownUntil = 3_300
+  const realFlush = h.store.flush.bind(h.store)
+  let armed = true
+  h.store.flush = async () => {
+    if (armed) {
+      armed = false
+      throw new Error('state file could not be written')
+    }
+    return realFlush()
+  }
+  let seen: { valueMissing: boolean; cooldownUntil: number } | undefined
+  const activating = h.service.activateAccount('anthropic', rowId).catch(() => undefined)
+  try {
+    await eventually(() => assert.equal(deleteParked, true))
+    const probe = internals.run(async () => { seen = { valueMissing: row.valueMissing, cooldownUntil: row.cooldownUntil } })
+    releaseDelete!()
+    await activating
+    await probe
+    assert.deepEqual(seen, { valueMissing: true, cooldownUntil: 3_300 },
+      'a mutation queued behind the failed activation saw the pre-compensation row')
+    const persisted = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as any
+    const restored = persisted.providers.anthropic.keys.find((key: any) => key.id === rowId)
+    assert.equal(restored.valueMissing, true, 'the compensation was not durable')
+    assert.equal(restored.cooldownUntil, 3_300, 'the compensation was not durable')
+  } finally {
+    releaseDelete?.()
+    await activating.catch(() => {})
+    raw.deleteRecord = realDelete
+    h.store.flush = realFlush
+    await h.close()
+  }
+})
+
+// P2 (queue-owned snapshot): `buildState` prunes and drains, so taking it
+// outside the queue let a mutation enter, mutate and be mid-flush while the
+// activation's view was built — exposing state that was not durable yet.
+
+test('an activation snapshot never exposes a mutation that has not flushed', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    const record = h.store.provider('anthropic')!
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // A broker-bound demoted shape: re-activating must strip the reference.
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-takeover', env: { NATIVE: '1' } })
+    ;(h.service as unknown as { foreignProjections: Set<string> }).foreignProjections.add('anthropic')
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = record.brokerRef
+    const realMutate = h.settings.mutate.bind(h.settings)
+    let releaseBind: (() => void) | undefined
+    const bindGate = new Promise<void>(resolve => { releaseBind = resolve })
+    let bindParked = false
+    h.settings.mutate = async (...args: Parameters<typeof realMutate>) => {
+      if (!bindParked) {
+        bindParked = true
+        await bindGate
+        throw new Error('settings are read-only')
+      }
+      return realMutate(...args)
+    }
+    const activating = h.service.activateAccount('anthropic', rowId)
+    let added: Record<string, unknown> | undefined
+    try {
+      await eventually(() => assert.equal(bindParked, true))
+      // A mutation submitted while the post-write turn is still working.
+      const adding = h.service.addKey('anthropic', 'added', 'sk-added').then(view => { added = view as unknown as Record<string, unknown> })
+      await new Promise(resolve => setTimeout(resolve, 20))
+      releaseBind!()
+      const view = await activating
+      const keys = view.providers.find(provider => provider.provider === 'anthropic')!.keys
+      assert.equal(keys.some(key => key.alias === 'added'), false,
+        'the activation snapshot exposed a mutation that had not flushed')
+      assert.equal(
+        view.warnings.some(warning => /pi-ai credential reference|broker binding/i.test(warning)),
+        true,
+        'the refused binding was missing from the returned state',
+      )
+      await adding
+      assert.ok(added)
+    } finally {
+      releaseBind?.()
+      await activating.catch(() => {})
+      h.settings.mutate = realMutate
+    }
+  } finally {
+    await h.close()
+  }
+})
+
 // P2-A: the returned view must carry the binding attempt's warning. Building it
 // inside the queue turn drained the snapshot first, so a refused binding
 // reported a clean activation while requests kept using the key pool.
