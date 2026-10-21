@@ -992,6 +992,14 @@ export class KeysManagerService {
   private queue: Promise<unknown> = Promise.resolve()
   private closing = false
   /**
+   * Shutdown has begun (PR review round 34). Set on `close()`'s first line,
+   * before the pre-close restoration runs, so a test arriving while that
+   * restoration is putting the outstanding borrows back is refused instead of
+   * starting a second window the restoration would not cover. Never cleared:
+   * the instance is closing.
+   */
+  private shutdownRequested = false
+  /**
    * Providers whose in-flight row test borrows the route's credential
    * surface (QC B4: an OAuth row test's projection, and the broker reference
    * it may temporarily release). While a provider is borrowed the binding
@@ -1628,6 +1636,10 @@ export class KeysManagerService {
 
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
   async close(): Promise<void> {
+    // PR review round 34: the entry marker goes up before the restoration, so
+    // the window this function spends putting borrowed projections back cannot
+    // accept a new test and a new borrow.
+    this.shutdownRequested = true
     // PR review round 33: `closing` refuses the in-window cleanup, so every
     // outstanding borrow is put back first. A test whose request ignores the
     // abort otherwise leaves the tested account projected past unload.
@@ -3510,6 +3522,10 @@ export class KeysManagerService {
    * not also raise the page-level banner a thrown RPC error produces.
    */
   async testKey(provider: string, keyId: string): Promise<KeyTestResult> {
+    // PR review round 34: shutdown marks its entry before it restores the
+    // outstanding borrows, and that restoration is not in this test's window —
+    // so a test arriving now would borrow during it and outlive it.
+    if (this.shutdownRequested) return this.shutdownEntryResult()
     // PR review round 12: a removal holds the provider from its entry, before
     // its first await, so a test cannot start in the window this check would
     // otherwise miss — read the grant and the projection while the removal is
@@ -4096,10 +4112,12 @@ export class KeysManagerService {
         result = this.abandonedTestResult()
         return
       }
-      if (this.closing) {
+      if (this.shutdownRequested) {
         // PR review round 30: shutdown abandons the chain parked here, so the
-        // borrow write below must not land after `close()`.
-        result = this.shutdownTestResult()
+        // borrow write below must not land after `close()`. Round 34: the
+        // marker is up from shutdown's entry, so the pre-close restoration is
+        // covered too — it does not borrow, and this test must not either.
+        result = this.shutdownEntryResult()
         return
       }
       // PR review round 12: both reads above are awaits, so a removal can have
@@ -4167,9 +4185,11 @@ export class KeysManagerService {
         }
         return
       }
-      if (this.closing) {
+      if (this.shutdownRequested) {
         // PR review round 30: the borrow write settled after shutdown started,
-        // so no binding release, request or restore may follow it.
+        // so no binding release, request or restore may follow it. Round 34:
+        // shutdown's entry marker makes that true during the pre-close
+        // restoration as well, which waits this write out and puts it back.
         result = this.shutdownTestResult()
         return
       }
@@ -4313,6 +4333,15 @@ export class KeysManagerService {
       ok: false,
       latencyMs: 0,
       error: 'Keys Manager is shutting down; the connection test did not finish and its cleanup was skipped.',
+    }
+  }
+
+  /** The refusal a test reports when it arrives after shutdown began (round 34). */
+  private shutdownEntryResult(): KeyTestResult {
+    return {
+      ok: false,
+      latencyMs: 0,
+      error: 'Keys Manager is shutting down; the connection test was refused before it borrowed a credential.',
     }
   }
 

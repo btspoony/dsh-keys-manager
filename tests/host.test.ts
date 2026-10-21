@@ -13312,3 +13312,93 @@ test('close restores the projection and binding a borrowed test left behind', { 
     await h.close()
   }
 })
+
+// Codex P1 (round 34): round 33 restored the outstanding borrows before
+// `closing` went up, but `closing` was still the only marker a test read — so a
+// test arriving while that restoration ran was accepted, borrowed a second
+// projection and escaped the pre-close restore. Shutdown now marks its entry
+// before the restoration, and that marker refuses a test outright.
+test('a test started while close restores the outstanding borrows is refused', { timeout: 10_000 }, async () => {
+  const h = await harness()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  let releaseRestore: (() => void) | undefined
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const anthropic = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-anthropic', email: 'a@example.com', refresh: 'rt-anthropic' })
+    const anthropicBrokerRef = h.store.provider('anthropic')!.brokerRef
+    // A second route that is still pool-served: its OAuth row test would borrow.
+    await h.service.adoptProvider('zai-coding-cn')
+    const zaiProfile = (): Record<string, unknown> => h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn']
+    zaiProfile().models = [{ id: 'glm-test-model' }]
+    const zai = seedOAuthAccount(h, 'zai-coding-cn', { accountId: 'acc-zai', email: 'z@example.com', refresh: 'rt-zai' })
+    const zaiGrantKey = 'llm-pi-ai/zai-coding-cn'
+    const zaiBrokerRef = h.store.provider('zai-coding-cn')!.brokerRef
+    assert.equal(h.credentials.records.has(zaiGrantKey), false)
+    assert.equal(zaiProfile().apiKeyEnv, zaiBrokerRef)
+
+    const gate = new Promise<void>(resolve => { releaseTest = resolve })
+    let entered!: () => void
+    const enteredGate = new Promise<void>(resolve => { entered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      if (options.maxTokens === 1) {
+        entered()
+        // The adapter ignores the abort the test timeout raised: this request
+        // never settles, so its borrow outlives it.
+        await gate
+      }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    testRun = h.service.testKey('anthropic', anthropic.rowId)
+    await enteredGate
+    // The borrow landed: the tested account is projected.
+    assert.equal(liveProjectionRefresh(h), 'rt-anthropic')
+
+    // Park the pre-close restoration, so the test below arrives exactly while
+    // `close()` is putting the outstanding borrows back.
+    const internals = h.service as unknown as { restoreBorrowedWindows: () => Promise<void> }
+    const restore = internals.restoreBorrowedWindows.bind(h.service)
+    let enteredRestore!: () => void
+    const restoreGate = new Promise<void>(resolve => { enteredRestore = resolve })
+    const parked = new Promise<void>(resolve => { releaseRestore = resolve })
+    internals.restoreBorrowedWindows = async () => {
+      enteredRestore()
+      await parked
+      return restore()
+    }
+    const closing = h.service.close()
+    await restoreGate
+
+    const refused = await Promise.race([
+      h.service.testKey('zai-coding-cn', zai.rowId),
+      new Promise<KeyTestResult>((_resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('the test was not refused at shutdown entry')), 1500)
+        timer.unref?.()
+      }),
+    ])
+    assert.equal(refused.ok, false)
+    assert.match(refused.error ?? '', /shutting down/i)
+    // No borrow, no binding release: both writes would outlive the restoration.
+    assert.equal(h.credentials.records.has(zaiGrantKey), false, 'the refused test projected its borrow anyway')
+    assert.equal(zaiProfile().apiKeyEnv, zaiBrokerRef, 'the refused test released the binding anyway')
+
+    releaseRestore!()
+    await closing
+    // The pre-close restoration still ran and put the first test's borrow back.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'close skipped the pre-close restoration')
+    assert.equal(
+      h.settings.valueOf('llm-pi-ai').providers['anthropic'].apiKeyEnv,
+      anthropicBrokerRef,
+      'the pre-close restoration did not put the binding back',
+    )
+  } finally {
+    releaseRestore?.()
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
