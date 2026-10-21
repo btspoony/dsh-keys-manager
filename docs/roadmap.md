@@ -72,8 +72,9 @@ may not serve them.
 
 ## M3 — Coverage: OAuth transports
 
-Source: issue #15. Each provider here speaks a wire protocol `llm-pi-ai`
-cannot serve, so it needs a transport slice like the Cursor one.
+Source: issue #15 and its store record `I-000049`. Each provider here speaks a
+wire protocol `llm-pi-ai` cannot serve, so it needs a transport slice like the
+Cursor one.
 
 | Order | Provider | Note |
 | --- | --- | --- |

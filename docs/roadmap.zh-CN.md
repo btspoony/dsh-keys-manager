@@ -48,7 +48,7 @@
 
 ## M3 —— 覆盖：OAuth transport
 
-来源：issue #15。这些 provider 说的是 `llm-pi-ai` 无法服务的线协议，需要像 Cursor 那样的独立 transport 切片。
+来源：issue #15 及其 store 记录 `I-000049`。这些 provider 说的是 `llm-pi-ai` 无法服务的线协议，需要像 Cursor 那样的独立 transport 切片。
 
 | 顺序 | Provider | 备注 |
 | --- | --- | --- |
