@@ -13,9 +13,11 @@ Every user-visible change ships a fragment in `.changes/unreleased/`: one slug
 `.md` file per change, optional `category:` frontmatter, `- ` bullet lines
 (format and example: `.changes/unreleased/README.md`). The release prep run
 groups the fragments into the next `## [<version>]` section and archives the
-consumed files to `.changes/archive/<version>/`. **A release with zero
-fragments fails**: prepare-release exits 1 and reports `.changes/unreleased/`
-rather than publishing an empty changelog section.
+consumed files to `.changes/archive/<version>/`. **An empty notes body fails
+both a dry run and a real run**: with no fragments, or only fragments without
+`- ` bullets, prepare-release exits 1 and reports `.changes/unreleased/`
+instead of publishing an empty changelog section (a passing dry run prints
+`FRAGMENTS=<n>`).
 
 ## Two-package pnpm workspace
 

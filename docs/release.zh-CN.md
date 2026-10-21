@@ -13,7 +13,7 @@ CI（`.github/workflows/ci.yml`）先运行根包 typecheck、build、测试，�
 发布由 PR 驱动：
 
 1. Actions → **Release prep** → Run workflow。版本留空表示自动 patch 升级，或传入 `X.Y.Z` / `X.Y.Z-prerelease`。两个发布包共用这一个版本号。
-2. 工作流把同一个版本号写入两个 `package.json`、从 git log 更新根包 `CHANGELOG.md`、校验构建，并打开 `release v<version>` PR。
+2. 工作流把同一个版本号写入两个 `package.json`、用 `.changes/unreleased/` 中撰写好的片段拼出根包 `CHANGELOG.md` 小节（格式见 [`.changes/unreleased/README.md`](../.changes/unreleased/README.md)）并把用掉的片段归档到 `.changes/archive/<version>/`、校验构建，并打开 `release v<version>` PR。片段产不出任何 bullet 时拒绝发布（`prepare-release.mjs` 退出码 1）。
 3. 合并发布 PR。**Release** 工作流把 `dsh-keys-manager@<version>` 与 `dsh-llm-omp-transports@<version>` 以 provenance 发布到 npm（传输包版本若已从本仓库历史中的提交发布则跳过）、推送 `v<version>` 与包名标签 `dsh-llm-omp-transports@<version>`，并创建 GitHub Release。
 
 ## 传输包

@@ -28,9 +28,12 @@ Releases are PR-driven:
 1. Actions → **Release prep** → Run workflow. Leave the version empty for an
    automatic patch bump, or pass `X.Y.Z` / `X.Y.Z-prerelease`. One version
    drives both published packages.
-2. The workflow writes that version to both `package.json` files, updates the
-   root `CHANGELOG.md` from git log, validates the build, and opens a
-   `release v<version>` PR.
+2. The workflow writes that version to both `package.json` files, assembles the
+   root `CHANGELOG.md` section from the authored `.changes/unreleased/`
+   fragments (see [`.changes/unreleased/README.md`](../.changes/unreleased/README.md))
+   and archives the consumed fragments to `.changes/archive/<version>/`,
+   validates the build, and opens a `release v<version>` PR. A release whose
+   fragments produce no bullets is refused (`prepare-release.mjs` exits 1).
 3. Merge the release PR. The **Release** workflow publishes
    `dsh-keys-manager@<version>` and `dsh-llm-omp-transports@<version>` to npm
    with provenance (the transport is skipped when that exact version is already

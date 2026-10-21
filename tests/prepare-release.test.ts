@@ -60,9 +60,22 @@ describe('buildSectionBody', () => {
   it('renders nothing for zero fragments so the caller refuses the release', () => {
     expect(buildSectionBody([])).toBe('')
   })
+
+  it('renders nothing for a frontmatter-only fragment (no bullets to publish)', () => {
+    const body = buildSectionBody([
+      parseFragment('empty.md', '---\ncategory: Added\n---\n'),
+      parseFragment('blank.md', '\n   \n'),
+    ])
+
+    expect(body).toBe('')
+  })
 })
 
 describe('readFragments', () => {
+  it('reports an empty list for an empty fragment directory', () => {
+    expect(readFragments(fragmentDir({}))).toEqual([])
+  })
+
   it('reads .md fragments in filename order and skips README.md, .gitkeep and non-.md entries', () => {
     const dir = fragmentDir({
       'README.md': '# Change fragments\n',

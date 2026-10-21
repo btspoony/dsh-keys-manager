@@ -13,8 +13,10 @@
  * and prints the root and transports versions and tags for the workflow to
  * capture. Node built-ins only, no new dependencies.
  *
- * The fragments ARE the release notes: a release with zero fragments is
- * refused, so an empty `## [<version>]` section can never be published.
+ * The fragments ARE the release notes: a release whose rendered body is empty
+ * (zero fragments, or fragments without bullet lines) is refused on both a
+ * dry run and a real run, so an empty `## [<version>]` section can never be
+ * published.
  *
  * The workspace package `packages/llm-omp` (`dsh-llm-omp-transports`) ships as
  * part of the same release and always carries the same version: the resolved
@@ -30,7 +32,7 @@
  *   node scripts/prepare-release.mjs --dry-run # validate + print, write nothing
  *
  * Exit codes: 0 = bumped (or dry-run resolved) and printed versions; 1 =
- * rejected (unparseable version, existing tag, no fragments in
+ * rejected (unparseable version, existing tag, no changelog bullets in
  * `.changes/unreleased/`, unparseable current package.json version, invalid
  * prerelease dist-tag, or CHANGELOG.md write error).
  */
@@ -232,10 +234,14 @@ export function readFragments(dir = UNRELEASED_DIR) {
 /**
  * Render the section body: `### <category>` + its bullets, categories in
  * first-seen order (a fragment without `category:` lands under `Changed`).
+ * A fragment with no bullets contributes nothing — not even a bullet-less
+ * heading — so "every fragment is empty" really renders an empty body and the
+ * caller can refuse it.
  */
 export function buildSectionBody(fragments) {
   const groups = []
   for (const fragment of fragments) {
+    if (fragment.bullets.length === 0) continue
     const category = fragment.category ?? DEFAULT_CATEGORY
     let group = groups.find((candidate) => candidate.category === category)
     if (group === undefined) {
@@ -270,11 +276,13 @@ export function insertSection(changelog, version, date, body) {
 }
 
 /**
- * Write the new section into CHANGELOG.md. Preserves all existing sections;
- * no-op when the section for this version already exists (idempotent re-runs
- * must not duplicate it); write failures exit 1. A 0-byte or whitespace-only
- * file (e.g. manual truncation) is treated as missing, so it still boots with
- * the standard header instead of a section above no header at all.
+ * Write the new section into CHANGELOG.md and report whether it was written.
+ * Preserves all existing sections; no-op (returns false) when the section for
+ * this version already exists, so a re-run must not duplicate it and must not
+ * consume fragments it never rendered. A 0-byte or whitespace-only file (e.g.
+ * manual truncation) is treated as missing, so it still boots with the
+ * standard header instead of a section above no header at all. Write failures
+ * exit 1.
  */
 function updateChangelog(version, body) {
   let content
@@ -288,7 +296,7 @@ function updateChangelog(version, body) {
   }
 
   if (content.includes(`## [${version}]`)) {
-    return
+    return false
   }
 
   const next = insertSection(content, version, new Date().toISOString().slice(0, 10), body)
@@ -299,6 +307,7 @@ function updateChangelog(version, body) {
     console.error(`Error: cannot write ${CHANGELOG_PATH}: ${error.message}`)
     process.exit(1)
   }
+  return true
 }
 
 /** Move the consumed fragments to `.changes/archive/<version>/`. */
@@ -342,15 +351,21 @@ function main() {
     process.exit(1)
   }
 
-  // The fragments are the only release-notes source, so a real release with
-  // none would publish an empty changelog section: refuse instead. A dry run
-  // writes nothing and may legitimately run before the fragments are written,
-  // so it only reports the count.
+  // The fragments are the only release-notes source, so a release whose
+  // rendered body is empty — no fragments at all, or only fragments with no
+  // bullet lines — would publish an empty `## [<version>]` section: refuse
+  // instead, on a dry run too (a dry run is release validation, not an
+  // exemption).
   const fragments = readFragments()
-  if (!dryRun && fragments.length === 0) {
+  const body = buildSectionBody(fragments)
+  if (body.trim() === '') {
+    const empties = fragments
+      .filter((fragment) => fragment.bullets.length === 0)
+      .map((fragment) => fragment.file)
     console.error(
-      'Error: no changelog fragments in .changes/unreleased/ — nothing to release. ' +
-        'Add one `- ` bullet per user-visible change (format: .changes/unreleased/README.md).',
+      'Error: no changelog bullets in .changes/unreleased/ — nothing to release. ' +
+        'Add one `- ` bullet per user-visible change (format: .changes/unreleased/README.md).' +
+        (empties.length === 0 ? '' : ` Fragment files without bullets: ${empties.join(', ')}.`),
     )
     process.exit(1)
   }
@@ -367,8 +382,15 @@ function main() {
     writeFileSync(TRANSPORTS_PKG_PATH, `${JSON.stringify(transportsPkg, null, 2)}\n`, 'utf8')
 
     // Root changelog only: the transports package has no generated changelog.
-    updateChangelog(version, buildSectionBody(fragments))
-    archiveFragments(version, fragments)
+    // Fragments are archived only when this run rendered them: an existing
+    // section (idempotent re-run) must not consume them unrendered.
+    if (updateChangelog(version, body)) {
+      archiveFragments(version, fragments)
+    } else {
+      console.error(
+        `Notice: CHANGELOG.md already has a "## [${version}]" section — fragments left in .changes/unreleased/.`,
+      )
+    }
   }
 
   // The workflow captures VERSION; the remaining lines are informational and

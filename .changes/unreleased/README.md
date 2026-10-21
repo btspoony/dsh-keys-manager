@@ -6,8 +6,10 @@ prep workflow (`scripts/prepare-release.mjs`) assembles them into the next
 fragments to `.changes/archive/<version>/`. `CHANGELOG.md` is never edited by
 hand.
 
-A release with **zero** fragments is refused: the fragments are the release
-notes, so prepare-release exits 1 instead of publishing an empty section.
+A release whose assembled notes body is **empty** — no fragments here, or only
+fragments without `- ` bullet lines — is refused on both a dry run and a real
+run: prepare-release exits 1 and names the files with no bullets. A dry run
+prints `FRAGMENTS=<n>` so the count is visible before anything is written.
 
 ## Format
 
