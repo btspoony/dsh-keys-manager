@@ -200,7 +200,7 @@ if (tagExists(`v${version}`)) {
   console.error(`Error: tag v${version} already exists — this version is already released.`)
   process.exit(1)
 }
-if (transportTag !== undefined && tagExists(transportTag)) {
+if (tagExists(transportTag)) {
   console.error(`Error: tag ${transportTag} already exists — this transport version is already released.`)
   process.exit(1)
 }

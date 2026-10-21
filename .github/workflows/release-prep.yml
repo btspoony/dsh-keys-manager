@@ -1,11 +1,12 @@
 name: Release prep
 
 # Manual entry point: Actions → "Release prep" → Run workflow (optionally pass
-# an explicit X.Y.Z or X.Y.Z-prerelease, e.g. 0.1.1-alpha.1). Bumps
-# package.json (+ lockfile sync), validates the build, and opens a
-# `release v<version>` PR. Merging that PR runs the Release workflow, which
-# publishes dsh-keys-manager@<version> (formal versions to `latest`, prereleases to
-# their prerelease dist-tag), pushes tag v<version>, and creates the GitHub
+# an explicit X.Y.Z or X.Y.Z-prerelease, e.g. 0.1.1-alpha.1). Writes that one
+# version to both package.json files (+ lockfile sync), validates the build,
+# and opens a `release v<version>` PR. Merging that PR runs the Release
+# workflow, which publishes dsh-keys-manager@<version> and
+# dsh-llm-omp-transports@<version> (formal versions to `latest`, prereleases
+# to their prerelease dist-tag), pushes both tags, and creates the GitHub
 # Release.
 
 on:
