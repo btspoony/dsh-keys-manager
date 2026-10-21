@@ -3548,33 +3548,42 @@ export class KeysManagerService {
    * `modifyRecord` (credentials/src/index.ts:236-250) against other writers.
    * The account whose payload lands becomes the pool's active account and is
    * cascade-selectable again.
+   *
+   * Plan iter-pool-activate-queue: that credential half runs on the chain
+   * BEFORE the mutation queue turn, so a slow credential store no longer
+   * delays unrelated mutations. The turn keeps what only admission order can
+   * decide — the activation error surface, the row writes and the returned
+   * `buildState`.
    */
-  activateAccount(provider: string, accountId: string): Promise<StateView> {
+  async activateAccount(provider: string, accountId: string): Promise<StateView> {
+    const records = this.credentialRecords()
+    // Locator only: it lets the credential I/O start before the queue turn and
+    // decides nothing — every admission-ordered check runs inside `run` below.
+    const located = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
+    let projected = false
+    if (located !== undefined && located.kind === 'oauth' && located.oauth !== null && records !== undefined) {
+      // The projection write now precedes the turn, so the refusals `run`
+      // applies (1632, 1634-1636) must fire before it, with their messages.
+      if (this.closing) throw new Error('Keys Manager is shutting down')
+      if (this.store.readOnly) {
+        throw new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.')
+      }
+      await this.projectActivationGrant(provider, accountId, located, records)
+      projected = true
+    }
     return this.run(async () => {
       const providerRecord = this.store.provider(provider)
       if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
       const row = providerRecord.keys.find(candidate => candidate.id === accountId)
       if (row === undefined) throw new Error(`Account "${accountId}" not found on ${provider}`)
       if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account`)
-      const records = this.credentialRecords()
       if (records === undefined) throw new Error('The credential store does not support records')
-      await this.scheduleGrantReconciliation(provider, async () => {
-        // Re-read the generation under the chain: a rotation that committed
-        // before this body claimed its slot is already reflected here.
-        const grantRef = row.oauth!.grantRef
-        const stored = await records.readRecord(grantRef)
-        if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
-          throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
-        }
-        this.intentionalProjectionRemovals.delete(provider)
-        await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, () =>
-          Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
-        this.claimProjectionOwner(provider, row.id)
-        // The re-activated grant is the serving credential again, so a broker
-        // reference left by the key pool must go (see syncBrokerBinding): the
-        // committed projection is not rolled back by a settings failure.
-        await this.syncBrokerBinding(provider)
-      })
+      // The row the projection ran for may have left the store while it ran
+      // (a removal that started after the chain body finished): a detached row
+      // must not be written to, and the caller gets the ordinary refusal.
+      if (projected && !this.accountRowIsManaged(provider, located!)) {
+        throw new Error(`Account "${accountId}" not found on ${provider}`)
+      }
       row.valueMissing = false
       // Round-5 finding M1: manual recovery ends the cooling window too, the
       // same reset a successful re-authentication applies. A demoted account
@@ -3588,6 +3597,62 @@ export class KeysManagerService {
       // Remote methods hand back the refreshed state view (addKey/deleteKey
       // precedent), so the client updates its snapshot in one round trip.
       return this.buildState()
+    })
+  }
+
+  /**
+   * The credential half of an activation, on the provider's grant chain and
+   * outside the mutation queue: read the row's grant generation, project it as
+   * the route's stored credential, claim the projection owner and sync the
+   * broker binding.
+   *
+   * `removeAccount` / `deleteKey` never run on this chain, so the write is
+   * fenced by revalidation instead — the same shape `reconcileGrantRecord`
+   * uses: a pre-write proof refuses a row a removal already took, and a
+   * post-write revalidation withdraws what a removal that landed mid-write
+   * would otherwise leave orphaned.
+   */
+  private projectActivationGrant(
+    provider: string,
+    accountId: string,
+    row: KeyRecord,
+    records: CredentialRecordsLike,
+  ): Promise<void> {
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    return this.scheduleGrantReconciliation(provider, async () => {
+      // A removal that landed before this body claimed the chain refuses here
+      // rather than projecting a grant nothing owns.
+      if (!this.accountRowIsManaged(provider, row)) {
+        throw new Error(`Account "${accountId}" not found on ${provider}`)
+      }
+      // Re-read the generation under the chain: a rotation that committed
+      // before this body claimed its slot is already reflected here.
+      const grantRef = row.oauth!.grantRef
+      const stored = await records.readRecord(grantRef)
+      if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+        throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
+      }
+      this.intentionalProjectionRemovals.delete(provider)
+      await records.modifyRecord(projectionKey, () =>
+        Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
+      this.claimProjectionOwner(provider, row.id)
+      // A removal that completed while the write was in flight deleted the
+      // projection before this write re-created it. Its own cleanup already
+      // ran, so the record and the claim are withdrawn here, mirroring the
+      // post-write compensation in `reconcileGrantRecord`.
+      if (!this.accountRowIsManaged(provider, row)) {
+        if (this.activeAccounts.get(provider) === row.id) this.activeAccounts.delete(provider)
+        try {
+          await records.deleteRecord(projectionKey)
+        } catch (error) {
+          this.warn(`cancelled activation projection cleanup failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        return
+      }
+      // The re-activated grant is the serving credential again, so a broker
+      // reference left by the key pool must go (see syncBrokerBinding): the
+      // committed projection is not rolled back by a settings failure.
+      await this.syncBrokerBinding(provider)
     })
   }
 

@@ -5208,6 +5208,96 @@ test('activation projects the generation the row still names when a rotation ech
   }
 })
 
+// Plan iter-pool-activate-queue, Task 2 regression: activation used to run its
+// credential read and projection write INSIDE the process-wide mutation queue,
+// so one slow credential store delayed every unrelated mutation. The invariant
+// pinned here: while activation's grant read is parked on the seam, another
+// mutation still gets its queue turn and completes.
+
+test('a parked activation credential read does not delay an unrelated mutation', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  let releaseRead: (() => void) | undefined
+  const readReleased = new Promise<void>(resolve => { releaseRead = resolve })
+  let parked = false
+  raw.readRecord = async (key: string) => {
+    if (key === grantRef && !parked) {
+      parked = true
+      await readReleased
+    }
+    return realRead(key)
+  }
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(parked, true))
+    const outcome = await Promise.race([
+      h.service.addKey('anthropic', 'unrelated', 'sk-unrelated-value').then(() => 'mutation' as const),
+      new Promise<'parked'>(resolve => { setTimeout(() => resolve('parked'), 500) }),
+    ])
+    assert.equal(outcome, 'mutation', 'the mutation queue must not be held across activation credential I/O')
+  } finally {
+    releaseRead!()
+    await activating.catch(() => {})
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+// Plan iter-pool-activate-queue, Task 2 removal race: `removeAccount` runs on
+// the mutation queue only, never on the provider's grant chain, so once the
+// credential I/O leaves the queue the chain body is the only thing keeping a
+// removal out of activation's read → project window. The invariant pinned
+// here: a removal that lands while the grant read is parked leaves no
+// projection record behind and no stale owner claim.
+//
+// This is a guard, not a reproduction: on the pre-split tree the queue turn
+// already serializes the removal after activation, so it is green there too.
+
+test('a removal landing during a parked activation read leaves no projection record or owner claim', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  let releaseRead: (() => void) | undefined
+  const readReleased = new Promise<void>(resolve => { releaseRead = resolve })
+  let parked = false
+  raw.readRecord = async (key: string) => {
+    if (key === grantRef && !parked) {
+      // Read first, then park: the real store returns what it read, so a
+      // removal landing in the parked window cannot retract the snapshot.
+      const snapshot = await realRead(key)
+      parked = true
+      await readReleased
+      return snapshot
+    }
+    return realRead(key)
+  }
+  const activating = h.service.activateAccount('anthropic', rowId)
+  let removing: Promise<unknown> | undefined
+  try {
+    await eventually(() => assert.equal(parked, true))
+    removing = h.service.removeAccount('anthropic', rowId)
+    // One queue turn for the removal: after the split it runs while the read is
+    // parked; before it, it waits behind the activation turn.
+    await new Promise(resolve => setTimeout(resolve, 40))
+    releaseRead!()
+    releaseRead = undefined
+    const [, removed] = await Promise.allSettled([activating, removing])
+    assert.equal(removed!.status, 'fulfilled')
+    assert.equal(h.credentials.records.has(grantRef), false, 'the removed row grant record is gone')
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'no projection record outlives the removed row')
+    const owners = (h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts
+    assert.equal(owners.has('anthropic'), false, 'no stale projection owner claim')
+    assert.equal(h.store.provider('anthropic')!.keys.filter(key => key.kind === 'oauth').length, 0)
+  } finally {
+    releaseRead?.()
+    await activating.catch(() => {})
+    await removing?.catch(() => {})
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
+
 // Round-2 review step 6: the projection owner is surfaced through the
 // state view — the provider names the owning row, and exactly one account
 // row is badged as the projected one.
