@@ -3742,7 +3742,13 @@ export class KeysManagerService {
         return
       }
       const borrowed = structuredClone(stored.payload)
-      const previous = await records.readRecord(projectionKey)
+      const captured = await records.readRecord(projectionKey)
+      // PR review round 14: the snapshot and its comparison key are frozen
+      // here. The seam hands back a live record, so a writer mutating that
+      // stored object in place would otherwise change `previous` along with
+      // the updater's `current` and make the borrow look unchanged.
+      const previous = captured === undefined ? undefined : structuredClone(captured)
+      const previousKey = previous === undefined ? undefined : JSON.stringify(previous)
       if (window.cleaned) {
         result = this.abandonedTestResult()
         return
@@ -3781,7 +3787,7 @@ export class KeysManagerService {
       const borrowWrite = records.modifyRecord(projectionKey, current => {
         const unchanged = previous === undefined
           ? current === undefined
-          : current !== undefined && JSON.stringify(current) === JSON.stringify(previous)
+          : current !== undefined && JSON.stringify(current) === previousKey
         if (!unchanged) {
           borrowRefused = true
           return Promise.resolve(undefined)

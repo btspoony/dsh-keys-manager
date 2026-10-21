@@ -8343,6 +8343,56 @@ test('a native sign-in landing before the borrow write is not overwritten', asyn
   }
 })
 
+// PR review round 14: the CAS above compared against the pre-borrow record by
+// reference, so a writer that mutated that stored object in place made
+// `current` and `previous` serialise identically and the borrow passed. The
+// snapshot and its comparison key are frozen at capture instead.
+
+test('an in-place mutation of the captured projection refuses the borrow', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+  let armed = false
+  let mutated = false
+  let calls = 0
+  try {
+    await drainGrantChain(h, 'anthropic')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    armed = true
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+    // The stored projection object is mutated in place — same identity in the
+    // records map — after the pre-borrow read resolved and before the borrow's
+    // updater runs.
+    h.credentials.raw.modifyRecord = async (key: string, mutate: any): Promise<FakeCredentialRecord | undefined> => {
+      if (armed && !mutated && key === GRANT_KEY) {
+        mutated = true
+        const stored = h.credentials.records.get(GRANT_KEY)!
+        ;(stored.payload as Record<string, unknown>).refresh = 'rt-mutated'
+      }
+      return realModify(key, mutate)
+    }
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(mutated, true, 'the in-place mutation landed inside the borrow window')
+    assert.equal(result.ok, false)
+    // The borrow refused instead of treating the mutated record as unchanged…
+    assert.match(String(result.error), /changed while the test was starting/)
+    // …the mutated payload stays, and nothing was borrowed or sent.
+    assert.equal(liveProjectionRefresh(h), 'rt-mutated')
+    assert.equal(calls, 0)
+    const borrows = (h.service as unknown as { testBindingBorrows: Set<string> }).testBindingBorrows
+    assert.equal(borrows.has('anthropic'), false, 'the refused borrow left its marker behind')
+  } finally {
+    h.credentials.raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
 test('an aborted finish fails the row test and a length-limited finish passes it', async () => {
   // PR review SF3: only a real completion ends the probe as a pass. The ping
   // asks for one token, so `length` is the expected completion; `aborted`
