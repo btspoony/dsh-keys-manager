@@ -13679,3 +13679,186 @@ test('a stale continuation cannot write during the pre-close restoration', { tim
     await h.close()
   }
 })
+
+// ── PR #26 review round 37 ──────────────────────────────────────────────────
+
+// Round 36's capability was unconditional: it named the pre-close restoration
+// but every holder was honoured for as long as shutdown lasted. A restoration
+// that outlived its cleanup deadline then resumed after `close()` had returned
+// and still wrote — the capability was the whole check. It is scoped to the
+// restoration phase now: the flag goes up when the phase starts and down in its
+// `finally` (the timeout included), and every write decision reads it again.
+test('a pre-close restoration released after its phase timed out writes nothing', { timeout: 10_000 }, async () => {
+  const h = await harness()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  const realDelete = raw.deleteRecord.bind(raw)
+  let releaseRead: (() => void) | undefined
+  const readGate = new Promise<void>(resolve => { releaseRead = resolve })
+  let entered!: () => void
+  const enteredGate = new Promise<void>(resolve => { entered = resolve })
+  let armed = false
+  let parked = false
+  let counting = false
+  const writes = { modify: 0, delete: 0 }
+  raw.modifyRecord = async (...args: any[]) => {
+    if (counting) writes.modify += 1
+    return await realModify(...args)
+  }
+  raw.deleteRecord = async (...args: any[]) => {
+    if (counting) writes.delete += 1
+    return await realDelete(...args)
+  }
+  raw.readRecord = async (key: string) => {
+    if (armed && key === GRANT_KEY && !parked) {
+      parked = true
+      entered()
+      await readGate
+    }
+    return realRead(key)
+  }
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    // The pre-test state: the pool serves the route, nothing is projected.
+    assert.equal(h.credentials.records.has(GRANT_KEY), false)
+    const gate = new Promise<void>(resolve => { releaseTest = resolve })
+    let requestEntered!: () => void
+    const requestEnteredGate = new Promise<void>(resolve => { requestEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      requestEntered()
+      // The adapter ignores the abort the test timeout raised: this request
+      // never settles, so its window is still outstanding at shutdown.
+      await gate
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 50
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    testRun = h.service.testKey('anthropic', account.rowId)
+    await requestEnteredGate
+    // The borrow landed: the tested account is projected.
+    assert.equal(liveProjectionRefresh(h), 'rt-only')
+
+    // From here only the pre-close restoration's own re-read parks, so the
+    // restoration outlives the cleanup deadline that bounds it.
+    armed = true
+    const closing = h.service.close()
+    await enteredGate
+    await closing
+
+    // What close() left behind is the baseline the released restoration may
+    // not move.
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')
+    const revision = namespace.revision
+    const records = JSON.stringify([...h.credentials.records])
+    const state = JSON.stringify(h.store.state)
+    const file = await readFile(h.store.file, 'utf8')
+    counting = true
+
+    // The continuation still holds the token it was handed inside the phase.
+    releaseRead!()
+    await new Promise<void>(resolve => { setTimeout(resolve, 50) })
+
+    assert.deepEqual(rejections, [], 'the released restoration rejected after close()')
+    assert.equal(writes.modify + writes.delete, 0, 'a restoration released after its phase wrote a credential record')
+    assert.equal(JSON.stringify([...h.credentials.records]), records, 'a restoration released after its phase changed a credential record')
+    assert.equal(namespace.revision, revision, 'the settings document was mutated after the restoration phase ended')
+    assert.equal(JSON.stringify(h.store.state), state, 'the provider state was mutated after the restoration phase ended')
+    assert.equal(await readFile(h.store.file, 'utf8'), file, 'the state document was rewritten after the restoration phase ended')
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    releaseRead?.()
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+// Codex P1 (round 37): the phase flag is cleared after the restoration's last
+// await, so a continuation that passed the entry check can reach its updater
+// with the phase already over. Only a check inside the write decision — the
+// same synchronous section as the write — refuses it there.
+test('a pre-close restoration released between its entry check and the write refuses the write', { timeout: 10_000 }, async () => {
+  const h = await harness()
+  let releaseTest: (() => void) | undefined
+  let testRun: Promise<KeyTestResult> | undefined
+  const rejections: unknown[] = []
+  const onRejection = (reason: unknown): void => { rejections.push(reason) }
+  process.on('unhandledRejection', onRejection)
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  let releaseWrite: (() => void) | undefined
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve })
+  let armed = false
+  let parked = false
+  let entered!: () => void
+  const enteredGate = new Promise<void>(resolve => { entered = resolve })
+  // Park the restore's record write before its updater runs: the entry check
+  // has already passed by then.
+  raw.modifyRecord = async (...args: any[]) => {
+    if (armed && args[0] === GRANT_KEY && !parked) {
+      parked = true
+      entered()
+      await writeGate
+    }
+    return await realModify(...args)
+  }
+  try {
+    h.settings.valueOf('llm-pi-ai').providers['anthropic'] = { models: [{ id: 'claude-test-model' }] }
+    await h.service.adoptProvider('anthropic')
+    const account = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-only', email: 'only@example.com', refresh: 'rt-only' })
+    // A projection the pool does not own is what the test borrows over, so the
+    // restoration has a pre-test payload to put back — the writing branch.
+    h.credentials.records.set(GRANT_KEY, grantPayload({ refresh: 'rt-pre-test', access: 'at-pre-test' }))
+    const gate = new Promise<void>(resolve => { releaseTest = resolve })
+    let requestEntered!: () => void
+    const requestEnteredGate = new Promise<void>(resolve => { requestEntered = resolve })
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      requestEntered()
+      await gate
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    } as any)
+    ;(h.service as unknown as { grantDrainDeadlineMs: number }).grantDrainDeadlineMs = 50
+    ;(h.service as unknown as { testCleanupDeadlineMs: number }).testCleanupDeadlineMs = 50
+    ;(h.ctx.logger as { warn: (message: string) => void }).warn = () => {}
+
+    testRun = h.service.testKey('anthropic', account.rowId)
+    await requestEnteredGate
+    // The borrow landed over the pre-test projection.
+    assert.equal(liveProjectionRefresh(h), 'rt-only')
+
+    armed = true
+    const closing = h.service.close()
+    await enteredGate
+    await closing
+
+    // close() abandoned the restoration at the deadline; the store still holds
+    // the borrow, and that is the baseline the released continuation may not
+    // replace with the pre-test payload.
+    const records = JSON.stringify([...h.credentials.records])
+    const namespace = h.settings.namespaces.find((entry: any) => entry.ns === 'llm-pi-ai')
+    const revision = namespace.revision
+    releaseWrite!()
+    await new Promise<void>(resolve => { setTimeout(resolve, 50) })
+
+    assert.deepEqual(rejections, [], 'the released restoration rejected after close()')
+    assert.equal(JSON.stringify([...h.credentials.records]), records, 'the updater wrote the pre-test payload after the restoration phase ended')
+    assert.equal(liveProjectionRefresh(h), 'rt-only', 'the released restoration replaced the borrow it could no longer put back')
+    assert.equal(namespace.revision, revision, 'the settings document was mutated after the restoration phase ended')
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    releaseWrite?.()
+    releaseTest?.()
+    await testRun?.catch(() => undefined)
+    await h.close()
+  }
+})

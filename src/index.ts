@@ -1000,6 +1000,15 @@ export class KeysManagerService {
   private queue: Promise<unknown> = Promise.resolve()
   private closing = false
   /**
+   * The pre-close restoration is running (PR review round 37). Only inside it
+   * — set when {@link restoreBorrowedWindows} starts and cleared in its
+   * `finally`, the cleanup deadline included — does the module-private
+   * {@link PRE_CLOSE_RESTORE} capability let a write past shutdown. A
+   * restoration that outlives its deadline resumes after this went down and
+   * is refused like any other continuation.
+   */
+  private preCloseRestorePhase = false
+  /**
    * Shutdown has begun (PR review round 34). Set on `close()`'s first line,
    * before the pre-close restoration runs, so a test arriving while that
    * restoration is putting the outstanding borrows back is refused instead of
@@ -1646,11 +1655,14 @@ export class KeysManagerService {
    * Whether a continuation that resumes from an await must stop writing
    * (PR review round 35). `shutdownRequested` is up for `close()`'s own
    * pre-close restoration, which writes by design: it alone carries the
-   * module-private {@link PRE_CLOSE_RESTORE} capability (round 36), so a
-   * continuation that resumes inside that window is still refused.
+   * module-private {@link PRE_CLOSE_RESTORE} capability (round 36), which is
+   * honoured only while that phase is running (round 37). Both facts are read
+   * here, at the caller's write decision, so a capability the phase left
+   * behind cannot pass a check made earlier.
    */
   private persistenceRefused(capability?: RestoreCapability): boolean {
-    return (this.closing || this.shutdownRequested) && capability !== PRE_CLOSE_RESTORE
+    if (!this.closing && !this.shutdownRequested) return false
+    return !(capability === PRE_CLOSE_RESTORE && this.preCloseRestorePhase)
   }
 
   /** Stop accepting mutations, drain the queue, then persist the final snapshot. */
@@ -1702,43 +1714,52 @@ export class KeysManagerService {
    * bound warns once and leaves the state to the next startup's hydration.
    */
   private async restoreBorrowedWindows(): Promise<void> {
-    for (const window of [...this.testWindows.values()]) {
-      const facts = window.facts
-      if (facts === undefined) continue
-      const attempt = (this.cleanupAttempts.get(window.provider) ?? 0) + 1
-      this.cleanupAttempts.set(window.provider, attempt)
-      const stillCurrent = (): boolean => this.cleanupAttempts.get(window.provider) === attempt
-      const failure = await this.withinCleanupDeadline(async () => {
-        // QC fix wave 3 (W-001): a borrow or binding release still in flight
-        // reads as the pre-borrow payload, so the restore would call the route
-        // clean and let the write land afterwards.
-        await this.awaitWindowMutations(window)
-        // The window is still outstanding, so this is an in-window restore (not
-        // the late one): the attempt fence is the only identity it needs. This
-        // is also the one writer that holds the pre-close capability.
-        const restored = await this.restoreProjection(
-          facts.records,
-          window.provider,
-          window.row,
-          facts.key,
-          facts.previous,
-          facts.borrowed,
-          stillCurrent,
-          false,
-          PRE_CLOSE_RESTORE,
-        )
-        if (restored !== undefined) return restored
-        if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
-        if (!window.releasedBinding) return undefined
-        // QC B4: the borrow released the profile's binding, so the restored
-        // serving source must be written back to it.
-        return await this.syncBrokerBinding(window.provider, { borrow: true })
-          ? undefined
-          : 'the route credential binding could not be restored'
-      })
-      if (failure !== undefined) {
-        this.warn(`shutdown could not put the borrowed credential for ${window.provider} back (${failure}); the projection stays as the store holds it and the next startup's hydration restores it`)
+    // PR review round 37: the capability is scoped to this phase. The flag goes
+    // up before the first await and down however the phase ends — a restoration
+    // the cleanup deadline abandoned is still parked, and it resumes with the
+    // phase already over.
+    this.preCloseRestorePhase = true
+    try {
+      for (const window of [...this.testWindows.values()]) {
+        const facts = window.facts
+        if (facts === undefined) continue
+        const attempt = (this.cleanupAttempts.get(window.provider) ?? 0) + 1
+        this.cleanupAttempts.set(window.provider, attempt)
+        const stillCurrent = (): boolean => this.cleanupAttempts.get(window.provider) === attempt
+        const failure = await this.withinCleanupDeadline(async () => {
+          // QC fix wave 3 (W-001): a borrow or binding release still in flight
+          // reads as the pre-borrow payload, so the restore would call the route
+          // clean and let the write land afterwards.
+          await this.awaitWindowMutations(window)
+          // The window is still outstanding, so this is an in-window restore (not
+          // the late one): the attempt fence is the only identity it needs. This
+          // is also the one writer that holds the pre-close capability.
+          const restored = await this.restoreProjection(
+            facts.records,
+            window.provider,
+            window.row,
+            facts.key,
+            facts.previous,
+            facts.borrowed,
+            stillCurrent,
+            false,
+            PRE_CLOSE_RESTORE,
+          )
+          if (restored !== undefined) return restored
+          if (!stillCurrent()) return 'a newer cleanup attempt took over this provider'
+          if (!window.releasedBinding) return undefined
+          // QC B4: the borrow released the profile's binding, so the restored
+          // serving source must be written back to it.
+          return await this.syncBrokerBinding(window.provider, { borrow: true })
+            ? undefined
+            : 'the route credential binding could not be restored'
+        })
+        if (failure !== undefined) {
+          this.warn(`shutdown could not put the borrowed credential for ${window.provider} back (${failure}); the projection stays as the store holds it and the next startup's hydration restores it`)
+        }
       }
+    } finally {
+      this.preCloseRestorePhase = false
     }
   }
 
