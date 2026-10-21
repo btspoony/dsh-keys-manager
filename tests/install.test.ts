@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-/** The transport versions independently; the packed range must follow it. */
+/** The transport ships from the same release version; the packed range must follow it. */
 const transportsVersion = JSON.parse(
   readFileSync(join(repoRoot, 'packages/llm-omp/package.json'), 'utf8'),
 ).version as string

@@ -11,21 +11,18 @@
  * changelog), and prints the root and transports versions and tags for the
  * workflow to capture. Node built-ins only, no new dependencies.
  *
- * The workspace package `packages/llm-omp` (`dsh-llm-omp-transports`) versions
- * independently: a run patches its patch line by default, `--transport X.Y.Z`
- * pins a version, and `--skip-transport` leaves it untouched. A bumped
- * transport version is checked against the `dsh-llm-omp-transports@<version>`
- * tag the Release workflow creates after publishing, and the version written
- * here is exactly the one `release.yml` publishes (that workflow skips an
- * already-published version). Both packages derive their npm dist-tag the same
- * way, so a transport prerelease is validated like the root one.
+ * The workspace package `packages/llm-omp` (`dsh-llm-omp-transports`) ships as
+ * part of the same release and always carries the same version: the resolved
+ * version is written to both package.json files, so one version input drives
+ * both tags (`v<version>` and `dsh-llm-omp-transports@<version>`). The
+ * transport version is checked against the tag the Release workflow creates
+ * after publishing, and the version written here is exactly the one
+ * `release.yml` publishes (that workflow skips an already-published version).
  *
  * Usage:
- *   node scripts/prepare-release.mjs                  # auto bump root + transport
- *   node scripts/prepare-release.mjs 0.2.0            # explicit root version
- *   node scripts/prepare-release.mjs --skip-transport # root only
- *   node scripts/prepare-release.mjs --transport 0.1.2
- *   node scripts/prepare-release.mjs --dry-run        # validate + print, write nothing
+ *   node scripts/prepare-release.mjs           # auto bump
+ *   node scripts/prepare-release.mjs 0.2.0     # explicit version
+ *   node scripts/prepare-release.mjs --dry-run # validate + print, write nothing
  *
  * Exit codes: 0 = bumped (or dry-run resolved) and printed versions; 1 =
  * rejected (unparseable version, existing tag, no commits since the previous
@@ -87,50 +84,32 @@ function assertPublishablePrerelease(prerelease) {
 const pkg = JSON.parse(readFileSync(PKG_PATH, 'utf8'))
 const transportsPkg = JSON.parse(readFileSync(TRANSPORTS_PKG_PATH, 'utf8'))
 
-const { versionArg, transportArg, skipTransport, dryRun } = parseArgs(process.argv.slice(2))
+const { versionArg, dryRun } = parseArgs(process.argv.slice(2))
 
 const target = resolveTarget(versionArg, pkg.version, 'package.json')
 const version = formatVersion(target)
 
-// Validate the npm dist-tag derived by the release workflow for either
-// package. A prerelease identifier like "latest" would move the stable tag,
-// and a numeric one like "1" is not a legal npm tag. Reject both before the
-// release PR is opened.
+// Validate the npm dist-tag derived by the release workflow. A prerelease
+// identifier like "latest" would move the stable tag, and a numeric one like
+// "1" is not a legal npm tag. Reject both before the release PR is opened.
 assertPublishablePrerelease(target.prerelease)
 
-// The transports package versions independently of the root package. By
-// default a run bumps its patch line; `--skip-transport` opts out, and
-// `--transport X.Y.Z` pins an explicit version.
-let transportTarget
-let transportVersion = transportsPkg.version
-if (!skipTransport) {
-  transportTarget = resolveTarget(transportArg, transportsPkg.version, 'packages/llm-omp/package.json')
-  transportVersion = formatVersion(transportTarget)
-  assertPublishablePrerelease(transportTarget.prerelease)
-}
-const transportTag = transportTarget === undefined ? undefined : `${TRANSPORT_PACKAGE}@${transportVersion}`
+// The transports package ships from the same version as the root: one input
+// drives both package.json files, so the two can never drift.
+const transportVersion = version
+const transportTag = `${TRANSPORT_PACKAGE}@${transportVersion}`
 
 /**
- * Parse CLI flags. The first non-flag argument is the root target version;
- * `--transport` consumes the next argument, so the option order is free.
+ * Parse CLI flags. The first non-flag argument is the target version.
  */
 function parseArgs(argv) {
-  const parsed = { versionArg: undefined, transportArg: undefined, skipTransport: false, dryRun: false }
+  const parsed = { versionArg: undefined, dryRun: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dry-run') parsed.dryRun = true
-    else if (arg === '--skip-transport') parsed.skipTransport = true
-    else if (arg === '--transport') {
-      const value = argv[i + 1]
-      if (value === undefined || value.startsWith('--')) usage('--transport needs an X.Y.Z value')
-      parsed.transportArg = value
-      i += 1
-    } else if (arg.startsWith('--')) usage(`unknown option "${arg}"`)
+    else if (arg.startsWith('--')) usage(`unknown option "${arg}"`)
     else if (parsed.versionArg === undefined) parsed.versionArg = arg
     else usage(`unexpected extra argument "${arg}"`)
-  }
-  if (parsed.skipTransport && parsed.transportArg !== undefined) {
-    usage('--skip-transport and --transport are mutually exclusive')
   }
   return parsed
 }
@@ -138,7 +117,7 @@ function parseArgs(argv) {
 function usage(message) {
   console.error(`Error: ${message}.`)
   console.error(
-    'Usage: node scripts/prepare-release.mjs [X.Y.Z[-prerelease]] [--transport X.Y.Z | --skip-transport] [--dry-run]',
+    'Usage: node scripts/prepare-release.mjs [X.Y.Z[-prerelease]] [--dry-run]',
   )
   process.exit(1)
 }
@@ -247,10 +226,8 @@ if (!dryRun) {
   // the version keeps `git diff package.json` to that one line.
   writeFileSync(PKG_PATH, `${JSON.stringify(pkg, null, 2)}\n`, 'utf8')
 
-  if (transportTarget !== undefined) {
-    transportsPkg.version = transportVersion
-    writeFileSync(TRANSPORTS_PKG_PATH, `${JSON.stringify(transportsPkg, null, 2)}\n`, 'utf8')
-  }
+  transportsPkg.version = transportVersion
+  writeFileSync(TRANSPORTS_PKG_PATH, `${JSON.stringify(transportsPkg, null, 2)}\n`, 'utf8')
 }
 
 /**
@@ -350,4 +327,4 @@ if (dryRun) console.log('DRY_RUN=1')
 console.log(`VERSION=${version}`)
 console.log(`TAG=v${version}`)
 console.log(`TRANSPORT_VERSION=${transportVersion}`)
-console.log(`TRANSPORT_TAG=${transportTag ?? 'none'}`)
+console.log(`TRANSPORT_TAG=${transportTag}`)

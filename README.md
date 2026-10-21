@@ -273,7 +273,8 @@ This repository is a pnpm workspace with two published packages:
 
 The root package declares the transports package as a dependency, so the
 published Keys Manager tarball pulls the transport in rather than vendoring
-it. The transport versions independently; see [Release](docs/release.md).
+it. Both packages are released together and carry the same version; see
+[Release](docs/release.md).
 
 ## Documentation
 

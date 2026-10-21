@@ -26,43 +26,39 @@ publishing.
 Releases are PR-driven:
 
 1. Actions → **Release prep** → Run workflow. Leave the version empty for an
-   automatic patch bump, or pass `X.Y.Z` / `X.Y.Z-prerelease`. The transports
-   version is optional: leave it empty for its automatic patch bump, pass
-   `X.Y.Z` / `X.Y.Z-prerelease` to pin it (dist-tag derived from the
-   suffix), or `skip` to leave that package unchanged.
-2. The workflow bumps both `package.json` versions (the transports package on
-   its own line), updates the root `CHANGELOG.md` from git log, validates the
-   build, and opens a `release v<version>` PR.
+   automatic patch bump, or pass `X.Y.Z` / `X.Y.Z-prerelease`. One version
+   drives both published packages.
+2. The workflow writes that version to both `package.json` files, updates the
+   root `CHANGELOG.md` from git log, validates the build, and opens a
+   `release v<version>` PR.
 3. Merge the release PR. The **Release** workflow publishes
-   `dsh-keys-manager@<version>` and `dsh-llm-omp-transports@<transport
-   version>` to npm with provenance (the transport is skipped when that exact
-   version is already published), pushes tag `v<version>` and the package tag
-   `dsh-llm-omp-transports@<transport version>`, and creates the GitHub
-   Release.
+   `dsh-keys-manager@<version>` and `dsh-llm-omp-transports@<version>` to npm
+   with provenance (the transport is skipped when that exact version is already
+   published), pushes tag `v<version>` and the package tag
+   `dsh-llm-omp-transports@<version>`, and creates the GitHub Release.
 
 ## The transports package
 
 `packages/llm-omp` publishes `dsh-llm-omp-transports` from the same release PR
-but on its own version line. The root package depends on it, so `pnpm pack`
-rewrites the `workspace:^` spec to a semver range and the published root
-tarball asks for that transport version.
+and the same version. The root package depends on it, so `pnpm pack` rewrites
+the `workspace:^` spec to a semver range and the published root tarball asks
+for that transport version.
 
-- `scripts/prepare-release.mjs` patches the transport's patch line on every
-  run. `--transport X.Y.Z` pins one, `--skip-transport` leaves it untouched,
-  and `--dry-run` validates and prints both package versions and tags without
-  writing. The workflow exposes the same choice as the optional
-  `transport_version` input (`skip` or `X.Y.Z`).
+- `scripts/prepare-release.mjs` writes the resolved version to both
+  `package.json` files, so the two packages cannot drift; `--dry-run`
+  validates and prints both versions and tags without writing. Release prep
+  exposes a single `version` input.
 - The transports package has no generated changelog. `CHANGELOG.md` and its
   `## [<version>]` sections stay root-only; the transport is described by its
   own README and git history.
 - `release.yml` skips the transport publish when its exact `package.json`
   version is already on npm from a commit in this repository's history (an
-  ancestor of the release commit), so a re-run or a root-only release is
+  ancestor of the release commit), so a re-run after a failed root publish is
   idempotent; a published version whose recorded commit is foreign fails the
   step. The tag step always ensures `dsh-llm-omp-transports@<version>` exists.
-- Transport prereleases publish to the same derived dist-tag as the root
+- Prereleases publish to the same derived dist-tag for both packages
   (`alpha`, `beta`, `rc` from `X.Y.Z-alpha.1`), never `latest`; release prep
-  rejects only a prerelease whose derived tag is invalid.
+  rejects a prerelease whose derived tag is invalid.
 
 ## npm publishing
 
