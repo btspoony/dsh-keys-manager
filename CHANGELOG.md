@@ -14,6 +14,10 @@ All notable changes to dsh-keys-manager are documented here. Assembled from `.ch
 - Cursor sign-in uses a PKCE flow with poll and refresh, and a generated 123-row model table comes from a pinned catalog.
 - The install now mounts two components (the plugin detail page lists both), and the keys manager lists, activates, removes and re-authenticates the resulting Cursor accounts beside the pi-ai pool.
 
+### Changed
+
+- Release prep drives both published packages from one version input: the resolved version is written to both manifests with both tags, and a transport manifest that disagrees with it is refused.
+
 ### Fixed
 
 - An OAuth-served route no longer fails with `MISSING_CREDENTIAL`: a broker reference is written only while the key pool actually serves the route, so pi-ai can reach its own grant, and a broken binding left by an earlier version is healed at startup.
@@ -23,10 +27,6 @@ All notable changes to dsh-keys-manager are documented here. Assembled from `.ch
 ### Docs
 
 - README documents the Desktop/Web install path and lists the extra providers in a collapsible table.
-
-### Changed
-
-- Release prep drives both published packages from one version input: the resolved version is written to both manifests with both tags, and a transport manifest that disagrees with it is refused.
 
 ## [0.2.1] - 2026-10-20
 

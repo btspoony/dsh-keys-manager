@@ -17,6 +17,10 @@ prints `FRAGMENTS=<n>` so the count is visible before anything is written.
   assembled in filename order. `README.md` and `.gitkeep` are ignored.
 - **Frontmatter** (optional): a `category:` key groups the fragment's bullets
   under a `### <category>` heading in the changelog (default: `Changed`).
+- **Category order**: `### <category>` blocks appear in the order their category
+  is first seen in filename order, so a fixed order needs a filename prefix —
+  name fragments `10-added-foo.md`, `20-changed-bar.md`, `30-fixed-baz.md`,
+  `40-docs-qux.md` (as `.changes/archive/0.2.2/` does).
 - **Body**: one or more English bullet lines (`- ` prefix), rendered verbatim.
 
 ```markdown
