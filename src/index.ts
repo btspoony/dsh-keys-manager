@@ -3741,6 +3741,16 @@ export class KeysManagerService {
         // from `cooldownUntil` only (core.ts:168-174).
         row.cooldownUntil = 0
         this.store.touch()
+        // The pre-write check closed the read window, but a rotation commit can
+        // land inside the seam's compare-and-write await: it repoints the row
+        // (a different record key) while the projection write is in flight, and
+        // the in-lock compare cannot see the row. Projecting then leaves the
+        // route serving a generation the row has already superseded, so the
+        // activation refuses and the flush compensation above undoes both — the
+        // claim is set, so the undo path owns it.
+        if (row.oauth.grantRef !== prepared.grantRef) {
+          throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+        }
       })
       // The re-activated grant is the serving credential again, so a broker
       // reference left by the key pool must go (see syncBrokerBinding). A

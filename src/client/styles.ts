@@ -12,6 +12,7 @@ export const CSS = `
 .km-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
 .km-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;cursor:pointer}
 .km-chip:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.km-chip:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 20%,transparent)}
 .km-chip-on{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-primary)}
 .km-chip-count{font-size:11.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 .km-chip-on .km-chip-count{color:inherit}

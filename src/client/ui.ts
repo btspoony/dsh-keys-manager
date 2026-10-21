@@ -1045,8 +1045,9 @@ function ProviderCard({ provider, expanded, onToggle, now }: ProviderCardProps):
         (provider.unattributedRequests ?? 0) > 0
           ? h('span', {
               className: 'km-tag km-tag-warn km-unattributed',
+              // The visible label carries the count, so it is the accessible
+              // name; the hint stays a description rather than replacing it.
               title: t('unattributedHint'),
-              'aria-label': t('unattributedHint'),
             }, t('unattributed', { n: provider.unattributedRequests ?? 0 }))
           : null,
         managed
@@ -1594,7 +1595,11 @@ function KeysManagerBody(): React.ReactElement {
 
     // Quick filter: single select, view state only, composed with the text
     // search below. Counts are derived per predicate from the snapshot.
-    !loading && !failed ? h('div', { className: 'km-filters' }, FILTER_CHIPS.map(chip =>
+    !loading && !failed ? h('div', {
+      className: 'km-filters',
+      role: 'group',
+      'aria-label': t('filterGroup'),
+    }, FILTER_CHIPS.map(chip =>
       h('button', {
         key: chip.value,
         type: 'button',
@@ -1676,7 +1681,7 @@ function KeysManagerBody(): React.ReactElement {
         h('span', { className: 'km-section-count' }, transportAccounts.length),
       ),
       transportAccounts.length === 0
-        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'search', size: 20 }), h('span', null, t('availableEmpty')))
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'search', size: 20 }), h('span', null, t('transportEmpty')))
         : h('div', { className: 'km-provider-list' }, transportAccounts.map(account => h(TransportAccountRow, {
             key: account.scope,
             account,

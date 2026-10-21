@@ -11,6 +11,7 @@ const zh = {
       filterPlugin: '插件',
       filterOauth: '支持 OAuth',
       filterTransport: '传输',
+      filterGroup: '筛选',
       // Unattributed requests (I-000120, D8): the compass's fixed copy, shared
       // with the filter plan's dictionary task — one pair, never a second.
       unattributed: '{n} 无归属',
@@ -167,6 +168,7 @@ const zh = {
       // Transport accounts (llm-omp-transports/<route>): managed beside the
       // pi-ai pool, so the copy never promises a key-pool fallback.
       transportAccounts: '传输账户',
+      transportEmpty: '还没有传输账户。',
       transportTag: '传输',
       transportSignIn: '登录',
       transportExpires: '有效期至 {time}',
@@ -188,6 +190,7 @@ const en = {
       filterPlugin: 'Plugin',
       filterOauth: 'OAuth-capable',
       filterTransport: 'Transport',
+      filterGroup: 'Filters',
       unattributed: '{n} unattributed',
       unattributedHint: 'Requests this route served with no account owner because its ownership read had not landed (or had failed). The count clears when a read attributes the route.',
       managed: 'Managed',
@@ -341,6 +344,7 @@ const en = {
       deleteAccountBodyNoKeys: 'This removes the account’s stored OAuth grant from the credential store. This route has no API-key pool, so it stops serving requests until an account is signed in again.',
       // Transport accounts — same values as locale/en.json.
       transportAccounts: 'Transport accounts',
+      transportEmpty: 'No transport accounts yet.',
       transportTag: 'Transport',
       transportSignIn: 'Sign in',
       transportExpires: 'Expires {time}',

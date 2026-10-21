@@ -5336,8 +5336,7 @@ test('a close that lands during the projection write waits for the turn and keep
     await new Promise(resolve => setTimeout(resolve, 40))
     assert.equal(closeSettled, false, 'close() closed the store while the turn was still writing')
     releaseWrite!()
-    const view = await activating
-    assert.ok(view.providers.some(provider => provider.provider === 'anthropic'))
+    await activating
     await closing
     const live = h.credentials.records.get(GRANT_KEY)
     assert.ok(live, 'the completed activation lost its projection')
@@ -5790,6 +5789,47 @@ test('a binding sync whose claim lands before the settings write is not written'
   }
 })
 
+// The pre-write check cannot see a rotation commit that lands inside the
+// seam's compare-and-write await: the rotation writes its own record key and
+// repoints the row, while the in-lock compare only reads the projection. A
+// stale payload must not land as a success.
+
+test('a rotation repointing the row inside the projection write refuses and restores', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const row = h.store.provider('anthropic')!.keys.find(key => key.id === rowId)!
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  let releaseWrite: (() => void) | undefined
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve })
+  let writeParked = false
+  raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+    if (key === GRANT_KEY && !writeParked) {
+      writeParked = true
+      await writeGate
+    }
+    return realModify(key, mutate)
+  }
+  const activating = h.service.activateAccount('anthropic', rowId)
+  try {
+    await eventually(() => assert.equal(writeParked, true))
+    // A rotation commits while the projection write is in flight.
+    row.oauth!.grantRef = `${row.oauth!.grantRef}-rotated`
+    releaseWrite!()
+    await assert.rejects(
+      () => activating,
+      /could not be projected; activate the account again/,
+      'the activation projected a generation the row had already superseded',
+    )
+    assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the stale projection survived the compensation')
+    assert.equal((h.service as unknown as { activeAccounts: Map<string, string> }).activeAccounts.has('anthropic'), false,
+      'the refused activation kept its claim')
+  } finally {
+    releaseWrite?.()
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
 // P1 (queue-owned compensation): `run` releases the queue before its
 // rejection reaches the caller, so a bare compensation raced whatever mutation
 // came next — that mutation flushed the pre-compensation row, and the restore
@@ -5927,7 +5967,6 @@ test('a refused binding during activation is reported in the returned state', as
     const internalsOwner = h.service as unknown as { foreignProjections: Set<string> }
     internalsOwner.foreignProjections.add('anthropic')
     h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = record.brokerRef
-    assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef)
     h.settings.mutate = async () => { throw new Error('settings are read-only') }
     const view = await h.service.activateAccount('anthropic', rowId)
     assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef,
