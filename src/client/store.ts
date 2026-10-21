@@ -111,6 +111,12 @@ export function createStore(ctx: ClientContext): ClientStore {
         return { ok: false, error: message }
       } finally {
         queuedMutations -= 1
+        // PR review round 12: the queue is idle at exactly this point for every
+        // tail — a success, a failure and a non-StateView answer all land here.
+        // The re-read used to hang off `stateOutcome` and the test's `finally`
+        // only, so a later queued mutation that failed (or answered an attempt
+        // view) left a dropped mutation's change unread until the next tick.
+        if (queuedMutations === 0) refreshDroppedState()
       }
     }
     const next = mutationTail.then(run, run)
@@ -132,8 +138,10 @@ export function createStore(ctx: ClientContext): ClientStore {
     if (borrowed) {
       if (queuedMutations === 1) update({ busy: null, error: null })
       else update({ error: null })
+      // The re-read runs at the queue's idle tail (see `send`), not here: this
+      // body still holds the queue, so the tail is the one place the dropped
+      // view can be read without racing the mutations behind it.
       stateDropped = true
-      refreshDroppedState()
       return { ok: true, value: state }
     }
     if (queuedMutations === 1) update({ status: 'ready', state, now: Date.now(), busy: null, error: null })

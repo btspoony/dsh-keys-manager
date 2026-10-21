@@ -10916,3 +10916,46 @@ test('a release is refused while a probe outlives the isolation deadline', async
     await h.close()
   }
 })
+
+// ── PR #26 review round 12 ──────────────────────────────────────────────────
+
+// Review must-fix: `settleTestBeforeRemoval` waits only for a test that already
+// exists, so a test starting after that check read the account grant and the
+// projection while a release was deleting them, then re-projected the removed
+// account's grant and sent with it. The removal now refuses a test at entry.
+test('a test starting during a release is refused instead of re-projecting the removed account', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  // Park the release in its credential deletion: it has already passed its own
+  // test wait, which is exactly the window a starting test used to enter.
+  const held = holdDeleteRecord(h, first.grantRef)
+  try {
+    ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 2_000
+    let requests = 0
+    h.llm.stream = (options: Record<string, any>) => {
+      requests += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      } as any)
+    }
+
+    const release = h.service.releaseProvider('anthropic')
+    await held.started
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /being removed/)
+    assert.equal(requests, 0, 'a test starting inside a release sent a request')
+    held.release()
+    await release
+    assert.equal(h.store.provider('anthropic'), undefined)
+    // The removed account is gone and nothing projected it again on the way
+    // out: neither its grant record nor a projection carrying its refresh.
+    assert.equal(h.credentials.records.has(first.grantRef), false)
+    for (const record of h.credentials.records.values()) {
+      assert.notEqual((record.payload as Record<string, unknown> | undefined)?.refresh, 'rt-first')
+    }
+  } finally {
+    held.release()
+    await h.close()
+  }
+})

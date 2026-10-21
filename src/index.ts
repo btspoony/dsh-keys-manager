@@ -900,6 +900,15 @@ export class KeysManagerService {
    */
   private readonly cleaningTests = new Set<string>()
   /**
+   * Nesting depth of an in-flight removal per provider (PR review round 12).
+   * {@link settleTestBeforeRemoval} can only wait for a test that already
+   * exists, so a test starting after that check would read the grant and the
+   * projection and then re-project an account the removal deleted. {@link
+   * testKey} refuses while this marker is up. A depth, because `deleteKey`
+   * releases through `releaseLocked` inside its own removal.
+   */
+  private readonly removalsInProgress = new Map<string, number>()
+  /**
    * Generation of the newest cleanup attempt per provider (PR review round 2).
    * An attempt that outlives its deadline keeps writing while a later attempt
    * for the same window starts. Only the newest generation may release
@@ -2905,6 +2914,17 @@ export class KeysManagerService {
    * not also raise the page-level banner a thrown RPC error produces.
    */
   async testKey(provider: string, keyId: string): Promise<KeyTestResult> {
+    // PR review round 12: a removal holds the provider from its entry, before
+    // its first await, so a test cannot start in the window this check would
+    // otherwise miss — read the grant and the projection while the removal is
+    // deleting them, then re-project the removed account.
+    if (this.removalsInProgress.has(provider)) {
+      return {
+        ok: false,
+        latencyMs: 0,
+        error: `Provider "${provider}" is being removed; run the connection test again once the removal finishes.`,
+      }
+    }
     const record = this.store.provider(provider)
     if (record === undefined) return { ok: false, latencyMs: 0, error: `Provider "${provider}" is not managed` }
     const row = record.keys.find(candidate => candidate.id === keyId)
@@ -3325,6 +3345,16 @@ export class KeysManagerService {
         result = this.abandonedTestResult()
         return
       }
+      // PR review round 12: both reads above are awaits, so a removal can have
+      // deleted the provider or this row while they were in flight (a test that
+      // registered and one that did not are covered: the marker refuses the
+      // latter, this re-check the former). Never write the borrow — and never
+      // re-project the removed account's grant — on that state.
+      const live = this.store.provider(provider)
+      if (live === undefined || !live.keys.some(candidate => candidate.id === row.id)) {
+        result = { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could borrow it` }
+        return
+      }
       // QC fix wave 2: record the borrow before the write, so an abandoned
       // window can restore a borrow whose write lands after the watchdog
       // looked. The restore decides by payload, so the facts are safe to hold
@@ -3449,6 +3479,24 @@ export class KeysManagerService {
       ok: false,
       latencyMs: 0,
       error: `The connection test was abandoned after ${this.isolationWaitMs}ms and its borrowed credential was cleaned up; run the test again.`,
+    }
+  }
+
+  /**
+   * Mark one provider as being removed for the whole removal body (PR review
+   * round 12). The marker is up before the body's first await — the removal's
+   * own test wait included — so {@link testKey} can refuse a test that would
+   * otherwise start inside the removal. Nesting is a depth because a
+   * last-key `deleteKey` releases through `releaseLocked`.
+   */
+  private async withRemovalInProgress<T>(provider: string, work: () => Promise<T>): Promise<T> {
+    const depth = this.removalsInProgress.get(provider) ?? 0
+    this.removalsInProgress.set(provider, depth + 1)
+    try {
+      return await work()
+    } finally {
+      if (depth === 0) this.removalsInProgress.delete(provider)
+      else this.removalsInProgress.set(provider, depth)
     }
   }
 
@@ -4057,7 +4105,7 @@ export class KeysManagerService {
    * falls back to the key pool.
    */
   removeAccount(provider: string, accountId: string): Promise<StateView> {
-    return this.run(async () => {
+    return this.run(() => this.withRemovalInProgress(provider, async () => {
       // R8-2: the removal decides against the route's live records, so it must
       // not run inside a row test's borrow window.
       await this.settleTestBeforeRemoval(provider)
@@ -4072,7 +4120,7 @@ export class KeysManagerService {
       this.store.clearBindings((_key, binding) => binding.keyId === row.id)
       this.store.touch()
       return this.buildState()
-    })
+    }))
   }
 
   /** Install the broker layer on one credential provider instance. */
@@ -5092,7 +5140,7 @@ export class KeysManagerService {
 
   /** Remote: delete one key, releasing the provider when it was the last one. */
   deleteKey(provider: string, keyId: string): Promise<StateView> {
-    return this.run(async () => {
+    return this.run(() => this.withRemovalInProgress(provider, async () => {
       // R8-2: a test may still be about to send this row's credential.
       await this.settleTestBeforeRemoval(provider)
       const record = this.store.provider(provider)
@@ -5121,7 +5169,7 @@ export class KeysManagerService {
       await this.syncBrokerBinding(provider)
       this.store.touch()
       return this.buildState()
-    })
+    }))
   }
 
   /** Read one live profile for repair and release-time cleanup decisions. */
@@ -5333,11 +5381,11 @@ export class KeysManagerService {
 
   /** Remote: stop managing a provider and restore its original key reference. */
   releaseProvider(provider: string): Promise<StateView> {
-    return this.run(async () => {
+    return this.run(() => this.withRemovalInProgress(provider, async () => {
       if (this.store.provider(provider) === undefined) throw new Error(`Provider "${provider}" is not managed`)
       await this.releaseLocked(provider)
       return this.buildState()
-    })
+    }))
   }
 
   /** Remote: update manager policy. */

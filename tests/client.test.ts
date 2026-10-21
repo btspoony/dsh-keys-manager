@@ -443,6 +443,75 @@ describe('mutation ordering', () => {
     expect(store.getSnapshot().error).toBe('update failed')
     expect(store.getSnapshot().busy).toBeNull()
   })
+
+  // PR #26 review round 12: a dropped mutation view was re-read only from
+  // `stateOutcome` and the row test's `finally`. A queued mutation behind it
+  // that failed drained the queue without reading the dropped change, so the
+  // successful rename stayed invisible until the next tick.
+  test('a dropped mutation view is re-read when the queue drains on a failure', async () => {
+    const state = makeState()
+    const accountA = { ...makeOauthKey(), id: 'k_oauthA', alias: 'Account A', projected: true }
+    const accountB = { ...makeOauthKey(), id: 'k_oauthB', alias: 'Account B' }
+    state.providers[0] = { ...makeOauthProvider(), keys: [accountA, accountB] }
+    // Inside the borrow window the host's route carries B's borrowed grant.
+    const borrowed = structuredClone(state)
+    for (const key of borrowed.providers[0]!.keys) {
+      if (key.id === 'k_oauthA') delete key.projected
+      if (key.id === 'k_oauthB') key.projected = true
+    }
+    // The rename the first mutation performed; its view was dropped, so only a
+    // re-read can put it in the snapshot.
+    const renamed = structuredClone(state)
+    renamed.providers[0]!.keys.find(key => key.id === 'k_oauthA')!.alias = 'Account A renamed'
+    let releaseTest!: (result: RpcResult) => void
+    const testAnswer = new Promise<RpcResult>(resolve => { releaseTest = resolve })
+    let releaseFailure!: () => void
+    const failureGate = new Promise<void>(resolve => { releaseFailure = resolve })
+    let loads = 0
+    let mutations = 0
+    const harness = makeContext({ ok: true, value: state })
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') {
+        loads += 1
+        // The first load is the pre-test snapshot; every later read observes
+        // the rename the dropped mutation performed.
+        return { ok: true, value: loads === 1 ? state : renamed }
+      }
+      if (endpoint === 'keysManager/testKey') return await testAnswer
+      if (endpoint === 'keysManager/updateKey') {
+        mutations += 1
+        if (mutations === 1) return { ok: true, value: borrowed }
+        await failureGate
+        return { ok: false, error: { message: 'update failed' } }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+    expect(loads).toBe(1)
+    const aliasOf = (id: string) =>
+      store.getSnapshot().state?.providers[0]?.keys.find(key => key.id === id)?.alias
+
+    const test = store.testKey('zai-coding-cn', 'k_oauthB')
+    // The first mutation succeeds inside the borrow window; its view is dropped.
+    const first = await store.call('updateKey', { provider: 'zai-coding-cn', keyId: 'k_oauthA', patch: { alias: 'Account A renamed' } })
+    expect(first.ok).toBe(true)
+    // A second mutation queues behind the dropped one and fails once the test
+    // settled: its tail is the only place the queue becomes idle.
+    const second = store.call('updateKey', { provider: 'zai-coding-cn', keyId: 'k_oauthA', patch: { alias: 'x' } })
+    releaseTest({ ok: true, value: { ok: true, latencyMs: 5 } })
+    expect(await test).toEqual({ ok: true, value: { ok: true, latencyMs: 5 } })
+    // The window closed, but the queued failure still holds the queue, so the
+    // dropped change is not in the snapshot yet.
+    expect(aliasOf('k_oauthA')).toBe('Account A')
+
+    releaseFailure()
+    expect((await second).ok).toBe(false)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // The failing tail drained the queue, so the dropped view is re-read.
+    expect(loads).toBe(2)
+    expect(aliasOf('k_oauthA')).toBe('Account A renamed')
+  })
 })
 
 
