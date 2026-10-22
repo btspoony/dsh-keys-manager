@@ -9929,6 +9929,39 @@ test('a row test does not adopt a projection no account row owns', async () => {
   }
 })
 
+// The recovery's ownership check is row identity, not mere ownership: a
+// projection ANOTHER live account row owns is neither borrowed by nor written
+// into the targeted row's ref.
+test('a row test does not adopt a projection another account row owns', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+    refresh: 'rt-seed-value',
+  })
+  try {
+    const other = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-other', email: 'other@example.com', refresh: 'rt-other-value' })
+    const profiles = h.settings.valueOf('llm-pi-ai').providers
+    profiles['anthropic'] = { ...(profiles['anthropic'] ?? {}), models: [{ id: 'claude-test-model' }] }
+    // The other account serves the route's projection, and the targeted row's
+    // own record is gone.
+    await h.service.activateAccount('anthropic', other.rowId)
+    h.credentials.records.delete(grantRef)
+    assert.equal(h.credentials.records.has(grantRef), false)
+
+    const result = await h.service.testKey('anthropic', rowId)
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /missing or unusable/)
+    assert.equal(h.credentials.records.has(grantRef), false, 'the test adopted a projection another account row owns')
+    // The other account's projection was left serving the route.
+    assert.equal(
+      (h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh,
+      'rt-other-value',
+    )
+  } finally {
+    await h.close()
+  }
+})
+
 test('a hydration read superseded by a newer activation is discarded', async () => {
   // Round-3 finding 3: the hydration read is awaited, and an activation
   // landing while it is in flight must win — the stale read lands last and

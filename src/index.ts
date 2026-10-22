@@ -3943,11 +3943,19 @@ export class KeysManagerService {
     // would attach another account's credential to this row.
     const oauthRows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
     if (matchOwningAccount(provider, oauthRows, live.payload)?.id !== row.id) return undefined
+    // `row` is a snapshot taken before the reads: a removal or a re-sign-in can
+    // have detached or repointed it since, and the repair must not land on a
+    // ref this row no longer names.
+    if (oauthRows.find(candidate => candidate.id === row.id)?.oauth?.grantRef !== grantRef) return live.payload
     try {
-      // Compare-at-absent: returning `current` for an occupied ref leaves the
-      // live record untouched — an `undefined` mutate would delete it.
-      await records.modifyRecord(grantRef, current => Promise.resolve(
-        current === undefined ? { kind: 'grant', payload: structuredClone(live.payload) } : current))
+      // Compare-at-absent: an occupied ref returns `current`, which the seam
+      // keeps, so a concurrent login's or rotation's record wins the ref.
+      const liveNow = await records.modifyRecord(grantRef, current => Promise.resolve(
+        current ?? { kind: 'grant', payload: structuredClone(live.payload) }))
+      // The ref may have been taken while this read was parked: the record's
+      // payload is the credential the caller must borrow now, not the
+      // projection this repair declined to write over it.
+      if (liveNow !== undefined && liveNow.kind === 'grant' && isOAuthGrantPayload(liveNow.payload)) return liveNow.payload
     } catch (error) {
       // Best-effort repair: the projection still served this read.
       this.warn(`could not restore ${grantRef} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
@@ -4869,23 +4877,6 @@ export class KeysManagerService {
     // grant chain, so a rotation echo cannot observe or overwrite the
     // temporary projection between them.
     await this.scheduleGrantReconciliation(provider, async () => {
-      const recovered = await this.recoverGrantPayload(provider, row, records)
-      if (window.cleaned) {
-        // QC fix wave 2: the watchdog abandoned this window while the read was
-        // in flight. Starting (or resuming) the borrow now would land it after
-        // the cleanup that already ran, so the test stops here.
-        result = this.abandonedTestResult()
-        return
-      }
-      if (recovered === undefined) {
-        result = {
-          ok: false,
-          latencyMs: 0,
-          error: `The grant payload at ${grant.grantRef} is missing or unusable; sign in to this account again`,
-        }
-        return
-      }
-      const borrowed = structuredClone(recovered)
       const captured = await records.readRecord(projectionKey)
       // PR review round 14: the snapshot and its comparison key are frozen
       // here. The seam hands back a live record, so a writer mutating that
@@ -4894,6 +4885,9 @@ export class KeysManagerService {
       const previous = captured === undefined ? undefined : structuredClone(captured)
       const previousKey = previous === undefined ? undefined : JSON.stringify(previous)
       if (window.cleaned) {
+        // QC fix wave 2: the watchdog abandoned this window while the read was
+        // in flight. Starting (or resuming) the borrow now would land it after
+        // the cleanup that already ran, so the test stops here.
         result = this.abandonedTestResult()
         return
       }
@@ -4925,6 +4919,18 @@ export class KeysManagerService {
           : { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could borrow it` }
         return
       }
+      // The recovery writes a grant record, so it runs only once this test is
+      // known to borrow: an abandoned or retiring test must not restore one.
+      const recovered = await this.recoverGrantPayload(provider, row, records)
+      if (recovered === undefined) {
+        result = {
+          ok: false,
+          latencyMs: 0,
+          error: `The grant payload at ${grant.grantRef} is missing or unusable; sign in to this account again`,
+        }
+        return
+      }
+      const borrowed = structuredClone(recovered)
       // QC fix wave 2: record the borrow before the write, so an abandoned
       // window can restore a borrow whose write lands after the watchdog
       // looked. The restore decides by payload, so the facts are safe to hold
