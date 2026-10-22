@@ -15,7 +15,7 @@ const zh = {
       // Unattributed requests (I-000120, D8): the compass's fixed copy, shared
       // with the filter plan's dictionary task — one pair, never a second.
       unattributed: '{n} 无归属',
-      unattributedHint: '该路由在归属读取尚未落地（或已失败）期间应答的请求数；读取完成归属后清零。',
+      unattributedHint: '该路由在归属读取尚未落地（或已失败）期间应答的流尝试数；失败转移重试会各计一次，故单个请求可能被计多次。读取完成归属后清零。',
       managed: '已接管',
       available: '可添加 Providers',
       managedEmpty: '还没有接管的 Provider。从下方选择一个开始。',
@@ -192,7 +192,7 @@ const en = {
       filterTransport: 'Transport',
       filterGroup: 'Filters',
       unattributed: '{n} unattributed',
-      unattributedHint: 'Requests this route served with no account owner because its ownership read had not landed (or had failed). The count clears when a read attributes the route.',
+      unattributedHint: 'Stream attempts this route served with no account owner because its ownership read had not landed (or had failed). A failover retry is a new attempt, so one request can be counted more than once. The count clears when a read attributes the route.',
       managed: 'Managed',
       available: 'Available providers',
       managedEmpty: 'No managed providers yet. Adopt one below to start.',

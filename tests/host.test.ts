@@ -5594,14 +5594,22 @@ test('a close requested while the turn is queued still lets the activation persi
     }
     return realFlush()
   }
+  const internals = h.service as unknown as {
+    run: <T>(operation: () => Promise<T>, onFailure?: (error: unknown) => Promise<void>) => Promise<T>
+  }
+  const realRun = internals.run.bind(h.service)
+  let turns = 0
+  internals.run = <T,>(operation: () => Promise<T>, onFailure?: (error: unknown) => Promise<void>): Promise<T> => {
+    turns += 1
+    return realRun(operation, onFailure)
+  }
   const adding = h.service.addKey('anthropic', 'Queued', 'sk-queued')
-  let closeRequested = false
   try {
     await eventually(() => assert.equal(held, true))
     const activating = h.service.activateAccount('anthropic', rowId)
-    // The credential read resolves, so the turn is queued behind `adding`.
-    await new Promise(resolve => setTimeout(resolve, 20))
-    closeRequested = true
+    // Observable gate instead of a wall clock: the activation's own turn is the
+    // second submission, so it is queued behind `adding` when this resolves.
+    await eventually(() => assert.equal(turns >= 2, true))
     closingSeen = true
     const closing = h.service.close()
     releaseAdd!()
@@ -5611,13 +5619,13 @@ test('a close requested while the turn is queued still lets the activation persi
     const live = h.credentials.records.get(GRANT_KEY)
     assert.ok(live, 'the activation lost its projection')
     assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-seed-value')
-    assert.equal(closeRequested, true)
     assert.equal(writeAfterClose, true, 'the projection was written outside the queue turn')
     const persisted = JSON.parse(await readFile(join(h.dir, 'state.json'), 'utf8')) as any
     const row = persisted.providers.anthropic.keys.find((key: any) => key.id === rowId)
     assert.equal(row.valueMissing, false)
   } finally {
     releaseAdd?.()
+    internals.run = realRun
     h.store.flush = realFlush
     raw.modifyRecord = realModify
     await h.close()
@@ -5634,6 +5642,57 @@ test('a close requested while the turn is queued still lets the activation persi
 // classification, the row state and the warnings exactly as the activation left
 // them — for a branch that classifies the route foreign (a native api-key
 // record) and for one that only drops the owner map entry (a foreign grant).
+
+// The baseline compare must look at FIELDS, not at the object shape: the seam
+// makes `key`/`env`/`payload` optional, and a read path that omits them while
+// the write path materialises them as `undefined` is the same record. A
+// structural compare refuses that route forever.
+// A row that becomes an OAuth account between the locator and the turn is a
+// stale locator, not a store without record support.
+test('an account that changes kind before the turn reports the change, not the store', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    await h.service.addKey('anthropic', 'Later account', 'sk-later')
+    const record = h.store.provider('anthropic')!
+    const keyRow = record.keys.find(key => key.alias === 'Later account')!
+    const acting = h.service.activateAccount('anthropic', keyRow.id)
+    // Before the queued turn runs: the row becomes an OAuth account, so the
+    // locator's "not an OAuth row" no longer holds.
+    keyRow.kind = 'oauth'
+    keyRow.oauth = { provider: 'anthropic', grantRef: 'keys-manager/anthropic-late' }
+    await assert.rejects(
+      () => acting,
+      /changed before it could be activated/,
+      'a transient race was blamed on the credential store',
+    )
+  } finally {
+    await h.close()
+  }
+})
+
+test('a baseline whose two read paths differ only in present keys still matches', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  try {
+    // `readRecord` materialises the optional fields; `modifyRecord` hands back
+    // the stored entry, which has only `kind` and `payload`.
+    // A projection already serves the route, so the compare path runs.
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    raw.readRecord = async (key: string) => {
+      const record = await realRead(key)
+      if (key !== GRANT_KEY || record === undefined) return record
+      return { ...record, key: undefined, env: undefined }
+    }
+    await h.service.activateAccount('anthropic', rowId)
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).accountId, 'acc-9', 'the activation wrote nothing')
+    assert.equal((h.service as unknown as { oauthOwnerFor: (provider: string) => string | null }).oauthOwnerFor('anthropic'), rowId)
+  } finally {
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
 
 test('a reconcile that captured its snapshot before the activation keeps the new claim', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })

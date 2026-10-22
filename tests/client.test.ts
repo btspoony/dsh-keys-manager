@@ -213,7 +213,7 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     // Unattributed request chip: the label and its explanation resolve the real
     // copy, so the row is asserted by what it renders.
     unattributed: '{n} 无归属',
-    unattributedHint: '该路由在归属读取尚未落地（或已失败）期间应答的请求数；读取完成归属后清零。',
+    unattributedHint: '该路由在归属读取尚未落地（或已失败）期间应答的流尝试数；失败转移重试会各计一次，故单个请求可能被计多次。读取完成归属后清零。',
     availableEmpty: '没有匹配的 Provider。',
     // Managed section: its empty body distinguishes "none exist" from "the
     // active chip or the query hides them", so all values resolve real copy.
@@ -3092,6 +3092,60 @@ describe('provider quick filter', () => {
     }
   })
 
+  test('the chip row is an announced, labelled group', async () => {
+    const { view } = await mountFiltered()
+    try {
+      const row = findByClass(view.nodes, 'km-filters')[0]
+      expect(row).toBeDefined()
+      expect(row!.props?.role).toBe('group')
+      expect(row!.props?.['aria-label']).toBe('筛选')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('the builtin and oauth chips exclude transport rows and honour the origin fallback', async () => {
+    // Rows that WOULD pass the looser predicates: a transport route reporting
+    // the dsh origin (and OAuth-capable), and two legacy rows with no `origin`
+    // whose tag falls back to `extra`.
+    const state = filterState()
+    state.providers.push(
+      { ...makeTransportProvider(), provider: 'transport-dsh', displayName: 'transport-dsh', origin: 'dsh' },
+      {
+        ...makeTransportProvider(),
+        provider: 'transport-oauth',
+        displayName: 'transport-oauth',
+        origin: 'dsh',
+        nativeAuth: { env: [], oauth: true },
+        accountSupported: true,
+      },
+      { ...state.providers[0]!, provider: 'legacy-plugin', displayName: 'legacy-plugin', origin: undefined, extra: true },
+      { ...state.providers[0]!, provider: 'legacy-dsh', displayName: 'legacy-dsh', origin: undefined, extra: false },
+    )
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    try {
+      selectChip(view, 'builtin')
+      expect(providerNames(view)).toContain('legacy-dsh')
+      expect(providerNames(view)).not.toContain('legacy-plugin')
+      expect(providerNames(view)).not.toContain('transport-dsh')
+      selectChip(view, 'plugin')
+      expect(providerNames(view)).toContain('legacy-plugin')
+      expect(providerNames(view)).not.toContain('legacy-dsh')
+      selectChip(view, 'oauth')
+      expect(providerNames(view)).not.toContain('transport-oauth')
+      selectChip(view, 'transport')
+      expect(providerNames(view)).toEqual(expect.arrayContaining(['transport-dsh', 'transport-oauth']))
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
   test('Built-in narrows to the dsh-origin rows', async () => {
     const { view, state } = await mountFiltered()
     try {
@@ -3209,7 +3263,9 @@ describe('provider quick filter', () => {
 // `title` alone is invisible to keyboard and screen-reader users).
 
 describe('unattributed request chip', () => {
-  const hint = '该路由在归属读取尚未落地（或已失败）期间应答的请求数；读取完成归属后清零。'
+  // The dictionary is the one source of this copy; the case below asserts the
+  // row renders it, so a wording change cannot leave a stale literal behind.
+  const hint = '该路由在归属读取尚未落地（或已失败）期间应答的流尝试数；失败转移重试会各计一次，故单个请求可能被计多次。读取完成归属后清零。'
 
   test('the chip copy exists in both dictionaries and mirrors locale/*.json', () => {
     expectLocaleParity(['unattributed', 'unattributedHint'])

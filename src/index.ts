@@ -15,7 +15,6 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
-import { isDeepStrictEqual } from 'node:util'
 import {
   KEY_LIMIT,
   accountRef,
@@ -1326,12 +1325,17 @@ export class KeysManagerService {
   /** Providers whose bounded-wait warning already fired (warn once). */
   private readonly hydrationWaitWarned = new Set<string>()
   /**
-   * Requests each provider served without an attributed account (`I-000120`,
-   * D8): the ownership read had not landed, or it had failed. Counted at the
-   * one per-request serving site (`wrapStream`), never in the hydration pass —
-   * a failed read serves no request, it only makes later requests unattributed.
-   * Cleared only when a later read decides the route's attribution; process-
-   * local, never persisted and never on the warnings channel.
+   * Stream attempts each provider served without an attributed account
+   * (`I-000120`, D8): the ownership read had not landed, or it had failed.
+   * Counted at the one managed serving site (`wrapStream`), never in the
+   * hydration pass — a failed read serves no request, it only makes later
+   * attempts unattributed. Two earlier branches are outside this definition and
+   * stay uncounted: a provider this manager does not manage (no ownership is
+   * ever asked for) and the `mismatch` profile shape, which hands the request
+   * to pi-ai untouched precisely because this manager's own binding cannot
+   * describe what serves it. Cleared only when a later read decides the route's
+   * attribution; process-local, never persisted and never on the warnings
+   * channel.
    */
   private readonly unattributedRequests = new Map<string, number>()
   /** Channels whose lost-subscription warning already fired (warn once). */
@@ -3730,8 +3734,15 @@ export class KeysManagerService {
         const row = providerRecord.keys.find(candidate => candidate.id === accountId)
         if (row === undefined) throw new Error(`Account "${accountId}" not found on ${provider}`)
         if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account`)
-        if (records === undefined || prepared === undefined) {
+        if (records === undefined) {
           throw new Error('The credential store does not support records')
+        }
+        if (prepared === undefined) {
+          // The locator only hints; the turn decides. A row that was not an
+          // OAuth account when it was located (created, re-added, or repointed
+          // in between) has nothing prepared for it — that is a stale locator,
+          // not a store without record support.
+          throw new Error(`The account "${accountId}" on ${provider} changed before it could be activated; activate it again`)
         }
         // A remount replaced the credential backend while the read ran; the
         // payload came from records this manager no longer serves.
@@ -3916,12 +3927,20 @@ export class KeysManagerService {
     baseline: ActivationBaseline,
   ): boolean {
     if (baseline.state === 'absent') return current === undefined
-    // The compare covers the complete opaque record the seam hands back —
-    // `kind`, `key`, `env` and `payload`. An api-key projection keeps its
-    // secret in `key`/`env` with `payload` undefined, so comparing only the
-    // payload would read a rotated native credential as unchanged and overwrite
-    // it.
-    return current !== undefined && isDeepStrictEqual(current, baseline.record)
+    if (current === undefined) return false
+    // Compare the FIELDS, never the object shape: `CredentialRecordLike` makes
+    // `key`/`env`/`payload` optional, and a seam whose read path and
+    // `modifyRecord` path materialise different key sets (one omits them, one
+    // sets them to `undefined`) would defeat a structural comparison and refuse
+    // every activation over an already-serving route.
+    //
+    // An api-key projection keeps its secret in `key`/`env` with `payload`
+    // absent, so every field is compared: payload plus the native fields.
+    const baselineRecord = baseline.record
+    const sameSecret = current.key === baselineRecord.key
+    const sameEnv = JSON.stringify(current.env ?? null) === JSON.stringify(baselineRecord.env ?? null)
+    const samePayload = JSON.stringify(current.payload ?? null) === JSON.stringify(baselineRecord.payload ?? null)
+    return current.kind === baselineRecord.kind && sameSecret && sameEnv && samePayload
   }
 
   /**
@@ -7670,6 +7689,12 @@ export class KeysManagerService {
       // branches, so it is constructed after the isolation wait — a mismatch
       // profile still resolves pi-ai's stored grant, so the borrowed
       // projection reaches it too.
+      //
+      // No ownership read and no unattributed count here: the store already
+      // said this route's profile disagrees with its binding, so this manager
+      // cannot describe what serves it and hands the request over untouched.
+      // The counter is defined over routes whose ownership it did try to read
+      // (see `unattributedRequests`).
       return this.isolateFromTest(providerId, () => next())
     }
     // An ordinary request must never be served by the grant a row test has
