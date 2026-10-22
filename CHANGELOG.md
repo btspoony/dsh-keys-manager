@@ -2,6 +2,14 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.4] - 2026-10-22
+
+### Fixed
+
+- A per-key connection test against a healthy provider reports success again (a one-token answer ends with `max-tokens`, which is a completion), and a failed re-authentication no longer deletes the grant record its surviving account row references; an account whose grant record was lost is now healed on the read path (activation or a connection test) from the route's live projection, instead of staying unusable.
+- Cursor now appears as a configured provider wherever providers are listed (DSH Models, fallback chains, third-party plugins), and its transport card gains a collapsible model picker that narrows the route to the selected catalog models; an empty selection keeps the full catalog.
+- The transport model picker fails closed when the settings store cannot be read: it reports the read error with a Retry action and keeps Save disabled, instead of showing the all-models state whose one save would have cleared a narrowed selection; a stored model id the shipped catalog no longer offers is filtered out of the picker so the remaining selection still saves.
+
 ## [0.2.3] - 2026-10-22
 
 ### Added
