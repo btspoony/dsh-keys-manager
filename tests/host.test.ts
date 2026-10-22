@@ -5845,6 +5845,92 @@ test('a rotation repointing the row inside the projection write refuses and rest
   }
 })
 
+// Shutdown opens after the activation's write turn started but before its tail
+// runs. No new turn may be appended there (`closeOnce` already captured the
+// queue reference), so the tail must join that same reference before taking its
+// snapshot, and it must say that the binding could not converge.
+
+test('an activation whose shutdown lands mid-turn waits for the queue and reports the unbinding', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    const record = h.store.provider('anthropic')!
+    // A broker-bound demoted profile: the activation's tail has real work to do.
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    h.credentials.records.set(GRANT_KEY, { kind: 'api-key', key: 'sk-native-takeover', env: { NATIVE: '1' } })
+    ;(h.service as unknown as { foreignProjections: Set<string> }).foreignProjections.add('anthropic')
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = record.brokerRef
+    const internals = h.service as unknown as {
+      run: <T>(operation: () => Promise<T>) => Promise<T>
+    }
+    const raw = h.credentials.raw
+    const realModify = raw.modifyRecord.bind(raw)
+    let releaseWrite: (() => void) | undefined
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve })
+    let writeParked = false
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+      if (key === GRANT_KEY && !writeParked) {
+        writeParked = true
+        await writeGate
+      }
+      return realModify(key, mutate)
+    }
+    // A mutation submitted behind the activation's write turn, parked INSIDE its
+    // turn: on the pre-fix shape the activation's snapshot would be built while
+    // this is still mutating, i.e. beside the queue, not after it.
+    let releaseMutation: (() => void) | undefined
+    const mutationGate = new Promise<void>(resolve => { releaseMutation = resolve })
+    let mutationStarted = false
+    let mutationDone = false
+    const activating = h.service.activateAccount('anthropic', rowId)
+    let settled = false
+    void activating.then(() => { settled = true }, () => { settled = true })
+    let mutating: Promise<void> | undefined
+    let closing: Promise<void> | undefined
+    try {
+      // The activation's turn must be IN the queue before the extra mutation is
+      // submitted, or the mutation would run first and block the activation.
+      await eventually(() => assert.equal(writeParked, true))
+      mutating = internals.run(async () => {
+        mutationStarted = true
+        await mutationGate
+        mutationDone = true
+      })
+      closing = h.service.close()
+      releaseWrite!()
+      await new Promise(resolve => setTimeout(resolve, 60))
+      await eventually(() => assert.equal(mutationStarted, true))
+      await new Promise(resolve => setTimeout(resolve, 40))
+      // The mutation is mid-turn and its flush has not run; a snapshot taken
+      // now would be a read beside the queue.
+      assert.equal(mutationDone, false)
+      assert.equal(settled, false, 'the activation built its snapshot beside the queue')
+      releaseMutation!()
+      const view = await activating
+      // The snapshot came after the queued turn settled, and it names the
+      // binding that could not converge during shutdown.
+      assert.equal(settled, true)
+      assert.equal(
+        view.warnings.some(warning => /pi-ai credential reference|shutting down/i.test(warning)),
+        true,
+        'the activation reported success for a route whose binding never converged',
+      )
+      assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, record.brokerRef,
+        'the binding was written during shutdown, so the refusal is not under test')
+    } finally {
+      releaseWrite?.()
+      releaseMutation?.()
+      raw.modifyRecord = realModify
+      await mutating?.catch(() => undefined)
+      await activating.catch(() => undefined)
+      await closing?.catch(() => undefined)
+    }
+  } finally {
+    await h.close()
+  }
+})
+
 // P1 (queue-owned compensation): `run` releases the queue before its
 // rejection reaches the caller, so a bare compensation raced whatever mutation
 // came next — that mutation flushed the pre-compensation row, and the restore

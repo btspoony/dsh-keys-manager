@@ -3800,10 +3800,27 @@ export class KeysManagerService {
       // `buildState` pruned and drained, exposing state that is not durable.
       // The turn waits for such a mutation to finish or fail first.
       if (this.closing) {
-        // Shutdown admits no new turn, and it also admits no new mutation, so
-        // nothing can interleave here: converge the binding and build the view
-        // inline rather than refuse an activation whose write already landed.
-        await this.syncBrokerBinding(provider)
+        // Shutdown opened while this activation was writing, so no new turn may
+        // be appended: `closeOnce` captured `this.queue` when `closing` went up
+        // and closes the store once THAT reference settles, so a turn submitted
+        // here would run after close(). Instead, join the reference shutdown is
+        // itself draining — mutations already queued behind this turn are still
+        // running, and `buildState` prunes and drains, so the snapshot must come
+        // after they settle rather than beside them.
+        await this.queue
+        // The binding's last-point guard refuses writes once `closing` is set,
+        // so a route that still needs converging cannot converge here. Attempt
+        // it (a route that is already converged returns true) and say so when it
+        // did not: the caller must not be told a route converged when it did
+        // not, and the next start's repair pass owns the convergence.
+        const warningsBefore = this.warnings.length
+        const converged = await this.syncBrokerBinding(provider)
+        // Only speak when the sync stayed silent: it reports its own reason for
+        // every refusal it can explain, and a second, vaguer warning would
+        // misattribute that one.
+        if (!converged && this.warnings.length === warningsBefore) {
+          this.bindingWriteRefused(provider, 'Keys Manager is shutting down')
+        }
         return this.buildState()
       }
       return await this.run(async () => {
