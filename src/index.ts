@@ -3951,7 +3951,10 @@ export class KeysManagerService {
    * rotation that landed after the payload was read. It never marks a
    * projection whose row has been detached or repointed since the snapshot —
    * that recovery is refused, because the projection then belongs to a
-   * generation this row no longer names.
+   * generation this row no longer names. For the same reason a repair the
+   * updater declined (row gone, retiring, or repointed) resolves `undefined`:
+   * the callers' own "missing or unusable" failure is the truthful answer, not
+   * the payload of a generation this row has left behind.
    */
   private async recoverGrantPayload(
     provider: string,
@@ -3979,10 +3982,10 @@ export class KeysManagerService {
       // "missing or unusable" failure in place instead of reviving it.
       return undefined
     }
-    // Only a record this call wrote may be cleaned up below; an updater that
-    // declined says so through this flag, so the returned `current` (a
-    // concurrent writer's record) is never deleted.
-    let wrote = false
+    // A declined updater is NOT "the ref is occupied by an unusable record":
+    // it means nothing was written for this row, so the projection read above
+    // is a previous generation's payload and must not be served.
+    let declined = false
     try {
       // Compare-at-absent: an occupied ref returns `current`, which the seam
       // keeps, so a concurrent login's or rotation's record wins the ref.
@@ -3998,24 +4001,23 @@ export class KeysManagerService {
           || liveRow.kind !== 'oauth'
           || liveRow.oauth === null
           || liveRow.oauth.grantRef !== grantRef) {
+          declined = true
           return Promise.resolve(undefined)
         }
-        wrote = true
         return Promise.resolve({ kind: 'grant', payload: structuredClone(live.payload) })
       })
-      // A removal can also finish after the write: delete only the record this
-      // call wrote, and only while no live row still names the ref.
-      if (wrote
-        && liveNow !== undefined
-        && liveNow.kind === 'grant'
-        && JSON.stringify(liveNow.payload) === JSON.stringify(live.payload)
-        && !this.grantRefServed(provider, grantRef)) {
-        try {
-          await records.deleteRecord(grantRef)
-        } catch (error) {
-          this.warn(`could not discard the restored ${grantRef} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
+      // No post-write compensation (PR #37 I-000233): it would prove what THIS
+      // call wrote, not that the record it deleted was still ours — a same-ref
+      // sign-in can commit a fresh record before attaching its row, and the
+      // seam has no compare-and-delete (`deleteRecord(key)` takes no expected
+      // payload). It is redundant: the removal path owns the ref it retires.
+      // `removeOAuthGrant` marks the row in `retiringAccounts` BEFORE its first
+      // awaited delete, and this updater revalidates synchronously under the
+      // seam's per-key lock, so a removal that started first makes the update
+      // decline, and one that starts after this write deletes
+      // `row.oauth.grantRef` — the very ref this updater just proved the row
+      // names — itself.
+      if (declined) return undefined
       // The ref may have been taken while this read was parked: the record's
       // payload is the credential the caller must borrow now, not the
       // projection this repair declined to write over it.
@@ -4934,15 +4936,15 @@ export class KeysManagerService {
 
   /**
    * Whether this test may still borrow the route, or the result it must report
-   * instead: the window is live, shutdown has not begun, and the row is neither
-   * retiring nor gone.
+   * instead: the window is live, shutdown has not begun, and the row still
+   * exists, is not retiring, and still names the `grantRef` the test captured.
    *
    * Read before the borrow and again after every await that precedes it. The
    * grant recovery is one: it outlives the isolation deadline on a slow seam,
    * and a window the watchdog already released no longer compensates its late
    * borrow (that branch is guarded by `abandonedWindows.get(provider) === window`).
    */
-  private borrowBarrier(window: RowTestWindow, provider: string, row: KeyRecord): KeyTestResult | undefined {
+  private borrowBarrier(window: RowTestWindow, provider: string, row: KeyRecord, grantRef: string): KeyTestResult | undefined {
     if (window.cleaned) {
       // QC fix wave 2: the watchdog abandoned this window while an await was in
       // flight. Starting (or resuming) the borrow now would land it after the
@@ -4970,10 +4972,18 @@ export class KeysManagerService {
     // already passed that check.
     const live = this.store.provider(provider)
     const removing = this.retiringAccounts.has(row)
-    if (removing || live === undefined || !live.keys.some(candidate => candidate.id === row.id)) {
+    const liveRow = live?.keys.find(candidate => candidate.id === row.id)
+    if (removing || liveRow === undefined) {
       return removing
         ? { ok: false, latencyMs: 0, error: `Provider "${provider}" is being removed; the test did not borrow its credential` }
         : { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could borrow it` }
+    }
+    // PR #37 review (I-000234): a re-sign-in repoints the row instead of
+    // removing it. The recovery read then belongs to the generation the row no
+    // longer names, so borrowing it would test the previous credential and
+    // report the outcome against this row.
+    if (liveRow.oauth === null || liveRow.oauth.grantRef !== grantRef) {
+      return { ok: false, latencyMs: 0, error: `Key "${row.id}" was repointed on ${provider} before its test could borrow it` }
     }
     return undefined
   }
@@ -4987,6 +4997,10 @@ export class KeysManagerService {
   ): Promise<KeyTestResult> {
     const grant = row.oauth
     if (grant === null) return { ok: false, latencyMs: 0, error: `Key "${row.id}" is not an OAuth account` }
+    // Captured here, not read from the row later: a re-sign-in repoints the
+    // row's generation in place, so the live object would answer with the NEW
+    // ref and the borrow would look current.
+    const grantRef = grant.grantRef
     const records = this.credentialRecords()
     if (records === undefined) return { ok: false, latencyMs: 0, error: 'The credential store does not support records' }
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
@@ -5002,7 +5016,7 @@ export class KeysManagerService {
       // the updater's `current` and make the borrow look unchanged.
       const previous = captured === undefined ? undefined : structuredClone(captured)
       const previousKey = previous === undefined ? undefined : JSON.stringify(previous)
-      const blocked = this.borrowBarrier(window, provider, row)
+      const blocked = this.borrowBarrier(window, provider, row, grantRef)
       if (blocked !== undefined) {
         result = blocked
         return
@@ -5014,7 +5028,7 @@ export class KeysManagerService {
         result = {
           ok: false,
           latencyMs: 0,
-          error: `The grant payload at ${grant.grantRef} is missing or unusable; sign in to this account again`,
+          error: `The grant payload at ${grantRef} is missing or unusable; sign in to this account again`,
         }
         return
       }
@@ -5023,7 +5037,7 @@ export class KeysManagerService {
       // and can outlive the isolation deadline, after which the window's
       // cleanup has already run and released the window. Registering facts or
       // borrowing now would land them with no owner: re-run the barrier first.
-      const lateBlocked = this.borrowBarrier(window, provider, row)
+      const lateBlocked = this.borrowBarrier(window, provider, row, grantRef)
       if (lateBlocked !== undefined) {
         result = lateBlocked
         return

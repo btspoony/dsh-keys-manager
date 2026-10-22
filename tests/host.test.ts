@@ -9984,15 +9984,56 @@ test('a row repointed while its grant read is parked does not lend its old proje
     assert.match(String(result.error), /missing or unusable/)
     assert.equal(calls, 0, 'the test streamed with a projection its row no longer names')
     assert.equal(liveProjectionRefresh(h), 'rt-first', 'the pre-test projection was replaced')
-    assert.equal(
-      (h.service as unknown as { testBindingBorrows: Set<string> }).testBindingBorrows.has('anthropic'),
-      false,
-      'the refused test left its borrow marker behind',
-    )
+    // The refused test neither borrowed nor demoted the grant its row still
+    // owns: the route keeps serving it.
+    const rows = h.service.getState().providers.find(entry => entry.provider === 'anthropic')!.keys
+    assert.equal(rows.find(row => row.id === first.rowId)!.projected, true)
   } finally {
     park?.release()
     await testing?.catch(() => undefined)
     park?.restore()
+    await h.close()
+  }
+})
+
+// PR #37 review (should-fix, I-000234): a repair updater that DECLINES is not
+// "the ref is occupied by an unusable record". A re-sign-in that repoints the
+// row between the pre-write check and the updater leaves the recovery holding
+// the previous generation's projection, and the test must report its own
+// "missing or unusable" failure instead of borrowing that payload.
+test('a row repointed between the pre-write check and the repair does not lend its old projection', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  let calls = 0
+  try {
+    // The tested row's own record is gone; its projection is the only copy.
+    await h.service.activateAccount('anthropic', first.rowId)
+    h.credentials.records.delete(first.grantRef)
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+      // The recovery's pre-write check already passed; the re-sign-in repoints
+      // the row before the repair takes the seam's per-key lock.
+      if (key === first.grantRef) {
+        const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === first.rowId)!
+        row.oauth!.grantRef = accountRef('anthropic', 'repointed')
+      }
+      return realModify(key, mutate)
+    }
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      } as any)
+    }
+
+    const result = await h.service.testKey('anthropic', first.rowId)
+
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /missing or unusable/)
+    assert.equal(calls, 0, 'the test streamed with the previous generation\'s projection')
+    assert.equal(liveProjectionRefresh(h), 'rt-first', 'the pre-test projection was replaced')
+  } finally {
+    raw.modifyRecord = realModify
     await h.close()
   }
 })
@@ -10142,6 +10183,46 @@ test('a removal landing before the repair write leaves no recreated grant record
       h.store.provider('anthropic')!.keys.filter(key => key.oauth?.grantRef === grantRef),
       [],
       'a live row still references the recreated grant',
+    )
+  } finally {
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
+// PR #37 review (should-fix, I-000233): the repair's old post-write
+// compensation proved what the repair wrote, not that the ref still held it. A
+// same-ref sign-in that commits a fresh record after the repair — before its
+// row is attached — must survive: the removal path owns the ref it retires.
+test('a same-ref sign-in landing after the repair commit keeps its record', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    h.credentials.records.delete(grantRef)
+    let interleaved = false
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+      const written = await realModify(key, mutate)
+      // The repair committed for this row; the account is then removed (its
+      // removal deletes the ref), and a same-ref sign-in commits a fresh grant
+      // before its row is attached.
+      if (key === grantRef && !interleaved) {
+        interleaved = true
+        await h.service.removeAccount('anthropic', rowId)
+        h.credentials.records.set(grantRef, {
+          kind: 'grant',
+          payload: { type: 'oauth', refresh: 'rt-signin-value', access: 'at-signin-value', expires: 1_800_000_000_000 },
+        })
+      }
+      return written
+    }
+    await assert.rejects(() => h.service.activateAccount('anthropic', rowId))
+    assert.equal(interleaved, true, 'the sign-in did not land inside the repair')
+    assert.equal(
+      (h.credentials.records.get(grantRef)?.payload as Record<string, unknown> | undefined)?.refresh,
+      'rt-signin-value',
+      'the repair deleted the sign-in record it had not written',
     )
   } finally {
     raw.modifyRecord = realModify
