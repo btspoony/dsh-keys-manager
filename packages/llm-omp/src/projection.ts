@@ -146,7 +146,7 @@ export interface RouteProfile {
 }
 
 /** The shipped Cursor route's projection facts. */
-const CURSOR_PROFILE = {
+export const CURSOR_PROFILE = {
   provider: 'cursor',
   api: 'cursor-agent',
   fallbackErrorCode: 'CURSOR_ERROR',
@@ -159,7 +159,7 @@ const CURSOR_PROFILE = {
  * No marker: its transport emits `deltaToolCalls` as plain calls and finishes
  * the turn `toolUse`, so DSH's tool loop is the native mode here.
  */
-const DEVIN_PROFILE = {
+export const DEVIN_PROFILE = {
   provider: 'devin',
   api: 'devin-agent',
   fallbackErrorCode: 'PROVIDER_ERROR',

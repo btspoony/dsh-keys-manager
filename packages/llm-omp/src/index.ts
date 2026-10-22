@@ -24,7 +24,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 
-import { CURSOR_ROUTE, OmpCursorAdapter } from './adapter.js'
+import { CURSOR_ROUTE, DEVIN_ROUTE, OmpCursorAdapter, OmpDevinAdapter } from './adapter.js'
+import type { OmpTransportOf } from './adapter.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
 import { loginCursor } from './cursor/auth.js'
@@ -33,8 +34,7 @@ import { CURSOR_CREDENTIAL_KEY, createCursorAccess } from './cursor/credentials.
 import type { CredentialRecordsLike } from './cursor/credentials.js'
 import { DevinAuthError, loginDevin } from './devin/auth.js'
 import type { DevinFetch, DevinGrant } from './devin/auth.js'
-import { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
-import type { OmpCursorTransport } from './omp.js'
+import { DEVIN_CREDENTIAL_KEY, createDevinAccess } from './devin/credentials.js'
 
 /** Machine code for a transport artifact that cannot be loaded. */
 export const TRANSPORT_UNAVAILABLE = 'TRANSPORT_UNAVAILABLE'
@@ -56,6 +56,7 @@ export interface TransportProviderProfile {
 /** The `providers` profile a volatile config reference snapshots. */
 export interface TransportProvidersProfile {
   cursor?: TransportProviderProfile
+  devin?: TransportProviderProfile
 }
 
 /** A live config reference (cosmokit `Volatile`) a volatile schema node resolves to. */
@@ -93,8 +94,18 @@ export const Config = z.object({
           )
           .default([]),
       }),
+      devin: z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
     })
-    .default({ cursor: { models: [] } })
+    .default({ cursor: { models: [] }, devin: { models: [] } })
     .volatile(),
 })
 
@@ -137,6 +148,15 @@ const CURSOR_PROVIDER = {
   displayName: 'Cursor',
   settingsNs: 'llm-omp-transports',
   settingsPath: ['providers', 'cursor'],
+  declared: false,
+} as const
+
+/** The route's Models-page entry, beside {@link CURSOR_PROVIDER}. */
+const DEVIN_PROVIDER = {
+  provider: DEVIN_ROUTE,
+  displayName: 'Devin',
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'devin'],
   declared: false,
 } as const
 
@@ -298,33 +318,34 @@ export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAu
 }
 
 /**
- * Load the bundled omp transport on first use.
+ * Load one bundled omp transport on first use.
  *
  * @remarks
- * `apply()` must not fail when the build artifact is missing (a partial
- * install, a source checkout without `pnpm build`): the import starts at the
- * first request and its failure reaches that request as a typed `LlmError`.
+ * `apply()` must not fail when a build artifact is missing (a partial install,
+ * a source checkout without `pnpm build`): the import starts at the first
+ * request and its failure reaches that request as a typed `LlmError`.
  */
-function bundledCursorTransport(): OmpCursorTransport {
+function bundledTransport<Model, Options>(
+  artifact: 'cursor' | 'devin',
+  exportName: 'streamCursor' | 'streamDevin',
+  label: string,
+): OmpTransportOf<Model, Options> {
   return (model, context, options) =>
     (async function* () {
-      let streamCursor: OmpCursorTransport
+      let stream: OmpTransportOf<Model, Options>
       try {
-        const artifact = (await import(new URL('./omp/cursor.mjs', import.meta.url).href)) as {
-          streamCursor?: OmpCursorTransport
-        }
-        if (typeof artifact.streamCursor !== 'function') {
-          throw new Error('the artifact exports no streamCursor')
-        }
-        streamCursor = artifact.streamCursor
+        const loaded = (await import(new URL(`./omp/${artifact}.mjs`, import.meta.url).href)) as Record<string, unknown>
+        const candidate = loaded[exportName]
+        if (typeof candidate !== 'function') throw new Error(`the artifact exports no ${exportName}`)
+        stream = candidate as OmpTransportOf<Model, Options>
       } catch (cause) {
         throw new LlmError(
-          'llm-omp-transports: the bundled Cursor transport is unavailable; run `pnpm build` in the transports package',
+          `llm-omp-transports: the bundled ${label} transport is unavailable; run \`pnpm build\` in the transports package`,
           TRANSPORT_UNAVAILABLE,
           { cause },
         )
       }
-      yield* streamCursor(model, context, options)
+      yield* stream(model, context, options)
     })()
 }
 
@@ -340,7 +361,23 @@ function bundledCursorTransport(): OmpCursorTransport {
 export function createCursorAdapter(credentials: CredentialRecordsLike, models?: () => readonly string[] | undefined): OmpCursorAdapter {
   return new OmpCursorAdapter({
     access: createCursorAccess(credentials),
-    transport: bundledCursorTransport(),
+    transport: bundledTransport('cursor', 'streamCursor', 'Cursor'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
+/**
+ * Build the Devin adapter this plugin registers.
+ *
+ * @remarks
+ * The twin of {@link createCursorAdapter}: the record resolver only reads (the
+ * rule has no refresh), and the bundled artifact still loads on the first
+ * request.
+ */
+export function createDevinAdapter(credentials: CredentialRecordsLike, models?: () => readonly string[] | undefined): OmpDevinAdapter {
+  return new OmpDevinAdapter({
+    access: createDevinAccess(credentials),
+    transport: bundledTransport('devin', 'streamDevin', 'Devin'),
     ...(models === undefined ? {} : { models }),
   })
 }
@@ -354,12 +391,15 @@ export function apply(ctx: Context, config: Config = {}): void {
   const providers = config.providers
   // A settings file is user input: drop a malformed row instead of throwing
   // from `listModels`/`stream`, which would take the whole route down.
-  const models = (): readonly string[] | undefined =>
-    providers?.get().cursor?.models?.flatMap(row => (typeof row?.id === 'string' ? [row.id] : []))
-  ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models))
-  ctx.llm.registerConfigurableProviders([CURSOR_PROVIDER])
+  const models = (route: 'cursor' | 'devin') => (): readonly string[] | undefined =>
+    providers?.get()[route]?.models?.flatMap(row => (typeof row?.id === 'string' ? [row.id] : []))
+  ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models('cursor')))
+  ctx.llm.registerAdapter([DEVIN_ROUTE], createDevinAdapter(host.credentials, models('devin')))
+  ctx.llm.registerConfigurableProviders([CURSOR_PROVIDER, DEVIN_PROVIDER])
   host.authorization.registerFlow(cursorAuthorizationFlow())
+  host.authorization.registerFlow(devinAuthorizationFlow())
 }
 
-export { CURSOR_ROUTE } from './adapter.js'
+export { CURSOR_ROUTE, DEVIN_ROUTE } from './adapter.js'
 export { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
+export { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'

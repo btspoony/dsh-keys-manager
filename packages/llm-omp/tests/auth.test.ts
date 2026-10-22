@@ -14,7 +14,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 
-import { CURSOR_ROUTE, OmpCursorAdapter } from '../src/adapter.js'
+import { CURSOR_ROUTE, DEVIN_ROUTE, OmpCursorAdapter, OmpDevinAdapter } from '../src/adapter.js'
 import {
   CURSOR_AUTH,
   CursorAuthError,
@@ -32,6 +32,7 @@ import {
   apply,
   beginCursorSignIn,
   createCursorAdapter,
+  createDevinAdapter,
   cursorAuthorizationFlow,
 } from '../src/index.js'
 import type { CursorAuthorizationFlow, CursorSignInInteraction, TransportModelProfile } from '../src/index.js'
@@ -597,10 +598,10 @@ describe('llm-omp-transports registration', () => {
     ctx: Context
     adapters: { providers: string[]; adapter: unknown }[]
     directories: unknown[]
-    flow: () => CursorAuthorizationFlow | undefined
+    flows: () => CursorAuthorizationFlow[]
     reads: () => number
   } {
-    let flow: CursorAuthorizationFlow | undefined
+    const flows: CursorAuthorizationFlow[] = []
     const adapters: { providers: string[]; adapter: unknown }[] = []
     const directories: unknown[] = []
     let reads = 0
@@ -624,7 +625,7 @@ describe('llm-omp-transports registration', () => {
       },
       authorization: {
         registerFlow(registered: CursorAuthorizationFlow) {
-          flow = registered
+          flows.push(registered)
           return () => {}
         },
       },
@@ -633,18 +634,18 @@ describe('llm-omp-transports registration', () => {
       ctx: ctx as unknown as Context,
       adapters,
       directories,
-      flow: () => flow,
+      flows: () => flows,
       reads: () => reads,
     }
   }
 
-  it('registers the cursor adapter, its Models-page entry and the flow', () => {
+  it('registers both adapters, their Models-page entries and both flows', () => {
     const host = fakeHost()
     apply(host.ctx)
 
-    expect(host.adapters).toHaveLength(1)
-    expect(host.adapters[0].providers).toEqual([CURSOR_ROUTE])
-    expect(host.adapters[0].adapter).toBeInstanceOf(OmpCursorAdapter)
+    expect(host.adapters.map(entry => entry.providers)).toEqual([[CURSOR_ROUTE], [DEVIN_ROUTE]])
+    expect(host.adapters[0]!.adapter).toBeInstanceOf(OmpCursorAdapter)
+    expect(host.adapters[1]!.adapter).toBeInstanceOf(OmpDevinAdapter)
     expect(host.directories).toEqual([
       [
         {
@@ -654,13 +655,27 @@ describe('llm-omp-transports registration', () => {
           settingsPath: ['providers', 'cursor'],
           declared: false,
         },
+        {
+          provider: 'devin',
+          displayName: 'Devin',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'devin'],
+          declared: false,
+        },
       ],
     ])
-    expect(host.flow()).toMatchObject({
-      key: 'llm-omp-transports/cursor',
-      label: 'Cursor',
-      methods: [{ id: 'oauth', label: 'Sign in with Cursor' }],
-    })
+    expect(host.flows().map(flow => ({ key: flow.key, label: flow.label, methods: flow.methods }))).toEqual([
+      {
+        key: 'llm-omp-transports/cursor',
+        label: 'Cursor',
+        methods: [{ id: 'oauth', label: 'Sign in with Cursor' }],
+      },
+      {
+        key: 'llm-omp-transports/devin',
+        label: 'Devin',
+        methods: [{ id: 'oauth', label: 'Sign in with Devin' }],
+      },
+    ])
     // Registration is start-up safe: no credential is read and no bundle is imported.
     expect(host.reads()).toBe(0)
   })
@@ -687,12 +702,17 @@ describe('llm-omp-transports registration', () => {
     ])
   })
 
-  it('exposes the registered adapter and its catalog through the plugin', async () => {
+  it('exposes both registered adapters and their catalogs through the plugin', async () => {
     const adapter = createCursorAdapter(fakeStore().credentials)
+    const devin = createDevinAdapter(fakeStore().credentials)
 
     expect(adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(adapter.providerInfo(CURSOR_ROUTE)).toEqual({ id: 'cursor', name: 'Cursor' })
     expect(await adapter.listModels(CURSOR_ROUTE)).toHaveLength(123)
+
+    expect(devin).toBeInstanceOf(OmpDevinAdapter)
+    expect(devin.providerInfo(DEVIN_ROUTE)).toEqual({ id: 'devin', name: 'Devin' })
+    expect(await devin.listModels(DEVIN_ROUTE)).toHaveLength(2)
   })
 
   it('drops a malformed configured row instead of throwing from the live getter', async () => {
@@ -716,6 +736,26 @@ describe('llm-omp-transports registration', () => {
     const options: GenerateOptions = {
       provider: CURSOR_ROUTE,
       model: 'claude-4.5-sonnet',
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } })],
+    }
+
+    const chunks: StreamChunk[] = []
+    await expect(
+      (async () => {
+        for await (const chunk of adapter.stream(options)) chunks.push(chunk)
+      })(),
+    ).rejects.toMatchObject({ code: TRANSPORT_UNAVAILABLE })
+    expect(chunks).toEqual([])
+  })
+
+  it('surfaces a missing devin bundle at request time as TRANSPORT_UNAVAILABLE', async () => {
+    // The parameterised loader must fail the same way for the second route.
+    const adapter = createDevinAdapter(
+      fakeStore({ kind: 'grant', payload: { access: 'fresh-token', expires: FAR_FUTURE } }).credentials,
+    )
+    const options: GenerateOptions = {
+      provider: DEVIN_ROUTE,
+      model: 'swe-1-6',
       messages: [createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } })],
     }
 
