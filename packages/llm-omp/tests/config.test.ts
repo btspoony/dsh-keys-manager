@@ -46,6 +46,10 @@ function getPath(value: unknown, path: readonly string[]): unknown {
 
 describe('Config', () => {
   it('projects a default providers.cursor profile with no user write', () => {
+    // A guard on the shipped default, not proof of the live projection: the
+    // real path runs `settings.describe` over a mounted plugin entry, which
+    // this package cannot construct offline (and does not depend on). The
+    // shape itself is private to schemastery and is deliberately not pinned.
     const value = describeValue({})
 
     expect(value).toEqual({ providers: { cursor: { models: [] } } })
@@ -60,12 +64,6 @@ describe('Config', () => {
     const resolved = Config({}) as unknown as { providers: { get(): unknown } }
 
     expect(resolved.providers.get()).toEqual({ cursor: { models: [] } })
-  })
-
-  it('keeps the providers node volatile so settings.describe projects it', () => {
-    // volatileForm returns undefined for an object with no volatile field: the
-    // descriptor would disappear and Cursor with it.
-    expect((Config as unknown as { dict: Record<string, { meta: { volatile?: boolean } }> }).dict.providers.meta.volatile).toBe(true)
   })
 
   it('resolves a user allow-list unchanged', () => {

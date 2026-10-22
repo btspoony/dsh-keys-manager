@@ -1007,6 +1007,7 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
   }
 
   const rows = view === null ? [] : modelPickerRows(view)
+  const errorLine = error === null ? null : h('div', { className: 'km-inline-error', role: 'alert' }, error)
   return h('div', { className: 'km-models' },
     h('button', {
       type: 'button',
@@ -1022,9 +1023,18 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
             draft.size === 0 ? t('transportModelsAll') : t('transportModelsSelected', { n: draft.size, total: view.catalog.length })),
     ),
     open ? h('div', { className: 'km-models-body' },
-      error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
+      // A failed load leaves no view: showing the loading line next to the
+      // error would claim a request that already finished, and Save must stay
+      // off without a view so a failed read cannot clear the saved selection.
+      // A failed save keeps the loaded view and reports above the grid.
+      view === null ? null : errorLine,
       view === null
-        ? h('div', { className: 'km-muted' }, t('transportModelsLoading'))
+        ? error !== null
+          ? h('div', { className: 'km-models-failure' },
+              errorLine,
+              h(Button, { size: 'small', variant: 'primary', onClick: () => void load() }, t('reload')),
+            )
+          : h('div', { className: 'km-muted' }, t('transportModelsLoading'))
         : h('div', { className: 'km-models-grid' }, rows.map(row =>
             h('label', { key: row.id, className: 'km-model-option' },
               h('input', {

@@ -243,13 +243,11 @@ export interface TransportCatalogModel {
  * Catalog plus configured allow-list for one transport route's model picker.
  *
  * `models` is the allow-list; an empty list means the route advertises the
- * full catalog, exactly like its adapter. `enabled` is that rule made
- * explicit, so a picker can say "all models" without re-deriving it.
+ * full catalog, exactly like its adapter.
  */
 export interface TransportModelsView {
   catalog: TransportCatalogModel[]
   models: string[]
-  enabled: boolean
 }
 
 /** Complete manager snapshot the UI renders. */

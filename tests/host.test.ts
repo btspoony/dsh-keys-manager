@@ -17328,22 +17328,16 @@ test('an api-key test fails when the route answered without the pinned key', asy
 test('reads and saves the cursor transport model allow-list through settings', async () => {
   const h = await transportHarness()
   try {
-    // A host without the transports namespace mounted (the plugin absent) still
-    // answers: no profile means no allow-list, not a failure.
-    assert.deepEqual(await h.service.transportModels('cursor'), {
-      catalog: cursorCatalogModels(),
-      models: [],
-      enabled: false,
-    })
     h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: { cursor: { models: [] } } }, revision: 1 })
 
     const initial = await h.service.transportModels('cursor')
     assert.ok(initial.catalog.length > 0)
     assert.equal(initial.catalog.find(row => row.id === 'claude-4.5-sonnet')?.name, 'Claude Sonnet 4.5')
+    // An empty allow-list is the all-models state; the view carries no flag.
+    assert.deepEqual(initial.models, [])
 
     const saved = await h.service.saveTransportModels('cursor', ['claude-4.5-sonnet'])
     assert.deepEqual(saved.models, ['claude-4.5-sonnet'])
-    assert.equal(saved.enabled, true)
     // The write is path-addressed on the route's own settings node and carries
     // display names for pickers.
     const write = h.settings.mutateCalls.at(-1)!
@@ -17359,6 +17353,53 @@ test('reads and saves the cursor transport model allow-list through settings', a
 
     // An empty selection restores the full catalog.
     assert.deepEqual((await h.service.saveTransportModels('cursor', [])).models, [])
+  } finally {
+    await h.close()
+  }
+})
+
+// I-000238: an unreadable descriptor answered "no models configured", which the
+// picker renders as the legitimate all-models state. One save then cleared a
+// narrowed selection, so the read must fail closed instead.
+test('refuses to report a transport model allow-list it could not read', async () => {
+  const h = await transportHarness()
+  try {
+    // A registered route always owns its namespace: its absence is a broken
+    // composition, not an empty allow-list.
+    await assert.rejects(() => h.service.transportModels('cursor'), /namespace "llm-omp-transports" is not mounted/)
+
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: { cursor: { models: [{ id: 'claude-4.5-sonnet', name: 'Claude Sonnet 4.5' }] } } }, revision: 1 })
+    h.settings.failDescribe = true
+    await assert.rejects(() => h.service.transportModels('cursor'), /Cannot read settings/)
+    await assert.rejects(() => h.service.saveTransportModels('cursor', ['claude-4.5-sonnet']), /Cannot read settings/)
+    assert.equal(h.settings.mutateCalls.length, 0)
+    // The saved selection survived the failed read.
+    h.settings.failDescribe = false
+    assert.deepEqual((await h.service.transportModels('cursor')).models, ['claude-4.5-sonnet'])
+  } finally {
+    await h.close()
+  }
+})
+
+// A stored id can outlive the catalog that shipped it: the picker renders the
+// catalog, so an unknown id would count toward {n} of {total} while matching no
+// checkbox, and every save of the visible selection would fail.
+test('filters a retired catalog id out of the read allow-list', async () => {
+  const h = await transportHarness()
+  try {
+    h.settings.namespaces.push({
+      ns: TRANSPORT_NS,
+      value: { providers: { cursor: { models: [
+        { id: 'retired-model', name: 'Retired' },
+        { id: 'claude-4.5-sonnet', name: 'Claude Sonnet 4.5' },
+      ] } } },
+      revision: 1,
+    })
+
+    assert.deepEqual((await h.service.transportModels('cursor')).models, ['claude-4.5-sonnet'])
+    // The remaining selection still saves, and the write replaces the profile.
+    assert.deepEqual((await h.service.saveTransportModels('cursor', ['claude-4.5-sonnet'])).models, ['claude-4.5-sonnet'])
+    assert.equal(h.settings.mutateCalls.length, 1)
   } finally {
     await h.close()
   }

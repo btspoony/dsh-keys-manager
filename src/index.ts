@@ -2507,13 +2507,19 @@ export class KeysManagerService {
    *
    * @remarks
    * The catalog comes from the transports package, because the route's
-   * `listModels` answers only the allow-list. `enabled` restates the
-   * empty-means-all rule the adapter applies.
+   * `listModels` answers only the allow-list. An empty allow-list means "all
+   * models", so an unreadable settings store must not answer `[]` — a save
+   * would then clear a narrowed selection — and it rejects instead.
    */
   async transportModels(route: string): Promise<TransportModelsView> {
     this.assertTransportRoute(route)
-    const models = this.transportModelIds(route)
-    return { catalog: transportCatalogOf(route), models, enabled: models.length > 0 }
+    const configured = this.transportModelIds(route)
+    const catalog = transportCatalogOf(route)
+    // A settings profile can outlive a catalog id; the picker renders the
+    // catalog, so an unknown id would count toward {n} of {total} while
+    // matching no checkbox and failing every save.
+    const known = new Set(catalog.map(row => row.id))
+    return { catalog, models: configured.filter(id => known.has(id)) }
   }
 
   /**
@@ -2549,10 +2555,23 @@ export class KeysManagerService {
     if (this.transportFlowFor(route) === undefined) throw new Error(`Provider "${route}" offers no transport account`)
   }
 
-  /** One transport route's configured model ids, read from the live settings. */
+  /**
+   * One transport route's configured model ids, read from the live settings.
+   *
+   * @remarks
+   * Rejects when the descriptor is unreadable or this plugin's namespace is
+   * not mounted: a registered route always owns that namespace, so answering
+   * "no models configured" would report the all-models state for a store the
+   * host simply could not read.
+   */
   private transportModelIds(route: string): string[] {
-    const namespace = this.namespace(this.describeSettings(), TRANSPORT_CREDENTIAL_SCOPE)
-    const value = namespace === undefined ? undefined : getPath(namespace.value, ['providers', route, 'models'])
+    const descriptor = this.describeSettings()
+    if (!descriptor.readable) throw new Error('Cannot read settings: the settings store is unavailable')
+    const namespace = this.namespace(descriptor, TRANSPORT_CREDENTIAL_SCOPE)
+    if (namespace === undefined) {
+      throw new Error(`Settings namespace "${TRANSPORT_CREDENTIAL_SCOPE}" is not mounted`)
+    }
+    const value = getPath(namespace.value, ['providers', route, 'models'])
     if (!Array.isArray(value)) return []
     return value.flatMap(row => {
       const id = row !== null && typeof row === 'object' ? (row as { id?: unknown }).id : undefined

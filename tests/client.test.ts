@@ -108,7 +108,13 @@ interface Harness {
   cleanups: Array<() => void>
 }
 
-function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harness {
+/**
+ * One RPC answer, or a per-endpoint answer so a test can fail exactly one call
+ * while every other read still returns the state snapshot.
+ */
+type RpcAnswer = RpcResult | ((endpoint: string) => RpcResult)
+
+function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harness {
   const calls: Harness['calls'] = []
   const registrations: Harness['registrations'] = []
   const dictionaries: Harness['dictionaries'] = {}
@@ -202,6 +208,18 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
     transportStatusSignedOut: '未登录',
     transportRemoveTitle: '移除 {name} 传输账户？',
     transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。',
+    // The transport card's model picker: its copy resolves the real values so
+    // the collapsed summary, the loading line and the failure branch are found
+    // by rendered text.
+    transportModels: '模型',
+    transportModelsAll: '全部模型',
+    transportModelsSelected: '已选 {n}/{total}',
+    transportModelsLoading: '正在加载模型…',
+    transportModelsClear: '清除选择',
+    transportModelsHint: '不勾选任何模型表示使用全部模型；保存后该路由的模型列表随之收窄。',
+    reload: '重试',
+    save: '保存',
+    saving: '保存中…',
     // Provider quick filter: the chip row resolves its real copy, so the set
     // and order are asserted by the value the UI renders.
     filterAll: '全部',
@@ -231,7 +249,7 @@ function makeContext(result: RpcResult = { ok: true, value: makeState() }): Harn
       rpc: {
         async call(channel, endpoint, payload) {
           calls.push({ channel, endpoint, payload })
-          return result
+          return typeof answer === 'function' ? answer(endpoint) : answer
         },
       },
     },
@@ -2584,6 +2602,84 @@ describe('transport account surface', () => {
     expect(inside.filter(node => node.type === 'button').some(node => node.text.includes('接管 Provider'))).toBe(false)
     expect(inside.some(node => node.text.includes('添加密钥'))).toBe(false)
     expect(view.nodes.some(node => node.text === '传输账户')).toBe(false)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  // I-000238: a failed catalog read used to render the legitimate all-models
+  // state with Save enabled, so one save could clear a narrowed selection.
+  test('a failed model-catalog read reports the error, offers a retry and keeps Save off', async () => {
+    const state = makeState()
+    state.providers = [...state.providers, makeTransportProvider()]
+    state.transportAccounts = [makeTransportAccount()]
+    const harness = makeContext(endpoint => endpoint === 'keysManager/transportModels'
+      ? { ok: false, error: { message: 'Cannot read settings: the settings store is unavailable' } }
+      : { ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    openProviderCard(view, 'cursor')
+
+    const panel = (): FlatNode => findByClass(descendants(view.nodes, providerCard(view.nodes, 'cursor')), 'km-models')[0]!
+    const head = descendants(view.nodes, panel()).find(node => node.type === 'button' && String(node.props?.className ?? '').includes('km-models-head'))!
+    ;(head.props!.onClick as () => void)()
+    await view.flush()
+
+    const inside = (): FlatNode[] => descendants(view.nodes, panel())
+    // The error is the whole body: no loading line claims a request that
+    // already finished, and no checkbox grid pretends the read succeeded.
+    expect(inside().some(node => node.text.includes('Cannot read settings'))).toBe(true)
+    expect(inside().some(node => node.text === '正在加载模型…')).toBe(false)
+    expect(findByClass(inside(), 'km-models-grid')).toHaveLength(0)
+    // A retry control is offered, and Save cannot fire without a view.
+    const retry = findByClass(inside(), 'km-models-failure').flatMap(node => descendants(inside(), node))
+      .filter(node => node.type === 'button')
+    expect(retry.map(node => node.text)).toEqual(['重试'])
+    const save = inside().find(node => node.type === 'button' && node.text === '保存')!
+    expect(save.props!.disabled).toBe(true)
+    // The collapsed head carries no selection summary, so nothing reads as the
+    // all-models state the saved profile may not actually be.
+    expect(head.text.trim()).toBe('模型')
+
+    // Retry re-reads: the error clears, the body reports the new request, and
+    // the second failure lands in the same branch.
+    const reads = (): number => harness.calls.filter(call => call.endpoint === 'keysManager/transportModels').length
+    const before = reads()
+    ;(retry[0]!.props!.onClick as () => void)()
+    expect(inside().some(node => node.text === '正在加载模型…')).toBe(true)
+    await view.flush()
+    expect(reads()).toBe(before + 1)
+    expect(inside().some(node => node.text.includes('Cannot read settings'))).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a loaded model picker preselects the saved allow-list', async () => {
+    const state = makeState()
+    state.providers = [...state.providers, makeTransportProvider()]
+    state.transportAccounts = [makeTransportAccount()]
+    const harness = makeContext(endpoint => endpoint === 'keysManager/transportModels'
+      ? { ok: true, value: { catalog: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }], models: ['model-b'] } }
+      : { ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    openProviderCard(view, 'cursor')
+
+    const panel = (): FlatNode => findByClass(descendants(view.nodes, providerCard(view.nodes, 'cursor')), 'km-models')[0]!
+    const head = descendants(view.nodes, panel()).find(node => node.type === 'button' && String(node.props?.className ?? '').includes('km-models-head'))!
+    ;(head.props!.onClick as () => void)()
+    await view.flush()
+
+    const inside = descendants(view.nodes, panel())
+    // A narrowed route reads as {n}/{total}, never as all models.
+    expect(panel().text).toContain('已选 1/2')
+    const boxes = findByClass(inside, 'km-model-option').map(row => descendants(inside, row)
+      .find(node => node.type === 'input')!)
+    expect(boxes.map(box => box.props!.checked)).toEqual([false, true])
+    expect(inside.find(node => node.type === 'button' && node.text === '保存')!.props!.disabled).toBe(false)
     view.unmount()
     setRuntimeContext(null)
   })
