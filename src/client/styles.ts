@@ -58,6 +58,7 @@ export const CSS = `
 .km-account-row{position:relative;display:grid;grid-template-columns:minmax(0,1.35fr) minmax(150px,.8fr) minmax(150px,.9fr) 32px;gap:10px;align-items:center;padding:10px 11px 10px 14px;border-top:1px solid var(--dsw-alias-border-l1)}
 .km-account-row:first-child{border-top:0}
 .km-account-row::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:1px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,transparent)}
+.km-transport-row{grid-template-columns:minmax(0,1.35fr) minmax(150px,.8fr) minmax(150px,.9fr) auto}
 .km-account-glyph{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;flex:0 0 22px;border-radius:50%;background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 14%,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-state-business-primary)}
 .km-key-identity{min-width:0;display:flex;flex-direction:column;gap:2px}
 .km-key-alias-line{display:flex;align-items:center;gap:6px;min-width:0}
@@ -67,7 +68,7 @@ export const CSS = `
 .km-key-last{display:flex;flex-direction:column;gap:2px;min-width:0}
 .km-key-time{font-size:11.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
 .km-key-time.km-warn{color:var(--dsw-alias-state-warn-primary)}
-.km-key-actions{position:relative;display:flex;justify-content:flex-end}
+.km-key-actions{position:relative;display:flex;justify-content:flex-end;gap:6px}
 .km-status{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:11px;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
 .km-status-success{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 26%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 8%,transparent)}
 .km-status-warn{color:var(--dsw-alias-state-warn-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 30%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 8%,transparent)}
@@ -183,6 +184,8 @@ select.km-input{appearance:auto}
   .km-key-row,.km-account-row{grid-template-columns:minmax(0,1fr) 32px;gap:6px}
   .km-key-status,.km-key-last{grid-column:1;padding-left:0}
   .km-key-actions{grid-column:2;grid-row:1}
+  .km-transport-row{grid-template-columns:minmax(0,1fr) auto}
+  .km-transport-row .km-key-actions{justify-content:flex-end;flex-wrap:wrap}
   .km-settings-grid{grid-template-columns:1fr}
   .km-form-grid{grid-template-columns:1fr}
   .km-provider-side .km-status{display:none}

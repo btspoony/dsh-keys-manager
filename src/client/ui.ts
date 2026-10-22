@@ -1054,7 +1054,8 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
   const accountAdoptable = oauthCapable(provider)
   const adoptable = provider.supported || accountAdoptable
 
-  return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', managed && 'km-provider-managed') },
+  // A transport card takes the adopted tint too, so the list reads as one component.
+  return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', (managed || transport) && 'km-provider-managed') },
     h('button', {
       type: 'button',
       className: 'km-provider-head',
@@ -1105,7 +1106,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
       // credential surface is the one account row its own plugin serves.
       transport
         ? transportAccount !== undefined
-          ? h(TransportAccountRow, { account: transportAccount })
+          ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount }))
           : h('div', { className: 'km-muted' }, t('transportProviderHint'))
         : !managed ? h('div', { className: 'km-adopt' },
         h('div', { className: 'km-adopt-copy' },
