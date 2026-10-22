@@ -46,6 +46,12 @@
   "transportStatusSignedOut": "Not signed in",
   "transportRemoveTitle": "Remove the {name} transport account?",
   "transportRemoveBody": "This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service.",
+  "transportModels": "Models",
+  "transportModelsAll": "All models",
+  "transportModelsSelected": "{n} of {total} selected",
+  "transportModelsLoading": "Loading models…",
+  "transportModelsClear": "Clear selection",
+  "transportModelsHint": "Leave every model unchecked to use the full catalog; saving narrows the list this route advertises.",
   "filterGroup": "Filters",
   "transportEmpty": "No transport accounts yet."
 }

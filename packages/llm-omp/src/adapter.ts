@@ -79,6 +79,17 @@ export interface OmpCursorAdapterConfig {
    * `lib/omp/cursor.mjs`. The seam tests drive it with recorded event scripts.
    */
   transport: OmpCursorTransport
+  /**
+   * Read the configured allow-list of catalog ids.
+   *
+   * @remarks
+   * A getter because the profile is a volatile setting: a save updates the
+   * running config reference without re-running the plugin, so a captured
+   * array would go stale. An absent or empty list advertises the full catalog,
+   * so the schema default (`providers.cursor.models: []`) is today's behavior;
+   * a non-empty list narrows the advertised models and the accepted ids.
+   */
+  models?: () => readonly string[] | undefined
 }
 
 /** The DSH llm adapter for every route this plugin's omp transport serves. */
@@ -103,7 +114,8 @@ export class OmpCursorAdapter extends LlmAdapter {
 
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     assertRoute(provider)
-    return CURSOR_MODELS.map(row => ({
+    const allowed = this.allowed()
+    return CURSOR_MODELS.filter(row => allowed === undefined || allowed.has(row.id)).map(row => ({
       provider,
       id: row.id,
       name: row.name,
@@ -113,11 +125,27 @@ export class OmpCursorAdapter extends LlmAdapter {
 
   override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     assertRoute(provider)
-    return modelInfo(provider, rowFor(model))
+    return modelInfo(provider, this.rowFor(model))
   }
 
   override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     return this.call(options)
+  }
+
+  /** The configured ids, or undefined when the route advertises the full catalog. */
+  private allowed(): ReadonlySet<string> | undefined {
+    const models = this.config.models?.()
+    return models === undefined || models.length === 0 ? undefined : new Set(models)
+  }
+
+  /** Resolve one catalog row, refusing ids the configured allow-list excludes. */
+  private rowFor(model: string): CursorModelRow {
+    const row = MODELS_BY_ID.get(model)
+    const allowed = this.allowed()
+    if (row === undefined || (allowed !== undefined && !allowed.has(row.id))) {
+      throw new LlmError(`llm-omp-transports: the cursor route has no model "${model}"`, UNKNOWN_MODEL)
+    }
+    return row
   }
 
   private async *call(options: GenerateOptions): AsyncGenerator<StreamChunk> {
@@ -129,7 +157,7 @@ export class OmpCursorAdapter extends LlmAdapter {
       yield abortedFinish()
       return
     }
-    const row = rowFor(options.model)
+    const row = this.rowFor(options.model)
     // Validate and project before touching the credential: a refused request
     // must not pay a credential read (nor, once the resolver refreshes, a CAS
     // write). Only a request that can be served resolves `access` and carries
@@ -154,15 +182,6 @@ export class OmpCursorAdapter extends LlmAdapter {
     const transportOptions: OmpCursorOptions = { ...request.options, apiKey: accessKey }
     yield* projectEvents(this.config.transport(request.model, request.context, transportOptions), options.signal)
   }
-}
-
-/** Resolve one catalog row, refusing ids the pinned catalog does not serve. */
-function rowFor(model: string): CursorModelRow {
-  const row = MODELS_BY_ID.get(model)
-  if (row === undefined) {
-    throw new LlmError(`llm-omp-transports: the cursor route has no model "${model}"`, UNKNOWN_MODEL)
-  }
-  return row
 }
 
 /** Refuse routes this adapter does not own instead of describing another provider's models. */

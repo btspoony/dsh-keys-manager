@@ -1,10 +1,10 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView } from './types'
+import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
-import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from './format'
+import { cooldownMinutes, cooldownMs, graceMinutes, graceMs, modelPickerRows } from './format'
 
 const h = React.createElement
 
@@ -942,6 +942,114 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
   )
 }
 
+interface TransportModelsProps {
+  route: string
+}
+
+/**
+ * The transport route's model allow-list, collapsed until opened.
+ *
+ * The catalog comes from the host: the route's own `listModels` answers only
+ * the allow-list, so a picker could not discover what was hidden. Selection
+ * saves through the host and an empty selection means "every model", the same
+ * rule the adapter applies.
+ */
+function TransportModels({ route }: TransportModelsProps): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const [open, setOpen] = React.useState(false)
+  const [view, setView] = React.useState<TransportModelsView | null>(null)
+  const [draft, setDraft] = React.useState<ReadonlySet<string>>(new Set())
+  const [busy, setBusy] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const loading = React.useRef(false)
+
+  async function load(): Promise<void> {
+    if (loading.current) return
+    loading.current = true
+    setError(null)
+    const result = await runtime.store.transportModels(route)
+    loading.current = false
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setView(result.value)
+    setDraft(new Set(result.value.models))
+  }
+
+  function toggle(): void {
+    const next = !open
+    setOpen(next)
+    if (next && view === null) void load()
+  }
+
+  function toggleModel(id: string): void {
+    setDraft(current => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function save(): Promise<void> {
+    setBusy(true)
+    setError(null)
+    const result = await runtime.store.saveTransportModels(route, [...draft])
+    setBusy(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    setView(result.value)
+    setDraft(new Set(result.value.models))
+  }
+
+  const rows = view === null ? [] : modelPickerRows(view)
+  return h('div', { className: 'km-models' },
+    h('button', {
+      type: 'button',
+      className: 'km-models-head',
+      onClick: toggle,
+      'aria-expanded': open,
+    },
+      h(Icon, { name: 'chevron', size: 14, className: cx('km-chevron', open && 'km-chevron-open') }),
+      h('span', { className: 'km-models-title' }, t('transportModels')),
+      view === null
+        ? null
+        : h('span', { className: 'km-muted' },
+            draft.size === 0 ? t('transportModelsAll') : t('transportModelsSelected', { n: draft.size, total: view.catalog.length })),
+    ),
+    open ? h('div', { className: 'km-models-body' },
+      error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
+      view === null
+        ? h('div', { className: 'km-muted' }, t('transportModelsLoading'))
+        : h('div', { className: 'km-models-grid' }, rows.map(row =>
+            h('label', { key: row.id, className: 'km-model-option' },
+              h('input', {
+                type: 'checkbox',
+                checked: draft.has(row.id),
+                onChange: () => toggleModel(row.id),
+                disabled: busy,
+              }),
+              h('span', null, row.name),
+            ))),
+      h('div', { className: 'km-models-actions' },
+        h(Button, { size: 'small', variant: 'primary', onClick: () => void save(), disabled: busy || view === null },
+          busy ? t('saving') : t('save')),
+        h(Button, {
+          size: 'small',
+          variant: 'ghost',
+          onClick: () => setDraft(new Set()),
+          disabled: busy || view === null || draft.size === 0,
+        }, t('transportModelsClear')),
+      ),
+      h('div', { className: 'km-field-hint' }, t('transportModelsHint')),
+    ) : null,
+  )
+}
+
 interface ProviderCardProps {
   provider: ProviderView
   expanded: boolean
@@ -1103,11 +1211,15 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
       error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
       warning !== undefined || broken ? h(Notice, { tone: 'warn', title: t('warning') }, broken ? t('bindingBroken') : warning) : null,
       // A transport route has no adopt step and no key pool: its whole
-      // credential surface is the one account row its own plugin serves.
+      // credential surface is the one account row its own plugin serves, plus
+      // the model allow-list its adapter advertises.
       transport
-        ? transportAccount !== undefined
-          ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount }))
-          : h('div', { className: 'km-muted' }, t('transportProviderHint'))
+        ? h('div', { className: 'km-transport-body' },
+            transportAccount !== undefined
+              ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount }))
+              : h('div', { className: 'km-muted' }, t('transportProviderHint')),
+            h(TransportModels, { route: provider.provider }),
+          )
         : !managed ? h('div', { className: 'km-adopt' },
         h('div', { className: 'km-adopt-copy' },
           // I-000063: an OAuth-only route is account-adoptable, so its
