@@ -1528,9 +1528,21 @@ export class KeysManagerService {
     // This read decided the route's attribution, so a count of requests served
     // without one no longer describes it (I-000120).
     this.unattributedRequests.delete(provider)
-    if (!this.ownershipReadFailures.delete(provider)) return
+    const recovering = this.ownershipReadFailures.delete(provider)
+    // Readiness is decided by the read, not by whether it was recovering: a
+    // `record-updated` reconcile can answer the projection while startup
+    // hydration is still pending for another provider, and the old early return
+    // left this one out of `hydratedProviders` — waits kept timing out, routing
+    // stayed skipped, and the count this read had just cleared started growing
+    // again although attribution was already decided. `noteProviderHydrated` is
+    // idempotent (a set add plus waking its waiters).
     this.noteProviderHydrated(provider)
-    void this.scheduleGrantReconciliation(provider, () => this.syncBindingAfterProjectionChange(provider))
+    // Only recovery re-derives the binding: the normal call arrives from a
+    // reconciliation that already owns that re-derive behind it, and the
+    // startup repair is what a failed read skipped.
+    if (recovering) {
+      void this.scheduleGrantReconciliation(provider, () => this.syncBindingAfterProjectionChange(provider))
+    }
   }
 
   /** Release every provider's readiness wait when hydration cannot proceed. */

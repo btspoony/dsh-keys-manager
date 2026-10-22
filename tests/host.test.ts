@@ -9783,6 +9783,105 @@ test('a hydration wait timer does not keep the process alive (I-000116)', async 
   }
 })
 
+// Readiness follows the read, not the recovery: a `record-updated` reconcile can
+// answer the projection while startup hydration is still pending for another
+// provider. Before the fix only a provider that had previously failed was marked
+// hydrated, so these waits kept timing out and requests stayed unattributed.
+
+// The recovery half must not regress: a read that answers after a prior failure
+// marks the provider ready and re-derives the binding the startup repair skipped.
+
+test('a reconcile read after a failed hydration mark still re-derives the binding', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-recovered', email: 'dev@example.com' })
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let failGrantReads = true
+  try {
+    const record = h.store.provider('anthropic')!
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (failGrantReads && key === GRANT_KEY) throw new Error('credential store unavailable')
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const internals = restarted as unknown as {
+      awaitProjectionOwnership: (provider: string) => Promise<boolean>
+      hydratedProviders: Set<string>
+      syncBindingAfterProjectionChange: (provider: string) => Promise<void>
+    }
+    // Count the re-derives: the reconcile ends with one of its own, and the
+    // recovery branch schedules a second because the startup repair skipped it.
+    const realSync = internals.syncBindingAfterProjectionChange.bind(restarted)
+    let syncs = 0
+    internals.syncBindingAfterProjectionChange = async (provider: string) => {
+      syncs += 1
+      return realSync(provider)
+    }
+    // The failed read decided nothing, so ownership is unknown and the startup
+    // repair skipped this route.
+    assert.equal(await internals.awaitProjectionOwnership('anthropic'), false)
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = record.brokerRef
+    failGrantReads = false
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(internals.hydratedProviders.has('anthropic'), true, 'the recovering read did not mark the provider ready')
+    assert.equal(await internals.awaitProjectionOwnership('anthropic'), true, 'ownership stayed unknown after a successful read')
+    await eventually(() => assert.equal(
+      h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv,
+      undefined,
+      'the recovery path stopped re-deriving the binding',
+    ))
+    assert.equal(syncs > 1, true, 'the recovery branch scheduled no binding re-derive of its own')
+  } finally {
+    failGrantReads = false
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+test('a reconcile that answers the projection while hydration is pending marks the provider ready', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-echo-ready', email: 'dev@example.com' })
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  let releaseHydration: (() => void) | undefined
+  const hydrationGate = new Promise<void>(resolve => { releaseHydration = resolve })
+  let grantReads = 0
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      // The first read of the projection key is the startup pass, which stays
+      // pending; the reconcile's own read is authoritative and answers.
+      if (key === GRANT_KEY && ++grantReads === 1) await hydrationGate
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const internals = restarted as unknown as {
+      awaitProjectionOwnership: (provider: string) => Promise<boolean>
+      hydratedProviders: Set<string>
+      hydrationWaitMs: number
+    }
+    internals.hydrationWaitMs = 20
+    assert.equal(internals.hydratedProviders.has('anthropic'), false, 'the startup pass already decided this route')
+    // A reconcile outside the startup pass answers the projection.
+    h.credentials.emitRecordUpdated(GRANT_KEY)
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(internals.hydratedProviders.has('anthropic'), true, 'an answered read did not make the provider ready')
+    assert.equal(await internals.awaitProjectionOwnership('anthropic'), true, 'the wait still timed out after an authoritative read')
+    // Routing proceeds normally, so a served request stays attributed.
+    await consume(restarted.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-echo-ready', messages: [] },
+      async function* () { yield { type: 'finish', reason: { kind: 'stop' } } } as any,
+    ))
+    assert.equal(
+      restarted.getState().providers.find(entry => entry.provider === 'anthropic')!.unattributedRequests ?? 0,
+      0,
+      'an attributed request was counted as unattributed',
+    )
+  } finally {
+    releaseHydration?.()
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
 // I-000201: the count is raised only once downstream actually has an iterator.
 // A routing/adapter failure that throws before dispatch served nothing, so it
 // must not inflate the unattributed count — and repeating it must not either.
