@@ -98,7 +98,7 @@ function controllerOf(provider: string, signIn: SignInProvider, request: SignInR
     // omp re-asks when the input yields no code, so this must tolerate repeats.
     onManualCodeInput: async signal =>
       request.interaction.prompt({
-        kind: 'text',
+        kind: 'manual-code',
         message: MANUAL_CODE_PROMPT,
         ...(signal === undefined && request.signal === undefined
           ? {}

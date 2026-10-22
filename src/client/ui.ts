@@ -1267,11 +1267,15 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
           provider.models.length > 0 ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('models')}:`), h('span', null, t('countModels', { n: provider.models.length }))) : null,
         ),
         isExtra
-          ? h('div', { className: 'km-adopt-actions' },
+          // The key form keeps the column's full width; only the sign-in entry
+          // joins the action row, matching the managed body's layout.
+          ? h(React.Fragment, null,
               signInCreatesRoute
-                ? h(Button, { variant: 'secondary', onClick: () => void adoptThenLogin(), disabled: adopting || startingLogin },
-                    startingLogin ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'user', size: 14 }),
-                    h('span', null, startingLogin ? t('adopting') : t('addAccount')),
+                ? h('div', { className: 'km-adopt-actions' },
+                    h(Button, { variant: 'secondary', onClick: () => void adoptThenLogin(), disabled: adopting || startingLogin },
+                      startingLogin ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'user', size: 14 }),
+                      h('span', null, startingLogin ? t('adopting') : t('addAccount')),
+                    ),
                   )
                 : null,
               h(KeyForm, { provider, autoFocus: true }),
@@ -1351,6 +1355,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
     login !== null ? h(LoginDialog, {
       provider,
       attemptId: login.attemptId,
+      cancellable: oauthCapable(provider) && provider.nativeAuth?.oauth !== true,
       onClose: () => setLogin(null),
     }) : null,
   )
@@ -1378,6 +1383,12 @@ interface LoginDialogProps {
   /** Only the display name is rendered; a transport account supplies one too. */
   provider: { displayName: string }
   attemptId: string
+  /**
+   * True when this plugin drove the flow and may cancel it. A seam-driven
+   * sign-in (pi-ai OAuth, transport) settles through its own surface, so its
+   * dialog only closes.
+   */
+  cancellable?: boolean
   onClose: () => void
 }
 
@@ -1394,7 +1405,7 @@ const LOGIN_POLL_FAILURE_LIMIT = 3
  * three consecutive misses and renders the failure notice (N1) instead of
  * waiting forever.
  */
-function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.ReactElement {
+function LoginDialog({ provider, attemptId, cancellable = false, onClose }: LoginDialogProps): React.ReactElement {
   const runtime = useRuntime()
   const t = useT()
   const [attempt, setAttempt] = React.useState<AccountAttemptView | null>(null)
@@ -1403,6 +1414,7 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
   const [answer, setAnswer] = React.useState('')
   const [answering, setAnswering] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [cancelling, setCancelling] = React.useState(false)
   const pollNowRef = React.useRef<(() => void) | null>(null)
   const onCloseRef = React.useRef(onClose)
   onCloseRef.current = onClose
@@ -1520,6 +1532,23 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
     pollNowRef.current?.()
   }
 
+  // Only an in-process attempt may be cancelled here; see `cancellable`.
+  const inProcess = cancellable
+
+  async function cancel(): Promise<void> {
+    if (cancelling) return
+    setCancelling(true)
+    setError(null)
+    const result = await runtime.store.cancelAccountLogin(attemptId)
+    setCancelling(false)
+    if (!result.ok) {
+      setError(result.error)
+      return
+    }
+    // Cancellation is a state transition, not an ack: poll for it.
+    pollNowRef.current?.()
+  }
+
   const lastNotice = attempt !== null && attempt.notices.length > 0 ? attempt.notices[attempt.notices.length - 1]! : null
   const safeUrl = attempt !== null ? attempt.notices.map(notice => safeNoticeUrl(notice.url)).reverse().find(url => url !== null) ?? null : null
   const answerable = prompt !== undefined && !answering && answer.trim().length > 0
@@ -1552,7 +1581,7 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
         h('div', { className: 'km-login-prompt-title' }, t('loginPromptTitle')),
         h('div', { className: 'km-field' },
           h('span', { className: 'km-field-label' }, prompt.message),
-          prompt.kind === 'text' ? h('span', { className: 'km-muted' }, t('loginPasteHint')) : null,
+          prompt.kind === 'manual-code' ? h('span', { className: 'km-muted' }, t('loginPasteHint')) : null,
           prompt.kind === 'select' && prompt.options !== undefined
             ? h('select', {
                 className: 'km-input',
@@ -1587,7 +1616,12 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
     title: t('loginTitle'),
     onClose,
     busy: false,
-    footer: h(Button, { onClick: onClose, disabled: answering }, t('close')),
+    footer: [
+      ...(inProcess
+        ? [h(Button, { key: 'cancel', onClick: () => void cancel(), disabled: answering || cancelling }, cancelling ? t('loginPending') : t('cancel'))]
+        : []),
+      h(Button, { key: 'close', onClick: onClose, disabled: answering || cancelling }, t('close')),
+    ],
   }, body)
 }
 

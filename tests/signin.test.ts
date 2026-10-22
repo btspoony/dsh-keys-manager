@@ -98,7 +98,7 @@ describe('zai sign-in', () => {
     expect(credential.access).toBe('ak.secret')
     expect(calls).toEqual([
       { kind: 'notify', message: 'Complete Z.ai login.', url: 'https://chat.z.ai/api/oauth/authorize?state=abc' },
-      { kind: 'prompt', message: 'Paste the final redirect URL or the authorization code', promptKind: 'text' },
+      { kind: 'prompt', message: 'Paste the final redirect URL or the authorization code', promptKind: 'manual-code' },
       { kind: 'notify', message: 'Waiting for pasted authorization code...' },
     ])
   })

@@ -90,7 +90,12 @@ export interface AuthorizationFlowEntry {
 export interface AuthorizationInteractionLike {
   notify(notice: { message: string; url?: string; code?: string }): void
   prompt(prompt: {
-    kind?: 'text' | 'secret' | 'select'
+    /**
+     * The seam itself only ever sends the three pi-ai kinds. `manual-code` is
+     * this plugin's own extension: the out-of-band paste step an OAuth-code
+     * driver parks on, which the dialog renders with paste guidance.
+     */
+    kind?: 'text' | 'secret' | 'select' | 'manual-code'
     message: string
     placeholder?: string
     options?: ReadonlyArray<{ id: string; label: string; description?: string }>

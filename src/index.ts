@@ -270,6 +270,13 @@ interface LoginAttempt {
   createdAt: number
   updatedAt: number
   settledAt?: number
+  /**
+   * True for an attempt this plugin drives itself (`src/oauth/`), false for one
+   * the authorization seam owns. Only an in-process attempt may be cancelled
+   * here: the seam owns its own settlement and an aborted seam attempt could
+   * leave a committed grant unharvested.
+   */
+  inProcess: boolean
   controller: AbortController
   /**
    * Resolves once the seam's attempt has settled AND this manager has acted on
@@ -322,7 +329,9 @@ function promptView(prompt: { kind?: string; message: string; placeholder?: stri
         && typeof (entry as Record<string, unknown>).id === 'string'
         && typeof (entry as Record<string, unknown>).label === 'string')
     : undefined
-  const kind = prompt.kind === 'secret' || prompt.kind === 'select' ? prompt.kind : 'text'
+  const kind = prompt.kind === 'secret' || prompt.kind === 'select' || prompt.kind === 'manual-code'
+    ? prompt.kind
+    : 'text'
   return {
     kind,
     message: prompt.message,
@@ -409,6 +418,7 @@ const INVOCATIONS: InvocationDescriptor[] = [
   // duplicating the account.
   endpoint('beginAccountLogin', ['provider', 'alias', 'targetAccountId']),
   endpoint('answerAccountPrompt', ['attemptId', 'value']),
+  endpoint('cancelAccountLogin', ['attemptId']),
   endpoint('accountAttempt', ['attemptId']),
   endpoint('listAccountAttempts'),
   endpoint('activateAccount', ['provider', 'accountId']),
@@ -700,25 +710,20 @@ function transportMethodOf(flow: AuthorizationFlowEntry): string | undefined {
   return flow.methods[0]?.id
 }
 
-/**
- * The catalog a transport route advertises to its model picker.
- *
- * Only the Cursor route ships a catalog projection today; a route without one
- * reports no models rather than borrowing another route's catalog.
- */
 /** The `devin` transport route id (its catalog ships with the same package). */
 const DEVIN_ROUTE = 'devin'
 
 /**
- * The model catalog one transport route advertises.
+ * The catalog a transport route advertises to its model picker.
  *
- * A transport route's catalog is the transport package's own data, not this
- * plugin's. `devin` is delivered by a sibling track in the same iteration, so
- * the installed transport build may predate its export: the function is probed
- * on the module namespace instead of imported by name, and an absent export
- * yields an empty catalog instead of breaking this plugin's import graph. The
- * picker then offers the all-models state, which is the truthful answer for a
- * route whose adapter ships no list.
+ * A route without a catalog projection reports no models rather than borrowing
+ * another route's. The catalog is the transport package's own data, not this
+ * plugin's: `devin` is delivered by a sibling track in the same iteration, so
+ * the installed transport build may predate its export. The function is
+ * therefore probed on the module namespace instead of imported by name — an
+ * absent export yields an empty catalog instead of breaking this plugin's
+ * import graph. An older build that still registers the route then has no list
+ * to narrow, so the picker offers the all-models state.
  */
 function transportCatalogOf(route: string): TransportCatalogModel[] {
   if (route === CURSOR_ROUTE) return cursorCatalogModels()
@@ -2310,6 +2315,7 @@ export class KeysManagerService {
       notices: [],
       createdAt: now,
       updatedAt: now,
+      inProcess: flow === undefined,
       controller: new AbortController(),
     }
     this.loginAttempts.set(attempt.id, attempt)
@@ -2414,11 +2420,13 @@ export class KeysManagerService {
     } else if (this.store.provider(provider) === undefined) {
       await this.addExtraProvider(provider, input.alias, input.value, importedFrom)
       const created = this.store.provider(provider)
-      attempt.accountId = created?.keys.find(key => key.importedFrom === importedFrom)?.id
+      // `findLast`: a repeat sign-in on a managed route appends a second row
+      // with the same provenance, and the attempt must name the row it wrote.
+      attempt.accountId = created?.keys.findLast(key => key.importedFrom === importedFrom)?.id
     } else {
       await this.addKey(provider, input.alias, input.value, importedFrom)
       const managed = this.store.provider(provider)
-      attempt.accountId = managed?.keys.find(key => key.importedFrom === importedFrom)?.id
+      attempt.accountId = managed?.keys.findLast(key => key.importedFrom === importedFrom)?.id
     }
     this.finishLoginAttempt(attempt, 'ready')
   }
@@ -2462,12 +2470,15 @@ export class KeysManagerService {
    * Remote: cancel one interactive attempt.
    *
    * The seam path learns about cancellation from `authorization`; an
-   * in-process sign-in has no seam handle, so the dialog's Cancel calls this.
-   * Idempotent: a settled attempt is left alone.
+   * in-process sign-in has no seam handle, so the login dialog's Cancel calls
+   * this. Idempotent: a settled attempt is left alone.
    */
   cancelAccountLogin(attemptId: string): void {
     const attempt = this.loginAttempts.get(attemptId)
     if (attempt === undefined) throw new Error('Unknown sign-in attempt')
+    if (!attempt.inProcess) {
+      throw new Error('The authorization seam owns this sign-in; cancel it from the surface that started it')
+    }
     this.finishLoginAttempt(attempt, 'cancelled')
   }
 
@@ -2576,6 +2587,8 @@ export class KeysManagerService {
       notices: [],
       createdAt: now,
       updatedAt: now,
+      // A transport attempt is seam-driven; `cancelAccountLogin` must not touch it.
+      inProcess: false,
       controller: new AbortController(),
     }
     this.loginAttempts.set(attempt.id, attempt)

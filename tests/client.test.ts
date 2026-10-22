@@ -2103,7 +2103,7 @@ function makePasteAttemptView(): AccountAttemptView {
     ...makeAttemptView(),
     provider: 'zai',
     notices: [{ message: 'Open this URL to continue signing in.', url: 'https://chat.z.ai/api/oauth/authorize' }],
-    prompt: { kind: 'text', message: 'Paste the final redirect URL or the authorization code' },
+    prompt: { kind: 'manual-code', message: 'Paste the final redirect URL or the authorization code' },
   }
 }
 
@@ -2182,6 +2182,74 @@ function makePasteAttemptView(): AccountAttemptView {
     // The rule's manual paste step, and the wording a `zcode://` redirect needs.
     expect(view.nodes.some(node => node.text === 'Paste the final redirect URL or the authorization code')).toBe(true)
     expect(view.nodes.some(node => node.text === '从浏览器地址栏复制完整 URL，或只粘贴授权码。')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the sign-in dialog cancels an in-process attempt', async () => {
+    const state = makeState()
+    state.providers = [makeSignInProvider()]
+    let cancelled = false
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePasteAttemptView() }
+      if (endpoint === 'keysManager/cancelAccountLogin') {
+        cancelled = true
+        return { ok: true, value: null }
+      }
+      if (endpoint === 'keysManager/accountAttempt') {
+        return {
+          ok: true,
+          value: cancelled
+            ? { ...makePasteAttemptView(), status: 'cancelled', prompt: undefined, updatedAt: 9, error: 'The zai sign-in was cancelled' }
+            : makePasteAttemptView(),
+        }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
+    await view.flush()
+
+    const cancel = findButtons(view.nodes, '取消')[0]
+    expect(cancel).toBeDefined()
+    ;(cancel!.props!.onClick as () => void)()
+    await view.flush()
+    expect(cancelled).toBe(true)
+    // The poller sees the terminal state and renders it.
+    expect(view.nodes.some(node => node.text === 'The zai sign-in was cancelled')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a seam-driven login dialog offers no Cancel', async () => {
+    // The seam settles its own attempts; the dialog can only be closed.
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makeAttemptView() }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makeAttemptView() }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
+    await view.flush()
+
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+    expect(findButtons(view.nodes, '取消')).toHaveLength(0)
     view.unmount()
     setRuntimeContext(null)
   })

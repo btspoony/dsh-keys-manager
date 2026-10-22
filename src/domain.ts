@@ -309,7 +309,12 @@ export interface AccountAttemptNotice {
 
 /** Serializable prompt parked on an interactive sign-in attempt. */
 export interface AccountAttemptPrompt {
-  kind: 'text' | 'secret' | 'select'
+  /**
+   * `manual-code` is the out-of-band paste step an OAuth-code flow parks on
+   * (a `zcode://` redirect the user copies back); it renders as a text input
+   * and carries the paste guidance, unlike a generic `text` prompt.
+   */
+  kind: 'text' | 'secret' | 'select' | 'manual-code'
   message: string
   placeholder?: string
   options?: ReadonlyArray<{ id: string; label: string; description?: string }>

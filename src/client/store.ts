@@ -228,6 +228,9 @@ export function createStore(ctx: ClientContext): ClientStore {
     answerAccountPrompt(attemptId: string, value: string): Promise<AckResult> {
       return send('answerAccountPrompt', { attemptId, value }, () => ({ ok: true, value: null }))
     },
+    cancelAccountLogin(attemptId: string): Promise<AckResult> {
+      return send('cancelAccountLogin', { attemptId }, () => ({ ok: true, value: null }))
+    },
     async accountAttempt(attemptId: string): Promise<AccountAttemptResult> {
       const result = await rpcRead('accountAttempt', { attemptId })
       if (!result.ok) return { ok: false, error: result.error.message }

@@ -4282,7 +4282,9 @@ test('signing in to zai appends one sign-in row to the adopted route', async () 
     const view = await h.service.beginAccountLogin('zai', 'GLM')
     await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'prompt'))
     assert.deepEqual(h.service.getAccountAttempt(view.id)!.prompt, {
-      kind: 'text',
+      // `manual-code` (not a generic text prompt) is what carries the paste
+      // guidance in the dialog.
+      kind: 'manual-code',
       message: 'Paste the final redirect URL or the authorization code',
     })
     await h.service.answerAccountPrompt(view.id, 'zcode://callback?code=the-code')
@@ -4329,6 +4331,52 @@ test('re-authenticating a sign-in row replaces its literal in place', async () =
     assert.equal(after.valueMissing, false)
     assert.equal(after.cooldownUntil, 0)
     assert.equal(h.service.getAccountAttempt(second.id)!.accountId, before.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a repeat sign-in names the row it appended, not the first sign-in row', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers())
+    h.credentials.refs.set('ZAI_API_KEY', 'sk-existing-zai')
+    await h.service.adoptProvider('zai')
+
+    const signIn = async (alias: string, code: string): Promise<string> => {
+      const view = await h.service.beginAccountLogin('zai', alias)
+      await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'prompt'))
+      await h.service.answerAccountPrompt(view.id, code)
+      await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+      return h.service.getAccountAttempt(view.id)!.accountId!
+    }
+
+    const firstRow = await signIn('GLM 1', 'code-1')
+    const secondRow = await signIn('GLM 2', 'code-2')
+    // Each attempt names the row it wrote: the earlier bug reported the first
+    // matching row, so a second Add account settled pointing at the first.
+    assert.notEqual(secondRow, firstRow)
+    const rows = h.store.provider('zai')!.keys.filter(key => key.importedFrom === ZAI_DRIVER)
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0]!.id, firstRow)
+    assert.equal(rows[1]!.id, secondRow)
+    assert.equal(h.credentials.refs.get(rows[1]!.ref), 'zai-key:code-2')
+  } finally {
+    await h.close()
+  }
+})
+
+test('cancelling a seam-driven attempt is refused', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    const view = await h.service.beginAccountLogin('anthropic')
+    // The seam owns this attempt's settlement: aborting it from here could
+    // leave a committed grant unharvested.
+    assert.throws(
+      () => h.service.cancelAccountLogin(view.id),
+      /authorization seam owns this sign-in/,
+    )
+    assert.equal(h.service.getAccountAttempt(view.id)!.status, 'pending')
   } finally {
     await h.close()
   }
@@ -11386,6 +11434,7 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
       'setSettings',
       'beginAccountLogin',
       'answerAccountPrompt',
+      'cancelAccountLogin',
       'accountAttempt',
       'listAccountAttempts',
       'activateAccount',
@@ -11403,6 +11452,7 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
       invocations.find(invocation => invocation.method === method)!.parameters.map(parameter => parameter.name)
     assert.deepEqual(params('beginAccountLogin'), ['provider', 'alias', 'targetAccountId'])
     assert.deepEqual(params('answerAccountPrompt'), ['attemptId', 'value'])
+    assert.deepEqual(params('cancelAccountLogin'), ['attemptId'])
     assert.deepEqual(params('accountAttempt'), ['attemptId'])
     assert.deepEqual(params('listAccountAttempts'), [])
     assert.deepEqual(params('activateAccount'), ['provider', 'accountId'])
@@ -17609,11 +17659,17 @@ test('a transport route without a shipped catalog resolves to the all-models sta
   try {
     h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: { devin: { models: [] } } }, revision: 1 })
     const transports = await import('dsh-llm-omp-transports') as Record<string, unknown>
-    const expected = typeof transports.devinCatalogModels === 'function'
-      ? (transports.devinCatalogModels as () => TransportCatalogModel[])()
-      : []
     const view = await h.service.transportModels('devin')
-    assert.deepEqual(view.catalog, expected)
+    if (typeof transports.devinCatalogModels === 'function') {
+      // Track B shipped its catalog: the root must serve exactly that list.
+      const shipped = (transports.devinCatalogModels as () => TransportCatalogModel[])()
+      assert.deepEqual(view.catalog.map(row => row.id), shipped.map(row => row.id))
+      assert.ok(shipped.length > 0)
+    } else {
+      // An older transport build registers the route but ships no list to
+      // narrow, so the picker offers the all-models state instead of failing.
+      assert.deepEqual(view.catalog, [])
+    }
     assert.deepEqual(view.models, [])
     // The existing cursor branch is untouched by the new probe.
     assert.ok((await h.service.transportModels('cursor')).catalog.length > 0)
