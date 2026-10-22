@@ -3726,6 +3726,35 @@ export class KeysManagerService {
       && records !== undefined
       ? await this.prepareActivation(provider, located, records)
       : undefined
+    if (prepared !== undefined && records !== undefined) {
+      // Same-`grantRef` rotation: pi-ai can refresh the ACCESS token while
+      // keeping the refresh token, so the reference never moves, both `grantRef`
+      // fences pass, and the projection can already carry the fresh payload
+      // while the plugin-scope record still holds the stale one. Projecting
+      // `prepared.payload` then writes an older credential over a fresher
+      // projection. Re-read the source as late as possible and refuse unless it
+      // still says what this activation prepared.
+      //
+      // This read sits OUTSIDE the queue, exactly where `prepareActivation` does
+      // its credential work: a read inside the turn would put credential I/O
+      // back on the global mutation queue, which is the cross-provider stall —
+      // and the shutdown wait — the activation split exists to remove.
+      //
+      // Residual, named: reading outside the turn only narrows the same-ref
+      // rotation window to this activation's QUEUE WAIT instead of closing it.
+      // Closing it fully needs a seam that lets one read and one write share a
+      // single lock, which `CredentialRecordsLike` (host-types.ts:136-143) does
+      // not promise. What still covers the rest: the in-lock baseline compare on
+      // the projection side, and the post-write `grantRef` recheck for reference
+      // changes. A same-ref rotation that lands while the activation waits in
+      // the queue is the uncovered case.
+      const source = await records.readRecord(prepared.grantRef)
+      if (source === undefined
+        || source.kind !== 'grant'
+        || JSON.stringify(source.payload) !== prepared.written) {
+        throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+      }
+    }
     let undo: ActivationUndo | undefined
     try {
       await this.run(async () => {
@@ -3753,28 +3782,6 @@ export class KeysManagerService {
         // either overwrite a newer generation or report a success the row does
         // not serve. Refusing keeps the record untouched; the caller retries.
         if (this.credentialRecords() !== records || row.oauth.grantRef !== prepared.grantRef) {
-          throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
-        }
-        // Same-`grantRef` rotation: pi-ai can refresh the ACCESS token while
-        // keeping the refresh token, so the reference never moves and both
-        // `grantRef` fences above still pass, while the projection can already
-        // carry the fresh payload and the plugin-scope record the stale one.
-        // Projecting `prepared.payload` then writes an older credential over a
-        // fresher projection whose baseline still matches. Re-read the source
-        // right before the write and refuse unless it still says what this
-        // activation prepared.
-        //
-        // The re-read is OUTSIDE the compare-and-write rather than inside its
-        // callback: `CredentialRecordsLike` documents no lock properties
-        // (host-types.ts:136-143), so nesting one seam call inside another's
-        // per-key lock cannot be established as safe from this repo, and a
-        // non-reentrant seam would deadlock. The outer read narrows the window
-        // to a single seam call, and the in-lock baseline compare covers the
-        // projection side.
-        const source = await records.readRecord(prepared.grantRef)
-        if (source === undefined
-          || source.kind !== 'grant'
-          || JSON.stringify(source.payload) !== prepared.written) {
           throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
         }
         // The projection write is a compare-and-write under the seam's per-key

@@ -5647,6 +5647,50 @@ test('a close requested while the turn is queued still lets the activation persi
 // makes `key`/`env`/`payload` optional, and a read path that omits them while
 // the write path materialises them as `undefined` is the same record. A
 // structural compare refuses that route forever.
+// The source revalidation must not hold the global mutation queue: a slow
+// credential read on one route cannot stall an unrelated provider's mutation,
+// and a mutation queued behind the activation still runs before its turn.
+test('a slow source revalidation holds neither the queue nor a half-prepared activation', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  let releaseRevalidation: (() => void) | undefined
+  const gate = new Promise<void>(resolve => { releaseRevalidation = resolve })
+  let parked = false
+  let grantReads = 0
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const projection = JSON.stringify(h.credentials.records.get(GRANT_KEY)?.payload)
+    await h.service.adoptProvider('zai-coding-cn')
+    // The second read of the grant record is the revalidation before the turn.
+    raw.readRecord = async (key: string) => {
+      if (key === grantRef && ++grantReads === 2) {
+        parked = true
+        await gate
+      }
+      return realRead(key)
+    }
+    const activating = h.service.activateAccount('anthropic', rowId)
+    await eventually(() => assert.equal(parked, true))
+    // The read is parked and the turn is not submitted: an unrelated provider's
+    // mutation must complete while the credential I/O is still in flight.
+    const added = await Promise.race([
+      h.service.addKey('zai-coding-cn', 'other', 'sk-other'),
+      new Promise((resolve) => setTimeout(() => resolve('timeout'), 1_000)),
+    ])
+    assert.notEqual(added, 'timeout', 'a parked credential read held the mutation queue')
+    // A mutation queued behind this activation still sees the pre-activation
+    // world: the turn has not begun, so nothing half-prepared is published.
+    assert.equal(JSON.stringify(h.credentials.records.get(GRANT_KEY)?.payload), projection)
+    releaseRevalidation!()
+    await activating
+  } finally {
+    releaseRevalidation?.()
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
+
 // A same-`grantRef` rotation: the access token refreshed, the reference did not
 // move, and the projection already carries the fresh payload while the record
 // the activation reads still carries the old one. Projecting the old payload
