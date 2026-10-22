@@ -5912,7 +5912,8 @@ test('an activation whose shutdown lands mid-turn waits for the queue and report
       // binding that could not converge during shutdown.
       assert.equal(settled, true)
       assert.equal(
-        view.warnings.some(warning => /pi-ai credential reference|shutting down/i.test(warning)),
+        view.warnings.some(warning =>
+          warning === 'The pi-ai credential reference for anthropic was not updated (Keys Manager is shutting down). Requests may use a different credential source until this is repaired.'),
         true,
         'the activation reported success for a route whose binding never converged',
       )
@@ -5925,6 +5926,71 @@ test('an activation whose shutdown lands mid-turn waits for the queue and report
       await mutating?.catch(() => undefined)
       await activating.catch(() => undefined)
       await closing?.catch(() => undefined)
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+// The shutdown warning comes from the last-point guard itself, which is reached
+// only once the route genuinely needs a write. A refusal that has its own
+// reason upstream (a value Keys Manager did not write) must keep it, and a
+// route that needs nothing must stay silent.
+
+test('a shutdown-era binding refusal keeps its own reason instead of blaming shutdown', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    const record = h.store.provider('anthropic')!
+    const internals = h.service as unknown as {
+      closing: boolean
+      syncBrokerBinding: (provider: string, options?: Record<string, unknown>) => Promise<boolean>
+    }
+    await h.service.addKey('anthropic', 'backup', 'sk-ant-backup')
+    // The pool serves the route, and the profile carries a value Keys Manager
+    // did not write: the sync declines it before the shutdown guard.
+    await h.service.fallbackToKeys('anthropic')
+    await drainGrantChain(h, 'anthropic')
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = 'HAND_EDITED_BY_USER'
+    internals.closing = true
+    try {
+      const converged = await internals.syncBrokerBinding('anthropic')
+      assert.equal(converged, false)
+      const warnings = h.service.getState().warnings
+      assert.equal(
+        warnings.some(warning => warning.includes('shutting down')),
+        false,
+        'a preserved-user-setting refusal was blamed on shutdown',
+      )
+      assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, 'HAND_EDITED_BY_USER')
+    } finally {
+      internals.closing = false
+    }
+    assert.equal(record.brokerRef.length > 0, true)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a converged binding stays silent during shutdown', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    // Activated and already unbound: the sync has nothing to write.
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    const internals = h.service as unknown as {
+      closing: boolean
+      syncBrokerBinding: (provider: string, options?: Record<string, unknown>) => Promise<boolean>
+    }
+    internals.closing = true
+    try {
+      assert.equal(await internals.syncBrokerBinding('anthropic'), true)
+      assert.equal(
+        h.service.getState().warnings.some(warning => warning.includes('shutting down')),
+        false,
+        'a converged route warned about a binding it never needed',
+      )
+    } finally {
+      internals.closing = false
     }
   } finally {
     await h.close()

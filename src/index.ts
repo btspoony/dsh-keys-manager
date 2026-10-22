@@ -3808,19 +3808,12 @@ export class KeysManagerService {
         // running, and `buildState` prunes and drains, so the snapshot must come
         // after they settle rather than beside them.
         await this.queue
-        // The binding's last-point guard refuses writes once `closing` is set,
-        // so a route that still needs converging cannot converge here. Attempt
-        // it (a route that is already converged returns true) and say so when it
-        // did not: the caller must not be told a route converged when it did
-        // not, and the next start's repair pass owns the convergence.
-        const warningsBefore = this.warnings.length
-        const converged = await this.syncBrokerBinding(provider)
-        // Only speak when the sync stayed silent: it reports its own reason for
-        // every refusal it can explain, and a second, vaguer warning would
-        // misattribute that one.
-        if (!converged && this.warnings.length === warningsBefore) {
-          this.bindingWriteRefused(provider, 'Keys Manager is shutting down')
-        }
+        // The binding's last-point guard refuses the write once `closing` is
+        // set and reports that refusal itself, so a route that needs converging
+        // now says so in the returned state instead of reporting a clean
+        // success; a route that is already converged needs no write at all. The
+        // next start's repair pass owns the convergence either way.
+        await this.syncBrokerBinding(provider)
         return this.buildState()
       }
       return await this.run(async () => {
@@ -6294,7 +6287,17 @@ export class KeysManagerService {
     // PR review round 35: the last point before the settings write. Only
     // `closing` is read: shutdown's own pre-close restoration writes here by
     // design and runs before that flag goes up.
-    if (this.closing) return false
+    //
+    // Reaching this point means the route genuinely needs a write: `current ===
+    // desired` already returned true above, and the preserved / releasing /
+    // foreign-value branches declined for their own reasons. So shutdown is
+    // what stops it, and this is the one place that can say so — the callers
+    // cannot infer it (`pushWarning` caps its list, and a silent `false` has
+    // several non-refusal causes upstream).
+    if (this.closing) {
+      this.bindingWriteRefused(provider, 'Keys Manager is shutting down')
+      return false
+    }
     // A caller that stamped the ownership generation it entered with forbids
     // this write once a newer claim landed: the binding it would commit was
     // derived from the classification that claim replaced.

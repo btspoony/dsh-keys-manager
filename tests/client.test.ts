@@ -3042,6 +3042,16 @@ describe('provider quick filter', () => {
         descendants(view.nodes, card).some(node => node.text === 'Cursor pool'),
       )!
       expect(descendants(view.nodes, poolCard).some(node => node.path.includes('km-transport'))).toBe(false)
+      // The chip gate keeps it: an orphan is a transport account with no card,
+      // so All and Transport show it and every other chip hides it.
+      for (const chip of ['builtin', 'plugin', 'oauth']) {
+        selectChip(view, chip)
+        expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(0)
+      }
+      selectChip(view, 'transport')
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(1)
+      selectChip(view, 'all')
+      expect(findByClass(view.nodes, 'km-transport-row')).toHaveLength(1)
       // Counted exactly once: the card that collides with the route id owns no
       // account, so the row contributes the single orphan entry.
       const expected = state.providers.filter(provider => provider.managed || provider.transport === true).length + 1
