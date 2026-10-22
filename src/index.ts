@@ -1720,16 +1720,30 @@ export class KeysManagerService {
   }
 
   /** Serialize mutations, rejecting submissions that arrive during shutdown. */
-  private run<T>(operation: () => Promise<T>): Promise<T> {
+  private run<T>(operation: () => Promise<T>, onFailure?: (error: unknown) => Promise<void>): Promise<T> {
     if (this.closing) return Promise.reject(new Error('Keys Manager is shutting down'))
     const guarded = async (): Promise<T> => {
       if (this.store.readOnly) {
         throw new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.')
       }
-      const result = await operation()
-      // A mutation is not successful until its state document is durable.
-      await this.store.flush()
-      return result
+      try {
+        const result = await operation()
+        // A mutation is not successful until its state document is durable.
+        await this.store.flush()
+        return result
+      } catch (error) {
+        // Failure cleanup belongs to THIS turn's exclusive window, not a later
+        // one: a queued mutation (a removal, say) would otherwise run first and
+        // destroy the state the undo needs to restore. `guarded` resolves only
+        // after the hook, so everything already submitted behind this turn sees
+        // the compensated state. Both awaits are best-effort — the caller must
+        // receive the original error, not the cleanup's.
+        if (onFailure !== undefined) {
+          await onFailure(error).catch(() => undefined)
+          await this.store.flush().catch(() => undefined)
+        }
+        throw error
+      }
     }
     const next = this.queue.then(guarded, guarded)
     this.queue = next.catch(() => {})
@@ -3754,6 +3768,24 @@ export class KeysManagerService {
         if (row.oauth.grantRef !== prepared.grantRef) {
           throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
         }
+      }, async () => {
+        // A rejected flush lands here AFTER the turn resolved its work: `run`
+        // does not roll the mutation back, so the row is still cleared in memory
+        // and the projection still serves the route. Undo both once, by
+        // identity, inside THIS turn's window — a later turn would lose the race
+        // against every mutation already queued behind the activation (a removal
+        // of the account deletes the half-committed projection first, and the
+        // captured baseline could then no longer be restored). Failures before
+        // the write leave `undo` unset: nothing to undo.
+        //
+        // Residual (I-000090 territory): `undo` is assigned only once the write
+        // resolved, so a `modifyRecord` that applies its mutation and THEN
+        // rejects refuses with the raw seam error and keeps the projection. What
+        // compensation could run is undecidable from this repo — the seam would
+        // have to promise it never commits then rejects — so this shape is left
+        // as the seam reports it rather than guessed at.
+        if (undo === undefined) return
+        await this.compensateActivationFlush(provider, accountId, prepared!, undo, records!)
       })
       // The re-activated grant is the serving credential again, so a broker
       // reference left by the key pool must go (see syncBrokerBinding). A
@@ -3779,40 +3811,16 @@ export class KeysManagerService {
         return this.buildState()
       })
     } catch (error) {
-      // A rejected flush lands here AFTER the turn resolved its work: `run`
-      // does not roll the mutation back (`1789-1800`), so the row is still
-      // cleared in memory and the projection still serves the route. Undo both
-      // once, by identity. Failures before the write leave `undo` unset.
-      //
-      // Residual (I-000090 territory): `undo` is assigned only once the write
-      // resolved, so a `modifyRecord` that applies its mutation and THEN
-      // rejects refuses with the raw seam error and keeps the projection. What
-      // compensation could run is undecidable from this repo — the seam would
-      // have to promise it never commits then rejects — so this shape is left
-      // as the seam reports it rather than guessed at.
-      if (undo !== undefined) {
-        const compensate = (): Promise<void> =>
-          this.compensateActivationFlush(provider, accountId, prepared!, undo!, records!)
-        // Queue-owned failure cleanup: `run` has already released the queue on
-        // this rejection path, so a bare call would race a later mutation's
-        // flush — that mutation could persist the pre-compensation row values
-        // while this restore is still awaiting seam I/O, and the assignment
-        // landing after it would never reach disk. As its own turn, no other
-        // mutation can observe the half-restored state and the turn's flush
-        // makes the undo durable.
-        if (this.closing || this.store.readOnly) {
-          // Fallback, named: the queue refuses turns in both states, and the
-          // projection and row must still be put back. Restore in memory only —
-          // the next successful mutation's flush persists it — rather than skip
-          // the undo and leave a live projection nothing owns.
-          await compensate()
-        } else {
-          // A refused or failed flush of the compensating turn leaves memory
-          // restored; the original error is what the caller must see, and the
-          // next successful flush persists the undo.
-          await this.run(compensate).catch(() => undefined)
-        }
-      }
+      // Which path covers which case:
+      // - `run` refuses the submission while `closing`, and `guarded` refuses a
+      //   read-only store before the operation runs: nothing was written, so
+      //   `undo` stayed unset and there is nothing to compensate.
+      // - a failure INSIDE the turn (the flush, or the seam) runs the
+      //   compensation hook above, inside that turn's exclusive window, even
+      //   when closing began during it; that hook is the fallback the previous
+      //   independent turn used to be, and it needs no closing branch.
+      // - the hook's own flush is best-effort: a still-unwritable store leaves
+      //   memory restored and the next successful flush persists it.
       throw error
     }
   }

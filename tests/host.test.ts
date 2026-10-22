@@ -5905,6 +5905,77 @@ test('a failed activation compensates under the queue so a later mutation sees t
   }
 })
 
+// The compensation runs inside the failing turn's window, so a mutation
+// submitted while the flush was pending cannot run before it. A removal of the
+// activated account used to delete the half-committed projection first, leaving
+// the compensation to conclude "gone" and the captured baseline unrestorable.
+
+test('a removal queued behind a failed activation cannot outrun its compensation', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({
+    accountId: 'acc-a',
+    email: 'a@example.com',
+    refresh: 'rt-a',
+  })
+  const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b' })
+  const internals = h.service as unknown as {
+    oauthOwnerFor: (provider: string) => string | null
+  }
+  try {
+    // B is the route's owner and its projection is the activation's baseline.
+    await h.service.activateAccount('anthropic', b.rowId)
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(internals.oauthOwnerFor('anthropic'), b.rowId)
+    const raw = h.credentials.raw
+    const realModify = raw.modifyRecord.bind(raw)
+    let releaseWrite: (() => void) | undefined
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve })
+    let writeParked = false
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+      if (key === GRANT_KEY && !writeParked) {
+        writeParked = true
+        await writeGate
+      }
+      return realModify(key, mutate)
+    }
+    // The activation's own flush is the one that fails.
+    const realFlush = h.store.flush.bind(h.store)
+    let armed = true
+    h.store.flush = async () => {
+      if (armed) {
+        armed = false
+        throw new Error('state file could not be written')
+      }
+      return realFlush()
+    }
+    let rejection: unknown
+    const activating = h.service.activateAccount('anthropic', rowA).catch((error: unknown) => { rejection = error })
+    let removing: Promise<unknown> | undefined
+    try {
+      await eventually(() => assert.equal(writeParked, true))
+      // Queued while the activation's turn is still writing, i.e. before its
+      // flush failure is known: it removes A, whose projection is the
+      // half-committed one.
+      removing = h.service.removeAccount('anthropic', rowA)
+      releaseWrite!()
+      await activating
+      await removing
+    } finally {
+      releaseWrite?.()
+      await activating.catch(() => {})
+      await removing?.catch(() => {})
+      raw.modifyRecord = realModify
+      h.store.flush = realFlush
+    }
+    assert.match(String(rejection), /state file could not be written/)
+    const live = h.credentials.records.get(GRANT_KEY)
+    assert.ok(live, 'the removal destroyed the baseline the compensation had to restore')
+    assert.equal((live.payload as Record<string, unknown>).accountId, 'acc-b', 'B is not serving again')
+    assert.equal(internals.oauthOwnerFor('anthropic'), b.rowId, 'the restored projection has no owner')
+  } finally {
+    await h.close()
+  }
+})
+
 // P2 (queue-owned snapshot): `buildState` prunes and drains, so taking it
 // outside the queue let a mutation enter, mutate and be mid-flush while the
 // activation's view was built — exposing state that was not durable yet.
