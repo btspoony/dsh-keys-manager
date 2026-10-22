@@ -5647,6 +5647,68 @@ test('a close requested while the turn is queued still lets the activation persi
 // makes `key`/`env`/`payload` optional, and a read path that omits them while
 // the write path materialises them as `undefined` is the same record. A
 // structural compare refuses that route forever.
+// A same-`grantRef` rotation: the access token refreshed, the reference did not
+// move, and the projection already carries the fresh payload while the record
+// the activation reads still carries the old one. Projecting the old payload
+// over the fresh projection would undo the refresh.
+test('a source record superseded by a same-ref rotation refuses before projecting', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+  })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const stale = h.credentials.records.get(grantRef)!.payload as Record<string, unknown>
+    const fresh = { ...stale, access: 'at-refreshed', expires: 1_900_000_100_000 }
+    // The route already serves the refreshed payload; the reconciler has not
+    // copied it back to the plugin-scope record yet.
+    h.credentials.records.set(GRANT_KEY, { kind: 'grant', payload: fresh })
+    let grantReads = 0
+    raw.emitRecordUpdated = () => undefined
+    // The second read of the grant record is the pre-write revalidation, and by
+    // then the reconciler has caught up.
+    raw.readRecord = async (key: string) => {
+      if (key === grantRef && ++grantReads === 2) {
+        h.credentials.records.set(grantRef, { kind: 'grant', payload: fresh })
+      }
+      return realRead(key)
+    }
+    await assert.rejects(
+      () => h.service.activateAccount('anthropic', rowId),
+      /could not be projected; activate the account again/,
+      'the activation projected a stale source over a fresher projection',
+    )
+    // The refreshed payload still serves: nothing was written over it.
+    assert.deepEqual(h.credentials.records.get(GRANT_KEY)!.payload, fresh)
+  } finally {
+    raw.emitRecordUpdated = realEmit
+    raw.readRecord = realRead
+    await h.close()
+  }
+})
+
+test('a source record newer than the projection still projects normally', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+  })
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const stale = h.credentials.records.get(grantRef)!.payload as Record<string, unknown>
+    const fresh = { ...stale, access: 'at-newer', expires: 1_900_000_200_000 }
+    // The records are current; the projection lags behind them. Re-activating is
+    // the legitimate way to publish the newer credential.
+    h.credentials.records.set(grantRef, { kind: 'grant', payload: fresh })
+    await h.service.activateAccount('anthropic', rowId)
+    assert.deepEqual(h.credentials.records.get(GRANT_KEY)!.payload, fresh)
+  } finally {
+    await h.close()
+  }
+})
+
 // A row that becomes an OAuth account between the locator and the turn is a
 // stale locator, not a store without record support.
 test('an account that changes kind before the turn reports the change, not the store', async () => {

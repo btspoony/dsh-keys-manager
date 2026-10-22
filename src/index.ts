@@ -3755,6 +3755,28 @@ export class KeysManagerService {
         if (this.credentialRecords() !== records || row.oauth.grantRef !== prepared.grantRef) {
           throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
         }
+        // Same-`grantRef` rotation: pi-ai can refresh the ACCESS token while
+        // keeping the refresh token, so the reference never moves and both
+        // `grantRef` fences above still pass, while the projection can already
+        // carry the fresh payload and the plugin-scope record the stale one.
+        // Projecting `prepared.payload` then writes an older credential over a
+        // fresher projection whose baseline still matches. Re-read the source
+        // right before the write and refuse unless it still says what this
+        // activation prepared.
+        //
+        // The re-read is OUTSIDE the compare-and-write rather than inside its
+        // callback: `CredentialRecordsLike` documents no lock properties
+        // (host-types.ts:136-143), so nesting one seam call inside another's
+        // per-key lock cannot be established as safe from this repo, and a
+        // non-reentrant seam would deadlock. The outer read narrows the window
+        // to a single seam call, and the in-lock baseline compare covers the
+        // projection side.
+        const source = await records.readRecord(prepared.grantRef)
+        if (source === undefined
+          || source.kind !== 'grant'
+          || JSON.stringify(source.payload) !== prepared.written) {
+          throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+        }
         // The projection write is a compare-and-write under the seam's per-key
         // lock: it lands only while the route still serves the baseline read
         // above. A removal or a foreign writer that got there first makes the
