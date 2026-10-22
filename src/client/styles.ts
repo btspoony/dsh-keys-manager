@@ -59,6 +59,17 @@ export const CSS = `
 .km-account-row:first-child{border-top:0}
 .km-account-row::before{content:'';position:absolute;left:0;top:12px;bottom:12px;width:2px;border-radius:1px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,transparent)}
 .km-transport-row{grid-template-columns:minmax(0,1.35fr) minmax(150px,.8fr) minmax(150px,.9fr) auto}
+.km-transport-body{display:flex;flex-direction:column;gap:10px}
+.km-models{border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}
+.km-models-head{display:flex;align-items:center;gap:7px;width:100%;padding:9px 11px;border:0;border-radius:9px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;font-weight:550;text-align:left;cursor:pointer}
+.km-models-head:hover{background:var(--dsw-alias-bg-layer-2)}
+.km-models-title{font-weight:600}
+.km-models-body{display:flex;flex-direction:column;gap:9px;padding:9px 11px 11px;border-top:1px solid var(--dsw-alias-border-l1)}
+.km-models-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:3px 10px;max-height:220px;overflow:auto}
+.km-model-option{display:flex;align-items:center;gap:7px;min-width:0;font-size:12px;color:var(--dsw-alias-label-primary);cursor:pointer}
+.km-model-option input{flex:0 0 auto;margin:0;accent-color:var(--dsw-alias-state-business-primary)}
+.km-model-option span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.km-models-actions{display:flex;justify-content:flex-end;gap:8px}
 .km-account-glyph{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;flex:0 0 22px;border-radius:50%;background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 14%,var(--dsw-alias-bg-layer-2));color:var(--dsw-alias-state-business-primary)}
 .km-key-identity{min-width:0;display:flex;flex-direction:column;gap:2px}
 .km-key-alias-line{display:flex;align-items:center;gap:6px;min-width:0}

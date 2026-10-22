@@ -178,6 +178,13 @@ const zh = {
       transportStatusSignedOut: '未登录',
       transportRemoveTitle: '移除 {name} 传输账户？',
       transportRemoveBody: '这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。',
+      // The route's model allow-list, edited in the transport card.
+      transportModels: '模型',
+      transportModelsAll: '全部模型',
+      transportModelsSelected: '已选 {n}/{total}',
+      transportModelsLoading: '正在加载模型…',
+      transportModelsClear: '清除选择',
+      transportModelsHint: '不勾选任何模型表示使用全部模型；保存后该路由的模型列表随之收窄。',
     }
 
 const en = {
@@ -354,6 +361,13 @@ const en = {
       transportStatusSignedOut: 'Not signed in',
       transportRemoveTitle: 'Remove the {name} transport account?',
       transportRemoveBody: 'This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service.',
+      // The route's model allow-list, edited in the transport card.
+      transportModels: 'Models',
+      transportModelsAll: 'All models',
+      transportModelsSelected: '{n} of {total} selected',
+      transportModelsLoading: 'Loading models…',
+      transportModelsClear: 'Clear selection',
+      transportModelsHint: 'Leave every model unchecked to use the full catalog; saving narrows the list this route advertises.',
     }
 
 /** Dictionaries registered under the plugin's locale namespace. */

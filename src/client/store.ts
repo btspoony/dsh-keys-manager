@@ -12,7 +12,10 @@ import type {
   KeyTestResult,
   RpcResult,
   StateView,
+  TransportModelsResult,
+  TransportModelsView,
 } from './types'
+import { shapeTransportModels } from './format'
 
 function messageOf(error: unknown): string {
   if (error instanceof Error && error.message.length > 0) return error.message
@@ -171,6 +174,11 @@ export function createStore(ctx: ClientContext): ClientStore {
     return { ok: true, value: (value ?? null) as AccountAttemptView | null }
   }
 
+  /** A transport model-picker answer shapes to its view and is not a snapshot. */
+  const modelsOutcome = (value: unknown): { ok: true; value: TransportModelsView } => {
+    return { ok: true, value: shapeTransportModels(value) }
+  }
+
   /** A connection test answers with its own result, never a state view. */
   const testOutcome = (value: unknown): { ok: true; value: KeyTestResult } => {
     const result = (value ?? {}) as Partial<KeyTestResult>
@@ -287,6 +295,14 @@ export function createStore(ctx: ClientContext): ClientStore {
     },
     removeTransportAccount(route: string): Promise<ActionOutcome> {
       return send('removeTransportAccount', { provider: route }, stateOutcome)
+    },
+    async transportModels(route: string): Promise<TransportModelsResult> {
+      const result = await rpcRead('transportModels', { provider: route })
+      if (!result.ok) return { ok: false, error: result.error.message }
+      return { ok: true, value: shapeTransportModels(result.value) }
+    },
+    saveTransportModels(route: string, models: string[]): Promise<TransportModelsResult> {
+      return send('saveTransportModels', { provider: route, models }, modelsOutcome)
     },
     tick() {
       update({ now: Date.now() })

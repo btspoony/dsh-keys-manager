@@ -25,6 +25,7 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 
 import { CURSOR_ROUTE, OmpCursorAdapter } from './adapter.js'
+import { CURSOR_MODELS } from './catalog/cursor.js'
 import { loginCursor } from './cursor/auth.js'
 import type { CursorFetch } from './cursor/auth.js'
 import { CURSOR_CREDENTIAL_KEY, createCursorAccess } from './cursor/credentials.js'
@@ -34,19 +35,82 @@ import type { OmpCursorTransport } from './omp.js'
 /** Machine code for a transport artifact that cannot be loaded. */
 export const TRANSPORT_UNAVAILABLE = 'TRANSPORT_UNAVAILABLE'
 
+/** One model row the Cursor route can advertise. */
+export interface TransportCatalogModel {
+  id: string
+  name: string
+}
+
+/** One configured model row beneath `providers.cursor.models`. */
+export interface TransportModelProfile extends TransportCatalogModel {
+  contextWindow?: number
+  maxTokens?: number
+}
+
+/** The configured profile of one transport route. */
+export interface TransportProviderProfile {
+  models: TransportModelProfile[]
+}
+
+/** The `providers` profile a volatile config reference snapshots. */
+export interface TransportProvidersProfile {
+  cursor?: TransportProviderProfile
+}
+
+/** A live config reference (cosmokit `Volatile`) a volatile schema node resolves to. */
+export interface ConfigReference<T> {
+  get(): T
+}
+
 /**
  * Plugin configuration.
  *
  * @remarks
- * Empty on purpose: a transport declares its endpoints and its pinned
- * client identity in code, so there is nothing for a profile to configure
- * yet. The runtime schema below keeps that contract explicit and gives the
- * loader a validated (empty) surface.
+ * `providers.cursor` is the route's entry in the configurable-provider
+ * directory (`CURSOR_PROVIDER.settingsPath`). Consumers that list *configured*
+ * providers decide by that settings path, so the entry must resolve with no
+ * user write; the node is `.volatile()` because `settings.describe` only
+ * projects declared fields below a volatile ancestor. A volatile node arrives
+ * as a live reference, not a plain object: a settings save updates it in place
+ * without re-running `apply`.
  */
-export interface Config {}
+export interface Config {
+  providers?: ConfigReference<TransportProvidersProfile>
+}
 
 /** Runtime schema for {@link Config}. */
-export const Config = z.object({})
+export const Config = z.object({
+  providers: z
+    .object({
+      cursor: z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+              contextWindow: z.number(),
+              maxTokens: z.number(),
+            }),
+          )
+          .default([]),
+      }),
+    })
+    .default({ cursor: { models: [] } })
+    .volatile(),
+})
+
+/**
+ * The full Cursor catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * `listModels` answers with the configured allow-list, so a picker cannot
+ * discover the models a narrowed route could still advertise. The transport
+ * package exports the unfiltered projection instead of adding a service or a
+ * package subpath.
+ */
+export function cursorCatalogModels(): TransportCatalogModel[] {
+  return CURSOR_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
 
 export const name = 'llm-omp-transports'
 
@@ -207,20 +271,23 @@ function bundledCursorTransport(): OmpCursorTransport {
  * credential store. The transport is the bundled artifact, still loaded only on
  * the first request.
  */
-export function createCursorAdapter(credentials: CredentialRecordsLike): OmpCursorAdapter {
+export function createCursorAdapter(credentials: CredentialRecordsLike, models?: () => readonly string[] | undefined): OmpCursorAdapter {
   return new OmpCursorAdapter({
     access: createCursorAccess(credentials),
     transport: bundledCursorTransport(),
+    ...(models === undefined ? {} : { models }),
   })
 }
 
-export function apply(ctx: Context, _config: Config = {}): void {
+export function apply(ctx: Context, config: Config = {}): void {
   const host = ctx as Context & {
     credentials: CredentialRecordsLike
     authorization: AuthorizationLike
   }
 
-  ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials))
+  const providers = config.providers
+  const models = (): readonly string[] | undefined => providers?.get().cursor?.models.map(row => row.id)
+  ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models))
   ctx.llm.registerConfigurableProviders([CURSOR_PROVIDER])
   host.authorization.registerFlow(cursorAuthorizationFlow())
 }

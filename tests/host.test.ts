@@ -10,6 +10,7 @@ import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOf
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
 import { KeysManagerStore, sanitizeState } from '../src/store'
+import { cursorCatalogModels } from 'dsh-llm-omp-transports'
 
 const ORIGINAL = Symbol.for('cordis.original')
 
@@ -11124,6 +11125,9 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
       'beginTransportLogin',
       'activateTransportAccount',
       'removeTransportAccount',
+      // The transport card's model picker: its catalog and allow-list.
+      'transportModels',
+      'saveTransportModels',
     ])
     const params = (method: string): string[] =>
       invocations.find(invocation => invocation.method === method)!.parameters.map(parameter => parameter.name)
@@ -11139,6 +11143,8 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
     assert.deepEqual(params('beginTransportLogin'), ['provider'])
     assert.deepEqual(params('activateTransportAccount'), ['provider'])
     assert.deepEqual(params('removeTransportAccount'), ['provider'])
+    assert.deepEqual(params('transportModels'), ['provider'])
+    assert.deepEqual(params('saveTransportModels'), ['provider', 'models'])
     // Every registered invocation names a real service method, so the
     // gateway's `service[invocation.method]` dispatch cannot drift from the
     // registry (typertRemote binds the service instance directly).
@@ -17314,6 +17320,58 @@ test('an api-key test fails when the route answered without the pinned key', asy
     const result = await h.service.testKey('zai-coding-cn', target.id)
     assert.equal(result.ok, false)
     assert.match(String(result.error), /another credential source|not used/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('reads and saves the cursor transport model allow-list through settings', async () => {
+  const h = await transportHarness()
+  try {
+    // A host without the transports namespace mounted (the plugin absent) still
+    // answers: no profile means no allow-list, not a failure.
+    assert.deepEqual(await h.service.transportModels('cursor'), {
+      catalog: cursorCatalogModels(),
+      models: [],
+      enabled: false,
+    })
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: { cursor: { models: [] } } }, revision: 1 })
+
+    const initial = await h.service.transportModels('cursor')
+    assert.ok(initial.catalog.length > 0)
+    assert.equal(initial.catalog.find(row => row.id === 'claude-4.5-sonnet')?.name, 'Claude Sonnet 4.5')
+
+    const saved = await h.service.saveTransportModels('cursor', ['claude-4.5-sonnet'])
+    assert.deepEqual(saved.models, ['claude-4.5-sonnet'])
+    assert.equal(saved.enabled, true)
+    // The write is path-addressed on the route's own settings node and carries
+    // display names for pickers.
+    const write = h.settings.mutateCalls.at(-1)!
+    assert.equal(write.ns, TRANSPORT_NS)
+    assert.deepEqual(write.ops, [{
+      op: 'set',
+      path: ['providers', 'cursor', 'models'],
+      value: [{ id: 'claude-4.5-sonnet', name: 'Claude Sonnet 4.5' }],
+    }])
+    assert.deepEqual(h.settings.valueOf(TRANSPORT_NS), {
+      providers: { cursor: { models: [{ id: 'claude-4.5-sonnet', name: 'Claude Sonnet 4.5' }] } },
+    })
+
+    // An empty selection restores the full catalog.
+    assert.deepEqual((await h.service.saveTransportModels('cursor', [])).models, [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('refuses a transport model id outside the catalog before writing settings', async () => {
+  const h = await transportHarness()
+  try {
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: { cursor: { models: [] } } }, revision: 1 })
+    await assert.rejects(() => h.service.saveTransportModels('cursor', ['not-a-model']), /has no model "not-a-model"/)
+    assert.equal(h.settings.mutateCalls.length, 0)
+    // A route without a transports flow has no model surface at all.
+    await assert.rejects(() => h.service.transportModels('nope'), /offers no transport account/)
   } finally {
     await h.close()
   }

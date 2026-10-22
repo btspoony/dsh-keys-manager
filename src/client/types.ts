@@ -1,6 +1,6 @@
 /** Browser-half domain and service contracts for the Keys Manager. */
 import type * as React from 'react'
-import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyTestResult, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView, TransportAccountStatus, TransportAccountView } from '../domain'
+import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyTestResult, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView, TransportAccountStatus, TransportAccountView, TransportModelsView } from '../domain'
 
 export type {
   AccountAttemptNotice,
@@ -16,6 +16,7 @@ export type {
   StateView,
   TransportAccountStatus,
   TransportAccountView,
+  TransportModelsView,
 }
 
 /** Locale dictionaries registered under the plugin namespace. */
@@ -45,6 +46,11 @@ export type AccountAttemptResult =
 /** Result of the attempt-list RPC. */
 export type AccountAttemptListResult =
   | { ok: true; value: AccountAttemptView[] }
+  | { ok: false; error: string }
+
+/** Result of one transport model-picker read or save. */
+export type TransportModelsResult =
+  | { ok: true; value: TransportModelsView }
   | { ok: false; error: string }
 
 /** Result of an RPC that carries no meaningful payload. */
@@ -105,6 +111,10 @@ export interface ClientStore {
   activateTransportAccount(route: string): Promise<ActionOutcome>
   /** Delete one transport route's grant record. */
   removeTransportAccount(route: string): Promise<ActionOutcome>
+  /** Read one transport route's catalog and configured model allow-list. */
+  transportModels(route: string): Promise<TransportModelsResult>
+  /** Replace one transport route's allow-list; an empty list means all models. */
+  saveTransportModels(route: string, models: string[]): Promise<TransportModelsResult>
   tick(): void
   dismissError(): void
 }

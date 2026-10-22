@@ -412,6 +412,51 @@ describe('OmpCursorAdapter catalog', () => {
     ).rejects.toMatchObject({ code: UNKNOWN_MODEL })
   })
 
+  it('advertises the full catalog for an empty allow-list', async () => {
+    const { adapter } = adapterFor('cursor-text.jsonl')
+    const empty = new OmpCursorAdapter({
+      access: async () => 'test-token',
+      transport: scriptedTransport('cursor-text.jsonl').transport,
+      models: () => [],
+    })
+
+    expect(await empty.listModels(CURSOR_ROUTE)).toEqual(await adapter.listModels(CURSOR_ROUTE))
+  })
+
+  it('advertises only the configured allow-list', async () => {
+    const adapter = new OmpCursorAdapter({
+      access: async () => 'test-token',
+      transport: scriptedTransport('cursor-text.jsonl').transport,
+      models: () => ['claude-4.5-sonnet'],
+    })
+
+    const models = await adapter.listModels(CURSOR_ROUTE)
+    expect(models.map(model => model.id)).toEqual(['claude-4.5-sonnet'])
+    await expect(adapter.resolveModel(CURSOR_ROUTE, 'claude-4.5-sonnet')).resolves.toMatchObject({
+      id: 'claude-4.5-sonnet',
+    })
+  })
+
+  it('refuses a catalog id outside the allow-list without reading a credential', async () => {
+    let reads = 0
+    const blocked = CURSOR_MODELS.find(row => row.id !== 'claude-4.5-sonnet')
+    if (blocked === undefined) throw new Error('the generated catalog has a single row')
+    const adapter = new OmpCursorAdapter({
+      access: async () => {
+        reads += 1
+        return 'test-token'
+      },
+      transport: scriptedTransport('cursor-text.jsonl').transport,
+      models: () => ['claude-4.5-sonnet'],
+    })
+
+    await expect(adapter.resolveModel(CURSOR_ROUTE, blocked.id)).rejects.toMatchObject({ code: UNKNOWN_MODEL })
+    await expect(
+      collect(adapter.stream(request({ model: blocked.id }))),
+    ).rejects.toMatchObject({ code: UNKNOWN_MODEL })
+    expect(reads).toBe(0)
+  })
+
   it('describes the route', async () => {
     const { adapter } = adapterFor('cursor-text.jsonl')
     expect(adapter.providerInfo(CURSOR_ROUTE)).toEqual({ id: 'cursor', name: 'Cursor' })

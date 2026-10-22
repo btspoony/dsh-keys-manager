@@ -15,6 +15,8 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
+import { CURSOR_ROUTE, cursorCatalogModels } from 'dsh-llm-omp-transports'
+import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
 import {
   KEY_LIMIT,
   TEST_SUCCESS_FINISH_KINDS,
@@ -50,6 +52,7 @@ import type {
   StateView,
   TransportAccountStatus,
   TransportAccountView,
+  TransportModelsView,
 } from './domain.js'
 import type {
   AttemptState,
@@ -415,6 +418,11 @@ const INVOCATIONS: InvocationDescriptor[] = [
   endpoint('beginTransportLogin', ['provider']),
   endpoint('activateTransportAccount', ['provider']),
   endpoint('removeTransportAccount', ['provider']),
+  // The transport card's model picker: the catalog lives in the transports
+  // package (listModels answers only the allow-list), and the selection is
+  // written to the route's own settings path.
+  endpoint('transportModels', ['provider']),
+  endpoint('saveTransportModels', ['provider', 'models']),
 ]
 
 /** Read a nested value by path. */
@@ -685,6 +693,16 @@ function transportAccountOf(flow: AuthorizationFlowEntry, record: CredentialReco
  */
 function transportMethodOf(flow: AuthorizationFlowEntry): string | undefined {
   return flow.methods[0]?.id
+}
+
+/**
+ * The catalog a transport route advertises to its model picker.
+ *
+ * Only the Cursor route ships a catalog projection today; a route without one
+ * reports no models rather than borrowing another route's catalog.
+ */
+function transportCatalogOf(route: string): TransportCatalogModel[] {
+  return route === CURSOR_ROUTE ? cursorCatalogModels() : []
 }
 
 /** Env names that are a single API-key credential, not an OAuth/federation token. */
@@ -2482,6 +2500,64 @@ export class KeysManagerService {
   /** The route's removal epoch; absent means never removed. */
   private transportGenerationOf(route: string): number {
     return this.transportRemovals.get(route) ?? 0
+  }
+
+  /**
+   * Remote: read one transport route's catalog and configured allow-list.
+   *
+   * @remarks
+   * The catalog comes from the transports package, because the route's
+   * `listModels` answers only the allow-list. `enabled` restates the
+   * empty-means-all rule the adapter applies.
+   */
+  async transportModels(route: string): Promise<TransportModelsView> {
+    this.assertTransportRoute(route)
+    const models = this.transportModelIds(route)
+    return { catalog: transportCatalogOf(route), models, enabled: models.length > 0 }
+  }
+
+  /**
+   * Remote: replace one transport route's model allow-list.
+   *
+   * Writes only the route's own `providers.<route>.models` path through the
+   * live settings revision; an empty list restores the full catalog.
+   */
+  async saveTransportModels(route: string, models: string[]): Promise<TransportModelsView> {
+    this.assertTransportRoute(route)
+    if (!Array.isArray(models) || models.some(id => typeof id !== 'string')) {
+      throw new TypeError('models must be a list of model ids')
+    }
+    const catalog = transportCatalogOf(route)
+    if (catalog.length === 0) throw new Error(`Provider "${route}" offers no model list`)
+    const known = new Map(catalog.map(row => [row.id, row.name]))
+    const selected = [...new Set(models)]
+    const unknown = selected.find(id => !known.has(id))
+    if (unknown !== undefined) throw new Error(`Provider "${route}" has no model "${unknown}"`)
+    await this.mutateSettings(TRANSPORT_CREDENTIAL_SCOPE, [
+      {
+        op: 'set',
+        path: ['providers', route, 'models'],
+        value: selected.map(id => ({ id, name: known.get(id)! })),
+      },
+    ])
+    return this.transportModels(route)
+  }
+
+  /** Refuse a route the transports package does not register. */
+  private assertTransportRoute(route: string): void {
+    if (typeof route !== 'string' || route.length === 0) throw new TypeError('provider is required')
+    if (this.transportFlowFor(route) === undefined) throw new Error(`Provider "${route}" offers no transport account`)
+  }
+
+  /** One transport route's configured model ids, read from the live settings. */
+  private transportModelIds(route: string): string[] {
+    const namespace = this.namespace(this.describeSettings(), TRANSPORT_CREDENTIAL_SCOPE)
+    const value = namespace === undefined ? undefined : getPath(namespace.value, ['providers', route, 'models'])
+    if (!Array.isArray(value)) return []
+    return value.flatMap(row => {
+      const id = row !== null && typeof row === 'object' ? (row as { id?: unknown }).id : undefined
+      return typeof id === 'string' ? [id] : []
+    })
   }
 
   /**
