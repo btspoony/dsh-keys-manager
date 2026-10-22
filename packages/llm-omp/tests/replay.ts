@@ -16,10 +16,14 @@ import { fileURLToPath } from 'node:url'
 
 import type {
   OmpAssistantMessageEvent,
+  OmpContext,
   OmpCursorContext,
   OmpCursorModel,
   OmpCursorOptions,
   OmpCursorTransport,
+  OmpDevinModel,
+  OmpDevinOptions,
+  OmpDevinTransport,
 } from '../src/omp.js'
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
@@ -54,6 +58,34 @@ export function recordedScript(name: string): OmpAssistantMessageEvent[] {
 export function scriptedTransport(name: string): { transport: OmpCursorTransport; calls: TransportCall[] } {
   const script = recordedScript(name)
   const calls: TransportCall[] = []
+  return {
+    calls,
+    transport: async function* (model, context, options) {
+      calls.push({ model, context, options })
+      yield* script
+    },
+  }
+}
+
+/** One Devin transport invocation, captured for assertions about the projected request. */
+export interface DevinTransportCall {
+  readonly model: OmpDevinModel
+  readonly context: OmpContext
+  readonly options: OmpDevinOptions
+}
+
+/**
+ * The Devin twin of {@link scriptedTransport}: same event scripts, the chat
+ * route's model/options types.
+ * @param name - fixture file name under `tests/fixtures/`.
+ * @returns the scripted transport plus the calls it received.
+ */
+export function scriptedDevinTransport(name: string): {
+  transport: OmpDevinTransport
+  calls: DevinTransportCall[]
+} {
+  const script = recordedScript(name)
+  const calls: DevinTransportCall[] = []
   return {
     calls,
     transport: async function* (model, context, options) {

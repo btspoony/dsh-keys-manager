@@ -11,16 +11,16 @@ and the plugin page lists both bundle components
 |---|---|
 | npm package | `dsh-llm-omp-transports` |
 | Plugin id | `llm-omp-transports` |
-| Route | `cursor` (first provider; the seam is provider-generic) |
-| Credential scope | `llm-omp-transports/<provider>`, today `llm-omp-transports/cursor` |
+| Routes | `cursor`, `devin` (the seam is provider-generic) |
+| Credential scope | `llm-omp-transports/<provider>`: `llm-omp-transports/cursor`, `llm-omp-transports/devin` |
 | Runtime | Node 24 (the bundle imports Node builtins only) |
 | License | MIT |
 
 The plugin registers its own route on the DSH `llm` seam, so it depends on no
 upstream DSH change. `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-catalog` are used at
-**build time only**: the build inlines the pinned omp Cursor transport into one
-ESM artifact (`lib/omp/cursor.mjs`), and the published package imports nothing
-from `@oh-my-pi/*` or `bun:*` at runtime.
+**build time only**: the build inlines the pinned omp transports into one ESM
+artifact per route (`lib/omp/cursor.mjs`, `lib/omp/devin.mjs`), and the
+published package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
 
 ## Cursor support status
 
@@ -46,6 +46,31 @@ from `@oh-my-pi/*` or `bun:*` at runtime.
   entry for it.
 - **Images** — not yet. The route advertises text-only input and refuses image
   blocks with `CONTENT_UNSUPPORTED`; see [known limits](docs/known-limits.md).
+
+## Devin support status
+
+- **Text streaming** — yes. Assistant text and reasoning are projected onto
+  DSH's `StreamChunk` stream, with the per-turn usage the chat frames report.
+- **Reasoning streaming** — yes as content; no reasoning-effort selector. Both
+  pinned rows advertise no efforts, and a request that selects one is refused
+  with `UNSUPPORTED_REASONING_EFFORT`.
+- **Tool-call handoff** — yes, native to DSH's tool loop. The transport emits
+  the call, finishes the turn `toolUse`, and DSH executes it; the result is
+  replayed from history on the next request. Unlike Cursor, no call is
+  transport-resolved, so nothing is filtered from the handoff.
+- **Sign-in** — yes, by pasting the callback. The pinned omp login is a
+  declarative `oauth-code` rule whose loopback listener is Bun-only; this
+  package registers the `llm-omp-transports/devin` flow, opens the authorize
+  page, and asks for the address the browser landed on (or just the code).
+  There is **no refresh** (`refresh "none"`): an expired grant demands a new
+  sign-in.
+- **Models** — from the pinned catalog: the Devin slice of
+  `@oh-my-pi/pi-catalog@18.12.3` (2 rows: `swe-1-6`, `swe-1-6-fast`) is
+  generated into `src/catalog/devin.ts` and served without a network call.
+- **Route** — `devin`, declared configurable so the Models page has a
+  `providers.devin` profile with an allow-list.
+- **Images** — not yet, same as Cursor: text-only input, image blocks refused
+  with `CONTENT_UNSUPPORTED`.
 
 ## Hard constraints
 
@@ -103,6 +128,24 @@ from `@oh-my-pi/*` or `bun:*` at runtime.
   for an output cap, sampling temperature, stop sequences or an auxiliary-call
   purpose; DSH's `maxTokens`, `temperature`, `stop` and `purpose` never reach
   the wire, and Cursor applies the catalog output limit server-side.
+- **Unofficial Devin client.** The transport presents the released Devin CLI
+  identity (`ideName: "devin-cli"`, `ideType: "chisel"`, `ideVersion:
+  "3000.11.3"`) and a `connect-go` client header the omp sources copy from the
+  CLI. Same posture as Cursor's S4: a first live turn rejected with `401`/`403`
+  stops the route until a product decision, never a retry under another
+  identity.
+- **Attribution deviates on one call.** The Devin chat request must keep the
+  transport's own `connect-go` client header — the backend gates on it. The
+  header-less `GetUserJwt` handshake has no identity of its own, so the adapter
+  fills DSH's attribution `user-agent` only where a header is absent. Cursor's
+  requests keep full attribution.
+- **Devin has no refresh.** The pinned rule declares `refresh "none"`, so the
+  record is a static bearer with a derived `expires` (JWT `exp` minus five
+  minutes, else one year). An expired or corrupt record is `REAUTH_REQUIRED`,
+  not renewed. Because the omp loopback listener is Bun-only and the browser
+  half is untestable offline, the flow is paste-only for now; a bare pasted
+  code skips the state check (the page is the only place the state could
+  travel).
 
 ## Develop and test
 
@@ -113,9 +156,10 @@ pnpm -C packages/llm-omp test
 pnpm -C packages/llm-omp run generate:catalog
 ```
 
-`build` bundles the pinned omp graph from `scripts/omp-entry.ts` into
-`lib/omp/cursor.mjs` and rewrites `scripts/omp-manifest.json`; run it before
-`test` after a pin or shim change. CI runs the same sequence and then fails if
+`build` bundles the pinned omp graphs from `scripts/omp-entry.ts` and
+`scripts/omp-entry-devin.ts` into `lib/omp/cursor.mjs` and `lib/omp/devin.mjs`
+and rewrites `scripts/omp-manifest.json`; run it before `test` after a pin or
+shim change. CI runs the same sequence and then fails if
 the committed manifest drifted.
 
 The install proof lives at the repository root and needs `pnpm` and `dsh` on

@@ -53,5 +53,7 @@
   "transportModelsClear": "Clear selection",
   "transportModelsHint": "Leave every model unchecked to use the full catalog; saving narrows the list this route advertises.",
   "filterGroup": "Filters",
-  "transportEmpty": "No transport accounts yet."
+  "transportEmpty": "No transport accounts yet.",
+  "signInAgain": "Sign in again",
+  "loginPasteHint": "Paste the full URL from your browser address bar, or just the authorization code."
 }

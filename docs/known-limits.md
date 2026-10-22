@@ -69,3 +69,24 @@ Current design boundaries of the Keys Manager plugin:
   keys form the sticky/round-robin/failover/cooldown ring, and exactly one
   projected OAuth grant serves the provider. Per-account ranking
   (rotating between accounts) is future work, not part of this increment.
+
+## In-process sign-in (Kilo, Z.AI Coding Plan)
+
+- Both flows are unofficial clients extracted from
+  `@oh-my-pi/pi-ai@18.12.3` at build time. The provider can change its login
+  endpoints, scopes or responses at any time; a break shows up as the
+  provider's own error text in the sign-in dialog, not as a crash.
+- Kilo's credential is a one-year bearer token with no refresh token
+  (`refresh: ''`). It cannot be renewed in the background: when it expires,
+  sign in again from that row.
+- Z.AI Coding Plan's flow ends in a minted API key (`<id>.<secret>`), not a
+  login grant. The key appears in the Z.AI console named `oh-my-pi`; deleting
+  or rotating it there invalidates the row, which then cools down like any
+  other key. The same flow does not cover `zai-coding-cn` (the China
+  endpoint), which is a separate route.
+- These sign-ins can only be started from the Keys Manager page. Nothing in
+  the DSH CLI or the Models page starts them, and no `llm-pi-ai/<provider>`
+  grant record is written.
+- The minted credential is one more row in the provider's pool: there is no
+  per-account rotation or ranking, exactly as with the seven pi-ai OAuth
+  accounts above.

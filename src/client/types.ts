@@ -89,6 +89,8 @@ export interface ClientStore {
   beginAccountLogin(provider: string, alias?: string, targetAccountId?: string): Promise<AccountAttemptResult>
   /** Resolve the attempt's parked prompt with the human's answer. */
   answerAccountPrompt(attemptId: string, value: string): Promise<AckResult>
+  /** Cancel an in-process attempt (the seam owns its own attempts). */
+  cancelAccountLogin(attemptId: string): Promise<AckResult>
   /** Poll one attempt's state; read-only, never sets the busy flag. */
   accountAttempt(attemptId: string): Promise<AccountAttemptResult>
   /** List every known attempt, newest first (page reload recovery). */

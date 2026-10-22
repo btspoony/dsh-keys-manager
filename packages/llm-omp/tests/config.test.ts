@@ -11,8 +11,9 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { Config, cursorCatalogModels } from '../src/index.js'
+import { Config, cursorCatalogModels, devinCatalogModels } from '../src/index.js'
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
+import { DEVIN_MODELS } from '../src/catalog/devin.js'
 
 /** The accessor key a schemastery volatile value carries (cosmokit). */
 const VOLATILE = Symbol.for('cosmokit.volatile.write')
@@ -45,17 +46,19 @@ function getPath(value: unknown, path: readonly string[]): unknown {
 }
 
 describe('Config', () => {
-  it('projects a default providers.cursor profile with no user write', () => {
+  it('projects default profiles for both routes with no user write', () => {
     // A guard on the shipped default, not proof of the live projection: the
     // real path runs `settings.describe` over a mounted plugin entry, which
     // this package cannot construct offline (and does not depend on). The
     // shape itself is private to schemastery and is deliberately not pinned.
     const value = describeValue({})
 
-    expect(value).toEqual({ providers: { cursor: { models: [] } } })
+    expect(value).toEqual({ providers: { cursor: { models: [] }, devin: { models: [] } } })
     expect(getPath(value, ['providers', 'cursor'])).toBeDefined()
+    expect(getPath(value, ['providers', 'devin'])).toBeDefined()
     // `configuredProvidersOf` keeps a provider when its settings path resolves.
     expect(getPath(value, ['providers', 'cursor']) !== undefined).toBe(true)
+    expect(getPath(value, ['providers', 'devin']) !== undefined).toBe(true)
   })
 
   it('hands the running plugin a live providers reference', () => {
@@ -63,22 +66,34 @@ describe('Config', () => {
     // `apply`, so `apply` must read the allow-list through it.
     const resolved = Config({}) as unknown as { providers: { get(): unknown } }
 
-    expect(resolved.providers.get()).toEqual({ cursor: { models: [] } })
+    expect(resolved.providers.get()).toEqual({ cursor: { models: [] }, devin: { models: [] } })
   })
 
-  it('resolves a user allow-list unchanged', () => {
+  it('resolves a user allow-list unchanged on either route', () => {
     const models = [{ id: 'claude-4.5-sonnet', name: 'Claude Sonnet 4.5' }]
+    const devin = [{ id: 'swe-1-6', name: 'SWE-1.6' }]
 
     expect(getPath(describeValue({ providers: { cursor: { models } } }), ['providers', 'cursor', 'models'])).toEqual(models)
+    expect(getPath(describeValue({ providers: { devin: { models: devin } } }), ['providers', 'devin', 'models'])).toEqual(
+      devin,
+    )
   })
 })
 
-describe('cursorCatalogModels', () => {
-  it('projects every catalog row as an id/name pair', () => {
+describe('catalog projections', () => {
+  it('projects every cursor row as an id/name pair', () => {
     const models = cursorCatalogModels()
 
     expect(models).toHaveLength(CURSOR_MODELS.length)
     expect(models[0]).toEqual({ id: CURSOR_MODELS[0]!.id, name: CURSOR_MODELS[0]!.name })
+    expect(Object.keys(models[0]!)).toEqual(['id', 'name'])
+  })
+
+  it('projects every devin row as an id/name pair, in catalog order', () => {
+    const models = devinCatalogModels()
+
+    expect(models).toHaveLength(DEVIN_MODELS.length)
+    expect(models.map(row => row.id)).toEqual(DEVIN_MODELS.map(row => row.id))
     expect(Object.keys(models[0]!)).toEqual(['id', 'name'])
   })
 })

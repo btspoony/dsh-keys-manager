@@ -1,7 +1,11 @@
 /**
- * Projection between the DSH llm seam and the omp Cursor transport.
+ * Projection between the DSH llm seam and the omp transports.
  *
- * Two pure functions do all the translation:
+ * Both routes share one engine: the request builder differs only in the
+ * transport identity, which request knobs the wire carries, and the
+ * external-executor claim (Cursor's agent protocol has one, Devin's chat stream
+ * does not); the event projection differs only in a {@link RouteProfile}. The
+ * route-specific pieces are data, not a second implementation:
  *
  * - {@link projectRequest} turns one assembled `GenerateOptions` into the
  *   transport's three arguments (model, context, options): the one-shot
@@ -70,14 +74,18 @@ import type {
   ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 
+import { attributionPreservingFetch } from './devin/transport.js'
 import type {
   CursorModelRow,
+  DevinModelRow,
   OmpAssistantMessage,
   OmpAssistantMessageEvent,
   OmpContentBlock,
-  OmpCursorContext,
+  OmpContext,
   OmpCursorModel,
   OmpCursorOptions,
+  OmpDevinModel,
+  OmpDevinOptions,
   OmpHistoryMessage,
   OmpTool,
   OmpToolCallBlock,
@@ -104,9 +112,58 @@ const ABORTED_CODE = 'ABORTED'
 /** A terminal stream chunk; the only chunk that ends one turn. */
 type FinishChunk = Extract<StreamChunk, { type: 'finish' }>
 
-/** The transport identity every projected model carries. */
-const CURSOR_API = 'cursor-agent'
-const CURSOR_PROVIDER = 'cursor'
+/**
+ * The route-specific facts of the shared projection.
+ *
+ * This replaces the module constants the Cursor-only projection carried: the
+ * transport identity, the provider-neutral code a transport failure falls back
+ * to, and the private mark a transport leaves on a call it answered itself.
+ * `devin` has no such mark — every tool call its transport emits is DSH's.
+ */
+export interface RouteProfile {
+  /** Provider route id: history identity and the label inside error messages. */
+  readonly provider: 'cursor' | 'devin'
+  /** omp's `Api` for the route. */
+  readonly api: 'cursor-agent' | 'devin-agent'
+  /** Provider-neutral code an unclassified transport failure maps to. */
+  readonly fallbackErrorCode: string
+  /**
+   * Description of the private symbol marking a transport-resolved tool call.
+   *
+   * `@oh-my-pi/pi-ai@18.12.3` tags every block the Cursor transport settled
+   * itself — the synthesized tool calls for Cursor's own exec frames (`read`,
+   * `shell`, `write`, `edit`, `delete`, `grep`, `ls`, `diagnostics`, plus
+   * `todo`, `web_fetch` and `connect_scm`) and its streamed edit display — with
+   * the private symbol `provider.block.cursorExecResolved`
+   * (`src/utils/block-symbols.ts`). It exports neither the symbol nor a name
+   * list, so the marker is matched by its description, which the transport
+   * never changes without changing what it means. An MCP call awaiting an
+   * external executor carries no marker: that one is the handoff.
+   * `tests/projection.test.ts` pins the marker and `tests/adapter-wire.test.ts`
+   * proves the bundled artifact still sets it.
+   */
+  readonly transportResolvedMarker?: string
+}
+
+/** The shipped Cursor route's projection facts. */
+export const CURSOR_PROFILE = {
+  provider: 'cursor',
+  api: 'cursor-agent',
+  fallbackErrorCode: 'CURSOR_ERROR',
+  transportResolvedMarker: 'provider.block.cursorExecResolved',
+} as const satisfies RouteProfile
+
+/**
+ * The Devin route's projection facts.
+ *
+ * No marker: its transport emits `deltaToolCalls` as plain calls and finishes
+ * the turn `toolUse`, so DSH's tool loop is the native mode here.
+ */
+export const DEVIN_PROFILE = {
+  provider: 'devin',
+  api: 'devin-agent',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies RouteProfile
 
 /** Token counters of a historical assistant message; the transport never re-prices history. */
 const EMPTY_USAGE: OmpUsage = Object.freeze({
@@ -117,15 +174,26 @@ const EMPTY_USAGE: OmpUsage = Object.freeze({
   totalTokens: 0,
 })
 
-/** The request projection's three positional transport arguments. */
+/** The Cursor request projection's three positional transport arguments. */
 export interface ProjectedRequest {
   readonly model: OmpCursorModel
-  readonly context: OmpCursorContext
+  readonly context: OmpContext
   /**
    * Transport options without the credential. The adapter resolves the token
    * only for a request the projection accepted, then injects `apiKey`.
    */
   readonly options: Omit<OmpCursorOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/** The Devin request projection's three positional transport arguments. */
+export interface ProjectedDevinRequest {
+  readonly model: OmpDevinModel
+  readonly context: OmpContext
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpDevinOptions, 'apiKey'> & { readonly apiKey?: string }
 }
 
 /**
@@ -153,6 +221,90 @@ export function projectRequest(
   accessToken?: string,
 ): ProjectedRequest {
   const wireModelId = resolveWireModelId(row, options.reasoningEffort)
+  const context = projectContext(CURSOR_PROFILE, options)
+  return {
+    model: { api: CURSOR_PROFILE.api, provider: CURSOR_PROFILE.provider, ...row },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(wireModelId !== undefined ? { wireModelId } : {}),
+      // Claim an external executor only when a tool is actually advertised.
+      // Without one there is no DSH tool loop to run a Cursor-initiated MCP
+      // call: the transport would emit an unresolved tool call that nothing
+      // answers, so it must answer the server frame itself as unknown. With one
+      // it hands the call to DSH and answers the frame with the handoff result.
+      ...(context.tools !== undefined ? { externalToolExecutor: true } : {}),
+      headers: attributionHeaders(),
+    },
+  }
+}
+
+/**
+ * Project one DSH request onto the omp Devin transport's arguments.
+ *
+ * Devin is a chat stream, not an agent protocol: it has no external-executor
+ * handoff, so that option is never sent and DSH's tool loop is the native mode.
+ * The wire does carry the request knobs Cursor cannot (`maxTokens`,
+ * `temperature`, `stopSequences`), so those are forwarded instead of ignored.
+ * No `wireModelId`: the pinned catalog has no `thinking` rows, so any requested
+ * effort is refused rather than routed.
+ *
+ * @param row - catalog row for the requested model.
+ * @param options - the assembled DSH request.
+ * @param accessToken - bearer token already resolved for this call; omit it to
+ *   project before the credential is read.
+ * @returns the transport arguments, ready to hand to `streamDevin`.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for any selected
+ *   effort: no pinned Devin row advertises one.
+ */
+export function projectDevinRequest(
+  row: DevinModelRow,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedDevinRequest {
+  if (options.reasoningEffort !== undefined) {
+    throw new LlmError(
+      `llm-omp-transports: devin model "${row.id}" does not advertise reasoning effort "${options.reasoningEffort}"`,
+      UNSUPPORTED_REASONING_EFFORT,
+    )
+  }
+  const context = projectContext(DEVIN_PROFILE, options)
+  return {
+    model: { api: DEVIN_PROFILE.api, provider: DEVIN_PROFILE.provider, ...row },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      // The transport reuses `sessionId` as `cascade_id`, so turns thread.
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.stop !== undefined ? { stopSequences: [...options.stop] } : {}),
+      // The chat request must keep the transport's own `connect-go` identity,
+      // and the header-less handshake must still carry DSH's attribution: this
+      // wrapper fills only headers a request left absent.
+      fetch: attributionPreservingFetch,
+    },
+  }
+}
+
+/**
+ * Build the transport context both routes share.
+ *
+ * The system slot, history mapping, tool projection and the typed refusals are
+ * identical on both routes; only the route identity inside the projected
+ * messages and the error wording differ, so both come from the profile.
+ * @param profile - the route being projected.
+ * @param options - the assembled DSH request.
+ * @returns the context for the transport's second positional argument.
+ */
+function projectContext(profile: RouteProfile, options: GenerateOptions): OmpContext {
   const tools = projectTools(options)
   const systemPrompt: string[] = []
   if (options.system !== undefined && options.system.length > 0) systemPrompt.push(options.system)
@@ -167,45 +319,29 @@ export function projectRequest(
   let leading = true
   for (const message of options.messages) {
     if (message.role === 'system') {
-      if (!leading) throw misplacedSystem()
-      systemPrompt.push(...systemText(message.content))
+      if (!leading) throw misplacedSystem(profile)
+      systemPrompt.push(...systemText(message.content, profile))
       continue
     }
     leading = false
     if (message.role === 'user' || message.role === 'developer') {
-      const content = plainContent(message.content, message.role)
+      const content = plainContent(message.content, message.role, profile)
       // A developer message that carried only tool updates projects to no wire
-      // content; emitting an empty turn would add noise Cursor has to replay.
+      // content; emitting an empty turn would add noise the transport replays.
       if (content.length > 0) messages.push({ role: message.role, content, timestamp: 0 })
       continue
     }
     if (message.role === 'assistant') {
-      messages.push(historyAssistant(message, toolNames))
+      messages.push(historyAssistant(message, toolNames, profile))
       continue
     }
-    messages.push(historyToolResult(message, toolNames))
+    messages.push(historyToolResult(message, toolNames, profile))
   }
 
   return {
-    model: { api: CURSOR_API, provider: CURSOR_PROVIDER, ...row },
-    context: {
-      ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-      messages,
-      ...(tools !== undefined ? { tools } : {}),
-    },
-    options: {
-      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
-      ...(wireModelId !== undefined ? { wireModelId } : {}),
-      // Claim an external executor only when a tool is actually advertised.
-      // Without one there is no DSH tool loop to run a Cursor-initiated MCP
-      // call: the transport would emit an unresolved tool call that nothing
-      // answers, so it must answer the server frame itself as unknown. With one
-      // it hands the call to DSH and answers the frame with the handoff result.
-      ...(tools !== undefined ? { externalToolExecutor: true } : {}),
-      headers: attributionHeaders(),
-    },
+    ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
+    messages,
+    ...(tools !== undefined ? { tools } : {}),
   }
 }
 
@@ -267,17 +403,17 @@ function resolveWireModelId(row: CursorModelRow, effort: string | undefined): st
  * not declare `systemPromptUpdate` for this adapter, so this arrives only from a
  * future producer; fail loudly rather than rewriting the history.
  */
-function misplacedSystem(): LlmError {
+function misplacedSystem(profile: RouteProfile): LlmError {
   return new LlmError(
-    'llm-omp-transports: a system message after a non-system message cannot be projected; the cursor transport carries system text only ahead of the conversation',
+    `llm-omp-transports: a system message after a non-system message cannot be projected; the ${profile.provider} transport carries system text only ahead of the conversation`,
     CONTENT_UNSUPPORTED,
   )
 }
 
 /** Collect a system-role message's text blocks; anything else is unsupported input. */
-function systemText(content: readonly ContentBlock[]): string[] {
+function systemText(content: readonly ContentBlock[], profile: RouteProfile): string[] {
   return content.map(block => {
-    if (block.type !== 'text') throw unsupportedContent(block.type, 'system')
+    if (block.type !== 'text') throw unsupportedContent(block.type, 'system', profile)
     return block.text
   })
 }
@@ -289,11 +425,15 @@ function systemText(content: readonly ContentBlock[]): string[] {
  * which have no wire representation: the active declarations travel as MCP
  * tool definitions instead, so those blocks are folded out rather than refused.
  */
-function plainContent(content: readonly ContentBlock[], role: 'user' | 'developer'): OmpContentBlock[] {
+function plainContent(
+  content: readonly ContentBlock[],
+  role: 'user' | 'developer',
+  profile: RouteProfile,
+): OmpContentBlock[] {
   return content.flatMap((block): OmpContentBlock[] => {
     if (block.type === 'text') return [{ type: 'text', text: block.text }]
     if (role === 'developer' && (block.type === 'tool-addition' || block.type === 'tool-removal')) return []
-    throw unsupportedContent(block.type, role)
+    throw unsupportedContent(block.type, role, profile)
   })
 }
 
@@ -314,23 +454,27 @@ function plainContent(content: readonly ContentBlock[], role: 'user' | 'develope
  * Tool calls keep their provider-issued id so the transport can pair the
  * replayed call with the `toolResult` step that answers it.
  */
-function historyAssistant(message: DshAssistantMessage, toolNames: Map<string, string>): OmpAssistantMessage {
+function historyAssistant(
+  message: DshAssistantMessage,
+  toolNames: Map<string, string>,
+  profile: RouteProfile,
+): OmpAssistantMessage {
   const source = message.source
-  const cursorSourced = source.provider === CURSOR_PROVIDER
+  const routeSourced = source.provider === profile.provider
   return {
     role: 'assistant',
     content: message.content.flatMap((block): OmpContentBlock[] => {
       if (block.type === 'text') return [{ type: 'text', text: block.text }]
-      if (block.type === 'reasoning') return cursorSourced ? [{ type: 'thinking', thinking: block.text }] : []
+      if (block.type === 'reasoning') return routeSourced ? [{ type: 'thinking', thinking: block.text }] : []
       if (block.type === 'tool-call') {
         toolNames.set(block.id, block.name)
         return [{ type: 'toolCall', id: block.id, name: block.name, arguments: toolArguments(block) }]
       }
-      throw unsupportedContent(block.type, 'assistant')
+      throw unsupportedContent(block.type, 'assistant', profile)
     }),
     model: source.model,
-    api: cursorSourced ? CURSOR_API : source.provider,
-    provider: cursorSourced ? CURSOR_PROVIDER : source.provider,
+    api: routeSourced ? profile.api : source.provider,
+    provider: routeSourced ? profile.provider : source.provider,
     usage: EMPTY_USAGE,
     stopReason: 'stop',
     timestamp: 0,
@@ -345,13 +489,17 @@ function historyAssistant(message: DshAssistantMessage, toolNames: Map<string, s
  * transport renders as text because nothing pairs it. Non-text result content
  * is refused rather than dropped, like every other non-text block.
  */
-function historyToolResult(message: ToolResultMessage, toolNames: ReadonlyMap<string, string>): OmpHistoryMessage {
+function historyToolResult(
+  message: ToolResultMessage,
+  toolNames: ReadonlyMap<string, string>,
+  profile: RouteProfile,
+): OmpHistoryMessage {
   return {
     role: 'toolResult',
     toolCallId: message.toolCallId,
     toolName: toolNames.get(message.toolCallId) ?? '',
     content: message.content.map(block => {
-      if (block.type !== 'text') throw unsupportedContent(block.type, 'tool')
+      if (block.type !== 'text') throw unsupportedContent(block.type, 'tool', profile)
       return { type: 'text', text: block.text }
     }),
     isError: message.isError === true,
@@ -378,15 +526,20 @@ function invalidToolArguments(detail: string): LlmError {
   return new LlmError(`llm-omp-transports: ${detail}`, TOOL_ARGUMENTS_INVALID)
 }
 
-function unsupportedContent(kind: string, role: string): LlmError {
+function unsupportedContent(kind: string, role: string, profile: RouteProfile): LlmError {
   return new LlmError(
-    `llm-omp-transports: the cursor route carries text, reasoning and tool calls only; ${role} message content block "${kind}" is not supported`,
+    `llm-omp-transports: the ${profile.provider} route carries text, reasoning and tool calls only; ${role} message content block "${kind}" is not supported`,
     CONTENT_UNSUPPORTED,
   )
 }
 
 /**
- * Translate one omp Cursor event stream into DSH chunks.
+ * Translate one omp event stream into DSH chunks.
+ *
+ * The stream shape is omp's `AssistantMessageEvent` on both routes; the profile
+ * supplies the route identity inside messages, the code an unclassified
+ * failure falls back to, and (Cursor only) the marker of a call the transport
+ * already answered.
  *
  * Known-but-unsupported events (images) throw a typed error; an unknown event
  * kind throws {@link UNKNOWN_EVENT} rather than being skipped. A tool-call
@@ -396,6 +549,7 @@ function unsupportedContent(kind: string, role: string): LlmError {
  * @param events - the transport's event stream for one turn.
  * @param signal - caller cancellation; an abort that races a provider error
  *   classifies that error as an aborted finish, as the seam expects.
+ * @param profile - route facts; defaults to the shipped Cursor route.
  * @returns chunks ending with `usage` then `finish`.
  * @throws LlmError for unsupported or unrecognized events, a tool-call event
  *   without its call block, and when the source ends without a terminal event.
@@ -403,6 +557,7 @@ function unsupportedContent(kind: string, role: string): LlmError {
 export async function* projectEvents(
   events: AsyncIterable<OmpAssistantMessageEvent>,
   signal?: AbortSignal,
+  profile: RouteProfile = CURSOR_PROFILE,
 ): AsyncGenerator<StreamChunk> {
   for await (const event of events) {
     switch (event.type) {
@@ -429,14 +584,14 @@ export async function* projectEvents(
       case 'toolcall_start': {
         // Resolve the call now: DSH needs its id on every following delta, and a
         // start without a block would leave a block that can never be closed.
-        const call = toolCallOf(event.contentIndex, event.partial)
-        if (isTransportResolved(call)) break
+        const call = toolCallOf(event.contentIndex, event.partial, profile)
+        if (isTransportResolved(call, profile)) break
         yield { type: 'block-start', index: event.contentIndex, blockType: 'tool-call' }
         break
       }
       case 'toolcall_delta': {
-        const call = toolCallOf(event.contentIndex, event.partial)
-        if (isTransportResolved(call)) break
+        const call = toolCallOf(event.contentIndex, event.partial, profile)
+        if (isTransportResolved(call, profile)) break
         yield {
           type: 'tool-call-delta',
           index: event.contentIndex,
@@ -447,8 +602,8 @@ export async function* projectEvents(
         break
       }
       case 'toolcall_end': {
-        const call = event.toolCall ?? toolCallOf(event.contentIndex, event.partial)
-        if (isTransportResolved(call)) break
+        const call = event.toolCall ?? toolCallOf(event.contentIndex, event.partial, profile)
+        if (isTransportResolved(call, profile)) break
         yield {
           type: 'block-end',
           index: event.contentIndex,
@@ -462,45 +617,31 @@ export async function* projectEvents(
         break
       }
       case 'image_end':
-        throw unsupportedContent('image', 'assistant')
+        throw unsupportedContent('image', 'assistant', profile)
       case 'done':
         yield { type: 'usage', usage: toTokenUsage(event.message.usage) }
-        yield doneFinish(event.message, event.reason)
+        yield doneFinish(event.message, event.reason, profile)
         return
       case 'error':
         yield { type: 'usage', usage: toTokenUsage(event.error.usage) }
-        yield errorFinish(event.error, event.reason, signal)
+        yield errorFinish(event.error, event.reason, signal, profile)
         return
       default: {
         const kind = (event as { type?: unknown }).type
-        throw new LlmError(`llm-omp-transports: unrecognized cursor event "${String(kind)}"`, UNKNOWN_EVENT)
+        throw new LlmError(`llm-omp-transports: unrecognized ${profile.provider} event "${String(kind)}"`, UNKNOWN_EVENT)
       }
     }
   }
-  throw new LlmError('llm-omp-transports: cursor event stream ended without done/error', STREAM_CLOSED)
+  throw new LlmError(`llm-omp-transports: ${profile.provider} event stream ended without done/error`, STREAM_CLOSED)
 }
 
-/**
- * The mark the pinned transport leaves on a call it answered itself.
- *
- * `@oh-my-pi/pi-ai@18.12.3` tags every block it settles internally — the
- * synthesized tool calls for Cursor's own exec frames (`read`, `shell`,
- * `write`, `edit`, `delete`, `grep`, `ls`, `diagnostics`, plus `todo`,
- * `web_fetch` and `connect_scm`) and its streamed edit display — with the
- * private symbol `provider.block.cursorExecResolved` (`src/utils/block-symbols.ts`).
- * It exports neither the symbol nor a name list, so the marker is matched by
- * its description, which the transport never changes without changing what it
- * means. An MCP call awaiting an external executor carries no marker: that one
- * is the handoff. `tests/projection.test.ts` pins the marker and
- * `tests/adapter-wire.test.ts` proves the bundled artifact still sets it.
- */
-const CURSOR_EXEC_RESOLVED_MARKER = 'provider.block.cursorExecResolved'
-
-/** Whether the transport already answered this tool call, so DSH must not run it. */
-function isTransportResolved(block: OmpContentBlock | undefined): boolean {
+/** Whether the route's transport already answered this tool call, so DSH must not run it. */
+function isTransportResolved(block: OmpContentBlock | undefined, profile: RouteProfile): boolean {
+  const marker = profile.transportResolvedMarker
   return (
     block !== undefined &&
-    Object.getOwnPropertySymbols(block).some(symbol => symbol.description === CURSOR_EXEC_RESOLVED_MARKER)
+    marker !== undefined &&
+    Object.getOwnPropertySymbols(block).some(symbol => symbol.description === marker)
   )
 }
 
@@ -512,11 +653,15 @@ function isTransportResolved(block: OmpContentBlock | undefined): boolean {
  * adapter cannot invent the id, so a missing block is a malformed stream rather
  * than something to paper over.
  */
-function toolCallOf(contentIndex: number, partial: OmpAssistantMessage | undefined): OmpToolCallBlock {
+function toolCallOf(
+  contentIndex: number,
+  partial: OmpAssistantMessage | undefined,
+  profile: RouteProfile,
+): OmpToolCallBlock {
   const block = partial?.content[contentIndex]
   if (block?.type !== 'toolCall' || typeof block.id !== 'string' || typeof block.name !== 'string') {
     throw new LlmError(
-      `llm-omp-transports: cursor tool-call event at index ${contentIndex} carries no call block`,
+      `llm-omp-transports: ${profile.provider} tool-call event at index ${contentIndex} carries no call block`,
       MALFORMED_TOOL_CALL,
     )
   }
@@ -537,23 +682,32 @@ function toolCallOf(contentIndex: number, partial: OmpAssistantMessage | undefin
  * @returns the mapped finish chunk.
  * @throws LlmError with {@link UNKNOWN_FINISH} for a reason outside the mapped set.
  */
-function doneFinish(message: OmpAssistantMessage, reason: 'stop' | 'length' | 'toolUse'): FinishChunk {
+function doneFinish(
+  message: OmpAssistantMessage,
+  reason: 'stop' | 'length' | 'toolUse',
+  profile: RouteProfile,
+): FinishChunk {
   if (reason === 'toolUse') return finishOf('tool-calls')
   if (reason === 'length') return finishOf('max-tokens')
   if (reason === 'stop') {
     // Calls the transport answered itself were never streamed to DSH, so they
     // do not make this a tool-call turn.
-    const visible = message.content.filter(block => block.type !== 'toolCall' || !isTransportResolved(block))
+    const visible = message.content.filter(
+      block => block.type !== 'toolCall' || !isTransportResolved(block, profile),
+    )
     if (visible.some(block => block.type === 'toolCall')) return finishOf('tool-calls')
     if (visible.length === 0 && message.content.length === 0) {
       return finishOf('error', {
-        message: `llm-omp-transports: cursor model "${message.model}" completed the turn with no content`,
+        message: `llm-omp-transports: ${profile.provider} model "${message.model}" completed the turn with no content`,
         code: EMPTY_RESPONSE_CODE,
       })
     }
     return finishOf('stop')
   }
-  throw new LlmError(`llm-omp-transports: unrecognized cursor stop reason "${String(reason)}"`, UNKNOWN_FINISH)
+  throw new LlmError(
+    `llm-omp-transports: unrecognized ${profile.provider} stop reason "${String(reason)}"`,
+    UNKNOWN_FINISH,
+  )
 }
 
 /**
@@ -566,15 +720,16 @@ function errorFinish(
   message: OmpAssistantMessage,
   reason: 'aborted' | 'error',
   signal: AbortSignal | undefined,
+  profile: RouteProfile,
 ): FinishChunk {
-  const text = message.errorMessage ?? 'cursor stream error'
+  const text = message.errorMessage ?? `${profile.provider} stream error`
   if (signal?.aborted === true || reason === 'aborted') {
     return finishOf('aborted', failureOf(text, ABORTED_CODE, message.errorStatus))
   }
   if (isContextWindowExceededError(text) || /\bCONVERSATION_TOO_LONG\b/.test(text)) {
     return finishOf('error', failureOf(text, CONTEXT_WINDOW_EXCEEDED_CODE, message.errorStatus))
   }
-  return finishOf('error', failureOf(text, classifyFailure(text, message.errorStatus), message.errorStatus))
+  return finishOf('error', failureOf(text, classifyFailure(text, message.errorStatus, profile), message.errorStatus))
 }
 
 /**
@@ -606,13 +761,14 @@ function failureOf(message: string, code: string, status: number | undefined): L
 }
 
 /**
- * Classify a Cursor failure into the seam's provider-neutral code vocabulary.
+ * Classify a transport failure into the seam's provider-neutral code vocabulary.
  *
- * Cursor's own error names arrive in the message (the transport prefixes them
- * with `Cursor`), and the transport also records the HTTP status it derived.
- * Status wins because it is the transport's own classification.
+ * omp's provider error names arrive in the message (Cursor's transport prefixes
+ * them with `Cursor`), and the transport also records the HTTP status it
+ * derived. Status wins because it is the transport's own classification; the
+ * profile supplies the unclassified fallback.
  */
-function classifyFailure(message: string, status: number | undefined): string {
+function classifyFailure(message: string, status: number | undefined, profile: RouteProfile): string {
   if (status === 401 || status === 403) return 'AUTH'
   if (status === 404) return 'NOT_FOUND'
   if (status === 429) return 'RATE_LIMIT'
@@ -622,7 +778,7 @@ function classifyFailure(message: string, status: number | undefined): string {
   if (/\bNOT_FOUND\b|\bFILE_NOT_FOUND\b/.test(message)) return 'NOT_FOUND'
   if (/\bUNAUTHORIZED\b|\bBAD_USER_API_KEY\b/.test(message)) return 'AUTH'
   if (/\bPROVIDER_ERROR\b|\bINTERNAL\b|\bNETWORK_ERROR\b/.test(message)) return 'SERVER'
-  return 'CURSOR_ERROR'
+  return profile.fallbackErrorCode
 }
 
 /**

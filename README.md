@@ -172,6 +172,29 @@ credential store, behind the account's `grantRef`; the manager state keeps
 the reference plus non-sensitive metadata (email, account id, expiry) — the
 same secret-free layout as API keys.
 
+### Sign-in providers (Kilo, Z.AI Coding Plan)
+
+Two more routes sign in from Keys Manager through this plugin's own bundled
+clients instead of the `llm-pi-ai` seam:
+
+- **Kilo** (`kilo`, installed as a plugin extra route): a device-code page
+  plus a poll. The first successful sign-in creates the route and its first
+  pool row; later sign-ins append rows.
+- **Z.AI (GLM Coding Plan)** (`zai`, a shipped pi-ai route): adopt it first.
+  The flow opens a browser page and asks you to paste the final redirect URL
+  (a `zcode://` URL) or just the authorization code back into the dialog.
+
+Both mint a **static** credential — a token or an `id.secret` key — stored as
+an ordinary pool row tagged `signin:kilo` / `signin:zai-coding-plan`. They are
+not refreshable grants, so the row menu's **Sign in again** is the only way to
+renew one; it replaces that row's literal in place and keeps its id and
+position. Nothing is written to `llm-pi-ai/<provider>` for these routes.
+
+**A login flow is not a transport.** These two routes serve through the normal
+pi-ai key pool and take part in sticky selection, round-robin, retry failover
+and cooldowns. The `llm-omp-transports` surface described below is the other
+thing entirely: one route, one grant, its own section.
+
 ### Cursor transport
 
 Cursor is served by the companion `dsh-llm-omp-transports` component on its

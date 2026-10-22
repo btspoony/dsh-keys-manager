@@ -172,6 +172,9 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     // never by the key-name echo of a translation the stub does not carry.
     addKey: '添加密钥',
     addAccount: '添加账户',
+    // issue #15: the in-process sign-in surface resolves its own copy.
+    signInAgain: '重新登录',
+    loginPasteHint: '从浏览器地址栏复制完整 URL，或只粘贴授权码。',
     adopt: '接管 Provider',
     loginPromptSubmit: '提交',
     delete: '删除',
@@ -2048,6 +2051,246 @@ describe('account ui', () => {
     expect(await buildCopy(true)).not.toContain('停止服务')
     expect(await buildCopy(false)).toContain('停止服务')
     expect(await buildCopy(false)).not.toContain('回落到 API-key 池')
+  })
+
+/** The unmanaged `kilo` extra card the in-process sign-in owns. */
+function makeKiloProvider(): ProviderView {
+  return {
+    provider: 'kilo',
+    displayName: 'Kilo',
+    source: 'extra',
+    managed: false,
+    configured: false,
+    active: false,
+    supported: true,
+    accountSupported: true,
+    settingsNs: 'llm-pi-ai',
+    settingsPath: ['providers', 'kilo'],
+    apiKeyEnv: null,
+    brokerRef: null,
+    extra: true,
+    extraId: 'kilo',
+    api: 'openai-completions',
+    baseURL: 'https://api.kilo.ai/api/gateway',
+    env: [],
+    defaultBaseURL: 'https://api.kilo.ai/api/gateway',
+    nativeAuth: null,
+    models: [],
+    keyCount: 0,
+    healthyKeyCount: 0,
+    status: 'unmanaged',
+    keys: [],
+  }
+}
+
+/** A managed `zai` route holding one in-process sign-in row. */
+function makeSignInProvider(): ProviderView {
+  const base = makeState().providers[0]!
+  return {
+    ...base,
+    provider: 'zai',
+    displayName: 'Z.AI (GLM Coding Plan)',
+    accountSupported: true,
+    apiKeyEnv: 'KEYSMGR_ZAI_AAAAAA',
+    brokerRef: 'KEYSMGR_ZAI_AAAAAA',
+    keys: [{ ...base.keys[0]!, id: 'k_signin1', alias: 'GLM', importedFrom: 'signin:zai-coding-plan' }],
+  }
+}
+
+/** The zai paste step: a browser URL notice plus a text prompt. */
+function makePasteAttemptView(): AccountAttemptView {
+  return {
+    ...makeAttemptView(),
+    provider: 'zai',
+    notices: [{ message: 'Open this URL to continue signing in.', url: 'https://chat.z.ai/api/oauth/authorize' }],
+    prompt: { kind: 'manual-code', message: 'Paste the final redirect URL or the authorization code' },
+  }
+}
+
+  test('the sign-in capability follows the host verdict, not the catalog flag', () => {
+    // A route with no catalog OAuth flag still reports the host's verdict
+    // (issue #15: kilo/zai sign in through this plugin, not through pi-ai).
+    const kilo = makeKiloProvider()
+    expect(oauthCapable(kilo)).toBe(true)
+    // A legacy snapshot predates the verdict and keeps the catalog fallback.
+    const legacy = { ...kilo, accountSupported: undefined, nativeAuth: { env: [], oauth: true } }
+    expect(oauthCapable(legacy)).toBe(true)
+    expect(oauthCapable({ ...legacy, nativeAuth: { env: [], oauth: false } })).toBe(false)
+    // An explicit refusal wins over a catalog flag that says otherwise.
+    expect(oauthCapable({ ...kilo, accountSupported: false, nativeAuth: { env: [], oauth: true } })).toBe(false)
+  })
+
+  test('an unmanaged extra card signs in directly instead of adopting first', async () => {
+    const state = makeState()
+    state.providers = [makeKiloProvider()]
+    const harness = makeContext()
+    const calls: string[] = []
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      calls.push(endpoint)
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        expect(payload).toEqual({ args: { provider: 'kilo', alias: undefined } })
+        return { ok: true, value: makePendingAttemptView() }
+      }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePendingAttemptView() }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    // The first sign-in creates the route, so no adopt step runs first.
+    expect(calls).toContain('keysManager/beginAccountLogin')
+    expect(calls).not.toContain('keysManager/adoptProvider')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the sign-in dialog shows the browser link and the paste hint', async () => {
+    const state = makeState()
+    state.providers = [makeSignInProvider()]
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePasteAttemptView() }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePasteAttemptView() }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const addAccount = findButtons(view.nodes, '添加账户')[0]
+    expect(addAccount).toBeDefined()
+    ;(addAccount!.props!.onClick as () => void)()
+    await view.flush()
+
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+    const link = hostNodes(view.nodes).find(node => node.type === 'a')
+    expect(link?.props?.href).toBe('https://chat.z.ai/api/oauth/authorize')
+    // The rule's manual paste step, and the wording a `zcode://` redirect needs.
+    expect(view.nodes.some(node => node.text === 'Paste the final redirect URL or the authorization code')).toBe(true)
+    expect(view.nodes.some(node => node.text === '从浏览器地址栏复制完整 URL，或只粘贴授权码。')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the sign-in dialog cancels an in-process attempt', async () => {
+    const state = makeState()
+    state.providers = [makeSignInProvider()]
+    let cancelled = false
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePasteAttemptView() }
+      if (endpoint === 'keysManager/cancelAccountLogin') {
+        cancelled = true
+        return { ok: true, value: null }
+      }
+      if (endpoint === 'keysManager/accountAttempt') {
+        return {
+          ok: true,
+          value: cancelled
+            ? { ...makePasteAttemptView(), status: 'cancelled', prompt: undefined, updatedAt: 9, error: 'The zai sign-in was cancelled' }
+            : makePasteAttemptView(),
+        }
+      }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
+    await view.flush()
+
+    const cancel = findButtons(view.nodes, '取消')[0]
+    expect(cancel).toBeDefined()
+    ;(cancel!.props!.onClick as () => void)()
+    await view.flush()
+    expect(cancelled).toBe(true)
+    // The poller sees the terminal state and renders it.
+    expect(view.nodes.some(node => node.text === 'The zai sign-in was cancelled')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a seam-driven login dialog offers no Cancel', async () => {
+    // The seam settles its own attempts; the dialog can only be closed.
+    const state = makeState()
+    state.providers[0] = makeOauthProvider()
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makeAttemptView() }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makeAttemptView() }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+    ;(findButtons(view.nodes, '添加账户')[0]!.props!.onClick as () => void)()
+    await view.flush()
+
+    expect(findByClass(view.nodes, 'km-modal')).toHaveLength(1)
+    expect(findButtons(view.nodes, '取消')).toHaveLength(0)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a sign-in row offers Sign in again with its own row id', async () => {
+    const state = makeState()
+    state.providers = [makeSignInProvider()]
+    const harness = makeContext()
+    let loginArgs: unknown
+    harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginAccountLogin') {
+        loginArgs = payload
+        return { ok: true, value: makePendingAttemptView() }
+      }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePendingAttemptView() }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    ;(findByClass(view.nodes, 'km-provider-head')[0]!.props!.onClick as () => void)()
+    view.render()
+
+    const row = findByClass(view.nodes, 'km-key-row')[0]!
+    const dots = descendants(view.nodes, row).filter(node => node.type === 'button' && node.props?.['aria-haspopup'] === 'menu')
+    ;(dots[0]!.props!.onClick as () => void)()
+    view.render()
+    const reauth = descendants(view.nodes, findByClass(view.nodes, 'km-key-row')[0]!)
+      .filter(node => node.type === 'button' && node.text.includes('重新登录'))
+    expect(reauth).toHaveLength(1)
+    ;(reauth[0]!.props!.onClick as () => void)()
+    await view.flush()
+    expect(loginArgs).toEqual({ args: { provider: 'zai', alias: 'GLM', targetAccountId: 'k_signin1' } })
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('the new sign-in strings are translated in every locale', () => {
+    expectLocaleParity(['signInAgain', 'loginPasteHint'])
   })
 
   test('the account re-authentication entry carries the target row id', async () => {
