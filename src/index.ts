@@ -3828,10 +3828,31 @@ export class KeysManagerService {
         await this.syncBrokerBinding(provider)
         return this.buildState()
       }
-      return await this.run(async () => {
-        await this.syncBrokerBinding(provider)
-        return this.buildState()
-      })
+      // The projection turn above already committed AND flushed, so the
+      // activation is durable and serving. This second turn only converges the
+      // binding and takes the snapshot; if its flush fails, that activation must
+      // not be reported as failed — a caller would retry an activation that
+      // already landed. `built` is the discriminator: `guarded` runs the body
+      // before the flush, so a BODY failure leaves it unset and still
+      // propagates (shutdown, a refusal), while a post-commit flush failure is
+      // reported in the state the caller receives.
+      let built: StateView | undefined
+      try {
+        return await this.run(async () => {
+          await this.syncBrokerBinding(provider)
+          built = this.buildState()
+          return built
+        })
+      } catch (error) {
+        if (built === undefined) throw error
+        const reason = error instanceof Error ? error.message : String(error)
+        const warning = `The ${provider} activation is saved, but its binding and state snapshot could not be persisted (${reason}). The account is serving; the next successful change saves the rest.`
+        this.pushWarning(warning)
+        // The snapshot was taken before this warning existed, and re-taking one
+        // outside the queue is the race this turn exists to avoid, so the view
+        // is annotated rather than rebuilt.
+        return { ...built, warnings: [...built.warnings, warning] }
+      }
     } catch (error) {
       // Which path covers which case:
       // - `run` refuses the submission while `closing`, and `guarded` refuses a

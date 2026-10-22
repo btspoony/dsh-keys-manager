@@ -6045,6 +6045,62 @@ test('the compensation invalidates the generation a stale reconciler captured', 
   }
 })
 
+// The projection turn commits and flushes before the binding/snapshot turn runs,
+// so a failure of that SECOND turn must not be reported as a failed activation:
+// the account already serves, and a caller would retry an activation that landed.
+
+test('a failed post-commit snapshot turn does not fail an activation that already landed', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as { oauthOwnerFor: (provider: string) => string | null }
+  const realFlush = h.store.flush.bind(h.store)
+  try {
+    // The first turn's flush succeeds; the post-commit turn's does not.
+    let flushes = 0
+    h.store.flush = async () => {
+      flushes += 1
+      if (flushes === 2) throw new Error('state file could not be written')
+      return realFlush()
+    }
+    const view = await h.service.activateAccount('anthropic', rowId)
+    assert.equal(flushes, 2, 'the second turn did not reach its flush')
+    // The activation is durable and serving, and the returned state says so
+    // while naming the part that did not persist.
+    assert.equal(internals.oauthOwnerFor('anthropic'), rowId)
+    assert.ok(h.credentials.records.get(GRANT_KEY), 'the committed projection is gone')
+    assert.equal(
+      view.warnings.some(warning =>
+        warning.includes('anthropic') && warning.includes('could not be persisted')),
+      true,
+      'a post-commit flush failure was not reported in the returned state',
+    )
+    assert.equal(view.warnings.some(warning => /shutting down/i.test(warning)), false)
+  } finally {
+    h.store.flush = realFlush
+    await h.close()
+  }
+})
+
+test('a failed post-commit body still fails the activation', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const internals = h.service as unknown as {
+    syncBrokerBinding: (provider: string, options?: Record<string, unknown>) => Promise<boolean>
+  }
+  const realSync = internals.syncBrokerBinding.bind(h.service)
+  try {
+    // The body of the post-commit turn fails before the snapshot exists, so
+    // there is no state to report and the failure must propagate.
+    internals.syncBrokerBinding = async () => { throw new Error('snapshot unavailable') }
+    await assert.rejects(
+      () => h.service.activateAccount('anthropic', rowId),
+      /snapshot unavailable/,
+      'a post-commit body failure was swallowed',
+    )
+  } finally {
+    internals.syncBrokerBinding = realSync
+    await h.close()
+  }
+})
+
 // The unbind direction is the one an activation takes (the OAuth projection
 // serves, so the pool is not the source): a value Keys Manager did not write
 // must decline there too, and a shutdown whose guard was never reached must not
