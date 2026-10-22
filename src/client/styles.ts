@@ -9,6 +9,13 @@ export const CSS = `
 .km-stat{display:flex;flex-direction:column;gap:2px;padding:11px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1)}
 .km-stat strong{font-size:19px;line-height:1.15;font-weight:650;font-variant-numeric:tabular-nums}
 .km-stat span{color:var(--dsw-alias-label-secondary);font-size:12px}
+.km-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.km-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font:inherit;font-size:12.5px;cursor:pointer}
+.km-chip:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.km-chip:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 20%,transparent)}
+.km-chip-on{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 55%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,var(--dsw-alias-bg-layer-1));color:var(--dsw-alias-label-primary)}
+.km-chip-count{font-size:11.5px;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}
+.km-chip-on .km-chip-count{color:inherit}
 .km-search{position:relative;display:flex;align-items:center;margin:0 0 20px}
 .km-search-icon{position:absolute;left:12px;color:var(--dsw-alias-label-secondary);pointer-events:none}
 .km-search-input{width:100%;box-sizing:border-box;padding:10px 38px 10px 36px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;outline:none}

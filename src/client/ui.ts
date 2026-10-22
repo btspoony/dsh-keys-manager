@@ -70,8 +70,39 @@ function providerInitial(provider: ProviderView | undefined): string {
  * Add account instead of opening a sign-in that would fail. Older host
  * snapshots that predate the field keep the catalog-only behaviour.
  */
-function oauthCapable(provider: ProviderView): boolean {
+export function oauthCapable(provider: ProviderView): boolean {
   return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
+}
+
+/** Where the row tag says a route came from, including legacy snapshots. */
+export function originOf(provider: ProviderView): 'dsh' | 'plugin' | 'custom' {
+  return provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
+}
+
+/** Provider-list quick filter. View state only: never written to the store. */
+type ProviderFilter = 'all' | 'builtin' | 'plugin' | 'oauth' | 'transport'
+
+/** Fixed chip set and order (product decision): origin → capability → surface. */
+const FILTER_CHIPS: ReadonlyArray<{ value: ProviderFilter; label: string }> = [
+  { value: 'all', label: 'filterAll' },
+  { value: 'builtin', label: 'filterBuiltin' },
+  { value: 'plugin', label: 'filterPlugin' },
+  { value: 'oauth', label: 'filterOauth' },
+  { value: 'transport', label: 'filterTransport' },
+]
+
+/**
+ * One predicate per chip, so a row is never shown under two chips at once: a
+ * transport route is its own surface and only All and Transport select it.
+ */
+function matchesFilter(provider: ProviderView, filter: ProviderFilter): boolean {
+  switch (filter) {
+    case 'transport': return provider.transport === true
+    case 'builtin': return provider.transport !== true && originOf(provider) === 'dsh'
+    case 'plugin': return provider.transport !== true && originOf(provider) === 'plugin'
+    case 'oauth': return provider.transport !== true && oauthCapable(provider)
+    default: return true
+  }
 }
 
 /**
@@ -79,7 +110,11 @@ function oauthCapable(provider: ProviderView): boolean {
  * other sign-in/remove control, so the 已接管 surface renders them directly.
  */
 function orphanTransportAccounts(providers: ProviderView[], transportAccounts: TransportAccountView[]): TransportAccountView[] {
-  return transportAccounts.filter(account => !providers.some(provider => provider.provider === account.id))
+  // Only a TRANSPORT card owns its account. A route id that collides with an
+  // ordinary provider's id owns nothing here, so the row stays an orphan and
+  // keeps rendering (the standalone section that used to carry it is gone).
+  return transportAccounts.filter(account =>
+    !providers.some(provider => provider.transport === true && provider.provider === account.id))
 }
 
 /**
@@ -931,8 +966,11 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
   const keyCount = provider.keyCount
   const warning = provider.warning
   const isExtra = provider.extra
+  // Main's architecture: a transport route is a provider card of its own, so it
+  // carries the plugin tag rather than a key-pool origin. `originOf` is the
+  // same expression main inlines for snapshots that predate `origin`.
   const transport = provider.transport === true
-  const origin = provider.origin ?? (provider.extra ? 'plugin' : 'dsh')
+  const origin = originOf(provider)
   const originLabel = transport || origin === 'plugin' ? t('pluginBuiltin') : origin === 'dsh' ? t('dshBuiltin') : t('customProvider')
   const providerMeta = [
     provider.provider,
@@ -1040,6 +1078,15 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
         ),
       ),
       h('span', { className: 'km-provider-side' },
+        // I-000120 / D8: requests this route served without an attributed
+        // account. Rendered only above zero, and the visible label carries the
+        // count so it is the accessible name; the hint stays a description.
+        (provider.unattributedRequests ?? 0) > 0
+          ? h('span', {
+              className: 'km-tag km-tag-warn km-unattributed',
+              title: t('unattributedHint'),
+            }, t('unattributed', { n: provider.unattributedRequests ?? 0 }))
+          : null,
         transport
           // No adopt state and no key count: the route's credential is the
           // account row in the body.
@@ -1495,6 +1542,7 @@ function KeysManagerBody(): React.ReactElement {
   const state = snapshot.state
   const now = snapshot.now
   const [query, setQuery] = React.useState('')
+  const [filter, setFilter] = React.useState<ProviderFilter>('all')
   const [showAllAvailable, setShowAllAvailable] = React.useState(false)
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
   const loadedRef = React.useRef(false)
@@ -1525,8 +1573,8 @@ function KeysManagerBody(): React.ReactElement {
   // A transport route is a provider card of its own: it groups with the
   // managed providers (the same set every 已接管 number counts), but it is
   // never offered as addable and never counts toward the key pool.
-  const managed = providers.filter(provider => (provider.managed || provider.transport === true) && matches(provider))
-  const available = providers.filter(provider => !provider.managed && provider.transport !== true && matches(provider))
+  const managed = providers.filter(provider => (provider.managed || provider.transport === true) && matchesFilter(provider, filter) && matches(provider))
+  const available = providers.filter(provider => !provider.managed && provider.transport !== true && matchesFilter(provider, filter) && matches(provider))
   const visibleAvailable = showAllAvailable || normalizedQuery.length > 0 ? available : available.slice(0, 12)
   // Orphan rows obey the same search filter their provider cards do.
   const matchesAccount = (account: TransportAccountView): boolean => {
@@ -1535,6 +1583,24 @@ function KeysManagerBody(): React.ReactElement {
     return haystack.includes(normalizedQuery)
   }
   const orphanAccounts = orphanTransportAccounts(providers, transportAccounts).filter(matchesAccount)
+  // The chips govern the orphan rows too: an orphan is a transport account with
+  // no card, so only All and Transport select it, and the section count and its
+  // placeholder must agree with what is actually rendered.
+  const visibleOrphans = filter === 'all' || filter === 'transport' ? orphanAccounts : []
+  // Counts follow the query-narrowed population the section heads render, so a
+  // no-match query cannot leave a chip advertising rows no section shows.
+  const filterCount = (value: ProviderFilter): number => {
+    const searchable = providers.filter(matches)
+    if (value === 'all') return searchable.length + orphanAccounts.length
+    if (value === 'transport') return searchable.filter(provider => provider.transport === true).length + orphanAccounts.length
+    return searchable.filter(provider => matchesFilter(provider, value)).length
+  }
+  // The managed list can be empty because nothing is managed, or because the
+  // query or the active chip hides rows that exist; the empty body says which.
+  // The query branch wins in the renderer, so this predicate needs only the
+  // chip term: with a query present the query copy is shown regardless.
+  const managedHiddenByChip = filter !== 'all'
+    && providers.some(provider => provider.managed || provider.transport === true)
 
   function toggle(provider: string): void {
     setExpanded(current => {
@@ -1587,6 +1653,25 @@ function KeysManagerBody(): React.ReactElement {
       ),
     ),
 
+    // Quick filter: single select, view state only, composed with the text
+    // search below. Counts are derived per predicate from the snapshot.
+    !loading && !failed ? h('div', {
+      className: 'km-filters',
+      role: 'group',
+      'aria-label': t('filterGroup'),
+    }, FILTER_CHIPS.map(chip =>
+      h('button', {
+        key: chip.value,
+        type: 'button',
+        className: cx('km-chip', `km-chip-${chip.value}`, filter === chip.value && 'km-chip-on'),
+        'aria-pressed': filter === chip.value,
+        onClick: () => setFilter(chip.value),
+      },
+        h('span', { className: 'km-chip-label' }, t(chip.label)),
+        h('span', { className: 'km-chip-count' }, filterCount(chip.value)),
+      ),
+    )) : null,
+
     h('div', { className: 'km-search' },
       h(Icon, { name: 'search', size: 17, className: 'km-search-icon' }),
       h('input', {
@@ -1614,24 +1699,30 @@ function KeysManagerBody(): React.ReactElement {
         h('h2', { className: 'km-section-title' }, t('managed')),
         // What is below it, like the available section: the tile above keeps
         // the global total.
-        h('span', { className: 'km-section-count' }, managed.length + orphanAccounts.length),
+        h('span', { className: 'km-section-count' }, managed.length + visibleOrphans.length),
       ),
-      // The placeholder only when the section renders neither a card nor a row.
-      managed.length === 0 && orphanAccounts.length === 0
-        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null, normalizedQuery.length > 0 ? t('noSearch') : t('managedEmpty')))
+      // The placeholder only when the section renders neither a card nor a row
+      // the active chip selects.
+      managed.length === 0 && visibleOrphans.length === 0
+        ? h('div', { className: 'km-empty' }, h(Icon, { name: 'key', size: 20 }), h('span', null,
+            normalizedQuery.length > 0
+              ? t('noSearch')
+              : filter === 'transport' ? t('transportEmpty') : managedHiddenByChip ? t('managedFilteredEmpty') : t('managedEmpty')))
         : null,
       managed.length > 0
         ? h('div', { className: 'km-provider-list' }, managed.map(provider => h(ProviderCard, {
             key: provider.provider,
             provider,
             now,
-            transportAccount: transportAccounts.find(account => account.id === provider.provider),
+            transportAccount: provider.transport === true
+              ? transportAccounts.find(account => account.id === provider.provider)
+              : undefined,
             expanded: expanded.has(provider.provider),
             onToggle: () => toggle(provider.provider),
           })))
         : null,
-      orphanAccounts.length > 0
-        ? h('div', { className: 'km-provider-list' }, orphanAccounts.map(account => h(TransportAccountRow, {
+      visibleOrphans.length > 0
+        ? h('div', { className: 'km-provider-list' }, visibleOrphans.map(account => h(TransportAccountRow, {
             key: account.scope,
             account,
           })))

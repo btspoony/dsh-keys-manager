@@ -968,6 +968,55 @@ function matchOwningAccount(provider: string, accounts: KeyRecord[], payload: OA
     candidate.oauth!.email === payload.email && candidate.oauth!.accountId === undefined)
 }
 
+/**
+ * What one activation read before it entered the queue (plan
+ * iter-pool-activate-queue, "Spike outcome"): the grant payload it will project,
+ * its serialized form, and the projection the route served at that moment.
+ *
+ * The baseline is the compare half of the in-turn compare-and-write: the write
+ * lands only while the live record still equals it, so a foreign writer that
+ * replaced the projection between the read and the turn is left untouched and
+ * the activation refuses. `absent` is a real baseline ("nothing served this
+ * route"), not a wildcard.
+ */
+type ActivationBaseline =
+  | { state: 'absent' }
+  | { state: 'present'; record: CredentialRecordLike }
+
+interface ActivationPreparation {
+  grantRef: string
+  payload: OAuthGrantPayload
+  written: string
+  baseline: ActivationBaseline
+  /** The route's owner classification before this activation claimed it. */
+  classification: ActivationClassification
+}
+
+/**
+ * Who owned the route before the activation. The compensation restores the
+ * record, so it must restore the classification that belongs to it: a route
+ * read as pool-served while a record serves it picks the wrong credential and
+ * attributes failures to the wrong account.
+ */
+type ActivationClassification =
+  | { state: 'owned'; rowId: string }
+  | { state: 'foreign' }
+  | { state: 'none' }
+
+/**
+ * What the compensation left serving the route. `ours` means the activation's
+ * own projection is (or may still be) live, so its claim must survive; the
+ * other three name something the classification can be derived from.
+ */
+type CompensationOutcome = 'baseline' | 'ours' | 'foreign' | 'gone' | 'superseded'
+
+/** What the turn changed in memory, for the flush-failure compensation. */
+interface ActivationUndo {
+  valueMissing: boolean
+  cooldownUntil: number
+  generation: number
+}
+
 export class KeysManagerService {
   readonly ctx: HostContext
   readonly store: KeysManagerStore
@@ -1172,12 +1221,15 @@ export class KeysManagerService {
    * order is preserved so the older observation can never commit after the
    * newer one and leave the row on a stale generation.
    *
-   * Round-8 finding I-000106: activation joins the same chain. The only
-   * writer of `row.oauth.grantRef` is {@link reconcileGrantRecord}, which runs
-   * outside the mutation queue, so activation's record read and its projection
-   * write must be mutually exclusive with that writer — otherwise a rotation
-   * landing between them leaves the projection on a generation the row no
-   * longer names.
+   * Round-8 finding I-000106 assumed activation would join this chain. It does
+   * not: activation runs its compare-and-write inside the mutation queue turn,
+   * and the only writer of `row.oauth.grantRef` is {@link reconcileGrantRecord},
+   * which runs outside that queue. The fence is therefore a generation re-check
+   * on both sides of the write — before it (the row must still name the
+   * generation that was read) and after it (a rotation commit can land inside
+   * the seam's compare-and-write await, which only reads the projection key).
+   * Chain members are the echo reconciler, the key-test borrow and adoption
+   * classification.
    */
   private readonly grantReconciliations = new Map<string, Promise<void>>()
   /**
@@ -1272,6 +1324,20 @@ export class KeysManagerService {
   private credentialsMounted = false
   /** Providers whose bounded-wait warning already fired (warn once). */
   private readonly hydrationWaitWarned = new Set<string>()
+  /**
+   * Stream attempts each provider served without an attributed account
+   * (`I-000120`, D8): the ownership read had not landed, or it had failed.
+   * Counted at the one managed serving site (`wrapStream`), never in the
+   * hydration pass — a failed read serves no request, it only makes later
+   * attempts unattributed. Two earlier branches are outside this definition and
+   * stay uncounted: a provider this manager does not manage (no ownership is
+   * ever asked for) and the `mismatch` profile shape, which hands the request
+   * to pi-ai untouched precisely because this manager's own binding cannot
+   * describe what serves it. Cleared only when a later read decides the route's
+   * attribution; process-local, never persisted and never on the warnings
+   * channel.
+   */
+  private readonly unattributedRequests = new Map<string, number>()
   /** Channels whose lost-subscription warning already fired (warn once). */
   private readonly subscriptionLostWarnings = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
@@ -1341,7 +1407,13 @@ export class KeysManagerService {
     }
     return (async () => {
       try {
-        await Promise.all(Object.values(this.store.providers).map(async providerRecord => {
+        // allSettled, never all: under `all`, a rejection from any single
+        // provider task settles this awaited pass at once, so the finally below
+        // flips `hydrationSettled` while the other providers' reads are still
+        // in flight and `awaitProjectionOwnership` calls them ready. No task
+        // body can reject today (the read error is caught inside it), so this
+        // is a structural guard — do not flip it back for style.
+        await Promise.allSettled(Object.values(this.store.providers).map(async providerRecord => {
           const provider = providerRecord.provider
           const accounts = providerRecord.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null)
           try {
@@ -1395,7 +1467,12 @@ export class KeysManagerService {
             // attributable now and must not wait behind another provider's
             // stalled read (round-10 should-fix SF1). A superseded pass does
             // not report readiness for a store it no longer describes.
-            if (this.hydrationEpoch === epoch) this.noteProviderHydrated(provider)
+            if (this.hydrationEpoch === epoch) {
+              // A landed read decided this route's attribution; a failed one
+              // decided nothing and never clears the count (I-000120).
+              if (!this.ownershipReadFailures.has(provider)) this.unattributedRequests.delete(provider)
+              this.noteProviderHydrated(provider)
+            }
           }
         }))
       } finally {
@@ -1452,9 +1529,24 @@ export class KeysManagerService {
    * repair was skipped while that shape was unknown.
    */
   private noteProjectionReadSucceeded(provider: string): void {
-    if (!this.ownershipReadFailures.delete(provider)) return
+    // This read decided the route's attribution, so a count of requests served
+    // without one no longer describes it (I-000120).
+    this.unattributedRequests.delete(provider)
+    const recovering = this.ownershipReadFailures.delete(provider)
+    // Readiness is decided by the read, not by whether it was recovering: a
+    // `record-updated` reconcile can answer the projection while startup
+    // hydration is still pending for another provider, and the old early return
+    // left this one out of `hydratedProviders` — waits kept timing out, routing
+    // stayed skipped, and the count this read had just cleared started growing
+    // again although attribution was already decided. `noteProviderHydrated` is
+    // idempotent (a set add plus waking its waiters).
     this.noteProviderHydrated(provider)
-    void this.scheduleGrantReconciliation(provider, () => this.syncBindingAfterProjectionChange(provider))
+    // Only recovery re-derives the binding: the normal call arrives from a
+    // reconciliation that already owns that re-derive behind it, and the
+    // startup repair is what a failed read skipped.
+    if (recovering) {
+      void this.scheduleGrantReconciliation(provider, () => this.syncBindingAfterProjectionChange(provider))
+    }
   }
 
   /** Release every provider's readiness wait when hydration cannot proceed. */
@@ -1504,6 +1596,9 @@ export class KeysManagerService {
       timer = setTimeout(() => {
         wake(false)
       }, ms)
+      // I-000116: a request waiting on hydration must not hold the process
+      // open for the rest of the wait; every exit path still clears it.
+      timer.unref?.()
       live.add(onLanded)
     })
   }
@@ -1591,6 +1686,17 @@ export class KeysManagerService {
   }
 
   /**
+   * Whether a claim landed after `generation` was captured. A reconciliation
+   * reads its snapshot before its awaited record read and decides after it, so
+   * an activation (or login) that claimed the route in between owns the answer
+   * now: the stale body must not clear the claim, mark the route foreign, or
+   * re-point the binding. The hydration write uses the same guard.
+   */
+  private ownershipSuperseded(provider: string, generation: number): boolean {
+    return (this.ownershipGenerations.get(provider) ?? 0) !== generation
+  }
+
+  /**
    * Claim the projection owner for one account row, bumping the provider's
    * ownership generation so an in-flight hydration read of an older state
    * is discarded instead of overwriting the claim (round-3 finding 3).
@@ -1599,6 +1705,8 @@ export class KeysManagerService {
     this.activeAccounts.set(provider, accountId)
     this.foreignProjections.delete(provider)
     this.noteProjectionCommitted(provider)
+    // The route has an owner now, so requests are attributed from here on.
+    this.unattributedRequests.delete(provider)
   }
 
   /**
@@ -1628,16 +1736,30 @@ export class KeysManagerService {
   }
 
   /** Serialize mutations, rejecting submissions that arrive during shutdown. */
-  private run<T>(operation: () => Promise<T>): Promise<T> {
+  private run<T>(operation: () => Promise<T>, onFailure?: (error: unknown) => Promise<void>): Promise<T> {
     if (this.closing) return Promise.reject(new Error('Keys Manager is shutting down'))
     const guarded = async (): Promise<T> => {
       if (this.store.readOnly) {
         throw new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.')
       }
-      const result = await operation()
-      // A mutation is not successful until its state document is durable.
-      await this.store.flush()
-      return result
+      try {
+        const result = await operation()
+        // A mutation is not successful until its state document is durable.
+        await this.store.flush()
+        return result
+      } catch (error) {
+        // Failure cleanup belongs to THIS turn's exclusive window, not a later
+        // one: a queued mutation (a removal, say) would otherwise run first and
+        // destroy the state the undo needs to restore. `guarded` resolves only
+        // after the hook, so everything already submitted behind this turn sees
+        // the compensated state. Both awaits are best-effort — the caller must
+        // receive the original error, not the cleanup's.
+        if (onFailure !== undefined) {
+          await onFailure(error).catch(() => undefined)
+          await this.store.flush().catch(() => undefined)
+        }
+        throw error
+      }
     }
     const next = this.queue.then(guarded, guarded)
     this.queue = next.catch(() => {})
@@ -3178,7 +3300,7 @@ export class KeysManagerService {
       // can already be superseded. The newer claim owns the route and settled
       // the binding itself: this stale removal decides nothing — no owner
       // delete, no rebind — it only consumes its own one-shot removal marker.
-      if ((this.ownershipGenerations.get(provider) ?? 0) !== generation) {
+      if (this.ownershipSuperseded(provider, generation)) {
         this.intentionalProjectionRemovals.delete(provider)
         return
       }
@@ -3233,6 +3355,10 @@ export class KeysManagerService {
     // reference over it. With no OAuth row the unowned-grant branch below
     // classifies a valid grant the same way.
     if (record.kind === 'api-key') {
+      // A newer claim (an activation that wrote and claimed after this body
+      // captured its snapshot) owns the route now; this stale classification
+      // must not clear it.
+      if (this.ownershipSuperseded(provider, generation)) return
       // Native api-key management took the route over: the manager no
       // longer owns any projection here.
       this.activeAccounts.delete(provider)
@@ -3244,11 +3370,14 @@ export class KeysManagerService {
       this.noteProjectionCommitted(provider)
       this.pushWarning(`The ${provider} route now holds a natively managed API-key credential; the Keys Manager account pool is not serving it.`)
       // pi-ai resolves the broker reference before this record, so a route
-      // left bound would keep serving the pool (PR review round 4).
+      // left bound would keep serving the pool (PR review round 4). The sync
+      // stamps the generation it entered with and re-checks before its own
+      // write, so this body's own bump cannot strand it.
       await this.syncBindingAfterProjectionChange(provider)
       return
     }
     if (!isOAuthGrantPayload(record.payload)) {
+      if (this.ownershipSuperseded(provider, generation)) return
       // An unrecognized payload is not ours to interpret: drop the stale
       // owner entry so failure attribution and demotion never fire on it.
       this.activeAccounts.delete(provider)
@@ -3266,6 +3395,7 @@ export class KeysManagerService {
     // applies, so a restarted process and the live reconciler agree.
     const owner = matchOwningAccount(provider, accounts, payload)
     if (owner === undefined) {
+      if (this.ownershipSuperseded(provider, generation)) return
       // A foreign account's grant serves the route: no pool row owns the
       // projection, so the previous owner entry must not survive it — and the
       // live record keeps the pool from claiming the route (round 3).
@@ -3285,6 +3415,10 @@ export class KeysManagerService {
     // (`valueMissing`) still qualifies — a projection that reappears for it
     // is re-adopted below. Only a removal in progress is refused.
     if (!this.accountRowIsManaged(provider, owner)) return
+    // A newer claim landed while this body was resolving its read: the
+    // rotation write, the row commit and the binding sync below all describe a
+    // generation that claim already superseded.
+    if (this.ownershipSuperseded(provider, generation)) return
     // F1 (I-000081): the matched grant IS the live projection, so this row
     // owns it from now on — even when no in-process login or activation
     // ran (the post-restart echo-rotation case: a hydrated row, no owner
@@ -3296,31 +3430,31 @@ export class KeysManagerService {
     // the stale echo claim is discarded exactly like a stale hydration
     // read (the rotation sync below still runs, but a commit that a newer
     // claim has superseded is rejected — round-9 P1).
-    let claimedGeneration: number | undefined
-    if ((this.ownershipGenerations.get(provider) ?? 0) === generation) {
-      this.claimProjectionOwner(provider, owner.id)
-      claimedGeneration = this.ownershipGenerations.get(provider)
-      // R7-SF3: the live projection proves this row's identity again, so a
-      // demoted row is re-adopted — restore its owner claim (above) and end
-      // the demoted state. `valueMissing` means "not serving but still
-      // managed", not "removal in progress": a native sign-in or pi-ai
-      // write that re-projects the grant recovers the account without a
-      // manual re-activation. The flag is persisted with the rest of the
-      // state document.
-      if (owner.valueMissing === true) {
-        owner.valueMissing = false
-        // R14-SF3: a demotion is earned by a failure, so the row usually
-        // still carries the cooldown `markFailure` wrote. Re-adoption is the
-        // same manual-recovery equivalence `activateAccount` and re-auth
-        // implement: the live projection is serving again, so the old
-        // window ends with it — otherwise the resurrected row renders
-        // "cooling" and stays out of the healthy counts until the timer
-        // expires. Only this proven-adoption branch clears; a row whose
-        // projection did not reappear keeps its window.
-        owner.cooldownUntil = 0
-        this.store.touch()
-      }
+    // Unconditional: the guard above already returned when a newer claim
+    // landed, and nothing between the two awaits.
+    this.claimProjectionOwner(provider, owner.id)
+    const claimedGeneration = this.ownershipGenerations.get(provider)
+    // R7-SF3: the live projection proves this row's identity again, so a
+    // demoted row is re-adopted — restore its owner claim (above) and end
+    // the demoted state. `valueMissing` means "not serving but still
+    // managed", not "removal in progress": a native sign-in or pi-ai
+    // write that re-projects the grant recovers the account without a
+    // manual re-activation. The flag is persisted with the rest of the
+    // state document.
+    if (owner.valueMissing === true) {
+      owner.valueMissing = false
+      // R14-SF3: a demotion is earned by a failure, so the row usually
+      // still carries the cooldown `markFailure` wrote. Re-adoption is the
+      // same manual-recovery equivalence `activateAccount` and re-auth
+      // implement: the live projection is serving again, so the old
+      // window ends with it — otherwise the resurrected row renders
+      // "cooling" and stays out of the healthy counts until the timer
+      // expires. Only this proven-adoption branch clears; a row whose
+      // projection did not reappear keeps its window.
+      owner.cooldownUntil = 0
+      this.store.touch()
     }
+
     // Rotation sync: the rotated payload is authoritative (the plan's
     // single-writer contract — "sync them back to the owning plugin-scope
     // record on record-updated"), so write it back to the row's grant
@@ -3403,7 +3537,18 @@ export class KeysManagerService {
     // PR review round 35: the commit is this body's persisted state write; a
     // shutdown that began under any of the awaits above refuses it.
     if (this.persistenceRefused()) return
-    await this.commitGrantGeneration(provider, owner, payload, rotatedRef)
+    // The commit is the row repoint plus the superseded record's delete, both
+    // after the awaits above (most recently `rotationStillCurrent`'s own record
+    // read). A claim that landed in that read owns the route now, so the commit
+    // refuses like every other mutation in this body.
+    const commitGeneration = claimedGeneration ?? generation
+    await this.commitGrantGeneration(
+      provider,
+      owner,
+      payload,
+      rotatedRef,
+      () => !this.ownershipSuperseded(provider, commitGeneration),
+    )
     // PR review round 44: the projection now serves this managed account again,
     // so a profile that still names the broker would make pi-ai resolve the
     // pool first and fail with MISSING_CREDENTIAL. Converge the binding with the
@@ -3532,63 +3677,558 @@ export class KeysManagerService {
    * Make one account's grant payload the route's stored credential
    * (D1 activation projection).
    *
-   * Round-8 finding I-000106 (must-fix): the decide snapshot used to be read
-   * before the seam's lock, and `reconcileGrantRecord` runs OUTSIDE the
-   * mutation queue — so a rotation echo could repoint `row.oauth.grantRef` and
-   * delete the record being projected between the read and the write, leaving
-   * the route on an older generation than the row names. The whole
-   * read → project → claim section therefore runs on the provider's grant
-   * chain ({@link scheduleGrantReconciliation}) — the same chain the
-   * reconciler bodies use. A rotation committed before this body is observed
-   * in `row.oauth.grantRef`; one that arrives while the body runs is queued
-   * behind it and reconciles the generation this body projected. Either way
-   * the projection holds exactly the generation the row names.
+   * Plan iter-pool-activate-queue, "Spike outcome" — the contract this method
+   * implements. The slow half (read the row's grant, validate it, capture what
+   * the route serves now) runs outside the mutation queue, so a slow credential
+   * store does not delay unrelated mutations. The mutation queue turn owns every
+   * write:
    *
-   * The seam's per-key lock still serializes the read-decide-replace steps of
-   * `modifyRecord` (credentials/src/index.ts:236-250) against other writers.
-   * The account whose payload lands becomes the pool's active account and is
-   * cascade-selectable again.
+   * 1. admission checks in queue order, which produce this method's error
+   *    surface (`Provider "…" is not managed`, `Account "…" not found on …`,
+   *    `Key "…" is not an OAuth account`, `The credential store does not support
+   *    records`) — plus a re-check that the row still names the generation the
+   *    read used;
+   * 2. the projection write as a compare-and-write under the seam's per-key
+   *    lock (credentials/src/index.ts:236-250): it lands only while the live
+   *    record still equals the captured baseline, "both absent" included. A
+   *    rotation, a removal or any foreign writer that replaced the projection
+   *    meanwhile makes the compare fail, so this call refuses with the retryable
+   *    `could not be projected` message and leaves the newer projection
+   *    untouched — there is nothing to delete, because nothing was written;
+   * 3. the owner claim, the row writes and the returned `buildState`.
+   *
+   * There is deliberately no shutdown check after the write: `close()` awaits
+   * this queue before it closes the store, so a turn that started in time always
+   * finishes (measured in the spike that produced this contract). A check there
+   * is what used to leave an orphan projection behind.
+   *
+   * The one write the turn cannot make durable by itself is a rejected state
+   * flush; see {@link compensateActivationFlush} for that compensation.
    */
-  activateAccount(provider: string, accountId: string): Promise<StateView> {
-    return this.run(async () => {
-      const providerRecord = this.store.provider(provider)
-      if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
-      const row = providerRecord.keys.find(candidate => candidate.id === accountId)
-      if (row === undefined) throw new Error(`Account "${accountId}" not found on ${provider}`)
-      if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account`)
-      const records = this.credentialRecords()
-      if (records === undefined) throw new Error('The credential store does not support records')
-      await this.scheduleGrantReconciliation(provider, async () => {
-        // Re-read the generation under the chain: a rotation that committed
-        // before this body claimed its slot is already reflected here.
-        const grantRef = row.oauth!.grantRef
-        const stored = await records.readRecord(grantRef)
-        if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
-          throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
+  async activateAccount(provider: string, accountId: string): Promise<StateView> {
+    const records = this.credentialRecords()
+    // Locator only: it keeps the row's grantRef reachable for the read below.
+    // The turn re-reads the store and decides; this lookup decides nothing.
+    const located = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
+    // The refusals `run` applies (1683, 1685-1687) are hoisted ahead of the
+    // credential read: a refused call should not pay for it at all. They are
+    // not the guarantee — the turn's own admission checks are.
+    if (this.closing) throw new Error('Keys Manager is shutting down')
+    if (this.store.readOnly) {
+      throw new Error('The state file could not be read; refusing to write over it. Restart after fixing file access.')
+    }
+    // The slow half, outside the queue: read the grant this activation would
+    // project and capture what the route serves now as the compare baseline.
+    // Nothing here decides — admission order belongs to the turn.
+    const prepared = located !== undefined
+      && located.kind === 'oauth'
+      && located.oauth !== null
+      && records !== undefined
+      ? await this.prepareActivation(provider, located, records)
+      : undefined
+    if (prepared !== undefined && records !== undefined) {
+      // Same-`grantRef` rotation: pi-ai can refresh the ACCESS token while
+      // keeping the refresh token, so the reference never moves, both `grantRef`
+      // fences pass, and the projection can already carry the fresh payload
+      // while the plugin-scope record still holds the stale one. Projecting
+      // `prepared.payload` then writes an older credential over a fresher
+      // projection. Re-read the source as late as possible and refuse unless it
+      // still says what this activation prepared.
+      //
+      // This read sits OUTSIDE the queue, exactly where `prepareActivation` does
+      // its credential work: a read inside the turn would put credential I/O
+      // back on the global mutation queue, which is the cross-provider stall —
+      // and the shutdown wait — the activation split exists to remove.
+      //
+      // Residual, named: reading outside the turn only narrows the same-ref
+      // rotation window to this activation's QUEUE WAIT instead of closing it.
+      // Closing it fully needs a seam that lets one read and one write share a
+      // single lock, which `CredentialRecordsLike` (host-types.ts:136-143) does
+      // not promise. What still covers the rest: the in-lock baseline compare on
+      // the projection side, and the post-write `grantRef` recheck for reference
+      // changes. A same-ref rotation that lands while the activation waits in
+      // the queue is the uncovered case.
+      const source = await records.readRecord(prepared.grantRef)
+      if (source === undefined
+        || source.kind !== 'grant'
+        || JSON.stringify(source.payload) !== prepared.written) {
+        throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+      }
+    }
+    let undo: ActivationUndo | undefined
+    try {
+      await this.run(async () => {
+        const providerRecord = this.store.provider(provider)
+        if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed`)
+        const row = providerRecord.keys.find(candidate => candidate.id === accountId)
+        if (row === undefined) throw new Error(`Account "${accountId}" not found on ${provider}`)
+        if (row.kind !== 'oauth' || row.oauth === null) throw new Error(`Key "${accountId}" is not an OAuth account`)
+        if (records === undefined) {
+          throw new Error('The credential store does not support records')
         }
-        this.intentionalProjectionRemovals.delete(provider)
-        await records.modifyRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`, () =>
-          Promise.resolve({ kind: 'grant', payload: structuredClone(stored.payload) }))
+        if (prepared === undefined) {
+          // The locator only hints; the turn decides. A row that was not an
+          // OAuth account when it was located (created, re-added, or repointed
+          // in between) has nothing prepared for it — that is a stale locator,
+          // not a store without record support.
+          throw new Error(`The account "${accountId}" on ${provider} changed before it could be activated; activate it again`)
+        }
+        // A remount replaced the credential backend while the read ran; the
+        // payload came from records this manager no longer serves.
+        //
+        // The row must still name the generation this activation read. A
+        // rotation echo or a removal + re-add that repointed it meanwhile
+        // belongs to a different grant, and projecting the old payload would
+        // either overwrite a newer generation or report a success the row does
+        // not serve. Refusing keeps the record untouched; the caller retries.
+        if (this.credentialRecords() !== records || row.oauth.grantRef !== prepared.grantRef) {
+          throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+        }
+        // The projection write is a compare-and-write under the seam's per-key
+        // lock: it lands only while the route still serves the baseline read
+        // above. A removal or a foreign writer that got there first makes the
+        // compare fail, and this activation refuses without touching the
+        // record — there is nothing to compensate afterwards.
+        const written = await this.compareAndWriteProjection(records, provider, prepared)
+        if (written === undefined) {
+          throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+        }
+        // No post-write shutdown check: `close()` awaits this queue before it
+        // closes the store (`1758-1762`), so a run that starts in time always
+        // finishes before the store goes away. Refusing here after the write
+        // is what used to manufacture an orphan.
+        undo = { valueMissing: row.valueMissing, cooldownUntil: row.cooldownUntil, generation: 0 }
         this.claimProjectionOwner(provider, row.id)
-        // The re-activated grant is the serving credential again, so a broker
-        // reference left by the key pool must go (see syncBrokerBinding): the
-        // committed projection is not rolled back by a settings failure.
-        await this.syncBrokerBinding(provider)
+        undo.generation = this.ownershipGenerations.get(provider) ?? 0
+        row.valueMissing = false
+        // Round-5 finding M1: manual recovery ends the cooling window too, the
+        // same reset a successful re-authentication applies. A demoted account
+        // is re-activated while its stale cooldown still sits on the row, which
+        // would render the freshly projected grant as cooling and keep it out
+        // of the healthy counts until the timer expires. Clearing the window
+        // also resets escalation: `applyFailureCooldown` derives the next level
+        // from `cooldownUntil` only (core.ts:168-174).
+        row.cooldownUntil = 0
+        this.store.touch()
+        // The pre-write check closed the read window, but a rotation commit can
+        // land inside the seam's compare-and-write await: it repoints the row
+        // (a different record key) while the projection write is in flight, and
+        // the in-lock compare cannot see the row. Projecting then leaves the
+        // route serving a generation the row has already superseded, so the
+        // activation refuses and the flush compensation above undoes both — the
+        // claim is set, so the undo path owns it.
+        if (row.oauth.grantRef !== prepared.grantRef) {
+          throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
+        }
+      }, async () => {
+        // A rejected flush lands here AFTER the turn resolved its work: `run`
+        // does not roll the mutation back, so the row is still cleared in memory
+        // and the projection still serves the route. Undo both once, by
+        // identity, inside THIS turn's window — a later turn would lose the race
+        // against every mutation already queued behind the activation (a removal
+        // of the account deletes the half-committed projection first, and the
+        // captured baseline could then no longer be restored). Failures before
+        // the write leave `undo` unset: nothing to undo.
+        //
+        // Residual (I-000090 territory): `undo` is assigned only once the write
+        // resolved, so a `modifyRecord` that applies its mutation and THEN
+        // rejects refuses with the raw seam error and keeps the projection. What
+        // compensation could run is undecidable from this repo — the seam would
+        // have to promise it never commits then rejects — so this shape is left
+        // as the seam reports it rather than guessed at.
+        if (undo === undefined) return
+        await this.compensateActivationFlush(provider, accountId, prepared!, undo, records!)
       })
-      row.valueMissing = false
-      // Round-5 finding M1: manual recovery ends the cooling window too, the
-      // same reset a successful re-authentication applies. A demoted account
-      // is re-activated while its stale cooldown still sits on the row, which
-      // would render the freshly projected grant as cooling and keep it out
-      // of the healthy counts until the timer expires. Clearing the window
-      // also resets escalation: `applyFailureCooldown` derives the next level
-      // from `cooldownUntil` only (core.ts:168-174).
-      row.cooldownUntil = 0
-      this.store.touch()
-      // Remote methods hand back the refreshed state view (addKey/deleteKey
-      // precedent), so the client updates its snapshot in one round trip.
-      return this.buildState()
+      // The re-activated grant is the serving credential again, so a broker
+      // reference left by the key pool must go (see syncBrokerBinding). A
+      // settings refusal does not roll back the committed projection.
+      //
+      // Both the sync and the returned snapshot run in a second queue turn:
+      // the binding attempt must have happened before the view is built (a
+      // refusal pushes its warning, and building the view inside the write turn
+      // drained it, so the RPC reported a clean activation while requests kept
+      // using the pool), and the snapshot itself is state: taken outside the
+      // queue, another mutation could enter, mutate and be mid-flush while
+      // `buildState` pruned and drained, exposing state that is not durable.
+      // The turn waits for such a mutation to finish or fail first.
+      if (this.closing) {
+        // Shutdown opened while this activation was writing, so no new turn may
+        // be appended: `closeOnce` captured `this.queue` when `closing` went up
+        // and closes the store once THAT reference settles, so a turn submitted
+        // here would run after close(). Instead, join the reference shutdown is
+        // itself draining — mutations already queued behind this turn are still
+        // running, and `buildState` prunes and drains, so the snapshot must come
+        // after they settle rather than beside them.
+        await this.queue
+        // The binding's last-point guard refuses the write once `closing` is
+        // set and reports that refusal itself, so a route that needs converging
+        // now says so in the returned state instead of reporting a clean
+        // success; a route that is already converged needs no write at all. The
+        // next start's repair pass owns the convergence either way.
+        await this.syncBrokerBinding(provider)
+        return this.buildState()
+      }
+      // The projection turn above already committed AND flushed, so the
+      // activation is durable and serving. This second turn only converges the
+      // binding and takes the snapshot; if its flush fails, that activation must
+      // not be reported as failed — a caller would retry an activation that
+      // already landed. `built` is the discriminator: `guarded` runs the body
+      // before the flush, so a BODY failure leaves it unset and still
+      // propagates (shutdown, a refusal), while a post-commit flush failure is
+      // reported in the state the caller receives.
+      let built: StateView | undefined
+      try {
+        return await this.run(async () => {
+          await this.syncBrokerBinding(provider)
+          built = this.buildState()
+          return built
+        })
+      } catch (error) {
+        if (built === undefined) throw error
+        const reason = error instanceof Error ? error.message : String(error)
+        const warning = `The ${provider} activation is saved, but its binding and state snapshot could not be persisted (${reason}). The account is serving; the next successful change saves the rest.`
+        // One channel only: the returned snapshot. `buildState` has already
+        // drained the warning queue, so ALSO queueing this copy would surface
+        // the same failure twice (once in this payload, once on the next
+        // refresh). It still reaches the operator log, which is what a caller
+        // that ignores the returned state leaves visible.
+        this.warn(`activation post-commit persistence failed for ${provider}: ${reason}`)
+        // The snapshot was taken before this warning existed, and re-taking one
+        // outside the queue is the race this turn exists to avoid, so the view
+        // is annotated rather than rebuilt.
+        return { ...built, warnings: [...built.warnings, warning] }
+      }
+    } catch (error) {
+      // Which path covers which case:
+      // - `run` refuses the submission while `closing`, and `guarded` refuses a
+      //   read-only store before the operation runs: nothing was written, so
+      //   `undo` stayed unset and there is nothing to compensate.
+      // - a failure INSIDE the turn (the flush, or the seam) runs the
+      //   compensation hook above, inside that turn's exclusive window, even
+      //   when closing began during it; that hook is the fallback the previous
+      //   independent turn used to be, and it needs no closing branch.
+      // - the hook's own flush is best-effort: a still-unwritable store leaves
+      //   memory restored and the next successful flush persists it.
+      throw error
+    }
+  }
+
+  /**
+   * The slow half of an activation, outside the queue: read the row's grant
+   * generation, validate it, and capture the projection the route serves now.
+   */
+  private async prepareActivation(
+    provider: string,
+    row: KeyRecord,
+    records: CredentialRecordsLike,
+  ): Promise<ActivationPreparation> {
+    const grantRef = row.oauth!.grantRef
+    const stored = await records.readRecord(grantRef)
+    if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+      throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
+    }
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    const live = await records.readRecord(projectionKey)
+    const payload = structuredClone(stored.payload)
+    // F5: the restored record decides its owner, so the classification is
+    // derived from the baseline payload through the shared matcher — the same
+    // rule the reconciler applies — rather than from an owner id captured
+    // earlier that the record may no longer belong to.
+    const accounts = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
+    const baselineOwner = live !== undefined && live.kind === 'grant' && isOAuthGrantPayload(live.payload)
+      ? matchOwningAccount(provider, accounts, live.payload)
+      : undefined
+    return {
+      grantRef,
+      payload,
+      written: JSON.stringify(payload),
+      baseline: live === undefined ? { state: 'absent' } : { state: 'present', record: structuredClone(live) },
+      // Captured with the baseline, before the turn claims the route: the
+      // compensation has to put back the classification that matches the
+      // record it restores, and only this snapshot still knows it. Any present
+      // record no row's payload matches is foreign (a native api-key
+      // credential, an unrecognized payload, an unowned grant), so `none` is
+      // only the absent-baseline case.
+      classification: live === undefined
+        ? { state: 'none' }
+        : baselineOwner !== undefined ? { state: 'owned', rowId: baselineOwner.id } : { state: 'foreign' },
+    }
+  }
+
+  /** Whether the projection still holds the value this activation read. */
+  private matchesActivationBaseline(
+    current: CredentialRecordLike | undefined,
+    baseline: ActivationBaseline,
+  ): boolean {
+    if (baseline.state === 'absent') return current === undefined
+    if (current === undefined) return false
+    // Compare the FIELDS, never the object shape: `CredentialRecordLike` makes
+    // `key`/`env`/`payload` optional, and a seam whose read path and
+    // `modifyRecord` path materialise different key sets (one omits them, one
+    // sets them to `undefined`) would defeat a structural comparison and refuse
+    // every activation over an already-serving route.
+    //
+    // An api-key projection keeps its secret in `key`/`env` with `payload`
+    // absent, so every field is compared: payload plus the native fields.
+    const baselineRecord = baseline.record
+    const sameSecret = current.key === baselineRecord.key
+    const sameEnv = JSON.stringify(current.env ?? null) === JSON.stringify(baselineRecord.env ?? null)
+    const samePayload = JSON.stringify(current.payload ?? null) === JSON.stringify(baselineRecord.payload ?? null)
+    return current.kind === baselineRecord.kind && sameSecret && sameEnv && samePayload
+  }
+
+  /**
+   * Write the projection only while the route still serves the baseline. The
+   * seam's `modifyRecord` mutate body runs under the per-key lock, so this is
+   * the one atomic primitive the activation has (I-000090: `deleteRecord` has
+   * no expected-payload form). Returns the payload written, or `undefined` when
+   * the compare failed and nothing was touched.
+   */
+  private async compareAndWriteProjection(
+    records: CredentialRecordsLike,
+    provider: string,
+    prepared: ActivationPreparation,
+  ): Promise<string | undefined> {
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    let landed = false
+    await records.modifyRecord(projectionKey, async current => {
+      if (!this.matchesActivationBaseline(current, prepared.baseline)) return undefined
+      landed = true
+      // Only this write supersedes a pending own-removal marker: a projection
+      // is about to serve again, so a removal echo still in flight cannot
+      // describe the live record. A refused compare must leave the marker
+      // armed for the removal it belongs to — clearing it there would let that
+      // removal's echo read as an out-of-band deletion (a spurious "removed
+      // outside Keys Manager" warning and a `valueMissing` row).
+      this.intentionalProjectionRemovals.delete(provider)
+      return { kind: 'grant', payload: prepared.payload }
     })
+    return landed ? prepared.written : undefined
+  }
+
+  /**
+   * Undo one activation whose state flush was rejected: the row this turn
+   * cleared in memory, the owner claim it took, and the projection it wrote
+   * (back to the captured baseline).
+   *
+   * The baseline decides the mechanism. A present baseline is restored with the
+   * same compare-and-write the projection used; only an absent baseline has to
+   * remove a record, and only while that record is still this activation's own
+   * payload. A foreign writer's record is never deleted.
+   */
+  private async compensateActivationFlush(
+    provider: string,
+    accountId: string,
+    prepared: ActivationPreparation,
+    undo: ActivationUndo,
+    records: CredentialRecordsLike,
+  ): Promise<void> {
+    const outcome = prepared.baseline.state === 'absent'
+      ? await this.deleteActivationProjection(records, provider, prepared.written, undo.generation)
+      : await this.restoreActivationProjection(records, provider, prepared, undo.generation)
+    // Both helpers awaited, so the classification below decides after the same
+    // read the guard above made before it: a claim that landed inside that I/O
+    // already settled what serves the route, and overwriting it would revert a
+    // newer owner or mark its route foreign. No await separates this check from
+    // the writes in the switch.
+    if (this.ownershipSuperseded(provider, undo.generation)) return
+    // The compensation is about to replace what the route serves (or which row
+    // owns it), so every reconciler that captured the earlier generation read a
+    // world this undoes and must not commit: its projection read may predate the
+    // restore, and its row/binding writes would re-claim an account the restored
+    // baseline does not serve. `ours` keeps the activation's projection and claim
+    // in place — it changes nothing a reconciler could misread — so it needs no
+    // bump.
+    if (outcome !== 'ours') this.noteProjectionCommitted(provider)
+    // P2-B: the row rollback belongs to the outcomes that actually changed what
+    // serves the route. `ours` keeps the activation's projection and claim — the
+    // account IS serving — so restoring the pre-activation demotion would render
+    // a live account as missing/cooling, and a restart without an echo would
+    // persist that lie.
+    if (outcome !== 'ours') {
+      const row = this.store.provider(provider)?.keys.find(candidate => candidate.id === accountId)
+      if (row !== undefined) {
+        row.valueMissing = undo.valueMissing
+        row.cooldownUntil = undo.cooldownUntil
+        this.store.touch()
+      }
+    }
+    switch (outcome) {
+      case 'superseded':
+        // The newer claim that moved the generation owns the route and has
+        // already settled what serves it; this undo decides nothing.
+        return
+      case 'ours':
+        // The activation's projection is still the live record, so its claim
+        // stays: deleting it would call the route pool-served while a record
+        // serves it, and selection plus failure attribution would be wrong
+        // until an echo reconciled the route (never, if the optional
+        // `record-updated` subscription is unavailable).
+        return
+      case 'baseline':
+        this.applyActivationClassification(provider, prepared.classification)
+        return
+      case 'foreign':
+        this.activeAccounts.delete(provider)
+        this.foreignProjections.add(provider)
+        return
+      case 'gone':
+        // Nothing serves the route any more, so the pool does.
+        this.activeAccounts.delete(provider)
+        this.foreignProjections.delete(provider)
+        return
+    }
+  }
+
+  /** Put the route's owner classification back to a captured snapshot. */
+  private applyActivationClassification(provider: string, classification: ActivationClassification): void {
+    if (classification.state === 'owned') {
+      this.activeAccounts.set(provider, classification.rowId)
+      this.foreignProjections.delete(provider)
+      return
+    }
+    this.activeAccounts.delete(provider)
+    if (classification.state === 'foreign') this.foreignProjections.add(provider)
+    else this.foreignProjections.delete(provider)
+  }
+
+  /** Put the projection back to the present baseline, if it is still ours. */
+  private async restoreActivationProjection(
+    records: CredentialRecordsLike,
+    provider: string,
+    prepared: ActivationPreparation,
+    generation: number,
+  ): Promise<CompensationOutcome> {
+    const baseline = prepared.baseline
+    if (baseline.state !== 'present') return 'baseline'
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    let outcome: CompensationOutcome = 'ours'
+    try {
+      await records.modifyRecord(projectionKey, async current => {
+        // The generation is decided HERE, under the seam's per-key lock and in
+        // the same synchronous step as the payload compare: a claim that lands
+        // between this compensation's entry and this callback would otherwise
+        // see its own projection matched and get the baseline written back over
+        // a route it owns, while the post-I/O check then exits early and leaves
+        // that newer account claimed beside the restored credential.
+        if (this.ownershipSuperseded(provider, generation)) {
+          outcome = 'superseded'
+          return undefined
+        }
+        if (current === undefined) {
+          outcome = 'gone'
+          return undefined
+        }
+        if (current.kind !== 'grant' || JSON.stringify(current.payload) !== prepared.written) {
+          // A record this activation did not write serves the route now.
+          outcome = 'foreign'
+          return undefined
+        }
+        // Return the captured record itself: rebuilding it from `kind` and
+        // `payload` would drop the `key`/`env` an api-key projection carries and
+        // leave the route unusable after a failed flush.
+        outcome = 'baseline'
+        return structuredClone(baseline.record)
+      })
+    } catch (error) {
+      // An unreadable or refused seam proves nothing: the activation's
+      // projection may still be live, so `ours` keeps its claim.
+      this.warn(`activation projection restore failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      return 'ours'
+    }
+    return outcome
+  }
+
+  /**
+   * The delete authority's proof for an activation's own projection, as an
+   * explicit three-valued answer (QC R2): only `matches` may authorize touching
+   * the record. `unknown` is a store failure — a closed seam, an unreadable
+   * record — and proves nothing, so it is never permission.
+   */
+  private async activationProjectionProof(
+    records: CredentialRecordsLike,
+    provider: string,
+    written: string,
+    generation: number,
+  ): Promise<'matches' | 'absent' | 'differs' | 'unknown' | 'superseded'> {
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    try {
+      // Absent and "another writer's record" are different answers: absent
+      // means nothing serves the route any more (our own demotion can remove
+      // the projection without superseding the claim), while `differs` means a
+      // replacement does. Folding them together marked a serviceless route
+      // foreign, which makes `keyPoolServes` false and leaves no usable
+      // credential at all.
+      let state: 'matches' | 'absent' | 'differs' | 'superseded' = 'absent'
+      await records.modifyRecord(projectionKey, async current => {
+        // The claim is decided under the same lock as the identity compare, for
+        // the same reason as the restore: a newer owner must not have its
+        // projection deleted by an undo that only checks the generation later.
+        if (this.ownershipSuperseded(provider, generation)) {
+          state = 'superseded'
+          return undefined
+        }
+        state = current === undefined
+          ? 'absent'
+          : current.kind === 'grant' && JSON.stringify(current.payload) === written ? 'matches' : 'differs'
+        return undefined
+      })
+      return state
+    } catch (error) {
+      this.warn(`activation projection proof failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      return 'unknown'
+    }
+  }
+
+  /**
+   * Delete one projection an activation just proved it still owns, through the
+   * same guarded shape the demotion path uses (MF2): the intentional-removal
+   * marker is armed before the delete, so the deletion's own echo is read as
+   * ours instead of as an out-of-band removal.
+   */
+  private async deleteActivationProjection(
+    records: CredentialRecordsLike,
+    provider: string,
+    written: string,
+    generation: number,
+  ): Promise<CompensationOutcome> {
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    // F2: the identity read and the delete cannot be atomic here — the seam has
+    // no compare-and-delete, `deleteRecord(key)` takes no expected payload
+    // (host-types.ts:142, tracked as I-000090). This read immediately before the
+    // delete narrows the window to the seam call itself; a writer that replaces
+    // the record inside it still loses its grant, and that residual needs the
+    // seam CAS, not another read here. Anything but a proven match is left
+    // alone.
+    const proof = await this.activationProjectionProof(records, provider, written, generation)
+    if (proof === 'superseded') return 'superseded'
+    // `absent` needs no delete and leaves nothing serving (the pool does);
+    // `differs` means another writer's record serves the route; `unknown`
+    // proves nothing and must keep the activation's claim.
+    if (proof === 'absent') return 'gone'
+    if (proof !== 'matches') return proof === 'differs' ? 'foreign' : 'ours'
+    const markedAt = Date.now()
+    this.intentionalProjectionRemovals.set(provider, markedAt)
+    try {
+      await records.deleteRecord(projectionKey)
+    } catch (error) {
+      // A delete that threw removed nothing, so no own-removal echo is coming:
+      // revoke this call's marker or it would mask a genuine one for the TTL.
+      if (this.intentionalProjectionRemovals.get(provider) === markedAt) {
+        this.intentionalProjectionRemovals.delete(provider)
+      }
+      this.warn(`cancelled activation projection cleanup failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      // R14-SF2 applies here too: a throwing delete may have removed the record
+      // before throwing, so the outcome is re-proved rather than assumed —
+      // guessing is what this file forbids. A second failure
+      // proves nothing and keeps the claim (`ours`).
+      const after = await this.activationProjectionProof(records, provider, written, generation)
+      if (after === 'superseded') return 'superseded'
+      if (after === 'absent') return 'gone'
+      if (after === 'differs') return 'foreign'
+      return 'ours'
+    }
+    return 'gone'
   }
 
   /**
@@ -4869,9 +5509,11 @@ export class KeysManagerService {
       ...(typeof payload.expires === 'number' && Number.isFinite(payload.expires) ? { expiresAt: payload.expires } : {}),
     }
     if (previousRef !== rotatedRef) {
-      // The row repoint above is synchronous, but the delete is a second write:
-      // re-read both gates immediately before it so a shutdown or a takeover
-      // that landed in between cannot remove a record this attempt never owned.
+      // Defence in depth, not a reachable window: no await separates the guard
+      // above from the delete below, so neither a shutdown nor a takeover can
+      // land in between. The re-check is kept because it is the condition the
+      // delete depends on and a future await inserted here would otherwise
+      // silently remove a record this attempt never owned.
       if (this.persistenceRefused(capability) || (guard !== undefined && !guard())) {
         this.store.touch()
         return
@@ -4879,6 +5521,11 @@ export class KeysManagerService {
       const records = this.credentialRecords()
       try {
         if (records === undefined) throw new Error('The credential store does not support records')
+        // Declared residual: this delete is an await with no expected-payload
+        // CAS (`deleteRecord(key)` takes only the key), so a claim landing
+        // inside it can still remove the same-ref record an activation just
+        // wrote. Post-delete compensation is out of scope here; closing it
+        // needs a seam-level compare-and-delete.
         await records.deleteRecord(previousRef)
       } catch (error) {
         this.warn(`cleanup of the superseded grant record failed for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
@@ -5412,6 +6059,16 @@ export class KeysManagerService {
     this.pruneAttempts(now)
   }
 
+  /**
+   * Project one provider's unattributed-request count into its row. Additive
+   * and optional (`I-000120`): a row with no count spreads nothing, so an
+   * older snapshot and a healthy store render exactly as before.
+   */
+  private unattributedView(provider: string): { unattributedRequests?: number } {
+    const count = this.unattributedRequests.get(provider) ?? 0
+    return count > 0 ? { unattributedRequests: count } : {}
+  }
+
   /** Build the complete UI state. */
   buildState(): StateView {
     const now = Date.now()
@@ -5479,6 +6136,7 @@ export class KeysManagerService {
         status: managed !== undefined ? statusOfProvider(managed.keys, now) : 'unmanaged',
         keys,
         ...(warning === undefined ? {} : { warning }),
+        ...this.unattributedView(entry.provider),
       })
       seen.add(entry.provider)
     }
@@ -5519,6 +6177,7 @@ export class KeysManagerService {
         status: managed !== undefined ? statusOfProvider(managed.keys, now) : 'unmanaged',
         keys,
         ...(managed === undefined ? {} : { warning: 'This extra provider is managed but its pi-ai route is not registered. Check the provider profile in Models.' }),
+        ...this.unattributedView(extra.id),
       })
       seen.add(extra.id)
     }
@@ -5557,6 +6216,7 @@ export class KeysManagerService {
         status: statusOfProvider(managed.keys, now),
         keys,
         warning: 'This provider route is not currently registered. Check its profile in Models.',
+        ...this.unattributedView(managed.provider),
       })
       seen.add(managed.provider)
     }
@@ -5698,7 +6358,7 @@ export class KeysManagerService {
    */
   private async syncBrokerBinding(
     provider: string,
-    options: { takeover?: boolean; write?: boolean; borrow?: boolean; correction?: number } = {},
+    options: { takeover?: boolean; write?: boolean; borrow?: boolean; correction?: number; ownershipGeneration?: number } = {},
   ): Promise<boolean> {
     const record = this.store.provider(provider)
     if (record === undefined) return false
@@ -5747,16 +6407,40 @@ export class KeysManagerService {
     // PR review round 35: the last point before the settings write. Only
     // `closing` is read: shutdown's own pre-close restoration writes here by
     // design and runs before that flag goes up.
-    if (this.closing) return false
+    //
+    // Reaching this point means the route genuinely needs a write: `current ===
+    // desired` already returned true above, and the preserved / releasing /
+    // foreign-value branches declined for their own reasons. So shutdown is
+    // what stops it, and this is the one place that can say so — the callers
+    // cannot infer it (`pushWarning` caps its list, and a silent `false` has
+    // several non-refusal causes upstream).
+    if (this.closing) {
+      this.bindingWriteRefused(provider, 'Keys Manager is shutting down')
+      return false
+    }
+    // A caller that stamped the ownership generation it entered with forbids
+    // this write once a newer claim landed: the binding it would commit was
+    // derived from the classification that claim replaced.
+    if (options.ownershipGeneration !== undefined
+      && this.ownershipSuperseded(provider, options.ownershipGeneration)) return false
     try {
-      // The entry gate above read a snapshot; ownership can turn unknown while
-      // this write re-reads its descriptor (PR review round 25). Binding is a
-      // guess then, so the gate closes again at the last point before the
+      // The entry gate above read a snapshot, and ownership can turn unknown
+      // while this write re-reads its descriptor (PR review round 25). Binding
+      // is a guess then, so the gate closes again at the last point before the
       // mutation. Unbinding stays allowed.
+      // That last point is `mutateSettings`' `stillWrites` predicate: it is
+      // evaluated synchronously between the descriptor re-read and
+      // `settings.mutate` (no await between them), and the mutate itself passes
+      // the descriptor's revision as an expected-revision CAS, so a takeover
+      // that changed the namespace in between makes the write fail instead of
+      // landing stale state. A claim the predicate sees must not leave this
+      // binding behind — it describes the classification that claim replaced.
+      const stamp = options.ownershipGeneration
       const written = await this.mutateSettings(
         record.settingsNs,
         [desired === undefined ? { op: 'unset', path } : { op: 'set', path, value: desired }],
-        () => desired === undefined || this.projectionOwnershipKnown(provider),
+        () => (desired === undefined || this.projectionOwnershipKnown(provider))
+          && (stamp === undefined || !this.ownershipSuperseded(provider, stamp)),
       )
       if (!written) return false
     } catch (error) {
@@ -5829,8 +6513,15 @@ export class KeysManagerService {
     const takeover = record?.takeoverPending === true
       && !this.foreignProjections.has(provider)
       && this.oauthOwnerFor(provider) === null
-    const bound = await this.syncBrokerBinding(provider, { write: false, takeover })
-    if (takeover && bound && record !== undefined) {
+    // The awaited sync can be superseded (an activation claims the route while
+    // it runs). It would then commit a binding derived from the pre-claim
+    // classification, and settling the debt would record a takeover reconciled
+    // for a generation that no longer owns the route. The generation is
+    // captured here, passed to the sync's own last-mile gate, and re-read
+    // immediately before the clear.
+    const generation = this.ownershipGenerations.get(provider) ?? 0
+    const bound = await this.syncBrokerBinding(provider, { write: false, takeover, ownershipGeneration: generation })
+    if (takeover && bound && record !== undefined && !this.ownershipSuperseded(provider, generation)) {
       record.takeoverPending = false
       this.store.touch()
     }
@@ -5853,6 +6544,14 @@ export class KeysManagerService {
     // land after `close()` has drained the chains; the binding write it ends in
     // is persistence, so shutdown refuses it.
     if (this.closing) return
+    // The own-generation stamp: this sync must not commit a binding derived
+    // from a classification a newer claim replaced. It travels into
+    // `syncBrokerBinding`, whose `stillWrites` predicate is the last point
+    // before the settings write and runs synchronously right before a
+    // revision-CAS'd mutate; the only window left is that write call itself,
+    // which fails on a revision mismatch rather than committing stale state.
+    // Every caller is covered here rather than at the call sites.
+    const generation = this.ownershipGenerations.get(provider) ?? 0
     try {
       // PR review round 40: adoption keeps the pre-adoption reference while a
       // foreign projection serves the route and records that it still owes the
@@ -5861,8 +6560,8 @@ export class KeysManagerService {
       // once the bind lands; `originalApiKeyEnv` alone proves nothing.
       const record = this.store.provider(provider)
       const takeover = record?.takeoverPending === true
-      const bound = await this.syncBrokerBinding(provider, { takeover })
-      if (takeover && bound && record !== undefined) {
+      const bound = await this.syncBrokerBinding(provider, { takeover, ownershipGeneration: generation })
+      if (takeover && bound && record !== undefined && !this.ownershipSuperseded(provider, generation)) {
         record.takeoverPending = false
         this.store.touch()
       }
@@ -6100,6 +6799,7 @@ export class KeysManagerService {
       return 'superseded'
     }
     this.ownershipReadFailures.delete(provider)
+    this.unattributedRequests.delete(provider)
     this.noteProviderHydrated(provider)
     if (record === undefined) this.foreignProjections.delete(provider)
     else this.foreignProjections.add(provider)
@@ -7049,6 +7749,12 @@ export class KeysManagerService {
       // branches, so it is constructed after the isolation wait — a mismatch
       // profile still resolves pi-ai's stored grant, so the borrowed
       // projection reaches it too.
+      //
+      // No ownership read and no unattributed count here: the store already
+      // said this route's profile disagrees with its binding, so this manager
+      // cannot describe what serves it and hands the request over untouched.
+      // The counter is defined over routes whose ownership it did try to read
+      // (see `unattributedRequests`).
       return this.isolateFromTest(providerId, () => next())
     }
     // An ordinary request must never be served by the grant a row test has
@@ -7286,6 +7992,17 @@ export class KeysManagerService {
                 })
               }
               iterator = await service.als.run(store!, () => next()[Symbol.asyncIterator]())
+              // I-000120 / D8 + I-000201: this request is served without an
+              // attribution, and this is the only site that counts one — but
+              // only once downstream actually has an iterator. Both causes (the
+              // bounded wait expired, the read had failed) still arrive here as
+              // the same `false`, and the hydration pass never counts. A routing
+              // or adapter failure that throws before dispatch served nothing, so
+              // it must not inflate the count; `started` keeps one attempt to one
+              // increment, and a later attempt that does dispatch counts then.
+              if (!hydrated) {
+                service.unattributedRequests.set(providerId, (service.unattributedRequests.get(providerId) ?? 0) + 1)
+              }
             }
             if (iterator === undefined) throw new Error('managed stream has no iterator')
             const result = await service.als.run(store!, () => iterator!.next())

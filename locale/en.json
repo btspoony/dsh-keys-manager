@@ -3,6 +3,14 @@
     "title": "Keys Manager",
     "description": "Multiple API keys per provider with sticky sessions, round-robin selection, retry failover, cooldown recovery, and searchable extra providers."
   },
+  "filterAll": "All",
+  "filterBuiltin": "Built-in",
+  "filterPlugin": "Plugin",
+  "filterOauth": "OAuth-capable",
+  "filterTransport": "Transport",
+  "unattributed": "{n} unattributed",
+  "unattributedHint": "Stream attempts this route served with no account owner because its ownership read had not landed (or had failed). A failover retry is a new attempt, so one request can be counted more than once. The count clears when a read attributes the route.",
+  "managedFilteredEmpty": "No managed providers match the current filter.",
   "addAccount": "Add account",
   "adoptAccountTitle": "Sign in with an OAuth account to use this provider.",
   "accountIdentity": "Account",
@@ -37,5 +45,7 @@
   "transportStatusNeedsReauth": "Sign in again",
   "transportStatusSignedOut": "Not signed in",
   "transportRemoveTitle": "Remove the {name} transport account?",
-  "transportRemoveBody": "This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service."
+  "transportRemoveBody": "This removes the grant stored for this transport route from the credential store and cancels a sign-in still in progress; the route does not recreate it. Sign in again to restore service.",
+  "filterGroup": "Filters",
+  "transportEmpty": "No transport accounts yet."
 }

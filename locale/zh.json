@@ -3,6 +3,14 @@
     "title": "密钥管理",
     "description": "为同一个 Provider 配置多个 API Key，支持单会话固定、Round Robin、重试切换、冷却恢复，并提供可搜索的扩展 Provider。"
   },
+  "filterAll": "全部",
+  "filterBuiltin": "内置",
+  "filterPlugin": "插件",
+  "filterOauth": "支持 OAuth",
+  "filterTransport": "传输",
+  "unattributed": "{n} 无归属",
+  "unattributedHint": "该路由在归属读取尚未落地（或已失败）期间应答的流尝试数；失败转移重试会各计一次，故单个请求可能被计多次。读取完成归属后清零。",
+  "managedFilteredEmpty": "当前筛选下没有已接管的 Provider。",
   "addAccount": "添加账户",
   "adoptAccountTitle": "使用 OAuth 账户登录后即可使用该 Provider。",
   "accountIdentity": "账户",
@@ -37,5 +45,7 @@
   "transportStatusNeedsReauth": "需重新登录",
   "transportStatusSignedOut": "未登录",
   "transportRemoveTitle": "移除 {name} 传输账户？",
-  "transportRemoveBody": "这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。"
+  "transportRemoveBody": "这会从凭证库中删除该传输路由保存的授权，并取消仍在进行的登录；路由自身不会重建它。要恢复服务需要重新登录。",
+  "filterGroup": "筛选",
+  "transportEmpty": "还没有传输账户。"
 }
