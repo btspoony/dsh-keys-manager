@@ -8,6 +8,7 @@ import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { ExtraProvider, KeyRecord, KeyTestResult, ProviderRecord, ProviderView, StateView } from '../src/domain'
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey, TEST_SUCCESS_FINISH_KINDS } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
+import type { OmpOAuthAdapter } from '../src/oauth/adapter'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
 import { KeysManagerStore, sanitizeState } from '../src/store'
 import { cursorCatalogModels } from 'dsh-llm-omp-transports'
@@ -199,6 +200,17 @@ function fakeLlm(): any {
           settingsPath: ['providers', 'zai-coding-cn'],
           nativeAuth: { env: ['ZAI_CODING_CN_API_KEY'], oauth: false },
           defaultBaseURL: 'https://open.bigmodel.cn/api/coding/paas/v4',
+        },
+        {
+          // The omp sign-in route (issue #15). Deliberately OAuth-flagless: its
+          // account capability comes from this plugin's in-process client, not
+          // from a catalog flow or a nativeAuth flag.
+          provider: 'zai',
+          displayName: 'Z.AI (GLM Coding Plan)',
+          settingsNs: 'llm-pi-ai',
+          settingsPath: ['providers', 'zai'],
+          nativeAuth: { env: ['ZAI_API_KEY'], oauth: false },
+          defaultBaseURL: 'https://api.z.ai/api/coding/paas/v4',
         },
         {
           provider: 'deepseek-official',
@@ -4187,6 +4199,263 @@ test('a terminal attempt is not resumed — a new begin starts a fresh flow (I-0
     assert.notEqual(second.id, first.id)
     assert.equal(second.status, 'pending')
     assert.equal(h.service.listAccountAttempts().filter(entry => entry.status === 'pending').length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// In-process sign-in (issue #15, T3). kilo and zai sign in without the
+// authorization seam: a bundled omp driver mints a static credential and the
+// host commits it as an ordinary `kind: 'api-key'` row tagged `signin:<driver>`.
+// ---------------------------------------------------------------------------
+
+/** Deterministic driver double: no network, no real omp bundle. */
+function signInDrivers(overrides: Partial<OmpOAuthAdapter> = {}): OmpOAuthAdapter {
+  return {
+    loginKilo: async controller => {
+      controller.onAuth?.({ url: 'https://api.kilo.ai/verify', instructions: 'Enter code ABCD-1234' })
+      return { refresh: '', access: 'kilo-bearer-1', expires: Date.now() + 365 * 24 * 60 * 60 * 1000 }
+    },
+    loginZaiCodingPlan: async controller => {
+      const pasted = await controller.onManualCodeInput?.()
+      return { refresh: '', access: `zai-key:${pasted}`, expires: Number.MAX_SAFE_INTEGER }
+    },
+    ...overrides,
+  }
+}
+
+/** The injection seam T3 exposes (same pattern as `isolationWaitMs`). */
+function useSignInDrivers(h: Harness, drivers: OmpOAuthAdapter): void {
+  ;(h.service as unknown as { signInAdapter: OmpOAuthAdapter }).signInAdapter = drivers
+}
+
+const KILO_DRIVER = 'signin:kilo'
+const ZAI_DRIVER = 'signin:zai-coding-plan'
+
+test('signing in to kilo creates the extra route and one sign-in row', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers())
+    const view = await h.service.beginAccountLogin('kilo', 'Kilo work')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+
+    const record = h.store.provider('kilo')!
+    assert.equal(record.source, 'extra')
+    assert.equal(record.createdProfile, true)
+    assert.equal(record.keys.length, 1)
+    const row = record.keys[0]
+    assert.equal(row.kind, 'api-key')
+    assert.equal(row.importedFrom, KILO_DRIVER)
+    assert.equal(row.alias, 'Kilo work')
+    assert.equal(row.oauth, null)
+    assert.equal(h.credentials.refs.get(row.ref), 'kilo-bearer-1')
+    // The first sign-in installed the route as a normal pi-ai profile bound to
+    // the broker reference, so the minted key serves the route directly.
+    const profile = h.settings.valueOf('llm-pi-ai').providers.kilo
+    assert.match(profile.apiKeyEnv, /^KEYSMGR_KILO_/)
+
+    // The attempt names the row it produced; omp's instructions text reached the
+    // dialog as a notice, and the secret never appears in the view.
+    const settled = h.service.getAccountAttempt(view.id)!
+    assert.equal(settled.accountId, row.id)
+    assert.deepEqual(settled.notices, [{ message: 'Enter code ABCD-1234', url: 'https://api.kilo.ai/verify' }])
+    assert.equal(JSON.stringify(settled).includes('kilo-bearer-1'), false)
+    // No seam flow was begun (kilo is not in the pin's flow list), and no
+    // llm-pi-ai grant record was written: the credential is a static row.
+    assert.equal(h.authorization.beganRequests.length, 0)
+    assert.equal(h.credentials.records.has('llm-pi-ai/kilo'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('signing in to zai appends one sign-in row to the adopted route', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers())
+    h.credentials.refs.set('ZAI_API_KEY', 'sk-existing-zai')
+    await h.service.adoptProvider('zai')
+    const adopted = h.store.provider('zai')!.keys.length
+
+    const view = await h.service.beginAccountLogin('zai', 'GLM')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'prompt'))
+    assert.deepEqual(h.service.getAccountAttempt(view.id)!.prompt, {
+      kind: 'text',
+      message: 'Paste the final redirect URL or the authorization code',
+    })
+    await h.service.answerAccountPrompt(view.id, 'zcode://callback?code=the-code')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
+
+    const record = h.store.provider('zai')!
+    assert.equal(record.keys.length, adopted + 1)
+    const row = record.keys.find(key => key.importedFrom === ZAI_DRIVER)!
+    assert.equal(row.kind, 'api-key')
+    assert.equal(h.credentials.refs.get(row.ref), 'zai-key:zcode://callback?code=the-code')
+    // The route keeps its broker binding; the sign-in added a pool row only.
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.zai.apiKeyEnv, record.brokerRef)
+    assert.equal(h.credentials.records.has('llm-pi-ai/zai'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('re-authenticating a sign-in row replaces its literal in place', async () => {
+  const h = await harness()
+  try {
+    let attempt = 0
+    useSignInDrivers(h, signInDrivers({
+      loginKilo: async () => ({ refresh: '', access: `kilo-bearer-${++attempt}`, expires: Date.now() + 1000 }),
+    }))
+    const first = await h.service.beginAccountLogin('kilo', 'Kilo work')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(first.id)!.status, 'ready'))
+    const before = h.store.provider('kilo')!.keys[0]
+    // A row whose literal a demotion dropped, with a cooldown the OLD credential
+    // earned still running: re-authentication must clear both.
+    before.valueMissing = true
+    before.cooldownUntil = Date.now() + 60_000
+
+    const second = await h.service.beginAccountLogin('kilo', 'Kilo work', before.id)
+    await eventually(() => assert.equal(h.service.getAccountAttempt(second.id)!.status, 'ready'))
+
+    const record = h.store.provider('kilo')!
+    assert.equal(record.keys.length, 1)
+    const after = record.keys[0]
+    assert.equal(after.id, before.id)
+    assert.equal(after.ref, before.ref)
+    assert.equal(after.importedFrom, KILO_DRIVER)
+    assert.equal(h.credentials.refs.get(after.ref), 'kilo-bearer-2')
+    assert.equal(after.valueMissing, false)
+    assert.equal(after.cooldownUntil, 0)
+    assert.equal(h.service.getAccountAttempt(second.id)!.accountId, before.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a hand-entered key is never a sign-in target', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers())
+    h.credentials.refs.set('ZAI_API_KEY', 'sk-existing-zai')
+    await h.service.adoptProvider('zai')
+    const state = await h.service.addKey('zai', 'manual', 'sk-manual')
+    const manual = state.providers.find(entry => entry.provider === 'zai')!.keys.find(key => key.alias === 'manual')!
+    await assert.rejects(
+      () => h.service.beginAccountLogin('zai', undefined, manual.id),
+      /is not a sign-in credential/,
+    )
+    await assert.rejects(
+      () => h.service.beginAccountLogin('zai', undefined, 'nope'),
+      /Account "nope" not found on zai/,
+    )
+  } finally {
+    await h.close()
+  }
+})
+
+test('signing in to an unadopted non-extra route is still refused', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers())
+    await assert.rejects(
+      () => h.service.beginAccountLogin('zai'),
+      /is not managed; adopt it before signing in/,
+    )
+  } finally {
+    await h.close()
+  }
+})
+
+test('a cancelled sign-in attempt writes no row', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers({
+      loginKilo: controller => new Promise((_, reject) => {
+        const abort = () => reject(new Error('cancelled'))
+        if (controller.signal?.aborted === true) abort()
+        else controller.signal?.addEventListener('abort', abort, { once: true })
+      }),
+    }))
+    const view = await h.service.beginAccountLogin('kilo')
+    h.service.cancelAccountLogin(view.id)
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'cancelled'))
+    assert.equal(h.store.provider('kilo'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a cancel that lands during the commit leaves the admitted row (documented residual)', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers())
+    h.credentials.refs.set('ZAI_API_KEY', 'sk-existing-zai')
+    await h.service.adoptProvider('zai')
+    // Hold the commit's durability write open, so the cancel lands after the
+    // admitted-commit check but before the attempt settles.
+    const originalFlush = h.store.flush.bind(h.store)
+    let flushCalls = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    ;(h.store as unknown as { flush: () => Promise<void> }).flush = async () => {
+      flushCalls += 1
+      await gate
+      return originalFlush()
+    }
+    try {
+      const view = await h.service.beginAccountLogin('zai', 'GLM')
+      await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'prompt'))
+      void h.service.answerAccountPrompt(view.id, 'zcode://callback?code=the-code')
+      await eventually(() => assert.ok(flushCalls > 0))
+      h.service.cancelAccountLogin(view.id)
+      assert.equal(h.service.getAccountAttempt(view.id)!.status, 'cancelled')
+      release()
+      // Documented residual: the admitted commit still completed. The row is a
+      // working credential, so keeping it is the same semantics the seam path
+      // has, and the attempt above stayed `cancelled`.
+      await eventually(
+        () => assert.equal(h.store.provider('zai')!.keys.filter(key => key.importedFrom === ZAI_DRIVER).length, 1),
+      )
+    } finally {
+      ;(h.store as unknown as { flush: () => Promise<void> }).flush = originalFlush
+    }
+  } finally {
+    await h.close()
+  }
+})
+
+test('a driver failure fails the attempt with the provider text and writes nothing', async () => {
+  const h = await harness()
+  try {
+    useSignInDrivers(h, signInDrivers({
+      loginKilo: async () => { throw new Error('Too many pending sign-in requests (429)') },
+    }))
+    const view = await h.service.beginAccountLogin('kilo')
+    await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'failed'))
+    assert.equal(h.service.getAccountAttempt(view.id)!.error, 'Too many pending sign-in requests (429)')
+    assert.equal(h.store.provider('kilo'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('account support follows the in-process client, not the seam flow list', async () => {
+  const h = await harness()
+  try {
+    const state = h.service.buildState()
+    const kilo = state.providers.find(entry => entry.provider === 'kilo')!
+    const zai = state.providers.find(entry => entry.provider === 'zai')!
+    assert.equal(kilo.accountSupported, true)
+    assert.equal(zai.accountSupported, true)
+    // Neither route is in the authorization fake's flow list, so this verdict
+    // can only come from SIGN_IN_PROVIDERS.
+    const keys = h.authorization.flows.map((flow: { key: string }) => flow.key)
+    assert.equal(keys.includes('llm-pi-ai/kilo'), false)
+    assert.equal(keys.includes('llm-pi-ai/zai'), false)
+    // A key-only fixture route is unchanged: no flow, no client, no accounts.
+    const cloudflare = state.providers.find(entry => entry.provider === 'cloudflare-workers-ai')!
+    assert.equal(cloudflare.accountSupported, false)
   } finally {
     await h.close()
   }

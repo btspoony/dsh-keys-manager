@@ -2440,6 +2440,19 @@ export class KeysManagerService {
     resolve(value)
   }
 
+  /**
+   * Remote: cancel one interactive attempt.
+   *
+   * The seam path learns about cancellation from `authorization`; an
+   * in-process sign-in has no seam handle, so the dialog's Cancel calls this.
+   * Idempotent: a settled attempt is left alone.
+   */
+  cancelAccountLogin(attemptId: string): void {
+    const attempt = this.loginAttempts.get(attemptId)
+    if (attempt === undefined) throw new Error('Unknown sign-in attempt')
+    this.finishLoginAttempt(attempt, 'cancelled')
+  }
+
   /** One attempt's serializable view, or undefined when unknown. */
   getAccountAttempt(attemptId: string): AccountAttemptView | undefined {
     const attempt = this.loginAttempts.get(attemptId)
