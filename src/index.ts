@@ -17,6 +17,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
 import {
   KEY_LIMIT,
+  TEST_SUCCESS_FINISH_KINDS,
   accountRef,
   applyFailureCooldown,
   bindingKey,
@@ -1457,26 +1458,6 @@ export class KeysManagerService {
             if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
               this.activeAccounts.set(provider, owner.id)
               this.foreignProjections.delete(provider)
-              // Observed live damage: the row's plugin-scope record is gone
-              // while its projection still serves, so every grant read
-              // (activate, test, rotation) fails. The projection is
-              // authoritative; restore the record from the payload just read.
-              if (projection !== undefined) {
-                const grantRef = owner.oauth!.grantRef
-                try {
-                  const stored = await records.readRecord(grantRef)
-                  if (stored === undefined
-                    && this.hydrationEpoch === epoch
-                    && (this.ownershipGenerations.get(provider) ?? 0) === generation) {
-                    // Compare-at-absent: a writer that restored this ref while
-                    // the read was in flight owns it now.
-                    await records.modifyRecord(grantRef, current => Promise.resolve(
-                      current === undefined ? { kind: 'grant', payload: structuredClone(projection) } : undefined))
-                  }
-                } catch (error) {
-                  this.warn(`projection ownership hydration could not restore ${grantRef}: ${error instanceof Error ? error.message : String(error)}`)
-                }
-              }
             } else {
               // Present but not a managed OAuth grant (PR review rounds 3–4):
               // the projection still serves, so the pool is not the route's
@@ -3943,8 +3924,41 @@ export class KeysManagerService {
   }
 
   /**
+   * The row's own grant payload, recovered from the live projection when the
+   * plugin-scope record is gone. The projection IS the route's credential, so a
+   * matching payload is written back (compare-at-absent) and used immediately.
+   */
+  private async recoverGrantPayload(
+    provider: string,
+    row: KeyRecord,
+    records: CredentialRecordsLike,
+  ): Promise<OAuthGrantPayload | undefined> {
+    const grantRef = row.oauth!.grantRef
+    const stored = await records.readRecord(grantRef)
+    if (stored !== undefined && stored.kind === 'grant' && isOAuthGrantPayload(stored.payload)) return stored.payload
+    const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
+    const live = await records.readRecord(projectionKey)
+    if (live === undefined || live.kind !== 'grant' || !isOAuthGrantPayload(live.payload)) return undefined
+    // Only a projection this row owns is adopted; recovering a foreign grant
+    // would attach another account's credential to this row.
+    const oauthRows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
+    if (matchOwningAccount(provider, oauthRows, live.payload)?.id !== row.id) return undefined
+    try {
+      // Compare-at-absent: returning `current` for an occupied ref leaves the
+      // live record untouched — an `undefined` mutate would delete it.
+      await records.modifyRecord(grantRef, current => Promise.resolve(
+        current === undefined ? { kind: 'grant', payload: structuredClone(live.payload) } : current))
+    } catch (error) {
+      // Best-effort repair: the projection still served this read.
+      this.warn(`could not restore ${grantRef} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    return live.payload
+  }
+
+  /**
    * The slow half of an activation, outside the queue: read the row's grant
-   * generation, validate it, and capture the projection the route serves now.
+   * generation (recovered from the live projection when its record is gone),
+   * validate it, and capture the projection the route serves now.
    */
   private async prepareActivation(
     provider: string,
@@ -3952,13 +3966,13 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
   ): Promise<ActivationPreparation> {
     const grantRef = row.oauth!.grantRef
-    const stored = await records.readRecord(grantRef)
-    if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+    const recovered = await this.recoverGrantPayload(provider, row, records)
+    if (recovered === undefined) {
       throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
     }
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     const live = await records.readRecord(projectionKey)
-    const payload = structuredClone(stored.payload)
+    const payload = structuredClone(recovered)
     // F5: the restored record decides its owner, so the classification is
     // derived from the baseline payload through the shared matcher — the same
     // rule the reconciler applies — rather than from an owner id captured
@@ -4855,7 +4869,7 @@ export class KeysManagerService {
     // grant chain, so a rotation echo cannot observe or overwrite the
     // temporary projection between them.
     await this.scheduleGrantReconciliation(provider, async () => {
-      const stored = await records.readRecord(grant.grantRef)
+      const recovered = await this.recoverGrantPayload(provider, row, records)
       if (window.cleaned) {
         // QC fix wave 2: the watchdog abandoned this window while the read was
         // in flight. Starting (or resuming) the borrow now would land it after
@@ -4863,7 +4877,7 @@ export class KeysManagerService {
         result = this.abandonedTestResult()
         return
       }
-      if (stored === undefined || stored.kind !== 'grant' || !isOAuthGrantPayload(stored.payload)) {
+      if (recovered === undefined) {
         result = {
           ok: false,
           latencyMs: 0,
@@ -4871,7 +4885,7 @@ export class KeysManagerService {
         }
         return
       }
-      const borrowed = structuredClone(stored.payload)
+      const borrowed = structuredClone(recovered)
       const captured = await records.readRecord(projectionKey)
       // PR review round 14: the snapshot and its comparison key are frozen
       // here. The seam hands back a live record, so a writer mutating that
@@ -5590,10 +5604,10 @@ export class KeysManagerService {
           // asks for one token, so `max-tokens` is the expected completion; a
           // finish chunk with NO reason, `aborted`, or any kind this broker
           // does not know means the provider did not answer, so reporting a
-          // pass would claim a credential it never served. The kinds are the
-          // installed `@deepseek-ai/dsh-llm` union (`FinishReasonMap`):
-          // `'length'`/`'toolUse'` do not exist there.
-          if (kind === 'stop' || kind === 'tool-calls' || kind === 'max-tokens') {
+          // pass would claim a credential it never served. The accepted kinds
+          // are the installed `@deepseek-ai/dsh-llm` union (`FinishReasonMap`),
+          // shared with the tests so the two cannot drift again.
+          if (kind !== undefined && (TEST_SUCCESS_FINISH_KINDS as readonly string[]).includes(kind)) {
             // PR review round 42: a successful ping only proves the route
             // answered. An api-key row test must also prove the pinned literal
             // was the credential that served it — a takeover during the stream

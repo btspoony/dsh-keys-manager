@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
 import type { ExtraProvider, KeyRecord, KeyTestResult, ProviderRecord, ProviderView, StateView } from '../src/domain'
-import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey } from '../src/core'
+import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey, TEST_SUCCESS_FINISH_KINDS } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
 import { KeysManagerStore, sanitizeState } from '../src/store'
@@ -9870,59 +9870,60 @@ test('a restarted service rehydrates projection ownership and demotes on removal
 
 // Plan key-test-recovery: observed live damage — the row's `oauth.grantRef`
 // record is gone while its projection still serves and still matches the row.
-// Hydration heals the plugin-scope record from the projection payload so every
-// grant read (activate, test, rotation) works again.
-test('hydration restores a grant record its owning projection still serves', async () => {
+// The read path (here: a row test) restores the record from the projection, so
+// the user does not have to restart DSH before the connection test works.
+test('a row test restores a missing grant record from its owning projection', async () => {
   const { h, rowId, grantRef } = await harnessWithSeededAccount({
     accountId: 'acc-9',
     email: 'dev@example.com',
     refresh: 'rt-seed-value',
   })
   try {
-    // The route still serves this row's grant; its plugin-scope record was lost.
-    h.credentials.records.set(GRANT_KEY, grantPayload({
-      refresh: 'rt-seed-value',
-      accountId: 'acc-9',
-      email: 'dev@example.com',
-    }))
+    const profiles = h.settings.valueOf('llm-pi-ai').providers
+    profiles['anthropic'] = { ...(profiles['anthropic'] ?? {}), models: [{ id: 'claude-test-model' }] }
+    await h.service.activateAccount('anthropic', rowId)
+    // The projection still serves this row's grant; its plugin-scope record was lost.
     h.credentials.records.delete(grantRef)
     assert.equal(h.credentials.records.has(grantRef), false)
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+    } as any)
 
-    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
-    await eventually(() => assert.equal(h.credentials.records.get(grantRef)?.kind, 'grant'))
-    assert.equal(
-      (h.credentials.records.get(grantRef)!.payload as Record<string, unknown>).refresh,
-      'rt-seed-value',
-    )
-    // The healed record makes an activation-shaped read of the ref work again.
-    await restarted.activateAccount('anthropic', rowId)
-    assert.equal(
-      (h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh,
-      'rt-seed-value',
-    )
+    const result = await h.service.testKey('anthropic', rowId)
+    assert.equal(result.ok, true, String(result.error))
+    // The repair wrote the projection payload back to the row's own ref.
+    const restored = h.credentials.records.get(grantRef)
+    assert.equal(restored?.kind, 'grant')
+    assert.equal((restored!.payload as Record<string, unknown>).refresh, 'rt-seed-value')
   } finally {
     await h.close()
   }
 })
 
-// The healing write is only for a projection a row owns: a foreign grant must
-// stay exactly where it is.
-test('hydration writes nothing for a projection no account row owns', async () => {
-  const h = await harnessWithManagedAnthropic()
+// The recovery is only for a projection a row owns: a grant no row matches is
+// not adopted, and the read keeps its original failure.
+test('a row test does not adopt a projection no account row owns', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+    refresh: 'rt-seed-value',
+  })
   try {
+    const profiles = h.settings.valueOf('llm-pi-ai').providers
+    profiles['anthropic'] = { ...(profiles['anthropic'] ?? {}), models: [{ id: 'claude-test-model' }] }
+    await h.service.activateAccount('anthropic', rowId)
     h.credentials.records.set(GRANT_KEY, grantPayload({
       refresh: 'rt-orphan',
       access: 'at-orphan',
       accountId: 'acc-orphan',
       email: 'orphan@example.com',
     }))
-    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
-    await new Promise(resolve => setTimeout(resolve, 60))
-    assert.deepEqual(
-      [...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')),
-      [],
-      'hydration wrote a grant record for a projection no row owns',
-    )
+    h.credentials.records.delete(grantRef)
+
+    const result = await h.service.testKey('anthropic', rowId)
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /missing or unusable/)
+    assert.equal(h.credentials.records.has(grantRef), false, 'the test adopted a projection no account row owns')
   } finally {
     await h.close()
   }
@@ -14112,7 +14113,11 @@ test('a finish chunk without a completion reason is not a pass', async () => {
     const unknown = await runWith({ type: 'finish', reason: { kind: 'interrupted' } })
     assert.equal(unknown.ok, false)
     assert.match(String(unknown.error), /interrupted/)
-    for (const kind of ['stop', 'tool-calls', 'max-tokens']) {
+    // The old literals are not in the installed union; they must stay failures.
+    const legacy = await runWith({ type: 'finish', reason: { kind: 'length' } })
+    assert.equal(legacy.ok, false)
+    assert.match(String(legacy.error), /length/)
+    for (const kind of TEST_SUCCESS_FINISH_KINDS) {
       const outcome = await runWith({ type: 'finish', reason: { kind } })
       assert.equal(outcome.ok, true, `the ${kind} completion was not reported as a pass`)
     }
