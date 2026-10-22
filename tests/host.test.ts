@@ -10038,6 +10038,67 @@ test('a row repointed between the pre-write check and the repair does not lend i
   }
 })
 
+// PR #37 review (should-fix, I-000235): the seam may hand back its own live
+// projection record, and the repair re-read it after the ownership check. An
+// in-place update landing in the repair gap must not make the write persist a
+// payload that was never verified: the repair writes the snapshot it checked.
+test('an in-place projection update during the repair does not land in the repair write', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+    refresh: 'rt-seed-value',
+  })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  let projection: FakeCredentialRecord | undefined
+  let swapped = false
+  try {
+    const profiles = h.settings.valueOf('llm-pi-ai').providers
+    profiles['anthropic'] = { ...(profiles['anthropic'] ?? {}), models: [{ id: 'claude-test-model' }] }
+    await h.service.activateAccount('anthropic', rowId)
+    h.credentials.records.delete(grantRef)
+    // The fake seam returns the map's live record, as a shared credential host
+    // may: remember the object the ownership check validated.
+    raw.readRecord = async (key: string) => {
+      const record = await realRead(key)
+      if (key === GRANT_KEY) projection = record as FakeCredentialRecord | undefined
+      return record
+    }
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+      // The check already passed on this object; the update lands in place in
+      // the gap before the repair writes.
+      if (key === grantRef && !swapped) {
+        swapped = true
+        ;(projection!.payload as Record<string, unknown>).refresh = 'rt-unverified-value'
+      }
+      return realModify(key, mutate)
+    }
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+    } as any)
+
+    const result = await h.service.testKey('anthropic', rowId)
+    assert.equal(swapped, true, 'the in-place update did not land inside the repair')
+    // The repair persisted the payload it ownership-verified, not the one an
+    // in-place update slipped in after that check.
+    assert.equal(
+      (h.credentials.records.get(grantRef)!.payload as Record<string, unknown>).refresh,
+      'rt-seed-value',
+      'the repair wrote a payload that was never ownership-verified',
+    )
+    // The verified baseline is what the borrow compares against, so the test
+    // refuses the live projection that no longer matches it instead of
+    // borrowing the unverified update.
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /projection for anthropic changed/)
+  } finally {
+    raw.readRecord = realRead
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
 // PR #37 review (must-fix): the recovery's seam round trip sits between the
 // entry gate and the borrow, and it can outlive the isolation deadline. The
 // watchdog then cleans and RELEASES the window, whose late-borrow compensation

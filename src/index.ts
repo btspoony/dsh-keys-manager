@@ -3967,12 +3967,16 @@ export class KeysManagerService {
       return { payload: stored.payload, recoveredFromProjection: false }
     }
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
-    const live = await records.readRecord(projectionKey)
-    if (live === undefined || live.kind !== 'grant' || !isOAuthGrantPayload(live.payload)) return undefined
+    // The seam can hand back its own live record and this repair awaits before
+    // it writes: snapshot it once so the ownership check, the write and the
+    // returned baseline all see the payload that was verified, even if the
+    // source is updated in place meanwhile.
+    const projection = structuredClone(await records.readRecord(projectionKey))
+    if (projection === undefined || projection.kind !== 'grant' || !isOAuthGrantPayload(projection.payload)) return undefined
     // Only a projection this row owns is adopted; recovering a foreign grant
     // would attach another account's credential to this row.
     const oauthRows = this.store.provider(provider)?.keys.filter(candidate => candidate.kind === 'oauth' && candidate.oauth !== null) ?? []
-    if (matchOwningAccount(provider, oauthRows, live.payload)?.id !== row.id) return undefined
+    if (matchOwningAccount(provider, oauthRows, projection.payload)?.id !== row.id) return undefined
     // `row` is a snapshot taken before the reads: a removal or a re-sign-in can
     // have detached or repointed it since, and the repair must not land on a
     // ref this row no longer names.
@@ -4004,7 +4008,7 @@ export class KeysManagerService {
           declined = true
           return Promise.resolve(undefined)
         }
-        return Promise.resolve({ kind: 'grant', payload: structuredClone(live.payload) })
+        return Promise.resolve({ kind: 'grant', payload: structuredClone(projection.payload) })
       })
       // No post-write compensation (PR #37 I-000233): it would prove what THIS
       // call wrote, not that the record it deleted was still ours — a same-ref
@@ -4028,7 +4032,7 @@ export class KeysManagerService {
       // Best-effort repair: the projection still served this read.
       this.warn(`could not restore ${grantRef} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
-    return { payload: live.payload, recoveredFromProjection: true, projection: live }
+    return { payload: projection.payload, recoveredFromProjection: true, projection }
   }
 
   /**
