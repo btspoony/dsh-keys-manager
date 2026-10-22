@@ -218,6 +218,8 @@ describe('OmpDevinAdapter catalog', () => {
 
     await expect(adapter.resolveModel(DEVIN_ROUTE, 'not-a-model')).rejects.toMatchObject({ code: UNKNOWN_MODEL })
     await expect(adapter.listModels('openai')).rejects.toMatchObject({ code: UNKNOWN_PROVIDER })
+    // A foreign name must not be described with this route's display name.
+    expect(() => adapter.providerInfo('openai')).toThrow(expect.objectContaining({ code: UNKNOWN_PROVIDER }))
     await expect(collect(adapter.stream(request({ model: 'not-a-model' })))).rejects.toMatchObject({
       code: UNKNOWN_MODEL,
     })

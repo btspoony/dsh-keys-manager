@@ -44,9 +44,10 @@ repository root docs.
   `REAUTH_REQUIRED`; an absent one is served as a static bearer.
 - **Sign-in is paste-only** for now: omp completes this login with a Bun-only
   loopback listener on `127.0.0.1:59653`, so this package opens the authorize
-  page and asks for the address the browser landed on. The page cannot load.
-  A full callback URL or `code#state` is state-checked; a bare code skips the
-  check (documented weakening of CSRF protection).
+  page and asks for the address the browser landed on. Nothing listens on that
+  port, so the browser's redirect target fails to load and the code stays in the
+  address bar to paste. A full callback URL or `code#state` is state-checked; a
+  bare code skips the check (documented weakening of CSRF protection).
 
 ## Model coverage
 

@@ -209,6 +209,7 @@ abstract class OmpTransportAdapter<
   }
 
   override providerInfo(provider: string): LlmProviderInfo {
+    this.assertRoute(provider)
     return { id: provider, name: this.config.route.displayName }
   }
 

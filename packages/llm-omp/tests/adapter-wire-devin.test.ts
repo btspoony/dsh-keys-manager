@@ -296,6 +296,23 @@ describe('bundled devin transport over Connect frames', () => {
     })
   })
 
+  it('maps a cap-worded permission_denied trailer to RATE_LIMIT', async () => {
+    const { adapter } = adapterFor(call =>
+      call.url.endsWith('/exa.auth_pb.AuthService/GetUserJwt')
+        ? authResponse()
+        : new Response(
+            frameStream([trailerFrame({ error: { code: 'permission_denied', message: 'RATE_LIMITED: session cap' } })]),
+          ),
+    )
+
+    const chunks = await collect(adapter.stream(request()))
+
+    expect(chunks.at(-1)).toMatchObject({
+      type: 'finish',
+      reason: { kind: 'error', failure: { code: 'RATE_LIMIT' } },
+    })
+  })
+
   it('fails an oversize frame header with the server code', async () => {
     const header = Buffer.alloc(5)
     header[0] = 0

@@ -600,19 +600,24 @@ describe('llm-omp-transports registration', () => {
     directories: unknown[]
     flows: () => CursorAuthorizationFlow[]
     reads: () => number
+    calls: string[]
   } {
     const flows: CursorAuthorizationFlow[] = []
     const adapters: { providers: string[]; adapter: unknown }[] = []
     const directories: unknown[] = []
+    // One ordered log across all three seams: registration order is observable.
+    const calls: string[] = []
     let reads = 0
     const ctx = {
       llm: {
         registerAdapter(providers: string[], adapter: unknown) {
           adapters.push({ providers, adapter })
+          calls.push(`adapter:${providers.join(',')}`)
           return Object.assign(() => {}, { replace() {} })
         },
         registerConfigurableProviders(entries: unknown[]) {
           directories.push(entries)
+          calls.push('providers')
           return Object.assign(() => {}, { replace() {} })
         },
       },
@@ -626,6 +631,7 @@ describe('llm-omp-transports registration', () => {
       authorization: {
         registerFlow(registered: CursorAuthorizationFlow) {
           flows.push(registered)
+          calls.push(`flow:${registered.key}`)
           return () => {}
         },
       },
@@ -636,6 +642,7 @@ describe('llm-omp-transports registration', () => {
       directories,
       flows: () => flows,
       reads: () => reads,
+      calls,
     }
   }
 
@@ -643,6 +650,15 @@ describe('llm-omp-transports registration', () => {
     const host = fakeHost()
     apply(host.ctx)
 
+    // The three seams are called in one observable order; a later refactor that
+    // reorders them shows up here, not as a registration race.
+    expect(host.calls).toEqual([
+      `adapter:${CURSOR_ROUTE}`,
+      `adapter:${DEVIN_ROUTE}`,
+      'providers',
+      'flow:llm-omp-transports/cursor',
+      'flow:llm-omp-transports/devin',
+    ])
     expect(host.adapters.map(entry => entry.providers)).toEqual([[CURSOR_ROUTE], [DEVIN_ROUTE]])
     expect(host.adapters[0]!.adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(host.adapters[1]!.adapter).toBeInstanceOf(OmpDevinAdapter)
@@ -709,10 +725,13 @@ describe('llm-omp-transports registration', () => {
     expect(adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(adapter.providerInfo(CURSOR_ROUTE)).toEqual({ id: 'cursor', name: 'Cursor' })
     expect(await adapter.listModels(CURSOR_ROUTE)).toHaveLength(123)
+    // Each adapter describes only its own route, not the sibling's models.
+    expect(() => adapter.providerInfo(DEVIN_ROUTE)).toThrow(expect.objectContaining({ code: 'UNKNOWN_PROVIDER' }))
 
     expect(devin).toBeInstanceOf(OmpDevinAdapter)
     expect(devin.providerInfo(DEVIN_ROUTE)).toEqual({ id: 'devin', name: 'Devin' })
     expect(await devin.listModels(DEVIN_ROUTE)).toHaveLength(2)
+    expect(() => devin.providerInfo(CURSOR_ROUTE)).toThrow(expect.objectContaining({ code: 'UNKNOWN_PROVIDER' }))
   })
 
   it('drops a malformed configured row instead of throwing from the live getter', async () => {
