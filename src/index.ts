@@ -3945,7 +3945,10 @@ export class KeysManagerService {
    * `recoveredFromProjection` marks a payload the ownership-verified projection
    * supplied when the repair write did not persist it: the ref stays absent or
    * unusable, so a caller that re-reads it must treat the payload as the live
-   * credential instead of a concurrent writer's record. It never marks a
+   * credential instead of a concurrent writer's record. That case also returns
+   * the projection record it validated: a caller that compares before writing
+   * must use this snapshot as its baseline, or the compare would accept a
+   * rotation that landed after the payload was read. It never marks a
    * projection whose row has been detached or repointed since the snapshot —
    * that recovery is refused, because the projection then belongs to a
    * generation this row no longer names.
@@ -3954,7 +3957,7 @@ export class KeysManagerService {
     provider: string,
     row: KeyRecord,
     records: CredentialRecordsLike,
-  ): Promise<{ payload: OAuthGrantPayload; recoveredFromProjection: boolean } | undefined> {
+  ): Promise<{ payload: OAuthGrantPayload; recoveredFromProjection: boolean; projection?: CredentialRecordLike } | undefined> {
     const grantRef = row.oauth!.grantRef
     const stored = await records.readRecord(grantRef)
     if (stored !== undefined && stored.kind === 'grant' && isOAuthGrantPayload(stored.payload)) {
@@ -3976,11 +3979,43 @@ export class KeysManagerService {
       // "missing or unusable" failure in place instead of reviving it.
       return undefined
     }
+    // Only a record this call wrote may be cleaned up below; an updater that
+    // declined says so through this flag, so the returned `current` (a
+    // concurrent writer's record) is never deleted.
+    let wrote = false
     try {
       // Compare-at-absent: an occupied ref returns `current`, which the seam
       // keeps, so a concurrent login's or rotation's record wins the ref.
-      const liveNow = await records.modifyRecord(grantRef, current => Promise.resolve(
-        current ?? { kind: 'grant', payload: structuredClone(live.payload) }))
+      const liveNow = await records.modifyRecord(grantRef, current => {
+        if (current !== undefined) return Promise.resolve(current)
+        // Runs under the seam's per-key lock, so this is the state the write
+        // commits against: a removal that deleted the ref and marked (or
+        // spliced) the row since the checks above must not be undone by
+        // re-creating the credential it deleted.
+        const liveRow = this.store.provider(provider)?.keys.find(candidate => candidate.id === row.id)
+        if (liveRow === undefined
+          || this.retiringAccounts.has(liveRow)
+          || liveRow.kind !== 'oauth'
+          || liveRow.oauth === null
+          || liveRow.oauth.grantRef !== grantRef) {
+          return Promise.resolve(undefined)
+        }
+        wrote = true
+        return Promise.resolve({ kind: 'grant', payload: structuredClone(live.payload) })
+      })
+      // A removal can also finish after the write: delete only the record this
+      // call wrote, and only while no live row still names the ref.
+      if (wrote
+        && liveNow !== undefined
+        && liveNow.kind === 'grant'
+        && JSON.stringify(liveNow.payload) === JSON.stringify(live.payload)
+        && !this.grantRefServed(provider, grantRef)) {
+        try {
+          await records.deleteRecord(grantRef)
+        } catch (error) {
+          this.warn(`could not discard the restored ${grantRef} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
       // The ref may have been taken while this read was parked: the record's
       // payload is the credential the caller must borrow now, not the
       // projection this repair declined to write over it.
@@ -3991,7 +4026,7 @@ export class KeysManagerService {
       // Best-effort repair: the projection still served this read.
       this.warn(`could not restore ${grantRef} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
-    return { payload: live.payload, recoveredFromProjection: true }
+    return { payload: live.payload, recoveredFromProjection: true, projection: live }
   }
 
   /**
@@ -4010,7 +4045,12 @@ export class KeysManagerService {
       throw new Error(`The grant payload at ${grantRef} is missing or unusable; sign in to this account again`)
     }
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
-    const live = await records.readRecord(projectionKey)
+    // A projection-only recovery already read and ownership-verified the route.
+    // Re-reading it here would open a gap: a same-ref rotation landing in it
+    // leaves the payload from the first read and a baseline from the second, so
+    // the compare would pass and write the older credential. The record the
+    // payload came from is the only truthful baseline for it.
+    const live = recovered.projection ?? await records.readRecord(projectionKey)
     const payload = structuredClone(recovered.payload)
     // F5: the restored record decides its owner, so the classification is
     // derived from the baseline payload through the shared matcher — the same

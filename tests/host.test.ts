@@ -10071,6 +10071,84 @@ test('an activation whose repair write failed activates from the verified projec
   }
 })
 
+// PR #37 review (should-fix, I-000231): a projection-only recovery must carry
+// the record it validated into the preparation's baseline. Re-reading the
+// projection opened a gap: a same-ref rotation landing in it left the payload
+// from the first read and the baseline from the second, so the compare passed
+// and the older access token overwrote the fresh projection.
+test('a rotation between the recovery read and the preparation read refuses the stale payload', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realRead = raw.readRecord.bind(raw)
+  const realModify = raw.modifyRecord.bind(raw)
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    const stale = h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>
+    const fresh = { ...stale, access: 'at-rotated', expires: 1_900_000_300_000 }
+    h.credentials.records.delete(grantRef)
+    // The repair write does not persist, so the recovery serves the projection.
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => (
+      key === grantRef ? undefined : realModify(key, mutate))
+    let projectionReads = 0
+    raw.readRecord = async (key: string) => {
+      const record = await realRead(key)
+      if (key !== GRANT_KEY || ++projectionReads !== 1) return record
+      // Same refresh token, new access/expires: the rotation lands exactly
+      // between the recovery's projection read and any later one.
+      h.credentials.records.set(GRANT_KEY, { kind: 'grant', payload: fresh })
+      return record
+    }
+    await assert.rejects(
+      () => h.service.activateAccount('anthropic', rowId),
+      /could not be projected; activate the account again/,
+      'the activation wrote the recovered payload over a newer projection',
+    )
+    assert.deepEqual(
+      h.credentials.records.get(GRANT_KEY)!.payload,
+      fresh,
+      'the recovered older payload replaced the rotated projection',
+    )
+  } finally {
+    raw.readRecord = realRead
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
+// PR #37 review (should-fix, I-000232): the repair's liveness check is not the
+// state its write commits against. A removal landing between the check and the
+// compare-at-absent write used to be undone by that write, leaving a live
+// refresh credential at rest for an account that no longer exists.
+test('a removal landing before the repair write leaves no recreated grant record', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    h.credentials.records.delete(grantRef)
+    let removed = false
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+      // The repair's row/grantRef check already passed; the removal deletes the
+      // ref (and its row) before the repair takes the seam's per-key lock.
+      if (key === grantRef && !removed) {
+        removed = true
+        await h.service.removeAccount('anthropic', rowId)
+      }
+      return realModify(key, mutate)
+    }
+    await assert.rejects(() => h.service.activateAccount('anthropic', rowId))
+    assert.equal(h.credentials.records.has(grantRef), false, 'the repair recreated the grant of a removed account')
+    assert.deepEqual(
+      h.store.provider('anthropic')!.keys.filter(key => key.oauth?.grantRef === grantRef),
+      [],
+      'a live row still references the recreated grant',
+    )
+  } finally {
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
 test('a hydration read superseded by a newer activation is discarded', async () => {
   // Round-3 finding 3: the hydration read is awaited, and an activation
   // landing while it is in flight must win — the stale read lands last and
