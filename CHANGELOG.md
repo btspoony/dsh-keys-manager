@@ -2,6 +2,30 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.3] - 2026-10-22
+
+### Added
+
+- The provider list gains five single-select quick filters — All, Built-in, Plugin, OAuth-capable and Transport — that narrow the managed and available lists and compose with the existing search.
+- OAuth-capable uses the same verdict as a row's Add account button, so it lists exactly the routes that can start a sign-in right now.
+- The chosen filter also governs the transport accounts section, which appears under All and Transport; with Transport selected and no accounts it stays visible with a `0` count and the existing empty copy.
+- The quick-filter chips show a visible focus ring, the row is announced as a labelled group, the unattributed count keeps its number in its accessible name, and an empty transport list says so instead of reusing the search-empty copy.
+
+### Fixed
+
+- A transport-plugin route (Cursor) now renders as a plugin Transport provider card and can no longer be adopted, key-bound or tested as a pi-ai provider; its account controls moved into that card.
+- A transport account whose route id collides with an ordinary provider's id keeps its row (and its only sign-in/remove control) instead of being treated as card-owned by a card that never rendered it.
+- Activating an account no longer holds the global mutation queue while it reads the OAuth credential, so a slow credential store cannot delay unrelated key or settings changes; the activation's errors, returned state and cooldown reset are unchanged.
+- An activation now writes its credential projection only while the route still serves the value it read, and never deletes a grant another writer replaced. A rejected state flush puts the projection back — removing it only when the activation created it — so a refused activation leaves nothing behind.
+- A refused activation restores the route's owner classification along with the projection it puts back, so requests keep using the restored credential and failures keep attributing to it instead of falling back to the key pool; the activated account keeps its claim whenever its projection is still serving.
+- Provider rows show an `Unattributed` count for stream attempts a route served with no account owner — whether its ownership read had not landed yet or had failed — and the count clears once a later read attributes the route. A failover retry is a new attempt, so one request can be counted more than once.
+- A request waiting on ownership hydration no longer keeps the process alive for the rest of the bounded wait.
+
+### Changed
+
+- Release notes are now assembled from authored `.changes/unreleased/` fragments instead of `git log` subjects, and a release with no changelog bullets is refused.
+- Backfill `CHANGELOG.md` for 0.1.0–0.2.2 with authored notes; earlier sections listed merge subjects.
+
 ## [0.2.2] - 2026-10-21
 
 ### Added
