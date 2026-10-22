@@ -9952,6 +9952,51 @@ test('a row test does not adopt a projection another account row owns', async ()
   }
 })
 
+// The recovery reads the row's ref BEFORE its seam reads and compares it with
+// the store afterwards: a row repointed during those reads names another
+// generation, so the projection that still matched the old ref must not be
+// borrowed as this row's credential (activation's source fallback would then
+// revive a stale grant). The test reports the original failure instead.
+test('a row repointed while its grant read is parked does not lend its old projection', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  let park: ReturnType<typeof parkGrantRead> | undefined
+  let testing: Promise<KeyTestResult> | undefined
+  let calls = 0
+  try {
+    // The tested row's own record is gone; its projection is the only copy.
+    await h.service.activateAccount('anthropic', first.rowId)
+    h.credentials.records.delete(first.grantRef)
+    park = parkGrantRead(h, first.grantRef)
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      } as any)
+    }
+    testing = h.service.testKey('anthropic', first.rowId)
+    await eventually(() => assert.equal(park!.parked(), true))
+    // A re-sign-in repoints the row while the grant read is parked.
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === first.rowId)!
+    row.oauth!.grantRef = accountRef('anthropic', 'repointed')
+    park.release()
+    const result = await testing
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /missing or unusable/)
+    assert.equal(calls, 0, 'the test streamed with a projection its row no longer names')
+    assert.equal(liveProjectionRefresh(h), 'rt-first', 'the pre-test projection was replaced')
+    assert.equal(
+      (h.service as unknown as { testBindingBorrows: Set<string> }).testBindingBorrows.has('anthropic'),
+      false,
+      'the refused test left its borrow marker behind',
+    )
+  } finally {
+    park?.release()
+    await testing?.catch(() => undefined)
+    park?.restore()
+    await h.close()
+  }
+})
+
 // PR #37 review (must-fix): the recovery's seam round trip sits between the
 // entry gate and the borrow, and it can outlive the isolation deadline. The
 // watchdog then cleans and RELEASES the window, whose late-borrow compensation

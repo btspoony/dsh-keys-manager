@@ -3942,10 +3942,13 @@ export class KeysManagerService {
    * plugin-scope record is gone. The projection IS the route's credential, so a
    * matching payload is written back (compare-at-absent) and used immediately.
    *
-   * `recoveredFromProjection` marks the payload the repair write did not
-   * persist: the ref stays absent or unusable, so a caller that re-reads it
-   * must treat the payload as the ownership-verified live credential instead of
-   * a concurrent writer's record.
+   * `recoveredFromProjection` marks a payload the ownership-verified projection
+   * supplied when the repair write did not persist it: the ref stays absent or
+   * unusable, so a caller that re-reads it must treat the payload as the live
+   * credential instead of a concurrent writer's record. It never marks a
+   * projection whose row has been detached or repointed since the snapshot —
+   * that recovery is refused, because the projection then belongs to a
+   * generation this row no longer names.
    */
   private async recoverGrantPayload(
     provider: string,
@@ -3968,7 +3971,10 @@ export class KeysManagerService {
     // have detached or repointed it since, and the repair must not land on a
     // ref this row no longer names.
     if (oauthRows.find(candidate => candidate.id === row.id)?.oauth?.grantRef !== grantRef) {
-      return { payload: live.payload, recoveredFromProjection: true }
+      // The row no longer names this ref, so the projection that matched it
+      // belongs to a previous generation: refusing leaves the caller's own
+      // "missing or unusable" failure in place instead of reviving it.
+      return undefined
     }
     try {
       // Compare-at-absent: an occupied ref returns `current`, which the seam
