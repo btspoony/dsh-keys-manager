@@ -178,6 +178,8 @@ export interface ProviderView {
    * is account-adoptable while carrying no key-pool credential.
    */
   accountSupported?: boolean
+  /** True when another plugin serves this route on its own credential (not the pi-ai key pool). */
+  transport?: boolean
   reason?: string
   settingsNs: string
   settingsPath: string[]
