@@ -4563,6 +4563,54 @@ test('a rejected state flush during re-authentication restores the superseded gr
   }
 })
 
+// Plan key-test-recovery: a same-ref re-authentication writes over the record
+// its own pre-existing row already names. When that harvest fails before the
+// row upsert, the pre-upsert compensation must not delete the record the live
+// row depends on — the row would survive with a dangling `oauth.grantRef`
+// ("missing or unusable" on every later read).
+test('a failed harvest keeps a grant a pre-existing row still references', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+    refresh: 'rt-seed-value',
+  })
+  try {
+    // The re-auth committed the same-ref payload over the record...
+    const reauthenticated = grantPayload({ refresh: 'rt-seed-value', access: 'at-reauthenticated' })
+    h.credentials.records.set(grantRef, reauthenticated)
+    const warnings: string[] = []
+    h.ctx.logger.warn = (message: string) => {
+      warnings.push(message)
+    }
+    // ...and the harvest failed before its row upsert (the pre-upsert
+    // compensation path receives exactly these facts).
+    const internals = h.service as unknown as {
+      compensateFailedHarvest: (attempt: { provider: string }, harvest: unknown) => Promise<void>
+    }
+    await internals.compensateFailedHarvest({ provider: 'anthropic' }, {
+      payload: reauthenticated.payload,
+      grantRef,
+      wroteRef: true,
+      previousRef: grantPayload({ refresh: 'rt-seed-value', access: 'at-seed-value' }),
+    })
+    // The record belongs to the live row, not to the failed attempt.
+    assert.equal(h.credentials.records.has(grantRef), true, 'the compensation deleted a grant a live row references')
+    assert.ok(
+      warnings.some(message => message.includes('an account row still references it')),
+      `expected a kept-grant warning, got: ${warnings.join(' | ')}`,
+    )
+    // The row stays usable: an activation-shaped read of its ref succeeds
+    // instead of reporting "missing or unusable".
+    await h.service.activateAccount('anthropic', rowId)
+    assert.equal(
+      (h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).access,
+      'at-reauthenticated',
+    )
+  } finally {
+    await h.close()
+  }
+})
+
 test('a resolved state flush keeps the harvested row and both grant records (no rollback)', async () => {
   const h = await harnessWithManagedAnthropic()
   try {
@@ -9820,6 +9868,66 @@ test('a restarted service rehydrates projection ownership and demotes on removal
   }
 })
 
+// Plan key-test-recovery: observed live damage — the row's `oauth.grantRef`
+// record is gone while its projection still serves and still matches the row.
+// Hydration heals the plugin-scope record from the projection payload so every
+// grant read (activate, test, rotation) works again.
+test('hydration restores a grant record its owning projection still serves', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({
+    accountId: 'acc-9',
+    email: 'dev@example.com',
+    refresh: 'rt-seed-value',
+  })
+  try {
+    // The route still serves this row's grant; its plugin-scope record was lost.
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-seed-value',
+      accountId: 'acc-9',
+      email: 'dev@example.com',
+    }))
+    h.credentials.records.delete(grantRef)
+    assert.equal(h.credentials.records.has(grantRef), false)
+
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await eventually(() => assert.equal(h.credentials.records.get(grantRef)?.kind, 'grant'))
+    assert.equal(
+      (h.credentials.records.get(grantRef)!.payload as Record<string, unknown>).refresh,
+      'rt-seed-value',
+    )
+    // The healed record makes an activation-shaped read of the ref work again.
+    await restarted.activateAccount('anthropic', rowId)
+    assert.equal(
+      (h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh,
+      'rt-seed-value',
+    )
+  } finally {
+    await h.close()
+  }
+})
+
+// The healing write is only for a projection a row owns: a foreign grant must
+// stay exactly where it is.
+test('hydration writes nothing for a projection no account row owns', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload({
+      refresh: 'rt-orphan',
+      access: 'at-orphan',
+      accountId: 'acc-orphan',
+      email: 'orphan@example.com',
+    }))
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 60))
+    assert.deepEqual(
+      [...h.credentials.records.keys()].filter(key => key.startsWith('keys-manager/')),
+      [],
+      'hydration wrote a grant record for a projection no row owns',
+    )
+  } finally {
+    await h.close()
+  }
+})
+
 test('a hydration read superseded by a newer activation is discarded', async () => {
   // Round-3 finding 3: the hydration read is awaited, and an activation
   // landing while it is in flight must win — the stale read lands last and
@@ -11127,9 +11235,9 @@ test('an in-place mutation of the captured projection refuses the borrow', async
   }
 })
 
-test('an aborted finish fails the row test and a length-limited finish passes it', async () => {
+test('an aborted finish fails the row test and a max-tokens finish passes it', async () => {
   // PR review SF3: only a real completion ends the probe as a pass. The ping
-  // asks for one token, so `length` is the expected completion; `aborted`
+  // asks for one token, so `max-tokens` is the expected completion; `aborted`
   // means the provider stopped the request, not that it answered.
   const { h, first } = await harnessWithTwoProjectedAccounts()
   try {
@@ -11141,10 +11249,27 @@ test('an aborted finish fails the row test and a length-limited finish passes it
     assert.match(String(aborted.error), /aborted/)
 
     h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
-      yield { type: 'finish', reason: { kind: 'length' } }
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
     } as any)
     const limited = await h.service.testKey('anthropic', first.rowId)
     assert.equal(limited.ok, true)
+    assert.equal(liveProjectionRefresh(h), 'rt-second')
+  } finally {
+    await h.close()
+  }
+})
+
+// Plan key-test-recovery: the installed `@deepseek-ai/dsh-llm` finish union is
+// `stop | tool-calls | max-tokens | aborted | error`, so a healthy real
+// one-token answer ends with `max-tokens` and must be reported as a pass.
+test('a stream ending with max-tokens reports the row test as a pass', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  try {
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+    } as any)
+    const result = await h.service.testKey('anthropic', first.rowId)
+    assert.equal(result.ok, true, String(result.error))
     assert.equal(liveProjectionRefresh(h), 'rt-second')
   } finally {
     await h.close()
@@ -13987,7 +14112,7 @@ test('a finish chunk without a completion reason is not a pass', async () => {
     const unknown = await runWith({ type: 'finish', reason: { kind: 'interrupted' } })
     assert.equal(unknown.ok, false)
     assert.match(String(unknown.error), /interrupted/)
-    for (const kind of ['stop', 'length', 'toolUse']) {
+    for (const kind of ['stop', 'tool-calls', 'max-tokens']) {
       const outcome = await runWith({ type: 'finish', reason: { kind } })
       assert.equal(outcome.ok, true, `the ${kind} completion was not reported as a pass`)
     }

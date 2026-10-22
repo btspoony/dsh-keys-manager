@@ -1444,9 +1444,10 @@ export class KeysManagerService {
             // serves the route ahead of any broker reference exactly like an
             // unowned grant, so it is classified as foreign below (PR review
             // rounds 4 and 13).
-            const owner = record.kind === 'grant' && isOAuthGrantPayload(record.payload)
-              ? matchOwningAccount(provider, accounts, record.payload)
+            const projection = record.kind === 'grant' && isOAuthGrantPayload(record.payload)
+              ? record.payload
               : undefined
+            const owner = projection === undefined ? undefined : matchOwningAccount(provider, accounts, projection)
             // A newer activation/login claimed the owner while this read was in
             // flight: the stale read is discarded, never written over it. A
             // remount replaced the whole store: its classification is gone too.
@@ -1456,6 +1457,26 @@ export class KeysManagerService {
             if (owner !== undefined && providerRecord.keys.some(candidate => candidate.id === owner.id)) {
               this.activeAccounts.set(provider, owner.id)
               this.foreignProjections.delete(provider)
+              // Observed live damage: the row's plugin-scope record is gone
+              // while its projection still serves, so every grant read
+              // (activate, test, rotation) fails. The projection is
+              // authoritative; restore the record from the payload just read.
+              if (projection !== undefined) {
+                const grantRef = owner.oauth!.grantRef
+                try {
+                  const stored = await records.readRecord(grantRef)
+                  if (stored === undefined
+                    && this.hydrationEpoch === epoch
+                    && (this.ownershipGenerations.get(provider) ?? 0) === generation) {
+                    // Compare-at-absent: a writer that restored this ref while
+                    // the read was in flight owns it now.
+                    await records.modifyRecord(grantRef, current => Promise.resolve(
+                      current === undefined ? { kind: 'grant', payload: structuredClone(projection) } : undefined))
+                  }
+                } catch (error) {
+                  this.warn(`projection ownership hydration could not restore ${grantRef}: ${error instanceof Error ? error.message : String(error)}`)
+                }
+              }
             } else {
               // Present but not a managed OAuth grant (PR review rounds 3–4):
               // the projection still serves, so the pool is not the route's
@@ -3003,10 +3024,18 @@ export class KeysManagerService {
       return
     }
     if (harvest.wroteRef) {
-      try {
-        await records.deleteRecord(harvest.grantRef)
-      } catch (error) {
-        this.warn(`harvest compensation could not delete ${harvest.grantRef}: ${error instanceof Error ? error.message : String(error)}`)
+      // A live row still names this ref: a same-ref re-authentication writes
+      // over the record its own pre-existing row depends on, and this
+      // compensation must not leave that row dangling (same guard as the
+      // rotation cleanup, R5-MF1).
+      if (this.grantRefServed(attempt.provider, harvest.grantRef)) {
+        this.warn(`harvest compensation kept ${harvest.grantRef} for ${attempt.provider}: an account row still references it`)
+      } else {
+        try {
+          await records.deleteRecord(harvest.grantRef)
+        } catch (error) {
+          this.warn(`harvest compensation could not delete ${harvest.grantRef}: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
     }
     await this.revertHarvestProjection(attempt, harvest)
@@ -5558,11 +5587,13 @@ export class KeysManagerService {
             return { ok: false, error: failure?.message ?? failure?.code ?? 'The provider reported a failure' }
           }
           // PR review SF3 + round 8: only a real completion is a pass. The ping
-          // asks for one token, so `length` is the expected completion; a
+          // asks for one token, so `max-tokens` is the expected completion; a
           // finish chunk with NO reason, `aborted`, or any kind this broker
           // does not know means the provider did not answer, so reporting a
-          // pass would claim a credential it never served.
-          if (kind === 'stop' || kind === 'length' || kind === 'toolUse') {
+          // pass would claim a credential it never served. The kinds are the
+          // installed `@deepseek-ai/dsh-llm` union (`FinishReasonMap`):
+          // `'length'`/`'toolUse'` do not exist there.
+          if (kind === 'stop' || kind === 'tool-calls' || kind === 'max-tokens') {
             // PR review round 42: a successful ping only proves the route
             // answered. An api-key row test must also prove the pinned literal
             // was the credential that served it — a takeover during the stream
