@@ -294,6 +294,7 @@ export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAu
         grant = await loginDevin({
           fetch: options.fetch,
           now: options.now,
+          signal: session.signal,
           onAuthUrl: url => session.notify({ message: 'Open this page to sign in to Devin.', url }),
           prompt: () =>
             session.prompt({

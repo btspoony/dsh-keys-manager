@@ -28,6 +28,13 @@ export interface DevinGrantPayload {
   readonly access: string
   /** Epoch ms after which the bearer is dead; absent means a static bearer. */
   readonly expires?: number
+  /**
+   * The record carried an `expires` field that is not a finite number.
+   *
+   * Only an *absent* expiry is a static bearer (§6.3); a present but corrupt one
+   * means the record cannot be trusted, so the resolver demands a re-sign-in.
+   */
+  readonly expiresInvalid?: boolean
 }
 
 /** Options for {@link createDevinAccess}; the clock is the test seam. */
@@ -42,10 +49,11 @@ export function readDevinGrant(record: StoredCredentialRecord | undefined): Devi
   if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return undefined
   const fields = payload as Record<string, unknown>
   if (typeof fields.access !== 'string' || fields.access === '') return undefined
-  return {
-    access: fields.access,
-    ...(typeof fields.expires === 'number' && Number.isFinite(fields.expires) ? { expires: fields.expires } : {}),
+  if (!('expires' in fields)) return { access: fields.access }
+  if (typeof fields.expires !== 'number' || !Number.isFinite(fields.expires)) {
+    return { access: fields.access, expiresInvalid: true }
   }
+  return { access: fields.access, expires: fields.expires }
 }
 
 /**
@@ -67,6 +75,12 @@ export function createDevinAccess(
       throw new LlmError(
         `llm-omp-transports: no Devin sign-in is stored at ${DEVIN_CREDENTIAL_KEY}; run the Devin authorization flow`,
         'MISSING_CREDENTIAL',
+      )
+    }
+    if (grant.expiresInvalid === true) {
+      throw new LlmError(
+        `llm-omp-transports: the Devin sign-in stored at ${DEVIN_CREDENTIAL_KEY} has an unreadable expiry; sign in again`,
+        'REAUTH_REQUIRED',
       )
     }
     if (grant.expires !== undefined && grant.expires <= now()) {

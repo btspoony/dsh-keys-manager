@@ -284,6 +284,14 @@ describe('devin access resolver', () => {
     expect(store.writes()).toBe(0)
   })
 
+  it('refuses a present but unreadable expires as REAUTH_REQUIRED', async () => {
+    // A corrupt expiry is not a static bearer: only an absent field means that.
+    const store = fakeStore({ kind: 'grant', payload: { access: 'devin-session-token', expires: 'soon' } })
+
+    await expect(createDevinAccess(store.credentials)()).rejects.toMatchObject({ code: 'REAUTH_REQUIRED' })
+    expect(store.writes()).toBe(0)
+  })
+
   it('serves a payload without expires as a static bearer', async () => {
     // Neither the flow nor the pinned rule produces one, but a hand-written
     // record must not be refused on a field the resolver can live without.
@@ -362,10 +370,10 @@ describe('devin authorization flow', () => {
     expect(committed).toEqual([])
   })
 
-  it('lets an abort escape and commits nothing', async () => {
+  it('forwards the flow signal into the exchange and commits nothing on abort', async () => {
     const controller = new AbortController()
     controller.abort()
-    const { fetch } = stubFetch(() => {
+    const { fetch, calls } = stubFetch(() => {
       throw new DOMException('The operation was aborted.', 'AbortError')
     })
     const { session, committed } = fakeSession('code-1')
@@ -373,6 +381,9 @@ describe('devin authorization flow', () => {
     await expect(devinAuthorizationFlow({ fetch }).run({ ...session, signal: controller.signal })).rejects.toMatchObject(
       { name: 'AbortError' },
     )
+    // The exchange is reachable by the seam's cancellation, not just the prompt.
+    expect(calls[0]!.init?.signal).toBe(controller.signal)
+    expect(calls[0]!.init?.signal?.aborted).toBe(true)
     expect(committed).toEqual([])
   })
 
