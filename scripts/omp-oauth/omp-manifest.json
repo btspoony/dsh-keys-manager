@@ -1,0 +1,154 @@
+{
+  "ompVersion": "18.12.3",
+  "piCatalogVersion": "18.12.3",
+  "piUtilsVersion": "18.12.3",
+  "esbuildVersion": "0.28.2",
+  "entry": "lib/omp-oauth/oauth.mjs",
+  "moduleCount": 35,
+  "bytes": 72426,
+  "shimSymbols": {
+    "pi-utils": [
+      "$env",
+      "$pickenv",
+      "debug",
+      "error",
+      "escapeXmlText",
+      "extractHttpStatusFromError",
+      "extractRetryHint",
+      "getLogsDir",
+      "info",
+      "isBunTestRuntime",
+      "isEnoent",
+      "isRecord",
+      "isRetryableError",
+      "isUnexpectedSocketCloseMessage",
+      "logger",
+      "truncate",
+      "warn"
+    ],
+    "bun-global": [
+      "BUN_MEMBERS",
+      "Bun",
+      "CryptoHasher",
+      "SHA256"
+    ]
+  },
+  "shimImports": {
+    "pi-utils": [
+      "$env",
+      "extractHttpStatusFromError",
+      "extractRetryHint",
+      "getLogsDir",
+      "isBunTestRuntime",
+      "isEnoent",
+      "isRecord",
+      "isRetryableError",
+      "isUnexpectedSocketCloseMessage",
+      "logger"
+    ],
+    "bun-global": [
+      "Bun"
+    ]
+  },
+  "overrides": [
+    {
+      "specifier": "@oh-my-pi/pi-utils(/*)",
+      "file": "scripts/omp-oauth/omp-shim/pi-utils.ts",
+      "reason": "Bun-oriented utility barrel; only the sign-in surface is implemented on Node",
+      "sourceHash": "sha256:bb040ef2c62b186330af008976abcac48bc406a2cd340f13574ba4800b30e1f6"
+    },
+    {
+      "specifier": "Bun (global)",
+      "file": "scripts/omp-oauth/omp-shim/bun-global.ts",
+      "reason": "Bun runtime global; sleep is real, hashing keeps Bun return contracts",
+      "sourceHash": "sha256:589624139d819830c74c3dcc9a4f7913590272360c38698fa4cfe0d8aa6832ed"
+    },
+    {
+      "specifier": "@oh-my-pi/pi-ai/src/registry/hooks",
+      "file": "scripts/omp-oauth/overrides/hooks.gen.ts",
+      "reason": "eager registry pulled the model catalog; narrowed to the hooks the copied rule names",
+      "sourceHash": "sha256:4fb7d49ef6d3f69b1696324380942ce51330fa422d18f07e6698170c52bedbd6"
+    },
+    {
+      "specifier": "@oh-my-pi/pi-ai/src/registry/api-key-validation",
+      "file": "scripts/omp-oauth/overrides/api-key-validation.ts",
+      "reason": "pasteKey branch is unreachable (the copied rule declares no pasteKey)",
+      "sourceHash": "sha256:dbb9aac4575450c3f8893557addd6a64b45f5daa6bc6657ee59ca1c26be29bce"
+    },
+    {
+      "specifier": "@oh-my-pi/pi-natives",
+      "file": "scripts/omp-oauth/overrides/pi-natives.ts",
+      "reason": "native URI-scheme helper; the copied rule sets nativeScheme: false",
+      "sourceHash": "sha256:fbbac3f183b45c5abe070b239f3dec776151f6f374c74ff533e65ffabf5698f6"
+    },
+    {
+      "specifier": "@oh-my-pi/pi-catalog/compat/behavior",
+      "file": "scripts/omp-oauth/overrides/compat-policy.ts",
+      "reason": "retry-reset timezone facts only; would otherwise inline the 467 KB rules catalog",
+      "sourceHash": "sha256:17fcc3a29fa5fdc50d682bd17abc2be90cddc8c9bdac3838825f92f7132a48e7"
+    }
+  ],
+  "sourceHashes": {
+    "@oh-my-pi/pi-ai/src/registry/oauth/kilo.ts": "sha256:e1c0a470789f8d822c486338e9fa3a2ec956fe993efbdfb33286c7ea36060938",
+    "@oh-my-pi/pi-ai/src/registry/oauth/zai.ts": "sha256:f61590eb11ef4941dcc93a6e21d91b56224afb24da71b2e19819a029b1999ca7",
+    "@oh-my-pi/pi-ai/src/registry/oauth/callback-server.ts": "sha256:ada74119229d4b29249f304b0ae0742292e7ba4e1266da4380a722310d9b0026",
+    "@oh-my-pi/pi-ai/src/registry/oauth/device-code.ts": "sha256:82becdc54849489d87995e7f9cc355c445f210e44fc908078134f780d9911b2e",
+    "@oh-my-pi/pi-ai/src/registry/oauth/pkce.ts": "sha256:07fac71be1131222735e672bc19aab02ab7a67caf19e9b0f6fe404c8dce18cee",
+    "@oh-my-pi/pi-ai/src/registry/oauth/native-scheme-callback.ts": "sha256:adba2e3b5876c940fbc19b8cc63ca773d28875a85f4dd5ead2ed5a0a9bbf8713",
+    "@oh-my-pi/pi-ai/src/registry/oauth/types.ts": "sha256:0bd2328463263218ef5ffa7b09f0d3dbe0e963d667edf9ef040b5d156a6aa807",
+    "@oh-my-pi/pi-ai/src/registry/oauth/oauth.html": "sha256:fa0406f8694464e716252e1f60504035cf01f590bae94a2ceb546840d3855b6c",
+    "@oh-my-pi/pi-ai/src/registry/engine/common.ts": "sha256:3e127fa16b70260c69e92970ee1a449bdc98ba71fd56036bfea1aa1437c8af2f",
+    "@oh-my-pi/pi-ai/src/registry/engine/oauth-code.ts": "sha256:77b35218e2cc73b73b6b8b307aeff26cda143336d174580d3541d115a9f88d61",
+    "@oh-my-pi/pi-ai/src/error/index.ts": "sha256:baf6b8cf27d173fcb38dd1b0dc00d38ee206cca2aa267f8b766e134a89d1cb7f",
+    "@oh-my-pi/pi-ai/src/error/flags.ts": "sha256:5a192459b4fca04d12bfe6a8910054756b36f31b08498d93f261bff3f0a60a65",
+    "@oh-my-pi/pi-ai/src/error/oauth.ts": "sha256:3ab46291214c638e714a927293e0e60709e21cfb3de831611344931c24f4c7fb",
+    "@oh-my-pi/pi-ai/src/error/classes.ts": "sha256:aa964060e9a661b18bdcb56ce2523f7a44bba62c75a243e89a84160a6f31bdba",
+    "@oh-my-pi/pi-ai/src/utils/retry-after.ts": "sha256:b4a137c8c0b5cb693c86d2b4e4ed3cf07ee452ed1154cad98a0381daf2279546",
+    "@oh-my-pi/pi-catalog/src/compat/rules.json": "sha256:2688dfbeda4b9c9973a9790784ba0c107b3417eafdaf4a66b45ef000a3fbfcd1",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/zai-coding-plan.kdl": "sha256:9806a6ec1f839f6254658e7517a86bab50b3a29d6252add29f3d60298efaf1ee",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/kilo.kdl": "sha256:9dc2093dd5df7d31e7e907e81657196821c246a795e7a29151ab89469ab13ebd"
+  },
+  "policyFacts": {
+    "kilo": {
+      "id": "kilo",
+      "name": "Kilo Gateway",
+      "apiKeyFormat": "bearer",
+      "loginKind": "custom",
+      "loginHook": "kilo"
+    },
+    "zaiCodingPlan": {
+      "id": "zai-coding-plan",
+      "name": "Z.AI (GLM Coding Plan · Sign in)",
+      "storeAs": "zai",
+      "apiKeyFormat": "bearer",
+      "loginKind": "oauth-code",
+      "clientId": "client_P8X5CMWmlaRO9gyO-KSqtg",
+      "authorizeUrl": "https://chat.z.ai/api/oauth/authorize",
+      "tokenUrl": "https://zcode.z.ai/api/v1/oauth/token",
+      "tokenBody": "json",
+      "redirectUri": "zcode://zai-auth/callback",
+      "state": "hex",
+      "pkce": false,
+      "scopes": [],
+      "manualOnly": true,
+      "nativeScheme": false,
+      "afterExchange": "zai-mint-key",
+      "accessPath": "data.zai.access_token",
+      "emailPath": "data.user.email",
+      "accountIdPath": "data.user.id",
+      "expiresMode": "never",
+      "refreshKind": "none",
+      "pasteCode": true,
+      "pasteKey": false
+    }
+  },
+  "bunSurface": [
+    "env",
+    "sleep",
+    "hash",
+    "SHA256",
+    "CryptoHasher",
+    "write"
+  ],
+  "bundleCeiling": 2000000
+}

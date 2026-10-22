@@ -3,15 +3,27 @@
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2023"],
-    "types": ["node"],
+    "lib": [
+      "ES2023"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "allowJs": true
   },
-  "include": ["src", "tests"],
-  "exclude": ["src/client", "tests/client.test.ts"]
+  "include": [
+    "src",
+    "tests",
+    "scripts/omp-oauth"
+  ],
+  "exclude": [
+    "src/client",
+    "tests/client.test.ts"
+  ]
 }
