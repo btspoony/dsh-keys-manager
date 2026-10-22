@@ -5971,6 +5971,80 @@ test('a shutdown-era binding refusal keeps its own reason instead of blaming shu
   }
 })
 
+// The compensation replaces what the route serves, so a reconciler that
+// captured the generation before it must not commit its stale claim. Without
+// the bump its `ownershipSuperseded` check still passes and it re-claims the
+// account the compensation just unseated.
+
+// The compensation replaces what the route serves, so it must invalidate every
+// reconciler that captured the earlier generation: those bodies read a world it
+// undoes and would commit a claim for the activation it just unseated. `ours`
+// changes nothing, so it deliberately does not bump.
+
+test('the compensation invalidates the generation a stale reconciler captured', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({
+    accountId: 'acc-a',
+    email: 'a@example.com',
+    refresh: 'rt-a',
+  })
+  const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b' })
+  const internals = h.service as unknown as {
+    oauthOwnerFor: (provider: string) => string | null
+    ownershipGenerations: Map<string, number>
+    ownershipSuperseded: (provider: string, generation: number) => boolean
+    claimProjectionOwner: (provider: string, accountId: string) => void
+    prepareActivation: (provider: string, row: KeyRecord, records: unknown) => Promise<unknown>
+    compensateActivationFlush: (
+      provider: string,
+      accountId: string,
+      prepared: unknown,
+      undo: unknown,
+      records: unknown,
+    ) => Promise<void>
+  }
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  try {
+    // B serves the route, so its projection is the activation's baseline.
+    await h.service.activateAccount('anthropic', b.rowId)
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(internals.oauthOwnerFor('anthropic'), b.rowId)
+    // The seam's echo would claim B and bump the generation by itself, which
+    // would hide whether the compensation invalidates a stale capture. The
+    // subscription is optional downstream, so only the compensation's bump is
+    // observable in this shape.
+    raw.emitRecordUpdated = () => undefined
+    const rowAEntity = h.store.provider('anthropic')!.keys.find(key => key.id === rowA)!
+    // What a fresh activation would have captured before it wrote.
+    const prepared = await internals.prepareActivation('anthropic', rowAEntity, raw)
+    // Replay the failed activation's own effects: A's projection, its claim.
+    // Exactly the payload the activation prepared: the restore's compare is the
+    // record's own payload, not a reconstruction.
+    await realModify(GRANT_KEY, async () => ({ kind: 'grant', payload: structuredClone((prepared as { payload: unknown }).payload) }))
+    internals.claimProjectionOwner('anthropic', rowA)
+    const undo = { valueMissing: false, cooldownUntil: 0, generation: internals.ownershipGenerations.get('anthropic') ?? 0 }
+    // A reconciler capturing here would read A's projection and commit against
+    // this generation; the compensation is what must invalidate it.
+    const captured = internals.ownershipGenerations.get('anthropic') ?? 0
+    await internals.compensateActivationFlush('anthropic', rowA, prepared, undo, raw)
+    // Outcome: B's captured baseline serves again, with its owner.
+    const live = h.credentials.records.get(GRANT_KEY)!
+    assert.equal((live.payload as Record<string, unknown>).accountId, 'acc-b', 'B is not serving again')
+    assert.equal(internals.oauthOwnerFor('anthropic'), b.rowId, 'the restored baseline has no owner')
+    // And the stale capture no longer describes the route.
+    assert.equal(
+      internals.ownershipSuperseded('anthropic', captured),
+      true,
+      'a reconciler that captured the pre-compensation generation would still commit',
+    )
+  } finally {
+    raw.emitRecordUpdated = realEmit
+    raw.modifyRecord = realModify
+    await h.close()
+  }
+})
+
 // The unbind direction is the one an activation takes (the OAuth projection
 // serves, so the pool is not the source): a value Keys Manager did not write
 // must decline there too, and a shutdown whose guard was never reached must not
@@ -6365,11 +6439,13 @@ test('a flush failure whose proof is unknown keeps the activation claim', async 
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   const internals = h.service as unknown as {
     activeAccounts: Map<string, string>
+    ownershipGenerations: Map<string, number>
     activationProjectionProof: (records: unknown, provider: string, written: string) => Promise<string>
   }
   h.credentials.records.delete(GRANT_KEY)
   const realProof = internals.activationProjectionProof.bind(h.service)
   // A store failure proves nothing, so it is never permission to delete.
+  const generationBefore = internals.ownershipGenerations.get('anthropic') ?? 0
   internals.activationProjectionProof = async () => 'unknown'
   try {
     await chmod(h.dir, 0o500)
@@ -6380,6 +6456,13 @@ test('a flush failure whose proof is unknown keeps the activation claim', async 
     }
     assert.equal(h.credentials.records.has(GRANT_KEY), true, 'an unproven projection was deleted')
     assert.equal(internals.activeAccounts.get('anthropic'), rowId, 'the live activation projection lost its claim')
+    // `ours` changes nothing about what serves the route, so it must not
+    // invalidate reconcilers that captured the activation's own generation.
+    assert.equal(
+      internals.ownershipGenerations.get('anthropic'),
+      generationBefore + 1,
+      'the `ours` outcome bumped a generation that still describes reality',
+    )
   } finally {
     internals.activationProjectionProof = realProof
     await chmod(h.dir, 0o700).catch(() => undefined)

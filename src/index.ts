@@ -3958,6 +3958,14 @@ export class KeysManagerService {
     // newer owner or mark its route foreign. No await separates this check from
     // the writes in the switch.
     if (this.ownershipSuperseded(provider, undo.generation)) return
+    // The compensation is about to replace what the route serves (or which row
+    // owns it), so every reconciler that captured the earlier generation read a
+    // world this undoes and must not commit: its projection read may predate the
+    // restore, and its row/binding writes would re-claim an account the restored
+    // baseline does not serve. `ours` keeps the activation's projection and claim
+    // in place — it changes nothing a reconciler could misread — so it needs no
+    // bump.
+    if (outcome !== 'ours') this.noteProjectionCommitted(provider)
     // P2-B: the row rollback belongs to the outcomes that actually changed what
     // serves the route. `ours` keeps the activation's projection and claim — the
     // account IS serving — so restoring the pre-activation demotion would render
