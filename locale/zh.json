@@ -53,5 +53,7 @@
   "transportModelsClear": "清除选择",
   "transportModelsHint": "不勾选任何模型表示使用全部模型；保存后该路由的模型列表随之收窄。",
   "filterGroup": "筛选",
-  "transportEmpty": "还没有传输账户。"
+  "transportEmpty": "还没有传输账户。",
+  "signInAgain": "重新登录",
+  "loginPasteHint": "从浏览器地址栏复制完整 URL，或只粘贴授权码。"
 }

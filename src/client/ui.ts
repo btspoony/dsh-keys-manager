@@ -71,7 +71,13 @@ function providerInitial(provider: ProviderView | undefined): string {
  * snapshots that predate the field keep the catalog-only behaviour.
  */
 export function oauthCapable(provider: ProviderView): boolean {
-  return provider.nativeAuth?.oauth === true && provider.accountSupported !== false
+  // The host verdict is authoritative whenever present. An in-process sign-in
+  // (issue #15: kilo, zai) has no catalog OAuth flag at all — its route may
+  // report `nativeAuth: null` — so the old `nativeAuth.oauth` test would hide
+  // the only sign-in entry the route has. Snapshots that predate the field
+  // keep the catalog-only fallback.
+  if (provider.accountSupported !== undefined) return provider.accountSupported
+  return provider.nativeAuth?.oauth === true
 }
 
 /** Where the row tag says a route came from, including legacy snapshots. */
@@ -519,9 +525,11 @@ interface KeyRowProps {
   provider: ProviderView
   keyRecord: KeyView
   now: number
+  /** Start a fresh sign-in that replaces this row's literal (sign-in rows only). */
+  onReauthenticate?: () => void
 }
 
-function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
+function KeyRow({ provider, keyRecord, now, onReauthenticate }: KeyRowProps): React.ReactElement {
   const key = keyRecord
   const runtime = useRuntime()
   const t = useT()
@@ -645,6 +653,12 @@ function KeyRow({ provider, keyRecord, now }: KeyRowProps): React.ReactElement {
         disabled: busy,
       }, h(Icon, { name: 'dots', size: 17 })),
       menu ? h('div', { className: 'km-menu', role: 'menu' },
+        // A row this plugin signed in for can be refreshed the same way it was
+        // created; a hand-entered key has nothing to re-authenticate.
+        key.importedFrom?.startsWith('signin:') === true && onReauthenticate !== undefined
+          ? h('button', { type: 'button', className: 'km-menu-item', role: 'menuitem', onClick: () => { setMenu(false); onReauthenticate() }, disabled: busy },
+              h(Icon, { name: 'user', size: 15 }), t('signInAgain'))
+          : null,
         h('button', { type: 'button', className: 'km-menu-item', role: 'menuitem', onClick: () => { setMenu(false); setEditing(true) } }, h(Icon, { name: 'key', size: 15 }), t('rename')),
         h('button', {
           type: 'button',
@@ -1148,7 +1162,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
    * keys when no key credential exists), then opens its sign-in dialog.
    */
   async function adoptThenLogin(): Promise<void> {
-    if (provider.managed) {
+    if (provider.managed || signInCreatesRoute) {
       await openLogin()
       return
     }
@@ -1171,6 +1185,10 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
   // enabled sign-in entry beside a disabled Adopt and an "unsupported" panel.
   const accountAdoptable = oauthCapable(provider)
   const adoptable = provider.supported || accountAdoptable
+  // An unmanaged *extra* route signs in directly: its first successful sign-in
+  // creates the profile and the first key, so adopting first would be a second,
+  // empty step (issue #15 design §4.4). A shipped route (zai) still adopts.
+  const signInCreatesRoute = provider.extra === true && accountAdoptable
 
   // A transport card takes the adopted tint too, so the list reads as one component.
   return h('div', { className: cx('km-card', 'km-provider', expanded && 'km-provider-open', (managed || transport) && 'km-provider-managed') },
@@ -1249,7 +1267,15 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
           provider.models.length > 0 ? h('div', { className: 'km-meta-line' }, h('span', { className: 'km-muted' }, `${t('models')}:`), h('span', null, t('countModels', { n: provider.models.length }))) : null,
         ),
         isExtra
-          ? h(KeyForm, { provider, autoFocus: true })
+          ? h('div', { className: 'km-adopt-actions' },
+              signInCreatesRoute
+                ? h(Button, { variant: 'secondary', onClick: () => void adoptThenLogin(), disabled: adopting || startingLogin },
+                    startingLogin ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'user', size: 14 }),
+                    h('span', null, startingLogin ? t('adopting') : t('addAccount')),
+                  )
+                : null,
+              h(KeyForm, { provider, autoFocus: true }),
+            )
           : h('div', { className: 'km-adopt-actions' },
               h(Button, { variant: 'primary', onClick: adopt, disabled: adopting || !adoptable },
                 adopting ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'shield', size: 14 }),
@@ -1306,7 +1332,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
             )
           : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
               ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) })
-              : h(KeyRow, { key: key.id, provider, keyRecord: key, now }))),
+              : h(KeyRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) }))),
       ),
       h('div', { className: 'km-provider-foot' },
         h('span', { className: 'km-muted' }, provider.extra ? `${t('api')}: ${provider.api ?? '—'} · ${t('models')}: ${provider.models.length}` : null),
@@ -1526,6 +1552,7 @@ function LoginDialog({ provider, attemptId, onClose }: LoginDialogProps): React.
         h('div', { className: 'km-login-prompt-title' }, t('loginPromptTitle')),
         h('div', { className: 'km-field' },
           h('span', { className: 'km-field-label' }, prompt.message),
+          prompt.kind === 'text' ? h('span', { className: 'km-muted' }, t('loginPasteHint')) : null,
           prompt.kind === 'select' && prompt.options !== undefined
             ? h('select', {
                 className: 'km-input',
