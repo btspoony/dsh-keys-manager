@@ -7806,13 +7806,6 @@ export class KeysManagerService {
               // provider, so a stalled credential read can neither wedge this
               // request nor delay a provider whose own read already landed.
               const hydrated = await service.awaitProjectionOwnership(providerId)
-              // I-000120 / D8: this request is served without an attribution, and
-              // this is the only site that counts one. Both causes — the bounded
-              // wait expired, or the read had already failed — arrive here as the
-              // same `false`; the hydration pass itself never counts.
-              if (!hydrated) {
-                service.unattributedRequests.set(providerId, (service.unattributedRequests.get(providerId) ?? 0) + 1)
-              }
               // Round-5 finding C4: while a projection exists, pi-ai serves
               // the stored grant and never consults the broker, so selecting
               // a key here would only mutate unused key state (cursor,
@@ -7870,6 +7863,17 @@ export class KeysManagerService {
                 })
               }
               iterator = await service.als.run(store!, () => next()[Symbol.asyncIterator]())
+              // I-000120 / D8 + I-000201: this request is served without an
+              // attribution, and this is the only site that counts one — but
+              // only once downstream actually has an iterator. Both causes (the
+              // bounded wait expired, the read had failed) still arrive here as
+              // the same `false`, and the hydration pass never counts. A routing
+              // or adapter failure that throws before dispatch served nothing, so
+              // it must not inflate the count; `started` keeps one attempt to one
+              // increment, and a later attempt that does dispatch counts then.
+              if (!hydrated) {
+                service.unattributedRequests.set(providerId, (service.unattributedRequests.get(providerId) ?? 0) + 1)
+              }
             }
             if (iterator === undefined) throw new Error('managed stream has no iterator')
             const result = await service.als.run(store!, () => iterator!.next())

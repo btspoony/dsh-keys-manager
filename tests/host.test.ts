@@ -9682,6 +9682,47 @@ test('a hydration wait timer does not keep the process alive (I-000116)', async 
   }
 })
 
+// I-000201: the count is raised only once downstream actually has an iterator.
+// A routing/adapter failure that throws before dispatch served nothing, so it
+// must not inflate the unattributed count — and repeating it must not either.
+
+test('a request whose downstream setup throws is not counted as unattributed', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-setup-throws', email: 'dev@example.com' })
+  const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+  try {
+    h.credentials.records.set(GRANT_KEY, grantPayload())
+    // An ownership read that failed answers `false` immediately: the route is
+    // unambiguously unattributed for this request.
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) throw new Error('credential store unavailable')
+      return realRead(key)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    const unattributed = (): number =>
+      restarted.getState().providers.find(entry => entry.provider === 'anthropic')!.unattributedRequests ?? 0
+    const failingFactory = (() => { throw new Error('routing failed') }) as unknown as () => AsyncIterable<never>
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await assert.rejects(
+        () => consume(restarted.streamListener(
+          { provider: 'anthropic', model: 'model', sessionId: `session-setup-${attempt}`, messages: [] },
+          failingFactory,
+        )),
+        /routing failed/,
+      )
+      assert.equal(unattributed(), 0, 'a request that never dispatched was counted as served')
+    }
+    // The behaviour that must survive: a served unattributed request counts once.
+    await consume(restarted.streamListener(
+      { provider: 'anthropic', model: 'model', sessionId: 'session-setup-served', messages: [] },
+      async function* () { yield { type: 'finish', reason: { kind: 'stop' } } } as any,
+    ))
+    assert.equal(unattributed(), 1, 'a served unattributed request stopped counting')
+  } finally {
+    h.credentials.raw.readRecord = realRead
+    await h.close()
+  }
+})
+
 // I-000120 / D8: a request served without an account owner is counted per
 // provider in the state view, not only warned about once per provider. Both
 // causes converge on the same `false` from `awaitProjectionOwnership`: the
