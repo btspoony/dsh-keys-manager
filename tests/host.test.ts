@@ -5405,15 +5405,34 @@ test('a foreign projection present when the compensation proves identity is left
     }
     return realModify(key, mutate)
   }
+  const internals = h.service as unknown as {
+    activeAccounts: Map<string, string>
+    foreignProjections: Set<string>
+    ownershipGenerations: Map<string, number>
+  }
+  // The seam's echoes would bump the generation by themselves; only the claim
+  // and the compensation may be observed here.
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  raw.emitRecordUpdated = () => undefined
+  const generationBefore = internals.ownershipGenerations.get('anthropic') ?? 0
   await chmod(h.dir, 0o500)
   try {
     await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
   } finally {
     await chmod(h.dir, 0o700)
     raw.modifyRecord = realModify
+    raw.emitRecordUpdated = realEmit
   }
   assert.equal(identityReads >= 2, true, 'the compensation deleted without a final identity read')
   assert.equal(row.cooldownUntil, 4_200, 'the in-memory cooldown was not restored')
+  // The `foreign` outcome's own writes, not just the record it left alone.
+  assert.equal(internals.activeAccounts.has('anthropic'), false, 'a foreign projection left an owner claim behind')
+  assert.equal(internals.foreignProjections.has('anthropic'), true, 'a foreign projection was not classified foreign')
+  assert.equal(
+    internals.ownershipGenerations.get('anthropic'),
+    generationBefore + 2,
+    'the `foreign` outcome did not invalidate reconcilers that captured the earlier generation',
+  )
   const live = h.credentials.records.get(GRANT_KEY)
   assert.ok(live, 'the compensation deleted a record it no longer owned')
   assert.equal((live.payload as Record<string, unknown>).refresh, 'rt-foreign')
@@ -6564,18 +6583,30 @@ test('a rejected flush over an absent baseline leaves the route pool-served', as
   const internals = h.service as unknown as {
     activeAccounts: Map<string, string>
     foreignProjections: Set<string>
+    ownershipGenerations: Map<string, number>
   }
+  const raw = h.credentials.raw
+  const realEmit = raw.emitRecordUpdated.bind(raw)
   h.credentials.records.delete(GRANT_KEY)
+  // Only the claim and the compensation may move the generation here.
+  raw.emitRecordUpdated = () => undefined
+  const generationBefore = internals.ownershipGenerations.get('anthropic') ?? 0
   try {
     await chmod(h.dir, 0o500)
     try {
       await assert.rejects(() => h.service.activateAccount('anthropic', rowId), /EACCES|permission denied|EPERM/)
     } finally {
       await chmod(h.dir, 0o700)
+      raw.emitRecordUpdated = realEmit
     }
     assert.equal(h.credentials.records.has(GRANT_KEY), false, 'the activation projection survived the compensation')
-    assert.equal(internals.activeAccounts.has('anthropic'), false)
-    assert.equal(internals.foreignProjections.has('anthropic'), false)
+    assert.equal(internals.activeAccounts.has('anthropic'), false, 'a gone projection left an owner claim behind')
+    assert.equal(internals.foreignProjections.has('anthropic'), false, 'a gone projection was classified foreign')
+    assert.equal(
+      internals.ownershipGenerations.get('anthropic'),
+      generationBefore + 2,
+      'the `gone` outcome did not invalidate reconcilers that captured the earlier generation',
+    )
   } finally {
     await chmod(h.dir, 0o700).catch(() => undefined)
     await h.close()
