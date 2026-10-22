@@ -31,6 +31,9 @@ import { loginCursor } from './cursor/auth.js'
 import type { CursorFetch } from './cursor/auth.js'
 import { CURSOR_CREDENTIAL_KEY, createCursorAccess } from './cursor/credentials.js'
 import type { CredentialRecordsLike } from './cursor/credentials.js'
+import { DevinAuthError, loginDevin } from './devin/auth.js'
+import type { DevinFetch, DevinGrant } from './devin/auth.js'
+import { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
 import type { OmpCursorTransport } from './omp.js'
 
 /** Machine code for a transport artifact that cannot be loaded. */
@@ -148,13 +151,24 @@ interface AuthorizationLike {
   }): Promise<{ status: 'authorized' | 'cancelled' }>
 }
 
-/** What a running flow is given, narrowed to what this flow calls. */
+/** One question the authorization seam can put to the human. */
+export interface AuthorizationPrompt {
+  readonly kind: 'text' | 'secret' | 'select'
+  readonly message: string
+  readonly placeholder?: string
+  readonly options?: readonly { id: string; label: string; description?: string }[]
+  readonly signal?: AbortSignal
+}
+
+/** What a running flow is given, narrowed to what these flows call. */
 export interface CursorAuthorizationSession {
   readonly method: string
   /** Aborted when the caller withdraws the attempt. */
   readonly signal: AbortSignal
   /** Report the page the human must open, or what is happening. */
   notify(notice: { message: string; url?: string; code?: string }): void
+  /** Ask the human for a value; Cursor's flow never needs it, Devin's paste does. */
+  prompt(prompt: AuthorizationPrompt): Promise<string>
   /** Commit the grant; the seam rejects an attempt that was cancelled meanwhile. */
   commit(record: { kind: 'grant'; payload: unknown }): Promise<void>
 }
@@ -170,13 +184,7 @@ export interface CursorAuthorizationFlow {
 /** The interaction a {@link beginCursorSignIn} caller supplies (shape of `AuthorizationInteraction`). */
 export interface CursorSignInInteraction {
   notify(notice: { message: string; url?: string; code?: string }): void
-  prompt(prompt: {
-    kind: 'text' | 'secret' | 'select'
-    message: string
-    placeholder?: string
-    options?: readonly { id: string; label: string; description?: string }[]
-    signal?: AbortSignal
-  }): Promise<string>
+  prompt(prompt: AuthorizationPrompt): Promise<string>
 }
 
 /** Test seams for the flow; the plugin uses the real network and timers. */
@@ -237,6 +245,56 @@ export function beginCursorSignIn(
 ): Promise<{ status: 'authorized' | 'cancelled' }> {
   const { authorization } = ctx as Context & { authorization: AuthorizationLike }
   return authorization.begin({ key: CURSOR_CREDENTIAL_KEY, interaction, signal })
+}
+
+/** Test seams for the Devin flow; the plugin uses the real network and clock. */
+export interface DevinFlowOptions {
+  readonly fetch?: DevinFetch
+  readonly now?: () => number
+}
+
+/**
+ * The `llm-omp-transports/devin` sign-in flow.
+ *
+ * @remarks
+ * omp completes this login with a loopback listener on `127.0.0.1:59653`, but
+ * that listener is Bun-only and the browser half is not verifiable offline, so
+ * this flow asks the human to paste the address the browser landed on instead.
+ * The page cannot load (nothing listens there), and only a code plus an
+ * optional state travel back through `session.prompt`.
+ */
+export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAuthorizationFlow {
+  return {
+    key: DEVIN_CREDENTIAL_KEY,
+    label: 'Devin',
+    methods: [{ id: 'oauth', label: 'Sign in with Devin' }],
+    async run(session) {
+      let grant: DevinGrant
+      try {
+        grant = await loginDevin({
+          fetch: options.fetch,
+          now: options.now,
+          onAuthUrl: url => session.notify({ message: 'Open this page to sign in to Devin.', url }),
+          prompt: () =>
+            session.prompt({
+              kind: 'text',
+              message:
+                'Your browser will land on a 127.0.0.1:59653 page that cannot load. Paste the whole address (or just the code) here.',
+              placeholder: 'http://127.0.0.1:59653/callback?code=…&state=…',
+              signal: session.signal,
+            }),
+        })
+      } catch (cause) {
+        // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
+        if (session.signal.aborted) throw cause
+        if (cause instanceof DevinAuthError) {
+          throw new LlmError(`llm-omp-transports: Devin sign-in failed — ${cause.message}`, 'AUTH_FAILED', { cause })
+        }
+        throw cause
+      }
+      await session.commit({ kind: 'grant', payload: { access: grant.access, expires: grant.expires } })
+    },
+  }
 }
 
 /**

@@ -327,6 +327,11 @@ describe('cursor sign-in flow', () => {
       method: 'oauth',
       signal: new AbortController().signal,
       notify: (notice: { message: string; url?: string }) => notices.push(notice),
+      // Cursor's flow is browser-completed and never asks the human anything;
+      // a prompt here would mean the flow changed shape.
+      prompt: async () => {
+        throw new Error('the Cursor flow must not prompt')
+      },
       commit: async (record: unknown) => {
         committed.push(record)
       },
@@ -389,6 +394,9 @@ describe('cursor sign-in flow', () => {
       method: 'oauth',
       signal: new AbortController().signal,
       notify: () => {},
+      prompt: async () => {
+        throw new Error('the Cursor flow must not prompt')
+      },
       commit: async (record: { kind: 'grant'; payload: unknown }) => {
         const payload = record.payload as Record<string, unknown>
         for (const [field, value] of Object.entries(payload)) {
