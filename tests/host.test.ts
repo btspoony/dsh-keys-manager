@@ -6059,6 +6059,76 @@ test('a shutdown-era binding refusal keeps its own reason instead of blaming shu
 // undoes and would commit a claim for the activation it just unseated. `ours`
 // changes nothing, so it deliberately does not bump.
 
+// The restore decides the generation INSIDE the seam's per-key lock: a claim
+// that lands between the compensation's entry and that callback owns the route,
+// so the baseline must not be written over its projection.
+test('a claim landing inside the restore lock leaves the newer owner and its projection alone', async () => {
+  const { h, rowId: rowA } = await harnessWithSeededAccount({
+    accountId: 'acc-a',
+    email: 'a@example.com',
+    refresh: 'rt-a',
+  })
+  const b = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-b', email: 'b@example.com', refresh: 'rt-b' })
+  const c = seedOAuthAccount(h, 'anthropic', { accountId: 'acc-c', email: 'c@example.com', refresh: 'rt-c' })
+  const internals = h.service as unknown as {
+    oauthOwnerFor: (provider: string) => string | null
+    activeAccounts: Map<string, string>
+    ownershipGenerations: Map<string, number>
+    restoreActivationProjection: (
+      records: unknown,
+      provider: string,
+      prepared: unknown,
+      generation: number,
+    ) => Promise<string>
+  }
+  const raw = h.credentials.raw
+  const realFlush = h.store.flush.bind(h.store)
+  const realEmit = raw.emitRecordUpdated.bind(raw)
+  let armedFlush = false
+  h.store.flush = async () => {
+    if (armedFlush) {
+      armedFlush = false
+      throw new Error('state file could not be written')
+    }
+    return realFlush()
+  }
+  const realRestore = internals.restoreActivationProjection.bind(h.service)
+  // The payload this activation will project, for the content assertion.
+  const rowAEntity = h.store.provider('anthropic')!.keys.find(key => key.id === rowA)!
+  const activationPayload = h.credentials.records.get(rowAEntity.oauth!.grantRef)!.payload
+  try {
+    await h.service.activateAccount('anthropic', b.rowId)
+    await drainGrantChain(h, 'anthropic')
+    assert.equal(internals.oauthOwnerFor('anthropic'), b.rowId)
+    raw.emitRecordUpdated = () => undefined
+    // A newer account claims the route after the compensation's entry check and
+    // before its locked callback runs.
+    internals.restoreActivationProjection = async (records, provider, prepared, generation) => {
+      internals.activeAccounts.set('anthropic', c.rowId)
+      internals.ownershipGenerations.set('anthropic', (internals.ownershipGenerations.get('anthropic') ?? 0) + 1)
+      return realRestore(records, provider, prepared, generation)
+    }
+    armedFlush = true
+    await h.service.activateAccount('anthropic', rowA).catch(() => undefined)
+  } finally {
+    internals.restoreActivationProjection = realRestore
+    raw.emitRecordUpdated = realEmit
+    h.store.flush = realFlush
+  }
+  try {
+    // The newer claim still owns the route, and the projection still carries the
+    // activation's payload: the baseline was not written over it.
+    assert.equal(internals.oauthOwnerFor('anthropic'), c.rowId, 'the undo re-classified a route a newer claim owns')
+    assert.deepEqual(
+      h.credentials.records.get(GRANT_KEY)?.payload,
+      activationPayload,
+      'the baseline was written over a projection a newer claim owns',
+    )
+  } finally {
+    await h.close()
+  }
+})
+
 test('the compensation invalidates the generation a stale reconciler captured', async () => {
   const { h, rowId: rowA } = await harnessWithSeededAccount({
     accountId: 'acc-a',
@@ -6152,6 +6222,12 @@ test('a failed post-commit snapshot turn does not fail an activation that alread
       'a post-commit flush failure was not reported in the returned state',
     )
     assert.equal(view.warnings.some(warning => /shutting down/i.test(warning)), false)
+    // One failure, one warning: the queued copy must not surface again.
+    assert.equal(
+      h.service.getState().warnings.some(warning => warning.includes('could not be persisted')),
+      false,
+      'the same post-commit failure was returned twice',
+    )
   } finally {
     h.store.flush = realFlush
     await h.close()

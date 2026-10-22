@@ -1008,7 +1008,7 @@ type ActivationClassification =
  * own projection is (or may still be) live, so its claim must survive; the
  * other three name something the classification can be derived from.
  */
-type CompensationOutcome = 'baseline' | 'ours' | 'foreign' | 'gone'
+type CompensationOutcome = 'baseline' | 'ours' | 'foreign' | 'gone' | 'superseded'
 
 /** What the turn changed in memory, for the flush-failure compensation. */
 interface ActivationUndo {
@@ -3858,7 +3858,12 @@ export class KeysManagerService {
         if (built === undefined) throw error
         const reason = error instanceof Error ? error.message : String(error)
         const warning = `The ${provider} activation is saved, but its binding and state snapshot could not be persisted (${reason}). The account is serving; the next successful change saves the rest.`
-        this.pushWarning(warning)
+        // One channel only: the returned snapshot. `buildState` has already
+        // drained the warning queue, so ALSO queueing this copy would surface
+        // the same failure twice (once in this payload, once on the next
+        // refresh). It still reaches the operator log, which is what a caller
+        // that ignores the returned state leaves visible.
+        this.warn(`activation post-commit persistence failed for ${provider}: ${reason}`)
         // The snapshot was taken before this warning existed, and re-taking one
         // outside the queue is the race this turn exists to avoid, so the view
         // is annotated rather than rebuilt.
@@ -3990,8 +3995,8 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
   ): Promise<void> {
     const outcome = prepared.baseline.state === 'absent'
-      ? await this.deleteActivationProjection(records, provider, prepared.written)
-      : await this.restoreActivationProjection(records, provider, prepared)
+      ? await this.deleteActivationProjection(records, provider, prepared.written, undo.generation)
+      : await this.restoreActivationProjection(records, provider, prepared, undo.generation)
     // Both helpers awaited, so the classification below decides after the same
     // read the guard above made before it: a claim that landed inside that I/O
     // already settled what serves the route, and overwriting it would revert a
@@ -4020,6 +4025,10 @@ export class KeysManagerService {
       }
     }
     switch (outcome) {
+      case 'superseded':
+        // The newer claim that moved the generation owns the route and has
+        // already settled what serves it; this undo decides nothing.
+        return
       case 'ours':
         // The activation's projection is still the live record, so its claim
         // stays: deleting it would call the route pool-served while a record
@@ -4059,6 +4068,7 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
     provider: string,
     prepared: ActivationPreparation,
+    generation: number,
   ): Promise<CompensationOutcome> {
     const baseline = prepared.baseline
     if (baseline.state !== 'present') return 'baseline'
@@ -4066,6 +4076,16 @@ export class KeysManagerService {
     let outcome: CompensationOutcome = 'ours'
     try {
       await records.modifyRecord(projectionKey, async current => {
+        // The generation is decided HERE, under the seam's per-key lock and in
+        // the same synchronous step as the payload compare: a claim that lands
+        // between this compensation's entry and this callback would otherwise
+        // see its own projection matched and get the baseline written back over
+        // a route it owns, while the post-I/O check then exits early and leaves
+        // that newer account claimed beside the restored credential.
+        if (this.ownershipSuperseded(provider, generation)) {
+          outcome = 'superseded'
+          return undefined
+        }
         if (current === undefined) {
           outcome = 'gone'
           return undefined
@@ -4100,7 +4120,8 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
     provider: string,
     written: string,
-  ): Promise<'matches' | 'absent' | 'differs' | 'unknown'> {
+    generation: number,
+  ): Promise<'matches' | 'absent' | 'differs' | 'unknown' | 'superseded'> {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     try {
       // Absent and "another writer's record" are different answers: absent
@@ -4109,8 +4130,15 @@ export class KeysManagerService {
       // replacement does. Folding them together marked a serviceless route
       // foreign, which makes `keyPoolServes` false and leaves no usable
       // credential at all.
-      let state: 'matches' | 'absent' | 'differs' = 'absent'
+      let state: 'matches' | 'absent' | 'differs' | 'superseded' = 'absent'
       await records.modifyRecord(projectionKey, async current => {
+        // The claim is decided under the same lock as the identity compare, for
+        // the same reason as the restore: a newer owner must not have its
+        // projection deleted by an undo that only checks the generation later.
+        if (this.ownershipSuperseded(provider, generation)) {
+          state = 'superseded'
+          return undefined
+        }
         state = current === undefined
           ? 'absent'
           : current.kind === 'grant' && JSON.stringify(current.payload) === written ? 'matches' : 'differs'
@@ -4133,6 +4161,7 @@ export class KeysManagerService {
     records: CredentialRecordsLike,
     provider: string,
     written: string,
+    generation: number,
   ): Promise<CompensationOutcome> {
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     // F2: the identity read and the delete cannot be atomic here — the seam has
@@ -4142,7 +4171,8 @@ export class KeysManagerService {
     // the record inside it still loses its grant, and that residual needs the
     // seam CAS, not another read here. Anything but a proven match is left
     // alone.
-    const proof = await this.activationProjectionProof(records, provider, written)
+    const proof = await this.activationProjectionProof(records, provider, written, generation)
+    if (proof === 'superseded') return 'superseded'
     // `absent` needs no delete and leaves nothing serving (the pool does);
     // `differs` means another writer's record serves the route; `unknown`
     // proves nothing and must keep the activation's claim.
@@ -4163,7 +4193,8 @@ export class KeysManagerService {
       // before throwing, so the outcome is re-proved rather than assumed —
       // guessing is what this file forbids. A second failure
       // proves nothing and keeps the claim (`ours`).
-      const after = await this.activationProjectionProof(records, provider, written)
+      const after = await this.activationProjectionProof(records, provider, written, generation)
+      if (after === 'superseded') return 'superseded'
       if (after === 'absent') return 'gone'
       if (after === 'differs') return 'foreign'
       return 'ours'
