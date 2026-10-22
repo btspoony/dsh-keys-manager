@@ -26,6 +26,7 @@ import z from '@deepseek-ai/schemastery'
 
 import { CURSOR_ROUTE, OmpCursorAdapter } from './adapter.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
+import { DEVIN_MODELS } from './catalog/devin.js'
 import { loginCursor } from './cursor/auth.js'
 import type { CursorFetch } from './cursor/auth.js'
 import { CURSOR_CREDENTIAL_KEY, createCursorAccess } from './cursor/credentials.js'
@@ -105,6 +106,18 @@ export const Config = z.object({
  */
 export function cursorCatalogModels(): TransportCatalogModel[] {
   return CURSOR_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
+/**
+ * The full Devin catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * The twin of {@link cursorCatalogModels}: the root keys-manager's model picker
+ * needs the unfiltered rows even when `providers.devin.models` narrows what the
+ * route advertises.
+ */
+export function devinCatalogModels(): TransportCatalogModel[] {
+  return DEVIN_MODELS.map(row => ({ id: row.id, name: row.name }))
 }
 
 export const name = 'llm-omp-transports'

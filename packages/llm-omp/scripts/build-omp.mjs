@@ -1,26 +1,31 @@
 /**
- * Build the omp Cursor transport bundle and refresh its drift manifest.
+ * Build the omp transport bundles and refresh their drift manifest.
  *
- * omp publishes TypeScript sources, so the transport is consumed at build time:
- * esbuild inlines the `@oh-my-pi/pi-ai/providers/cursor` graph, substitutes the
- * Node shims in `scripts/omp-shim/`, and writes one ESM artifact. The runtime
- * package therefore depends on nothing from `@oh-my-pi/*`.
+ * omp publishes TypeScript sources, so transports are consumed at build time:
+ * esbuild inlines each `@oh-my-pi/pi-ai/providers/<name>` graph, substitutes the
+ * Node shims in `scripts/omp-shim/`, and writes one ESM artifact per entry. The
+ * runtime package therefore depends on nothing from `@oh-my-pi/*`.
  *
  * Three contracts make an omp bump safe:
  *
  * 1. A missing shim symbol or a new shim *category* fails this build loudly.
- * 2. `scripts/omp-manifest.json` records the pinned versions, the measured
- *    artifact, the shim surface, and the hashes of every source whose semantics
- *    the transport depends on; `tests/build.test.ts` re-checks all of it.
- * 3. The manifest also records which shim symbols the bundled graph *reaches*
- *    (`shimImports`, derived from the esbuild metafile), so an omp bump that
- *    starts calling a deliberately degraded `simplify:` member fails the drift
- *    gate with a one-line manifest diff. `lib/omp/metafile.json` is the build
- *    output the test re-derives those facts from; it is gitignored and excluded
- *    from the published tarball.
+ * 2. `scripts/omp-manifest.json` records the pinned versions, each measured
+ *    artifact, the shared shim surface, and the hashes of every source whose
+ *    semantics a transport depends on; `tests/build.test.ts` and
+ *    `tests/build-devin.test.ts` re-check all of it.
+ * 3. The manifest also records which shim symbols each bundled graph *reaches*
+ *    (`shimImports`, derived from that build's esbuild metafile), so an omp bump
+ *    that starts calling a deliberately degraded `simplify:` member fails the
+ *    drift gate with a one-line manifest diff. `lib/omp/<name>.metafile.json` is
+ *    the build output the tests re-derive those facts from; it is gitignored and
+ *    excluded from the published tarball.
+ *
+ * One pin, two entries: `moduleCount`, `bytes` and `shimImports` are per entry
+ * because they measure one artifact; versions, the shim surface and
+ * `sourceHashes` are shared because both builds read the same pin and shims.
  *
  * Determinism: no timestamps, no source maps, sorted manifest keys, so a rebuild
- * of an unchanged pin produces a byte-identical artifact and manifest.
+ * of an unchanged pin produces byte-identical artifacts and manifest.
  *
  * @module dsh-llm-omp-transports/build-omp
  */
@@ -37,10 +42,11 @@ import { shimImportsOf } from './omp-reach.mjs'
 const scriptsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(scriptsDir)
 
-const ENTRY = join(scriptsDir, 'omp-entry.ts')
-const OUT = join(packageRoot, 'lib', 'omp', 'cursor.mjs')
-/** esbuild's own graph description; `tests/build.test.ts` re-derives `shimImports` from it. */
-const METAFILE = join(packageRoot, 'lib', 'omp', 'metafile.json')
+/** One esbuild entry: the script to bundle and the artifact it writes. */
+const ENTRIES = [
+  { name: 'cursor', entry: join(scriptsDir, 'omp-entry.ts'), out: join(packageRoot, 'lib', 'omp', 'cursor.mjs') },
+  { name: 'devin', entry: join(scriptsDir, 'omp-entry-devin.ts'), out: join(packageRoot, 'lib', 'omp', 'devin.mjs') },
+]
 const MANIFEST = join(scriptsDir, 'omp-manifest.json')
 
 const PI_UTILS_SHIM = join(scriptsDir, 'omp-shim', 'pi-utils.ts')
@@ -160,13 +166,21 @@ const ompShims = () => ({
   },
 })
 
-async function main() {
-  await mkdir(dirname(OUT), { recursive: true })
+/** Package-relative, forward-slash key for one build output path. */
+function outputKey(path) {
+  return relative(packageRoot, path).split('\\').join('/')
+}
 
+/**
+ * Bundle one entry and write its metafile beside the artifact.
+ * @param entry - the entry table row.
+ * @returns the measured entry record plus the build's metafile.
+ */
+async function bundleEntry(entry) {
   const result = await build({
     absWorkingDir: packageRoot,
-    entryPoints: [ENTRY],
-    outfile: OUT,
+    entryPoints: [entry.entry],
+    outfile: entry.out,
     bundle: true,
     platform: 'node',
     format: 'esm',
@@ -182,6 +196,33 @@ async function main() {
     inject: [BUN_GLOBAL_SHIM],
     plugins: [ompJsonAsEsm(), ompShims()],
   })
+
+  const metafilePath = join(dirname(entry.out), `${entry.name}.metafile.json`)
+  await writeFile(metafilePath, `${JSON.stringify(result.metafile)}\n`)
+
+  const artifact = await readFile(entry.out)
+  return {
+    record: {
+      entry: outputKey(entry.out),
+      metafile: outputKey(metafilePath),
+      moduleCount: Object.keys(result.metafile.inputs).length,
+      bytes: artifact.byteLength,
+      shimImports: shimImportsOf(result.metafile, { packageRoot, shimPaths: SHIM_PATHS }),
+    },
+    metafile: result.metafile,
+  }
+}
+
+async function main() {
+  await mkdir(join(packageRoot, 'lib', 'omp'), { recursive: true })
+
+  const entries = {}
+  const modules = {}
+  for (const entry of ENTRIES) {
+    const built = await bundleEntry(entry)
+    entries[entry.name] = built.record
+    modules[entry.name] = Object.keys(built.metafile.inputs)
+  }
 
   const piAiRoot = packageRootOf('@oh-my-pi/pi-ai')
   const piCatalogRoot = packageRootOf('@oh-my-pi/pi-catalog')
@@ -204,15 +245,21 @@ async function main() {
       piAiRoot,
       'src/providers/cursor-external-tool-handoff.md',
     ),
+    // The second route's protocol surface: provider, Connect envelope, codecs,
+    // wire identity constants and the declarative auth rule.
+    '@oh-my-pi/pi-ai/src/providers/devin.ts': join(piAiRoot, 'src/providers/devin.ts'),
+    '@oh-my-pi/pi-ai/src/providers/connect-frame.ts': join(piAiRoot, 'src/providers/connect-frame.ts'),
+    '@oh-my-pi/pi-catalog/src/discovery/devin-proto.ts': join(piCatalogRoot, 'src/discovery/devin-proto.ts'),
+    '@oh-my-pi/pi-catalog/src/discovery/protobuf.ts': join(piCatalogRoot, 'src/discovery/protobuf.ts'),
+    '@oh-my-pi/pi-catalog/src/wire/devin.ts': join(piCatalogRoot, 'src/wire/devin.ts'),
+    '@oh-my-pi/pi-catalog/src/wire/devin-proto.ts': join(piCatalogRoot, 'src/wire/devin-proto.ts'),
+    '@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl': join(piCatalogRoot, 'src/compat/rules/auth/devin.kdl'),
   }
 
   const sourceHashes = {}
   for (const [key, path] of Object.entries(tracked)) {
     sourceHashes[key] = sha256(await readFile(path))
   }
-
-  const artifact = await readFile(OUT)
-  await writeFile(METAFILE, `${JSON.stringify(result.metafile)}\n`)
 
   const manifest = {
     ompVersion: piAiVersion,
@@ -221,37 +268,37 @@ async function main() {
     // devDependency of its own rather than a transitive accident.
     piUtilsVersion,
     esbuildVersion: esbuildVersion(),
-    entry: relative(packageRoot, OUT).split('\\').join('/'),
-    moduleCount: Object.keys(result.metafile.inputs).length,
-    bytes: artifact.byteLength,
+    entries,
     shimSymbols: {
       'pi-utils': shimSymbols(PI_UTILS_SHIM),
       'bun-modules': shimSymbols(BUN_SHIM),
       'bun-global': shimSymbols(BUN_GLOBAL_SHIM),
     },
-    shimImports: shimImportsOf(result.metafile, { packageRoot, shimPaths: SHIM_PATHS }),
     sourceHashes,
   }
 
   await writeFile(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`)
 
-  const modules = Object.keys(result.metafile.inputs)
-  console.log(
-    `llm-omp: bundled ${manifest.moduleCount} modules → ${manifest.entry} (${manifest.bytes} bytes) ` +
-      `from @oh-my-pi/pi-ai@${piAiVersion} with esbuild@${manifest.esbuildVersion}`,
-  )
+  for (const [name, entry] of Object.entries(entries)) {
+    const reached = entry.shimImports
+    console.log(
+      `llm-omp: bundled ${entry.moduleCount} modules → ${entry.entry} (${entry.bytes} bytes) ` +
+        `from @oh-my-pi/pi-ai@${piAiVersion} with esbuild@${manifest.esbuildVersion}`,
+    )
+    console.log(
+      `llm-omp: ${name} reached pi-utils=${reached['pi-utils'].length} ` +
+        `bun-modules=${reached['bun-modules'].length} bun-global=${reached['bun-global'].length}`,
+    )
+    if (process.env.OMP_BUILD_DEBUG) {
+      for (const module of modules[name]) console.log(`llm-omp: ${name} module ${module}`)
+    }
+  }
   console.log(
     `llm-omp: shim surface pi-utils=${manifest.shimSymbols['pi-utils'].length} ` +
       `bun-modules=${manifest.shimSymbols['bun-modules'].length} ` +
-      `bun-global=${manifest.shimSymbols['bun-global'].length}; ` +
-      `reached pi-utils=${manifest.shimImports['pi-utils'].length} ` +
-      `bun-modules=${manifest.shimImports['bun-modules'].length} ` +
-      `bun-global=${manifest.shimImports['bun-global'].length}`,
+      `bun-global=${manifest.shimSymbols['bun-global'].length}`,
   )
   for (const [key, hash] of Object.entries(sourceHashes)) console.log(`llm-omp: ${hash}  ${key}`)
-  if (process.env.OMP_BUILD_DEBUG) {
-    for (const module of modules) console.log(`llm-omp: module ${module}`)
-  }
 }
 
 // The build runs only when this file is the script (`pnpm build`,

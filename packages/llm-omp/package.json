@@ -2,13 +2,14 @@
   "name": "dsh-llm-omp-transports",
   "version": "0.2.4",
   "type": "module",
-  "description": "DSH transport plugin: serves providers whose wire protocols only oh-my-pi's own transport code can speak (Cursor first), by registering its own routes on the dsh-llm seam.",
+  "description": "DSH transport plugin: serves providers whose wire protocols only oh-my-pi's own transport code can speak (Cursor and Devin), by registering its own routes on the dsh-llm seam.",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "llm",
     "transport",
     "cursor",
+    "devin",
     "oh-my-pi"
   ],
   "license": "MIT",
@@ -30,7 +31,7 @@
   "files": [
     "lib",
     "bundle",
-    "!lib/omp/metafile.json"
+    "!lib/omp/*.metafile.json"
   ],
   "publishConfig": {
     "access": "public"

@@ -44,44 +44,68 @@ const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
 
 /**
- * Hard ceiling for the shipped artifact, calibrated against the measurement the
- * manifest records (`bytes`, ~1.4 MB once the model catalog is tree-shaken out)
- * rather than a stale snapshot literal: ~1.5x the measurement leaves room for
- * the transport to grow, while still failing the pre-fix 14.7 MB form — a
- * catalog (or another large asset) being pulled back into the bundle. Every
- * build changes `manifest.bytes`, so CI's manifest diff already names a size
- * change; this bound answers "how big is too big".
+ * Hard ceiling per shipped artifact, calibrated against the measurement the
+ * manifest records rather than a stale snapshot literal: ~1.5x the measurement
+ * leaves room for the transport to grow, while still failing the pre-fix
+ * 14.7 MB form — a catalog (or another large asset) being pulled back into the
+ * bundle. Every build changes `entries.<name>.bytes`, so CI's manifest diff
+ * already names a size change; these bounds answer "how big is too big".
+ *
+ * cursor: 1 392 691 bytes measured -> 2 000 000.
+ * devin: 1 278 632 bytes measured -> 1 920 000; its graph is strictly smaller
+ * in source (a 914-line provider plus a 2 650-line codec vs Cursor's 6 800 +
+ * 8 810), so a size above Cursor's bound means something was pulled in that
+ * this route never reads.
  */
-const MAX_BUNDLE_BYTES = 2_000_000
+const CEILINGS: Readonly<Record<string, number>> = {
+  cursor: 2_000_000,
+  devin: 1_920_000,
+}
+
+/** One entry's measured build facts (manifest schema v2). */
+interface OmpEntry {
+  entry: string
+  metafile: string
+  moduleCount: number
+  bytes: number
+  shimImports: Record<string, string[]>
+}
 
 interface OmpManifest {
   ompVersion: string
   piCatalogVersion: string
   piUtilsVersion: string
   esbuildVersion: string
-  entry: string
-  moduleCount: number
-  bytes: number
+  entries: Record<string, OmpEntry>
   shimSymbols: Record<string, string[]>
-  shimImports: Record<string, string[]>
   sourceHashes: Record<string, string>
 }
 
 const manifest: OmpManifest = JSON.parse(readFileSync(join(packageRoot, 'scripts/omp-manifest.json'), 'utf8'))
 
-const artifactPath = join(packageRoot, manifest.entry)
-/** esbuild's graph description of the same build; written next to the artifact. */
-const metafilePath = join(dirname(artifactPath), 'metafile.json')
-
-if (!existsSync(artifactPath) || !existsSync(metafilePath)) {
-  throw new Error(`llm-omp: run \`pnpm build\` first — the bundle and ${metafilePath} are build outputs`)
-}
-
 interface Metafile {
   inputs: Record<string, { imports: { path: string; original?: string }[] }>
 }
 
-const metafile: Metafile = JSON.parse(readFileSync(metafilePath, 'utf8'))
+/** The esbuild export each entry is expected to expose, per artifact name. */
+const EXPORTS: Readonly<Record<string, string>> = {
+  cursor: 'streamCursor',
+  devin: 'streamDevin',
+}
+
+const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
+  name,
+  manifest: entry,
+  artifactPath: join(packageRoot, entry.entry),
+  metafilePath: join(packageRoot, entry.metafile),
+  metafile: (existsSync(join(packageRoot, entry.metafile))
+    ? JSON.parse(readFileSync(join(packageRoot, entry.metafile), 'utf8'))
+    : undefined) as Metafile | undefined,
+}))
+
+if (entries.length === 0 || entries.some(entry => entry.metafile === undefined)) {
+  throw new Error('llm-omp: run `pnpm build` first — every artifact and its metafile are build outputs')
+}
 
 /** Shim module name → the same package-relative key the build records. */
 const shimPaths = {
@@ -132,23 +156,28 @@ function shimSymbols(name: keyof OmpManifest['shimSymbols']): string[] {
   return [...names].sort()
 }
 
-describe('omp cursor bundle', () => {
+describe.each(entries)('omp $name bundle', ({ name, manifest: entry, artifactPath, metafile }) => {
   it('ships an artifact with the measured shape', () => {
-    expect(manifest.entry).toBe('lib/omp/cursor.mjs')
+    expect(entry.entry).toBe(`lib/omp/${name}.mjs`)
     // Exact, not a floor: the metafile is this build's module list, so a pin
     // bump that adds or drops a module changes the manifest (and CI's diff).
-    expect(manifest.moduleCount).toBe(Object.keys(metafile.inputs).length)
+    expect(entry.moduleCount).toBe(Object.keys(metafile!.inputs).length)
     expect(existsSync(artifactPath)).toBe(true)
     const artifact = readFileSync(artifactPath)
-    expect(artifact.byteLength).toBe(manifest.bytes)
-    expect(artifact.byteLength).toBeLessThanOrEqual(MAX_BUNDLE_BYTES)
+    expect(artifact.byteLength).toBe(entry.bytes)
+    // An entry with no calibrated ceiling is a gap, not a pass.
+    const ceiling = CEILINGS[name]
+    expect(ceiling, `no calibrated ceiling for ${name}`).toBeDefined()
+    expect(artifact.byteLength, name).toBeLessThanOrEqual(ceiling!)
   })
 
   it('imports under plain Node without a Bun global', async () => {
     expect('Bun' in globalThis).toBe(false)
-    const module = (await import(pathToFileURL(artifactPath).href)) as { streamCursor?: unknown }
-    expect(Object.keys(module)).toEqual(['streamCursor'])
-    expect(typeof module.streamCursor).toBe('function')
+    const module = (await import(pathToFileURL(artifactPath).href)) as Record<string, unknown>
+    const exportName = EXPORTS[name]
+    expect(exportName, `no expected export for ${name}`).toBeDefined()
+    expect(Object.keys(module)).toEqual([exportName])
+    expect(typeof module[exportName!]).toBe('function')
   })
 
   it('imports nothing but Node builtins', () => {
@@ -157,8 +186,10 @@ describe('omp cursor bundle', () => {
     expect(specifiers.length).toBeGreaterThan(0)
     expect(specifiers.filter(specifier => !specifier.startsWith('node:'))).toEqual([])
   })
+})
 
-  it('packs the built entry, the transport and the bundle patch', () => {
+describe('omp packed surface', () => {
+  it('packs the built entry, both transports and the bundle patch', () => {
     // Publish parity: `files` + `prepack` must produce a tarball whose `main`,
     // `types` and bundle patch actually exist in it. `--ignore-scripts` because
     // the build already ran and a pack must not rebuild under the test.
@@ -168,11 +199,18 @@ describe('omp cursor bundle', () => {
     })
     const listing = `${packed.stdout ?? ''}\n${packed.stderr ?? ''}`
     expect(packed.status, listing).toBe(0)
-    for (const path of ['lib/index.js', 'lib/index.d.ts', 'lib/omp/cursor.mjs', 'bundle/cordis.patch.yml']) {
+    for (const path of [
+      'lib/index.js',
+      'lib/index.d.ts',
+      'lib/omp/cursor.mjs',
+      'lib/omp/devin.mjs',
+      'bundle/cordis.patch.yml',
+    ]) {
       expect(listing, path).toMatch(new RegExp(`notice\\s+\\S+\\s+${path.replace(/[.]/g, '\\.')}(\\s|$)`))
     }
-    // The metafile is a build intermediate, not part of the published surface.
-    expect(listing).not.toContain('lib/omp/metafile.json')
+    // Metafiles are build intermediates, not part of the published surface.
+    expect(listing).not.toContain('lib/omp/cursor.metafile.json')
+    expect(listing).not.toContain('lib/omp/devin.metafile.json')
   })
 })
 
@@ -273,18 +311,20 @@ describe('omp drift gate', () => {
     }
   })
 
-  it('records the shim symbols the bundled graph actually reaches', () => {
-    const reached = shimImportsOf(metafile, { packageRoot, shimPaths }) as Record<string, string[]>
-    // A `simplify:` member that becomes reachable changes this set, so the
-    // manifest diff names it before the behaviour change ships.
-    expect(reached).toEqual(manifest.shimImports)
-    // Both sides run the same derivation, so a parser regression would shrink
-    // them together; the real reach must never silently become empty.
-    expect(reached['pi-utils'].length).toBeGreaterThan(0)
-    expect(manifest.shimImports['pi-utils'].length).toBeGreaterThan(0)
-    // No module in the graph imports a `bun:*` builtin: the shim exists to fail
-    // loudly if one ever does, so its reach must stay empty.
-    expect(manifest.shimImports['bun-modules']).toEqual([])
+  it('records the shim symbols each bundled graph actually reaches', () => {
+    for (const { name, manifest: entry, metafile } of entries) {
+      const reached = shimImportsOf(metafile!, { packageRoot, shimPaths }) as Record<string, string[]>
+      // A `simplify:` member that becomes reachable changes this set, so the
+      // manifest diff names it before the behaviour change ships.
+      expect(reached, name).toEqual(entry.shimImports)
+      // Both sides run the same derivation, so a parser regression would shrink
+      // them together; the real reach must never silently become empty.
+      expect(reached['pi-utils'].length, name).toBeGreaterThan(0)
+      expect(entry.shimImports['pi-utils'].length, name).toBeGreaterThan(0)
+      // No module in either graph imports a `bun:*` builtin: the shim exists to
+      // fail loudly if one ever does, so its reach must stay empty.
+      expect(entry.shimImports['bun-modules'], name).toEqual([])
+    }
   })
 })
 
