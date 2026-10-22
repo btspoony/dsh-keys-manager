@@ -3019,6 +3019,39 @@ describe('provider quick filter', () => {
     }
   })
 
+  test('a transport account whose route id collides with a plain provider still renders', async () => {
+    // The orphan test is "no TRANSPORT card owns me". A route id that happens to
+    // equal an ordinary provider's id owns nothing, so hiding the row would
+    // drop the only sign-in/remove control for that grant — the standalone
+    // section the transport cards replaced used to render it unconditionally.
+    const state = filterState()
+    state.providers = state.providers.filter(provider => provider.transport !== true)
+    state.providers.push({ ...makeTransportProvider(), transport: undefined, provider: 'cursor', displayName: 'Cursor pool' })
+    state.transportAccounts = [makeTransportAccount()]
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    try {
+      const rows = findByClass(view.nodes, 'km-transport-row')
+      expect(rows).toHaveLength(1)
+      expect(descendants(view.nodes, rows[0]!).some(node => node.text === 'llm-omp-transports/cursor')).toBe(true)
+      // The colliding card must not receive another surface's account.
+      const poolCard = findByClass(view.nodes, 'km-provider').find(card =>
+        descendants(view.nodes, card).some(node => node.text === 'Cursor pool'),
+      )!
+      expect(descendants(view.nodes, poolCard).some(node => node.path.includes('km-transport'))).toBe(false)
+      // Counted exactly once: the card that collides with the route id owns no
+      // account, so the row contributes the single orphan entry.
+      const expected = state.providers.filter(provider => provider.managed || provider.transport === true).length + 1
+      expect(findByClass(view.nodes, 'km-stat')[0]?.text).toBe(`${expected}已接管`)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
   test('the filter composes with the text search and clearing restores the list', async () => {
     const { view, state } = await mountFiltered()
     try {

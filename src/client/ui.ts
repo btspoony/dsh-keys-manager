@@ -110,7 +110,11 @@ function matchesFilter(provider: ProviderView, filter: ProviderFilter): boolean 
  * other sign-in/remove control, so the 已接管 surface renders them directly.
  */
 function orphanTransportAccounts(providers: ProviderView[], transportAccounts: TransportAccountView[]): TransportAccountView[] {
-  return transportAccounts.filter(account => !providers.some(provider => provider.provider === account.id))
+  // Only a TRANSPORT card owns its account. A route id that collides with an
+  // ordinary provider's id owns nothing here, so the row stays an orphan and
+  // keeps rendering (the standalone section that used to carry it is gone).
+  return transportAccounts.filter(account =>
+    !providers.some(provider => provider.transport === true && provider.provider === account.id))
 }
 
 /**
@@ -1710,7 +1714,9 @@ function KeysManagerBody(): React.ReactElement {
             key: provider.provider,
             provider,
             now,
-            transportAccount: transportAccounts.find(account => account.id === provider.provider),
+            transportAccount: provider.transport === true
+              ? transportAccounts.find(account => account.id === provider.provider)
+              : undefined,
             expanded: expanded.has(provider.provider),
             onToggle: () => toggle(provider.provider),
           })))
