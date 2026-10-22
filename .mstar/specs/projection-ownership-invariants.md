@@ -41,11 +41,15 @@ conditions that implementation has to keep satisfying.
   a binding refusal must be visible in the state the caller receives (building the view inside the
   write turn drained the warning first), and `buildState` prunes and drains, so it must not run
   while another mutation is mid-flush.
-- **The flush compensation is its own turn.** A rejected turn's `run` has already released the
-  queue, so an unowned compensation races whatever mutation comes next: that mutation can flush
-  the pre-compensation row, and the restore landing afterwards never reaches disk. When the queue
-  refuses turns (shutdown entry, unreadable state file) the undo runs in memory only, and the next
-  successful mutation persists it — named here because it is a real, accepted gap.
+- **Failure cleanup belongs to the failing turn, never to a later one.** `run` takes an optional
+  failure hook that it invokes inside the turn's own body before the error is re-thrown, followed by
+  one best-effort flush. That ordering is the whole point: the queue has already chained every
+  mutation submitted behind the failing turn, so a cleanup appended as a *subsequent* turn runs
+  after them — a removal of the account deletes the half-committed projection first, the cleanup
+  then proves the projection `absent`, and the captured baseline is gone for good. Because the hook
+  finishes before the turn settles, those mutations observe the compensated state instead. When the
+  store stays unwritable the undo exists in memory only and the next successful flush persists it —
+  named here because it is a real, accepted gap.
 - Each seam needs an explicit fence:
   - **Shutdown**: the fences differ by owner, because the queue and the chain give different
     guarantees. A queue turn needs no post-`await` shutdown check: `close()` drains the queue before
