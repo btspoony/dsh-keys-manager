@@ -5971,6 +5971,41 @@ test('a shutdown-era binding refusal keeps its own reason instead of blaming shu
   }
 })
 
+// The unbind direction is the one an activation takes (the OAuth projection
+// serves, so the pool is not the source): a value Keys Manager did not write
+// must decline there too, and a shutdown whose guard was never reached must not
+// be blamed for it.
+test('an unbind refusal over a value Keys Manager did not write keeps its silence', async () => {
+  const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  try {
+    const record = h.store.provider('anthropic')!
+    await h.service.activateAccount('anthropic', rowId)
+    await drainGrantChain(h, 'anthropic')
+    // `desired` is `undefined` now (the projection serves); the profile carries a
+    // value the user wrote, so the preserved branch declines before the guard.
+    h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv = 'HAND_EDITED_BY_USER'
+    const internals = h.service as unknown as {
+      closing: boolean
+      syncBrokerBinding: (provider: string, options?: Record<string, unknown>) => Promise<boolean>
+    }
+    internals.closing = true
+    try {
+      assert.equal(await internals.syncBrokerBinding('anthropic'), false)
+      assert.equal(
+        h.service.getState().warnings.some(warning => warning.includes('shutting down')),
+        false,
+        'an unbind refusal for a user-written value was blamed on shutdown',
+      )
+      assert.equal(h.settings.valueOf('llm-pi-ai').providers.anthropic.apiKeyEnv, 'HAND_EDITED_BY_USER')
+    } finally {
+      internals.closing = false
+    }
+    assert.equal(record.brokerRef.length > 0, true)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a converged binding stays silent during shutdown', async () => {
   const { h, rowId } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
   try {
