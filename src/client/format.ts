@@ -33,8 +33,7 @@ export function shapeTransportModels(value: unknown): TransportModelsView {
     }
   }
   const models = Array.isArray(record.models) ? record.models.filter((id): id is string => typeof id === 'string') : []
-  // Derived, not read from the wire: an empty allow-list means "all models".
-  return { catalog, models, enabled: models.length > 0 }
+  return { catalog, models }
 }
 
 /** Picker rows for every catalog model, preselecting the configured allow-list. */

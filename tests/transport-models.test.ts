@@ -15,13 +15,11 @@ describe('transport model picker shaping', () => {
     const view = shapeTransportModels({
       catalog: [{ id: 'a', name: 'Model A' }, { id: 'b', name: 'Model B' }, { id: 'c', name: 'Model C' }],
       models: ['b'],
-      enabled: true,
     })
 
     expect(view).toEqual({
       catalog: [{ id: 'a', name: 'Model A' }, { id: 'b', name: 'Model B' }, { id: 'c', name: 'Model C' }],
       models: ['b'],
-      enabled: true,
     })
     expect(modelPickerRows(view)).toEqual([
       { id: 'a', name: 'Model A', selected: false },
@@ -33,8 +31,14 @@ describe('transport model picker shaping', () => {
   test('an empty allow-list means every model', () => {
     const view = shapeTransportModels({ catalog: [{ id: 'a', name: 'Model A' }], models: [] })
 
-    expect(view.enabled).toBe(false)
+    expect(view.models).toEqual([])
     expect(modelPickerRows(view)).toEqual([{ id: 'a', name: 'Model A', selected: false }])
+  })
+
+  test('a failed read has no view to shape, so nothing looks like all models', () => {
+    // The host rejects an unreadable settings store; the store turns that into
+    // `{ ok: false }` and the component renders its error branch, never this.
+    expect(shapeTransportModels(undefined)).toEqual({ catalog: [], models: [] })
   })
 
   test('malformed wire rows never reach the picker', () => {
@@ -43,7 +47,7 @@ describe('transport model picker shaping', () => {
       models: ['c', 7, null],
     })
 
-    expect(view).toEqual({ catalog: [{ id: 'c', name: 'Model C' }], models: ['c'], enabled: true })
+    expect(view).toEqual({ catalog: [{ id: 'c', name: 'Model C' }], models: ['c'] })
   })
 
   test('configured ids outside the catalog render no row', () => {
@@ -53,7 +57,7 @@ describe('transport model picker shaping', () => {
   })
 
   test('an absent payload shapes to an empty picker', () => {
-    expect(shapeTransportModels(undefined)).toEqual({ catalog: [], models: [], enabled: false })
+    expect(shapeTransportModels(null)).toEqual({ catalog: [], models: [] })
   })
 })
 

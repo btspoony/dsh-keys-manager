@@ -42,10 +42,7 @@ export interface TransportCatalogModel {
 }
 
 /** One configured model row beneath `providers.cursor.models`. */
-export interface TransportModelProfile extends TransportCatalogModel {
-  contextWindow?: number
-  maxTokens?: number
-}
+export type TransportModelProfile = TransportCatalogModel
 
 /** The configured profile of one transport route. */
 export interface TransportProviderProfile {
@@ -88,8 +85,6 @@ export const Config = z.object({
             z.object({
               id: z.string(),
               name: z.string(),
-              contextWindow: z.number(),
-              maxTokens: z.number(),
             }),
           )
           .default([]),
@@ -286,7 +281,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   }
 
   const providers = config.providers
-  const models = (): readonly string[] | undefined => providers?.get().cursor?.models.map(row => row.id)
+  // A settings file is user input: drop a malformed row instead of throwing
+  // from `listModels`/`stream`, which would take the whole route down.
+  const models = (): readonly string[] | undefined =>
+    providers?.get().cursor?.models?.flatMap(row => (typeof row?.id === 'string' ? [row.id] : []))
   ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models))
   ctx.llm.registerConfigurableProviders([CURSOR_PROVIDER])
   host.authorization.registerFlow(cursorAuthorizationFlow())

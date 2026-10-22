@@ -34,7 +34,7 @@ import {
   createCursorAdapter,
   cursorAuthorizationFlow,
 } from '../src/index.js'
-import type { CursorAuthorizationFlow, CursorSignInInteraction } from '../src/index.js'
+import type { CursorAuthorizationFlow, CursorSignInInteraction, TransportModelProfile } from '../src/index.js'
 
 const noSleep = async (): Promise<void> => {}
 
@@ -685,6 +685,18 @@ describe('llm-omp-transports registration', () => {
     expect(adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(adapter.providerInfo(CURSOR_ROUTE)).toEqual({ id: 'cursor', name: 'Cursor' })
     expect(await adapter.listModels(CURSOR_ROUTE)).toHaveLength(123)
+  })
+
+  it('drops a malformed configured row instead of throwing from the live getter', async () => {
+    // A settings file is user input: a `null` row, or one whose id is not a
+    // string, must narrow nothing rather than take the whole route down.
+    const host = fakeHost()
+    const rows = [{ id: 'claude-4.5-sonnet', name: 'Claude Sonnet 4.5' }, null, { name: 'no id' }, { id: 7 }]
+    apply(host.ctx, { providers: { get: () => ({ cursor: { models: rows as unknown as TransportModelProfile[] } }) } })
+
+    const adapter = host.adapters[0]!.adapter as OmpCursorAdapter
+    expect((await adapter.listModels(CURSOR_ROUTE)).map(row => row.id)).toEqual(['claude-4.5-sonnet'])
+    await expect(adapter.resolveModel(CURSOR_ROUTE, 'gpt-5')).rejects.toMatchObject({ code: 'UNKNOWN_MODEL' })
   })
 
   it('surfaces a missing bundle at request time as TRANSPORT_UNAVAILABLE', async () => {
