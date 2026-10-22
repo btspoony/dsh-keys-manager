@@ -2572,6 +2572,12 @@ describe('transport account surface', () => {
     expect(inside.some(node => node.text === 'dev@cursor.example')).toBe(true)
     const rows = findByClass(inside, 'km-transport-row')
     expect(rows).toHaveLength(1)
+    // The row sits in the same framed container every other card uses for its
+    // rows, and the card takes the adopted tint so it reads as one component.
+    const frames = findByClass(inside, 'km-keys')
+    expect(frames).toHaveLength(1)
+    expect(descendants(inside, frames[0]!).some(node => node.path === rows[0]!.path)).toBe(true)
+    expect(findByClass(view.nodes, 'km-provider-managed')).toContain(providerCard(view.nodes, 'cursor'))
     expect(findByClass(inside, 'km-status')[0]!.text).toBe('正常')
     expect(inside.some(node => node.text.includes('有效期至'))).toBe(true)
     // No adopt / key-pool toolbar survives on a transport card.
