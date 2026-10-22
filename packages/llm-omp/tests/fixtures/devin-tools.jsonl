@@ -1,0 +1,4 @@
+{"type":"start"}
+{"type":"toolcall_start","contentIndex":0,"partial":{"role":"assistant","model":"swe-1-6","api":"devin-agent","provider":"devin","stopReason":"stop","timestamp":1760000000100,"content":[{"type":"toolCall","id":"call-devin-1","name":"lookup_doc","arguments":{"query":"hello"}}],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0}}}
+{"type":"toolcall_end","contentIndex":0,"toolCall":{"type":"toolCall","id":"call-devin-1","name":"lookup_doc","arguments":{"query":"hello"}}}
+{"type":"done","reason":"toolUse","message":{"role":"assistant","model":"swe-1-6","api":"devin-agent","provider":"devin","stopReason":"toolUse","timestamp":1760000000100,"content":[{"type":"toolCall","id":"call-devin-1","name":"lookup_doc","arguments":{"query":"hello"}}],"usage":{"input":700,"output":12,"cacheRead":0,"cacheWrite":0,"totalTokens":712}}}

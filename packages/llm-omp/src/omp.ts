@@ -18,8 +18,8 @@
  * @module dsh-llm-omp-transports/omp
  */
 
-/** Per-million-token prices omp prices a Cursor turn with. */
-export interface CursorModelCost {
+/** Per-million-token prices omp prices a turn with. */
+export interface ModelCost {
   readonly input: number
   readonly output: number
   readonly cacheRead: number
@@ -44,7 +44,7 @@ export interface CursorModelRow {
   /** Per-response output cap the catalog advertises. */
   readonly maxTokens: number
   readonly input: ('text' | 'image')[]
-  readonly cost: CursorModelCost
+  readonly cost: ModelCost
   /** `max_mode` marker; only meaningful per routed wire id on collapsed rows. */
   readonly cursorMaxMode?: boolean
   /** Per-wire-id `max_mode` markers when the row collapsed several wire ids. */
@@ -61,6 +61,38 @@ export interface CursorModelRow {
 export interface OmpCursorModel extends CursorModelRow {
   readonly api: 'cursor-agent'
   readonly provider: 'cursor'
+}
+
+/** Devin's resolved compat trio: the required keys of omp's `ResolvedDevinCompat`. */
+export interface DevinModelCompat {
+  readonly trustExplicitThinkingOnly: boolean
+  /** Server-side router models resolve through `AssignModel`; no pinned row sets it. */
+  readonly modelRouter: boolean
+  readonly supportsParallelToolCalls: boolean
+}
+
+/** One row of the generated Devin model table. */
+export interface DevinModelRow {
+  readonly id: string
+  readonly name: string
+  readonly baseUrl: string
+  /** Combined request and response context window in tokens. */
+  readonly contextWindow: number
+  /** Per-response output cap the catalog advertises. */
+  readonly maxTokens: number
+  readonly input: ('text' | 'image')[]
+  readonly cost: ModelCost
+  /** Gates plaintext-reasoning replay inside the transport. */
+  readonly reasoning: boolean
+  readonly compat: DevinModelCompat
+  /** Wire model id to request when it differs from {@link id}. */
+  readonly requestModelId?: string
+}
+
+/** The omp model object for devin: one catalog row plus the transport identity. */
+export interface OmpDevinModel extends DevinModelRow {
+  readonly api: 'devin-agent'
+  readonly provider: 'devin'
 }
 
 /** Token counters omp reports for one turn. */
@@ -262,17 +294,43 @@ export interface OmpCursorOptions {
   readonly transport?: 'auto' | 'http2' | 'http1'
 }
 
-/** One fully projected request: the transport's three positional arguments. */
-export interface OmpCursorContext {
+/** Request options handed to the omp devin transport. */
+export interface OmpDevinOptions {
+  /** Devin session token; the transport prefixes its wire scheme itself. */
+  readonly apiKey: string
+  readonly signal?: AbortSignal
+  /** Reused as `cascade_id` so the backend threads turns. */
+  readonly sessionId?: string
+  /** Forwarded output cap; falls back to the row's `maxTokens` inside the transport. */
+  readonly maxTokens?: number
+  readonly temperature?: number
+  readonly stopSequences?: string[]
+  /** Fill-absent attribution wrapper (`src/devin/transport.ts`). */
+  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+}
+
+/** One fully projected request: the devin transport's three positional arguments. */
+export interface OmpContext {
   readonly systemPrompt?: readonly string[]
   readonly messages: readonly OmpHistoryMessage[]
-  /** Active tool declarations, advertised to Cursor as MCP tools. */
+  /** Active tool declarations, advertised to Devin as chat tools. */
   readonly tools?: readonly OmpTool[]
 }
+
+/** The Cursor route's name for {@link OmpContext}. */
+export type OmpCursorContext = OmpContext
 
 /** The injected transport shape: omp's `streamCursor`. */
 export type OmpCursorTransport = (
   model: OmpCursorModel,
-  context: OmpCursorContext,
+  context: OmpContext,
   options: OmpCursorOptions,
 ) => AsyncIterable<OmpAssistantMessageEvent>
+
+/** The injected devin transport shape: omp's `streamDevin`. */
+export type OmpDevinTransport = (
+  model: OmpDevinModel,
+  context: OmpContext,
+  options: OmpDevinOptions,
+) => AsyncIterable<OmpAssistantMessageEvent>
+

@@ -3,9 +3,78 @@
   "piCatalogVersion": "18.12.3",
   "piUtilsVersion": "18.12.3",
   "esbuildVersion": "0.28.2",
-  "entry": "lib/omp/cursor.mjs",
-  "moduleCount": 133,
-  "bytes": 1392691,
+  "entries": {
+    "cursor": {
+      "entry": "lib/omp/cursor.mjs",
+      "metafile": "lib/omp/cursor.metafile.json",
+      "moduleCount": 133,
+      "bytes": 1392691,
+      "shimImports": {
+        "pi-utils": [
+          "$env",
+          "$flag",
+          "*",
+          "LRUCache",
+          "classifyJsonPrefix",
+          "escapeXmlText",
+          "extractHttpStatusFromError",
+          "extractRetryHint",
+          "getLogsDir",
+          "isBunTestRuntime",
+          "isEnoent",
+          "isRecord",
+          "isRetryableError",
+          "isUnexpectedSocketCloseMessage",
+          "logger",
+          "parseJsonWithRepair",
+          "parseStreamingJsonThrottled",
+          "sanitizeText",
+          "stringifyJson",
+          "structuredCloneJSON",
+          "truncate",
+          "wrapFetchForExtraCa"
+        ],
+        "bun-modules": [],
+        "bun-global": [
+          "Bun"
+        ]
+      }
+    },
+    "devin": {
+      "entry": "lib/omp/devin.mjs",
+      "metafile": "lib/omp/devin.metafile.json",
+      "moduleCount": 121,
+      "bytes": 1278632,
+      "shimImports": {
+        "pi-utils": [
+          "$env",
+          "$flag",
+          "LRUCache",
+          "classifyJsonPrefix",
+          "escapeXmlText",
+          "extractHttpStatusFromError",
+          "extractRetryHint",
+          "getLogsDir",
+          "isBunTestRuntime",
+          "isEnoent",
+          "isRecord",
+          "isRetryableError",
+          "isUnexpectedSocketCloseMessage",
+          "logger",
+          "parseJsonWithRepair",
+          "parseStreamingJsonThrottled",
+          "sanitizeText",
+          "stringifyJson",
+          "structuredCloneJSON",
+          "wrapFetchForExtraCa"
+        ],
+        "bun-modules": [],
+        "bun-global": [
+          "Bun"
+        ]
+      }
+    }
+  },
   "shimSymbols": {
     "pi-utils": [
       "$env",
@@ -56,36 +125,6 @@
       "SHA256"
     ]
   },
-  "shimImports": {
-    "pi-utils": [
-      "$env",
-      "$flag",
-      "*",
-      "LRUCache",
-      "classifyJsonPrefix",
-      "escapeXmlText",
-      "extractHttpStatusFromError",
-      "extractRetryHint",
-      "getLogsDir",
-      "isBunTestRuntime",
-      "isEnoent",
-      "isRecord",
-      "isRetryableError",
-      "isUnexpectedSocketCloseMessage",
-      "logger",
-      "parseJsonWithRepair",
-      "parseStreamingJsonThrottled",
-      "sanitizeText",
-      "stringifyJson",
-      "structuredCloneJSON",
-      "truncate",
-      "wrapFetchForExtraCa"
-    ],
-    "bun-modules": [],
-    "bun-global": [
-      "Bun"
-    ]
-  },
   "sourceHashes": {
     "@oh-my-pi/pi-ai/src/providers/cursor.ts": "sha256:080c421a3db8e0c4170451b4b243060fe5713a001ff6423f1296e1a3298f8326",
     "@oh-my-pi/pi-catalog/src/discovery/cursor-proto.ts": "sha256:fc98341073be49c4f1b81af94204444a0421ed98a6805de51cfc342cbd772e99",
@@ -94,6 +133,13 @@
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/cursor.kdl": "sha256:91e418257bb11fa6d32c0eadcbe2f25947d39ef2fcc0577fcf17de1694febe4b",
     "@oh-my-pi/pi-utils/src/json-lexer.ts": "sha256:c3ccb7932cd36a39db5c6a2f0cd331c8f91dddb56e621aa29b1f61b4c35757ef",
     "@oh-my-pi/pi-utils/src/json-parse.ts": "sha256:9f3388c00ee71ac7a0feddbd362fd7ac907ec7e67c28e30e745c38acff78a6bf",
-    "@oh-my-pi/pi-ai/src/providers/cursor-external-tool-handoff.md": "sha256:620487ffda8ccfb39fa60700d9aae63a752c8f4359cf0939ddb125734d668b5d"
+    "@oh-my-pi/pi-ai/src/providers/cursor-external-tool-handoff.md": "sha256:620487ffda8ccfb39fa60700d9aae63a752c8f4359cf0939ddb125734d668b5d",
+    "@oh-my-pi/pi-ai/src/providers/devin.ts": "sha256:c44078f6eb8ea901311bed1ee3e39a7309ccfec5f42774ec88a50541e3637222",
+    "@oh-my-pi/pi-ai/src/providers/connect-frame.ts": "sha256:5811467269cf1e4d2309a723164da605b76cf135326a0b1e618d17af6e6b11ab",
+    "@oh-my-pi/pi-catalog/src/discovery/devin-proto.ts": "sha256:b2feb659ac17452c57b3ec16481cc738ae5ff9e77da42182a66bc3f875abed7d",
+    "@oh-my-pi/pi-catalog/src/discovery/protobuf.ts": "sha256:aff266ce3d1375dcbedaca27cb2db35571e78f9d37424caaedc6ea46195383e5",
+    "@oh-my-pi/pi-catalog/src/wire/devin.ts": "sha256:dd31b7c80fdeb1063780eab4b60db9b3ab1cbfb3d9dcd8d542b4c66535c0c68a",
+    "@oh-my-pi/pi-catalog/src/wire/devin-proto.ts": "sha256:a4d0e43ba2f3a24df749ea61ed4180fee9c25e425d16b6f31f5fc6d2811bf88b",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl": "sha256:bb6de7869e3a6fce610ff517087fb8b64491a3b5a38df7ff91bea61e5ad7ba49"
   }
 }

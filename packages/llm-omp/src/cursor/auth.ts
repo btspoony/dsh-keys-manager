@@ -13,6 +13,8 @@
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
+import { jwtExpiry, readJwtPayload } from '../jwt.js'
+
 /**
  * The vendor identity this client presents, copied from the pinned omp
  * sources because the published package may not import them:
@@ -366,23 +368,9 @@ export async function loginCursor(options: CursorLoginOptions = {}): Promise<Cur
   }
 }
 
-/** Decode a JWT payload, undefined when the token is not a three-part JWT. */
-function cursorTokenPayload(token: string): Record<string, unknown> | undefined {
-  const parts = token.split('.')
-  if (parts.length !== 3) return undefined
-  try {
-    const payload = JSON.parse(Buffer.from(parts[1] ?? '', 'base64url').toString('utf8')) as unknown
-    return typeof payload === 'object' && payload !== null && !Array.isArray(payload)
-      ? (payload as Record<string, unknown>)
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 /** The account user id: the JWT `sub` after its `|`, as omp reads it. */
 function cursorAccountId(accessToken: string): string | undefined {
-  const sub = cursorTokenPayload(accessToken)?.sub
+  const sub = readJwtPayload(accessToken)?.sub
   if (typeof sub !== 'string') return undefined
   const parts = sub.split('|')
   const accountId = (parts.length > 1 ? parts[1] : sub).trim()
@@ -391,6 +379,5 @@ function cursorAccountId(accessToken: string): string | undefined {
 
 /** Expiry from the JWT, with the 5-minute skew and omp's one-hour fallback. */
 function cursorTokenExpiry(accessToken: string): number {
-  const exp = cursorTokenPayload(accessToken)?.exp
-  return typeof exp === 'number' && Number.isFinite(exp) ? exp * 1000 - TOKEN_SKEW_MS : Date.now() + TOKEN_FALLBACK_LIFETIME_MS
+  return jwtExpiry(accessToken, { skewMs: TOKEN_SKEW_MS, fallbackMs: TOKEN_FALLBACK_LIFETIME_MS })
 }
