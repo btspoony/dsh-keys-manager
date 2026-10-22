@@ -12,6 +12,7 @@ import type { OmpOAuthAdapter } from '../src/oauth/adapter'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
 import { KeysManagerStore, sanitizeState } from '../src/store'
 import { cursorCatalogModels } from 'dsh-llm-omp-transports'
+import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
 
 const ORIGINAL = Symbol.for('cordis.original')
 
@@ -13078,6 +13079,12 @@ const TRANSPORT_FLOW = {
   methods: [{ id: 'oauth', label: 'Sign in with Cursor' }],
 }
 
+const DEVIN_FLOW = {
+  key: 'llm-omp-transports/devin',
+  label: 'Devin',
+  methods: [{ id: 'oauth', label: 'Sign in with Devin' }],
+}
+
 const CURSOR_SCOPE = 'llm-omp-transports/cursor'
 const TRANSPORT_NS = 'llm-omp-transports'
 
@@ -17589,6 +17596,27 @@ test('an api-key test fails when the route answered without the pinned key', asy
     const result = await h.service.testKey('zai-coding-cn', target.id)
     assert.equal(result.ok, false)
     assert.match(String(result.error), /another credential source|not used/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a transport route without a shipped catalog resolves to the all-models state', async () => {
+  // A5 cross-track hand-off: the root must answer for `devin` even while the
+  // installed transport build predates that track's catalog export. The probe
+  // tolerates both shapes, so the assertion holds before and after the merge.
+  const h = await harness([...piAiFlows(), TRANSPORT_FLOW, DEVIN_FLOW])
+  try {
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: { devin: { models: [] } } }, revision: 1 })
+    const transports = await import('dsh-llm-omp-transports') as Record<string, unknown>
+    const expected = typeof transports.devinCatalogModels === 'function'
+      ? (transports.devinCatalogModels as () => TransportCatalogModel[])()
+      : []
+    const view = await h.service.transportModels('devin')
+    assert.deepEqual(view.catalog, expected)
+    assert.deepEqual(view.models, [])
+    // The existing cursor branch is untouched by the new probe.
+    assert.ok((await h.service.transportModels('cursor')).catalog.length > 0)
   } finally {
     await h.close()
   }

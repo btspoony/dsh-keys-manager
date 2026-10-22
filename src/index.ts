@@ -16,6 +16,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
 import { CURSOR_ROUTE, cursorCatalogModels } from 'dsh-llm-omp-transports'
+import * as transportModule from 'dsh-llm-omp-transports'
 import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
 import {
   KEY_LIMIT,
@@ -705,8 +706,25 @@ function transportMethodOf(flow: AuthorizationFlowEntry): string | undefined {
  * Only the Cursor route ships a catalog projection today; a route without one
  * reports no models rather than borrowing another route's catalog.
  */
+/** The `devin` transport route id (its catalog ships with the same package). */
+const DEVIN_ROUTE = 'devin'
+
+/**
+ * The model catalog one transport route advertises.
+ *
+ * A transport route's catalog is the transport package's own data, not this
+ * plugin's. `devin` is delivered by a sibling track in the same iteration, so
+ * the installed transport build may predate its export: the function is probed
+ * on the module namespace instead of imported by name, and an absent export
+ * yields an empty catalog instead of breaking this plugin's import graph. The
+ * picker then offers the all-models state, which is the truthful answer for a
+ * route whose adapter ships no list.
+ */
 function transportCatalogOf(route: string): TransportCatalogModel[] {
-  return route === CURSOR_ROUTE ? cursorCatalogModels() : []
+  if (route === CURSOR_ROUTE) return cursorCatalogModels()
+  if (route !== DEVIN_ROUTE) return []
+  const probe = (transportModule as Record<string, unknown>).devinCatalogModels
+  return typeof probe === 'function' ? (probe as () => TransportCatalogModel[])() : []
 }
 
 /** Env names that are a single API-key credential, not an OAuth/federation token. */
