@@ -284,6 +284,23 @@ describe('generated omp policy slice', () => {
     expect(facts.kilo).toMatchObject({ id: 'kilo', apiKeyFormat: 'bearer', loginKind: 'custom', loginHook: 'kilo' })
   })
 
+  it('refuses a policy that names a hook the bundle does not bind', () => {
+    // The registry substitution is only safe while every referenced hook is
+    // bound explicitly. These are the two ways a rules bump could break that:
+    // a renamed after-exchange hook, and a `hook=` on a runtime-resolved value.
+    const renamed = structuredClone(policySlice(rulesText))
+    renamed.zai.login.afterExchange = 'some-new-hook'
+    expect(() => renderHooks(renamed)).toThrow(/some-new-hook/)
+
+    const valueHook = structuredClone(policySlice(rulesText))
+    valueHook.zai.login.token.url.hook = 'some-value-hook'
+    expect(() => renderHooks(valueHook)).toThrow(/some-value-hook/)
+
+    // The one `hook=` the slice legitimately names (kilo's custom login) stays
+    // accepted: entry.ts imports it directly instead of the registry.
+    expect(() => renderHooks(policySlice(rulesText))).not.toThrow()
+  })
+
   it('narrows the hook registry to the hooks the copied rule names', () => {
     expect(readFileSync(HOOKS_FILE, 'utf8')).toBe(renderHooks(policySlice(rulesText)))
     const source = readFileSync(HOOKS_FILE, 'utf8')

@@ -102,7 +102,14 @@ export const Bun = {
   },
 }
 
-/** The members {@link Bun} provides; the build records this as `bunSurface`. */
+/**
+ * The members {@link Bun} provides; the build records this as `bunSurface`.
+ *
+ * `Bun.serve` / `Bun.Server` are intentionally absent: neither sign-in flow
+ * hosts a server (the zai flow is `manualOnly`, kilo polls a remote endpoint).
+ * A future flow that reaches them fails `assertReachedSymbols` at build time,
+ * not at runtime with an `undefined is not a constructor`.
+ */
 export const BUN_MEMBERS = ['env', 'sleep', 'hash', 'SHA256', 'CryptoHasher', 'write'] as const
 
 export default Bun

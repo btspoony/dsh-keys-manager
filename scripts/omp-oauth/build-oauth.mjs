@@ -134,6 +134,17 @@ function versionOf(name) {
   return JSON.parse(readFileSync(join(installedPackageRoot(name), 'package.json'), 'utf8')).version
 }
 
+/**
+ * Hard ceiling for the shipped artifact.
+ *
+ * Calibrated against the measured shape (~72 KB) with room for the flows to
+ * grow, while still failing the degenerate multi-megabyte form (the whole hook
+ * registry or the 467 KB rules catalog pulled back in). Enforced here, so
+ * `prepare`/`prepack` cannot package an oversized artifact; the drift test
+ * re-asserts it from the manifest.
+ */
+const BUNDLE_CEILING = 2_000_000
+
 /** A JSON object key that can be emitted as an ESM binding name. */
 const IDENTIFIER_KEY = /^[A-Za-z_$][\w$]*$/
 
@@ -275,6 +286,12 @@ async function main() {
   }
 
   const artifact = await readFile(OUT)
+  if (artifact.byteLength > BUNDLE_CEILING) {
+    throw new Error(
+      `omp-oauth: the bundle is ${artifact.byteLength} bytes, over the ${BUNDLE_CEILING}-byte ceiling; `
+        + 'a substitution probably stopped matching and pulled a large graph in',
+    )
+  }
   await writeFile(METAFILE, `${JSON.stringify(result.metafile)}\n`)
 
   const overrides = OVERRIDES.map(entry => ({
@@ -301,7 +318,7 @@ async function main() {
     sourceHashes,
     policyFacts: policyFactsOf(policySlice(rulesText)),
     bunSurface: bunSurface(BUN_GLOBAL_SHIM),
-    bundleCeiling: 2_000_000,
+    bundleCeiling: BUNDLE_CEILING,
   }
 
   assertReachedSymbols(manifest)

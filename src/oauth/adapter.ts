@@ -22,6 +22,13 @@ export interface OmpOAuthController {
   onProgress?: (message: string) => void
   onManualCodeInput?: (signal?: AbortSignal) => Promise<string>
   onPrompt?: (prompt: { message: string; placeholder?: string; allowEmpty?: boolean; secret?: boolean }) => Promise<string>
+  /**
+   * Deliberately not wired: an isolated host-owned browser is a capability
+   * this surface has no equivalent for. A flow that needs it (no flow in this
+   * batch does) fails as unsupported instead of silently hanging on a callback
+   * that never arrives.
+   */
+  onBrowserSession?: never
   signal?: AbortSignal
   fetch?: typeof fetch
 }

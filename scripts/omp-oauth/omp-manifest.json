@@ -61,13 +61,13 @@
       "specifier": "Bun (global)",
       "file": "scripts/omp-oauth/omp-shim/bun-global.ts",
       "reason": "Bun runtime global; sleep is real, hashing keeps Bun return contracts",
-      "sourceHash": "sha256:589624139d819830c74c3dcc9a4f7913590272360c38698fa4cfe0d8aa6832ed"
+      "sourceHash": "sha256:b0182f7f577cee2aee54ff3ac5dc713858e8b26ff3f6b6f92a7eab6e9ae59600"
     },
     {
       "specifier": "@oh-my-pi/pi-ai/src/registry/hooks",
       "file": "scripts/omp-oauth/overrides/hooks.gen.ts",
       "reason": "eager registry pulled the model catalog; narrowed to the hooks the copied rule names",
-      "sourceHash": "sha256:4fb7d49ef6d3f69b1696324380942ce51330fa422d18f07e6698170c52bedbd6"
+      "sourceHash": "sha256:d6d51f026490e57993e29fc955d26deacac885ffd9ca8a19c75aa0314c7e3ccf"
     },
     {
       "specifier": "@oh-my-pi/pi-ai/src/registry/api-key-validation",

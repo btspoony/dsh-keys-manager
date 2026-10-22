@@ -62,9 +62,14 @@ export class SignInUnavailableError extends Error {
   }
 }
 
+/** Aborted-signal predicate; a function call so a live signal is re-read. */
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true
+}
+
 /** Whether a driver failure is the attempt's cancellation. */
 function isCancellation(error: unknown, signal: AbortSignal | undefined): boolean {
-  if (signal?.aborted === true) return true
+  if (isAborted(signal)) return true
   return error instanceof Error && error.name === 'LoginCancelledError'
 }
 
@@ -146,6 +151,10 @@ export async function runSignIn(provider: string, request: SignInRequest): Promi
     if (isCancellation(error, request.signal)) throw new SignInCancelledError(provider)
     throw error
   }
+  // A flow can resolve after the attempt's signal released it (an abort that
+  // lands between the driver's last await and its return); the credential of a
+  // cancelled attempt must never reach the pool.
+  if (isAborted(request.signal)) throw new SignInCancelledError(provider)
   if (typeof credentials?.access !== 'string' || credentials.access.length === 0) {
     throw new Error(`The ${signIn.label} sign-in returned no credential`)
   }

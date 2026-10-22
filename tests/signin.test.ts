@@ -187,7 +187,9 @@ describe('capability table', () => {
     expect(Object.keys(SIGN_IN_PROVIDERS).sort()).toEqual(['kilo', 'zai'])
     expect(signInCapable('kilo')).toBe(true)
     expect(signInCapable('zai')).toBe(true)
-    for (const provider of ['anthropic', 'zai-coding-cn', 'devin', 'cursor', '']) {
+    // `constructor` / `toString` / `__proto__` would answer through a plain
+    // object index; the capability check must not inherit them.
+    for (const provider of ['anthropic', 'zai-coding-cn', 'devin', 'cursor', '', 'constructor', 'toString', '__proto__']) {
       expect(signInCapable(provider), provider).toBe(false)
       expect(signInProvider(provider), provider).toBeUndefined()
     }
@@ -207,5 +209,8 @@ describe('bundle loading', () => {
     // published build must never have, and it must read as such.
     await expect(ompOAuthAdapter()).rejects.toBeInstanceOf(OmpOAuthBundleMissingError)
     await expect(ompOAuthAdapter()).rejects.toThrow('pnpm build')
+    // The load is cached: a second call returns the same settled promise
+    // instead of retrying the filesystem on every attempt.
+    expect(ompOAuthAdapter()).toBe(ompOAuthAdapter())
   })
 })

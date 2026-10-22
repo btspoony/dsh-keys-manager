@@ -3,9 +3,8 @@
  *
  * The omp hook registry narrowed to the names the copied policy declares.
  * Each entry resolves to the real omp implementation; no behaviour is
- * reimplemented here. Anything else stays absent on purpose, so a rule that
- * starts referencing a new hook fails the build instead of silently running
- * a degenerate flow.
+ * reimplemented here. Anything else stays absent on purpose: the generator
+ * refuses to emit this file when a rule names a hook it cannot bind.
  */
 import type { HookTables } from '@oh-my-pi/pi-ai/registry/hooks/types'
 

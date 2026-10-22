@@ -33,10 +33,12 @@ export const SIGN_IN_PROVIDERS: Readonly<Record<string, SignInProvider>> = Objec
 
 /** Whether this plugin can obtain a credential for `provider` by signing in. */
 export function signInCapable(provider: string): boolean {
-  return SIGN_IN_PROVIDERS[provider] !== undefined
+  // Own-property check: a plain-object index would answer `true` for
+  // `constructor`, `toString` or `__proto__` and hand a function to the driver.
+  return Object.hasOwn(SIGN_IN_PROVIDERS, provider)
 }
 
 /** The sign-in driver for `provider`, or `undefined` when it is not supported. */
 export function signInProvider(provider: string): SignInProvider | undefined {
-  return SIGN_IN_PROVIDERS[provider]
+  return Object.hasOwn(SIGN_IN_PROVIDERS, provider) ? SIGN_IN_PROVIDERS[provider] : undefined
 }
