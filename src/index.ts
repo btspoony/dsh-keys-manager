@@ -16,6 +16,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash, randomBytes } from 'node:crypto'
 import { CURSOR_ROUTE, cursorCatalogModels } from 'dsh-llm-omp-transports'
+import * as transportModule from 'dsh-llm-omp-transports'
 import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
 import {
   KEY_LIMIT,
@@ -78,6 +79,10 @@ import type {
   StreamChunkLike,
   TransportGrantLike,
 } from './host-types.js'
+import type { OmpOAuthAdapter } from './oauth/adapter.js'
+import { signInCapable, signInProvider } from './oauth/providers.js'
+import { SignInCancelledError, runSignIn } from './oauth/signin.js'
+import type { MintedCredential } from './oauth/signin.js'
 import { EXTRA_PROVIDER_MAP, EXTRA_PROVIDERS } from './providers.js'
 import { KeysManagerStore, ensureStateFile, statePath } from './store.js'
 
@@ -265,6 +270,13 @@ interface LoginAttempt {
   createdAt: number
   updatedAt: number
   settledAt?: number
+  /**
+   * True for an attempt this plugin drives itself (`src/oauth/`), false for one
+   * the authorization seam owns. Only an in-process attempt may be cancelled
+   * here: the seam owns its own settlement and an aborted seam attempt could
+   * leave a committed grant unharvested.
+   */
+  inProcess: boolean
   controller: AbortController
   /**
    * Resolves once the seam's attempt has settled AND this manager has acted on
@@ -317,7 +329,9 @@ function promptView(prompt: { kind?: string; message: string; placeholder?: stri
         && typeof (entry as Record<string, unknown>).id === 'string'
         && typeof (entry as Record<string, unknown>).label === 'string')
     : undefined
-  const kind = prompt.kind === 'secret' || prompt.kind === 'select' ? prompt.kind : 'text'
+  const kind = prompt.kind === 'secret' || prompt.kind === 'select' || prompt.kind === 'manual-code'
+    ? prompt.kind
+    : 'text'
   return {
     kind,
     message: prompt.message,
@@ -404,6 +418,7 @@ const INVOCATIONS: InvocationDescriptor[] = [
   // duplicating the account.
   endpoint('beginAccountLogin', ['provider', 'alias', 'targetAccountId']),
   endpoint('answerAccountPrompt', ['attemptId', 'value']),
+  endpoint('cancelAccountLogin', ['attemptId']),
   endpoint('accountAttempt', ['attemptId']),
   endpoint('listAccountAttempts'),
   endpoint('activateAccount', ['provider', 'accountId']),
@@ -695,14 +710,26 @@ function transportMethodOf(flow: AuthorizationFlowEntry): string | undefined {
   return flow.methods[0]?.id
 }
 
+/** The `devin` transport route id (its catalog ships with the same package). */
+const DEVIN_ROUTE = 'devin'
+
 /**
  * The catalog a transport route advertises to its model picker.
  *
- * Only the Cursor route ships a catalog projection today; a route without one
- * reports no models rather than borrowing another route's catalog.
+ * A route without a catalog projection reports no models rather than borrowing
+ * another route's. The catalog is the transport package's own data, not this
+ * plugin's: `devin` is delivered by a sibling track in the same iteration, so
+ * the installed transport build may predate its export. The function is
+ * therefore probed on the module namespace instead of imported by name — an
+ * absent export yields an empty catalog instead of breaking this plugin's
+ * import graph. An older build that still registers the route then has no list
+ * to narrow, so the picker offers the all-models state.
  */
 function transportCatalogOf(route: string): TransportCatalogModel[] {
-  return route === CURSOR_ROUTE ? cursorCatalogModels() : []
+  if (route === CURSOR_ROUTE) return cursorCatalogModels()
+  if (route !== DEVIN_ROUTE) return []
+  const probe = (transportModule as Record<string, unknown>).devinCatalogModels
+  return typeof probe === 'function' ? (probe as () => TransportCatalogModel[])() : []
 }
 
 /** Env names that are a single API-key credential, not an OAuth/federation token. */
@@ -762,16 +789,24 @@ interface CapabilitySplit {
  *
  * `oauthFlow` is the live answer from {@link KeysManagerService.oauthFlowAvailable}
  * — C6-2 requires an actually-beginable flow, not the catalog flag alone.
+ * `signIn` is the second source of the account verdict: this plugin's own
+ * in-process sign-in clients (`src/oauth/providers.ts`), which run inside the
+ * attempt surface instead of a seam flow.
  */
-function capabilityOf(entry: DirectoryEntry, profile: ProfileShape | undefined, oauthFlow: boolean): CapabilitySplit {
+function capabilityOf(
+  entry: DirectoryEntry,
+  profile: ProfileShape | undefined,
+  oauthFlow: boolean,
+  signIn = false,
+): CapabilitySplit {
   if (entry.error !== undefined) return { keys: false, accounts: false, reason: entry.error }
-  const accounts = entry.nativeAuth?.oauth === true && oauthFlow
+  const accounts = signIn || (entry.nativeAuth?.oauth === true && oauthFlow)
   const unsupportedReason = UNSUPPORTED_KEY_POOL_PROVIDERS[entry.provider]
   if (unsupportedReason !== undefined) {
     // The table's reason describes the key verdict; when the only possible
     // capability (accounts) is unavailable too, the flow gap is the truthful
     // explanation a user needs.
-    const reason = entry.nativeAuth?.oauth === true && !oauthFlow ? NO_OAUTH_FLOW_REASON : unsupportedReason
+    const reason = !accounts && entry.nativeAuth?.oauth === true && !oauthFlow ? NO_OAUTH_FLOW_REASON : unsupportedReason
     return { keys: false, accounts, reason }
   }
   if (entry.provider === 'deepseek-official') return { keys: true, accounts }
@@ -782,8 +817,8 @@ function capabilityOf(entry: DirectoryEntry, profile: ProfileShape | undefined, 
     // capabilities; the oauth-only verdict below is for routes with no
     // key credential at all.
     if (auth.env.some(isKeyishEnv)) return { keys: true, accounts }
-    if (auth.oauth) {
-      return oauthFlow
+    if (auth.oauth || signIn) {
+      return accounts
         ? { keys: false, accounts: true, reason: 'This provider signs in with an OAuth account; no API key is used' }
         : { keys: false, accounts: false, reason: NO_OAUTH_FLOW_REASON }
     }
@@ -802,10 +837,14 @@ function capabilityOf(entry: DirectoryEntry, profile: ProfileShape | undefined, 
  * may mount after this plugin, so availability is never cached at
  * construction. While the flow list is empty (seam not mounted yet) support
  * is false; the next state build re-evaluates once flows are enumerable.
+ *
+ * `signIn` answers before that gate: an in-process client needs no seam flow,
+ * so it stays available even while the flow list is empty.
  */
-function accountSupportOf(entry: DirectoryEntry | undefined, oauthFlow: boolean): ProviderSupport {
+function accountSupportOf(entry: DirectoryEntry | undefined, oauthFlow: boolean, signIn = false): ProviderSupport {
   if (entry === undefined) return { supported: false, reason: 'This provider route is not registered' }
   if (entry.error !== undefined) return { supported: false, reason: entry.error }
+  if (signIn) return { supported: true }
   if (entry.nativeAuth?.oauth !== true) return { supported: false, reason: 'This provider offers no OAuth account sign-in' }
   if (!oauthFlow) return { supported: false, reason: NO_OAUTH_FLOW_REASON }
   return { supported: true }
@@ -1057,6 +1096,12 @@ export class KeysManagerService {
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
   settings: SettingsLike | undefined
+  /**
+   * Test/embedding seam for the in-process sign-in drivers (the same pattern
+   * `isolationWaitMs` uses). Production leaves it undefined, so `runSignIn`
+   * loads the build artifact lazily on the first attempt.
+   */
+  private signInAdapter: OmpOAuthAdapter | undefined
   private rawCredentials: CredentialsLike | undefined
   private readonly credentialOriginals = new WeakMap<object, CredentialOriginals>()
   private readonly credentialWrappers = new WeakMap<object, CredentialWrappers>()
@@ -2203,9 +2248,19 @@ export class KeysManagerService {
   async beginAccountLogin(provider: string, alias?: string, targetAccountId?: string): Promise<AccountAttemptView> {
     if (typeof provider !== 'string' || provider.length === 0) throw new TypeError('provider is required')
     const flow = this.oauthFlowFor(provider)
-    if (flow === undefined) throw new Error(`Provider "${provider}" offers no OAuth sign-in flow`)
+    // Two sign-in sources: a flow on the Harness authorization seam (pi-ai
+    // projections), and this plugin's own in-process clients (`src/oauth/`).
+    // A provider may have both; the seam stays authoritative when it does,
+    // because its harvest owns the grant projection.
+    const signIn = signInProvider(provider)
+    if (flow === undefined && signIn === undefined) throw new Error(`Provider "${provider}" offers no OAuth sign-in flow`)
     const providerRecord = this.store.provider(provider)
-    if (providerRecord === undefined) throw new Error(`Provider "${provider}" is not managed; adopt it before signing in`)
+    // A sign-in-only *extra* route does not exist in the pool yet: its first
+    // successful sign-in creates the route and its first row (design §4.4).
+    const createsRoute = flow === undefined && signIn !== undefined && EXTRA_PROVIDER_MAP.has(provider)
+    if (providerRecord === undefined && !createsRoute) {
+      throw new Error(`Provider "${provider}" is not managed; adopt it before signing in`)
+    }
     // Validate the re-authentication target up front (round-3 finding 6):
     // the harvest binds the new grant to this row, so it must already name
     // a live OAuth account of this provider. It runs BEFORE the pending
@@ -2214,10 +2269,18 @@ export class KeysManagerService {
     // foreign id is refused even while another sign-in is pending.
     let cleanTarget: string | undefined
     if (typeof targetAccountId === 'string' && targetAccountId.length > 0) {
-      const target = providerRecord.keys.find(candidate => candidate.id === targetAccountId)
+      const target = providerRecord?.keys.find(candidate => candidate.id === targetAccountId)
       if (target === undefined) throw new Error(`Account "${targetAccountId}" not found on ${provider}`)
-      if (target.kind !== 'oauth' || target.oauth === null) throw new Error(`Key "${targetAccountId}" is not an OAuth account`)
-      cleanTarget = targetAccountId
+      if (flow !== undefined) {
+        if (target.kind !== 'oauth' || target.oauth === null) throw new Error(`Key "${targetAccountId}" is not an OAuth account`)
+        cleanTarget = targetAccountId
+      } else if (target.kind === 'api-key' && target.importedFrom?.startsWith('signin:') === true) {
+        // Only a row this sign-in path owns may be re-authenticated in place;
+        // a hand-entered key is never silently replaced.
+        cleanTarget = targetAccountId
+      } else {
+        throw new Error(`Key "${targetAccountId}" is not a sign-in credential`)
+      }
     }
     if (this.loginsInFlight.has(provider)) {
       // F3 (I-000082): a pending attempt IS the flow — reopening the dialog
@@ -2252,18 +2315,25 @@ export class KeysManagerService {
       notices: [],
       createdAt: now,
       updatedAt: now,
+      inProcess: flow === undefined,
       controller: new AbortController(),
     }
     this.loginAttempts.set(attempt.id, attempt)
     this.capLoginAttempts()
     this.loginsInFlight.set(provider, attempt.id)
+    const interaction = this.attemptInteraction(attempt)
+    if (flow === undefined) {
+      // In-process sign-in: no seam flow, no grant record. The driver mints a
+      // static credential and {@link commitSignIn} writes the pool row.
+      void this.driveSignIn(attempt, provider, interaction)
+      return attemptView(attempt)
+    }
     const records = this.credentialRecords()
     if (records === undefined) {
       this.loginAttempts.delete(attempt.id)
       this.loginsInFlight.delete(provider)
       throw new Error('The credential store does not support records; OAuth sign-in is unavailable')
     }
-    const interaction = this.attemptInteraction(attempt)
     const beginPromise = this.ctx.authorization!.begin({
       key: flow.key,
       method: flow.method,
@@ -2288,6 +2358,102 @@ export class KeysManagerService {
     return attemptView(attempt)
   }
 
+  /**
+   * Run one in-process sign-in and commit the static credential it mints.
+   *
+   * The driver runs outside the mutation queue (design §4.4): it performs
+   * provider I/O and parks on prompts, so holding the queue would block every
+   * other remote call for minutes. The commit itself re-enters through the
+   * public transactional methods, exactly like a remote caller would.
+   */
+  private async driveSignIn(
+    attempt: LoginAttempt,
+    provider: string,
+    interaction: AuthorizationInteractionLike,
+  ): Promise<void> {
+    try {
+      const credential = await runSignIn(provider, {
+        interaction,
+        signal: attempt.controller.signal,
+        ...(this.signInAdapter === undefined ? {} : { adapter: this.signInAdapter }),
+      })
+      await this.commitSignIn(attempt, provider, credential)
+    } catch (error) {
+      // A terminal transition that already happened (cancel, TTL prune) owns
+      // the attempt; nothing above may overwrite it.
+      if (attempt.settledAt !== undefined) return
+      if (error instanceof SignInCancelledError || attempt.controller.signal.aborted) {
+        this.finishLoginAttempt(attempt, 'cancelled')
+        return
+      }
+      this.failLoginAttempt(attempt, error)
+    }
+  }
+
+  /**
+   * Turn a minted static credential into pool state.
+   *
+   * Three shapes, one rule — the credential is a *static* secret, so it is an
+   * ordinary `kind: 'api-key'` row with `importedFrom: 'signin:<driver>'`, never
+   * a grant:
+   *
+   * 1. `targetAccountId` → replace that row's literal in place (same id, same
+   *    ref, same list position).
+   * 2. an unmanaged *extra* route → create the route and its first row
+   *    (`kilo`, whose card is an extra profile).
+   * 3. a managed route → append a row (`zai`, a shipped DSH route).
+   *
+   * The secret passes the same `validateKeyInput` guard `addKey` uses, so an
+   * over-long provider token fails as the existing named error.
+   */
+  private async commitSignIn(attempt: LoginAttempt, provider: string, credential: MintedCredential): Promise<void> {
+    // A cancel that landed while the flow was finishing must not write a row.
+    if (attempt.settledAt !== undefined) return
+    const signIn = signInProvider(provider)
+    if (signIn === undefined) throw new Error(`Provider "${provider}" offers no in-process sign-in`)
+    const input = validateKeyInput(attempt.alias ?? signIn.label, credential.access)
+    const importedFrom = `signin:${signIn.driver}`
+    const target = attempt.targetAccountId
+    if (target !== undefined) {
+      await this.replaceSignInCredential(provider, target, input.value)
+      attempt.accountId = target
+    } else if (this.store.provider(provider) === undefined) {
+      await this.addExtraProvider(provider, input.alias, input.value, importedFrom)
+      const created = this.store.provider(provider)
+      // `findLast`: a repeat sign-in on a managed route appends a second row
+      // with the same provenance, and the attempt must name the row it wrote.
+      attempt.accountId = created?.keys.findLast(key => key.importedFrom === importedFrom)?.id
+    } else {
+      await this.addKey(provider, input.alias, input.value, importedFrom)
+      const managed = this.store.provider(provider)
+      attempt.accountId = managed?.keys.findLast(key => key.importedFrom === importedFrom)?.id
+    }
+    this.finishLoginAttempt(attempt, 'ready')
+  }
+
+  /**
+   * Replace a sign-in row's literal in place on re-authentication.
+   *
+   * Mirrors the recovery half of the grant harvest: the row keeps its id, ref
+   * and position, the missing flag a demotion set goes, and a cooldown the OLD
+   * credential earned ends with the new one. No row is added and no record is
+   * created — the literal is the whole credential.
+   */
+  private async replaceSignInCredential(provider: string, keyId: string, value: string): Promise<void> {
+    await this.run(async () => {
+      const record = this.store.provider(provider)
+      if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
+      const key = record.keys.find(candidate => candidate.id === keyId)
+      if (key === undefined) throw new Error(`Account "${keyId}" not found on ${provider}`)
+      if (key.kind !== 'api-key') throw new Error(`Key "${keyId}" is not a sign-in credential`)
+      await this.setOriginal(key.ref, value)
+      key.valueMissing = false
+      key.cooldownUntil = 0
+      this.cooldownGenerations.delete(key.id)
+      this.store.touch()
+    })
+  }
+
   /** Resolve the attempt's parked prompt with the human's answer. */
   async answerAccountPrompt(attemptId: string, value: string): Promise<void> {
     const attempt = this.loginAttempts.get(attemptId)
@@ -2298,6 +2464,22 @@ export class KeysManagerService {
     const resolve = attempt.resolvePrompt
     this.dropPrompt(attempt)
     resolve(value)
+  }
+
+  /**
+   * Remote: cancel one interactive attempt.
+   *
+   * The seam path learns about cancellation from `authorization`; an
+   * in-process sign-in has no seam handle, so the login dialog's Cancel calls
+   * this. Idempotent: a settled attempt is left alone.
+   */
+  cancelAccountLogin(attemptId: string): void {
+    const attempt = this.loginAttempts.get(attemptId)
+    if (attempt === undefined) throw new Error('Unknown sign-in attempt')
+    if (!attempt.inProcess) {
+      throw new Error('The authorization seam owns this sign-in; cancel it from the surface that started it')
+    }
+    this.finishLoginAttempt(attempt, 'cancelled')
   }
 
   /** One attempt's serializable view, or undefined when unknown. */
@@ -2405,6 +2587,8 @@ export class KeysManagerService {
       notices: [],
       createdAt: now,
       updatedAt: now,
+      // A transport attempt is seam-driven; `cancelAccountLogin` must not touch it.
+      inProcess: false,
       controller: new AbortController(),
     }
     this.loginAttempts.set(attempt.id, attempt)
@@ -6352,9 +6536,10 @@ export class KeysManagerService {
       // capable, and it is never adoptable.
       const transport = entry.settingsNs === TRANSPORT_CREDENTIAL_SCOPE
       const oauthFlow = this.oauthFlowAvailable(entry.provider)
-      const caps = capabilityOf(entry, profile, oauthFlow)
+      const signIn = signInCapable(entry.provider)
+      const caps = capabilityOf(entry, profile, oauthFlow, signIn)
       const support: ProviderSupport = { supported: caps.keys, ...(caps.reason === undefined ? {} : { reason: caps.reason }) }
-      const accountSupport = accountSupportOf(entry, oauthFlow)
+      const accountSupport = accountSupportOf(entry, oauthFlow, signIn)
       const apiKeyEnv = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : null
       const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
       const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
@@ -6418,8 +6603,9 @@ export class KeysManagerService {
         configured: managed !== undefined,
         active: false,
         supported: true,
-        // Extra providers are key-pool routes; they offer no OAuth flow.
-        accountSupported: false,
+        // Extra providers are key-pool routes; `kilo` additionally has an
+        // in-process sign-in, which needs no seam flow.
+        accountSupported: signInCapable(extra.id),
         settingsNs: 'llm-pi-ai',
         settingsPath: ['providers', extra.id],
         apiKeyEnv: managed?.brokerRef ?? null,
@@ -6458,7 +6644,7 @@ export class KeysManagerService {
         configured: false,
         active: false,
         supported: true,
-        accountSupported: false,
+        accountSupported: signInCapable(managed.provider),
         settingsNs: managed.settingsNs,
         settingsPath: [...managed.settingsPath],
         apiKeyEnv: managed.brokerRef,
@@ -6916,8 +7102,9 @@ export class KeysManagerService {
       // route adopts as before; the key-pool table alone no longer blocks
       // an adoptable account route.
       const oauthFlow = this.oauthFlowAvailable(entry.provider)
-      const caps = capabilityOf(entry, profile, oauthFlow)
-      const accountSupport = accountSupportOf(entry, oauthFlow)
+      const signIn = signInCapable(entry.provider)
+      const caps = capabilityOf(entry, profile, oauthFlow, signIn)
+      const accountSupport = accountSupportOf(entry, oauthFlow, signIn)
       if (!caps.keys && !accountSupport.supported) {
         throw new Error(caps.reason ?? accountSupport.reason ?? 'This provider cannot be managed')
       }
@@ -7143,7 +7330,13 @@ export class KeysManagerService {
    * the key that serves it in the same mutation, so the write below is the
    * route's first binding rather than a takeover of a value the user owns.
    */
-  addExtraProvider(extraId: string, alias: string, value: string): Promise<StateView> {
+  addExtraProvider(
+    extraId: string,
+    alias: string,
+    value: string,
+    /** Provenance for the first row; `signin:<driver>` for an in-process sign-in. */
+    importedFrom: string | null = null,
+  ): Promise<StateView> {
     return this.run(async () => {
       if (typeof extraId !== 'string' || extraId.length === 0) throw new Error('extraId is required')
       const input = validateKeyInput(alias, value)
@@ -7160,7 +7353,7 @@ export class KeysManagerService {
         // add-key flow restores them and the repair keeps one implementation.
         // Hand it the value resolved above: the entry refusal stays the single
         // decision for this surface, and the environment is read once per add.
-        await this.addKeyLocked(extraId, input.alias, input.value, headers)
+        await this.addKeyLocked(extraId, input.alias, input.value, headers, importedFrom)
         this.store.touch()
         return this.buildState()
       }
@@ -7189,7 +7382,7 @@ export class KeysManagerService {
           cursor: 0,
           keys: [],
         }
-        const key = await this.createKeyRecord(extraId, input.alias, input.value)
+        const key = await this.createKeyRecord(extraId, input.alias, input.value, importedFrom)
         const ops: SettingsPathOp[] = [{ op: 'set', path: ['providers', extraId, 'apiKeyEnv'], value: record.brokerRef }]
         // Fill the declared headers the stored profile does not carry; a value
         // the profile already sets for the same header is never overwritten.
@@ -7235,7 +7428,7 @@ export class KeysManagerService {
         ...(headers === undefined ? {} : { headers }),
         models,
       }
-      const key = await this.createKeyRecord(extraId, input.alias, input.value)
+      const key = await this.createKeyRecord(extraId, input.alias, input.value, importedFrom)
       try {
         // The profile and its binding are created together (see the method
         // comment); no user value exists to take over here.
@@ -7338,7 +7531,13 @@ export class KeysManagerService {
   }
 
   /** Add one key; caller already owns the mutation queue. */
-  private async addKeyLocked(provider: string, alias: string, value: string, declaredHeaders?: Record<string, string>): Promise<void> {
+  private async addKeyLocked(
+    provider: string,
+    alias: string,
+    value: string,
+    declaredHeaders?: Record<string, string>,
+    importedFrom: string | null = null,
+  ): Promise<void> {
     const record = this.store.provider(provider)
     if (record === undefined) throw new Error(`Provider "${provider}" is not managed`)
     // MF1: the key-pool restriction lives on the key entry path. A route
@@ -7352,7 +7551,7 @@ export class KeysManagerService {
     }
     const input = validateKeyInput(alias, value)
     if (record.keys.length >= KEY_LIMIT) throw new Error(`A provider may have at most ${KEY_LIMIT} keys`)
-    const key = await this.createKeyRecord(provider, input.alias, input.value)
+    const key = await this.createKeyRecord(provider, input.alias, input.value, importedFrom)
     record.keys.push(key)
     // After the key add: a refused key (capability or capacity) must leave the
     // settings document untouched, so the repair never runs ahead of it.
@@ -7366,9 +7565,9 @@ export class KeysManagerService {
   }
 
   /** Remote: add one key to a managed provider. */
-  addKey(provider: string, alias: string, value: string): Promise<StateView> {
+  addKey(provider: string, alias: string, value: string, importedFrom: string | null = null): Promise<StateView> {
     return this.run(async () => {
-      await this.addKeyLocked(provider, alias, value)
+      await this.addKeyLocked(provider, alias, value, undefined, importedFrom)
       this.store.touch()
       return this.buildState()
     })

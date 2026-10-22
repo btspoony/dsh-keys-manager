@@ -122,6 +122,17 @@ dsh plugin --profile web link .
 
 添加账户只把提供商签发的授权存进 Harness 凭据存储（挂在账户的 `grantRef` 之下）；管理器状态里只存引用与非敏感元数据（邮箱、账户 ID、过期时间）——与 API key 相同的无明文布局。
 
+### 内置登录提供商（Kilo、Z.AI Coding Plan）
+
+另有两条路由通过本插件自带的登录客户端，而不是 `llm-pi-ai` seam 登录：
+
+- **Kilo**（`kilo`，以插件内置扩展路由的形式安装）：设备码页面加轮询。首次登录成功会创建该路由及其第一把 key 行；之后再登录则追加行。
+- **Z.AI (GLM Coding Plan)**（`zai`，DSH 随附的 pi-ai 路由）：需要先接管。流程会打开浏览器页面，并要求你把最终跳转 URL（`zcode://` 链接）或授权码粘贴回对话框。
+
+两者签发的都是**静态凭据**——一个 token 或一个 `id.secret` key——以普通的 key 行存入同一个池，标记为 `signin:kilo` / `signin:zai-coding-plan`。它们不是可刷新的授权，因此行菜单里的**重新登录**是唯一的续期方式：它会就地替换该行的字面量，保留行 ID 与位置。这两条路由不会向 `llm-pi-ai/<provider>` 写入任何内容。
+
+**登录流程不等于传输。** 这两条路由走常规 pi-ai key 池，参与会话粘滞、轮询、重试切换与冷却。下面描述的 `llm-omp-transports` 是另一套机制：一条路由、一条授权、独立区块。
+
 ### Cursor 传输
 
 Cursor 由随附的 `dsh-llm-omp-transports` 组件在独立 `cursor` 路由上提供。它不经过 pi-ai key 池：该路由在 `llm-omp-transports/cursor` 只保留一条授权，并在凭据 seam 上自动刷新。

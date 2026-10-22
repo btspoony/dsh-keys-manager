@@ -19,3 +19,11 @@ Keys Manager 插件当前的设计边界：
 - 每个提供商同时只保留一个活跃授权。
 - 条件删除是凭证 seam 不具备的能力：凭证库只提供 `deleteRecord(key)`，没有比较/版本守卫，因此降级或补偿 `llm-pi-ai/<provider>` 投影只能是"先比较、后删除"。原生授权若落在最后一次比较与删除排队入口之间的亚微任务窗口内，即使它已不属于被移除的账户，仍可能被删除。管理器用 seam 每 key 锁内的比较加删除前复读收窄了该窗口，并有回归测试精确固定这一残留行为。上游能力请求见 store issue I-000090（credential seam: compare-and-delete / versioned delete primitive）。
 - 增量 1 的选择模型以 key 为中心：该提供商的 API key 构成粘滞/轮询/切换/冷却的选择环，同时只由一条被投影的 OAuth 授权服务该提供商。按账户排名（在账户间轮换）属于后续工作，不在本增量内。
+
+## 内置登录（Kilo、Z.AI Coding Plan）
+
+- 两个流程都是构建时从 `@oh-my-pi/pi-ai@18.12.3` 抽取的非官方客户端。提供商随时可能改动登录端点、scope 或响应；失效会以提供商自己的错误文本出现在登录对话框中，而不会导致崩溃。
+- Kilo 的凭据是有效期一年的 bearer token，没有刷新令牌（`refresh: ''`）。它无法在后台续期：过期后从该行重新登录。
+- Z.AI Coding Plan 流程最终签发一把 API key（`<id>.<secret>`），不是登录授权。该 key 会以 `oh-my-pi` 为名出现在 Z.AI 控制台中；在控制台删除或轮换它会使对应行失效，之后像普通 key 一样进入冷却。同一流程不覆盖 `zai-coding-cn`（中国区端点），那是独立路由。
+- 这些登录只能从 Keys Manager 页面发起。DSH CLI 与 Models 页面都不会触发它们，也不会写入 `llm-pi-ai/<provider>` 授权记录。
+- 签发得到的凭据就是该提供商池中的又一行：没有按账户的轮换或排名，与上述七家 pi-ai OAuth 账户一致。
