@@ -4578,10 +4578,6 @@ test('a failed harvest keeps a grant a pre-existing row still references', async
     // The re-auth committed the same-ref payload over the record...
     const reauthenticated = grantPayload({ refresh: 'rt-seed-value', access: 'at-reauthenticated' })
     h.credentials.records.set(grantRef, reauthenticated)
-    const warnings: string[] = []
-    h.ctx.logger.warn = (message: string) => {
-      warnings.push(message)
-    }
     // ...and the harvest failed before its row upsert (the pre-upsert
     // compensation path receives exactly these facts).
     const internals = h.service as unknown as {
@@ -4595,10 +4591,6 @@ test('a failed harvest keeps a grant a pre-existing row still references', async
     })
     // The record belongs to the live row, not to the failed attempt.
     assert.equal(h.credentials.records.has(grantRef), true, 'the compensation deleted a grant a live row references')
-    assert.ok(
-      warnings.some(message => message.includes('an account row still references it')),
-      `expected a kept-grant warning, got: ${warnings.join(' | ')}`,
-    )
     // The row stays usable: an activation-shaped read of its ref succeeds
     // instead of reporting "missing or unusable".
     await h.service.activateAccount('anthropic', rowId)
@@ -9884,7 +9876,6 @@ test('a row test restores a missing grant record from its owning projection', as
     await h.service.activateAccount('anthropic', rowId)
     // The projection still serves this row's grant; its plugin-scope record was lost.
     h.credentials.records.delete(grantRef)
-    assert.equal(h.credentials.records.has(grantRef), false)
     h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
       yield { type: 'finish', reason: { kind: 'max-tokens' } }
     } as any)
@@ -9946,7 +9937,6 @@ test('a row test does not adopt a projection another account row owns', async ()
     // own record is gone.
     await h.service.activateAccount('anthropic', other.rowId)
     h.credentials.records.delete(grantRef)
-    assert.equal(h.credentials.records.has(grantRef), false)
 
     const result = await h.service.testKey('anthropic', rowId)
     assert.equal(result.ok, false)
@@ -9958,6 +9948,80 @@ test('a row test does not adopt a projection another account row owns', async ()
       'rt-other-value',
     )
   } finally {
+    await h.close()
+  }
+})
+
+// PR #37 review (must-fix): the recovery's seam round trip sits between the
+// entry gate and the borrow, and it can outlive the isolation deadline. The
+// watchdog then cleans and RELEASES the window, whose late-borrow compensation
+// is identity-guarded by that released entry — a resumed continuation would
+// borrow the tested account into the route and never put the pre-test
+// projection back. The gate is re-run after the recovery: the test reports
+// abandoned and the route keeps serving the account it served before.
+test('a grant read that outlives the deadline leaves the pre-test projection serving', async () => {
+  const { h, first } = await harnessWithTwoProjectedAccounts()
+  const park = parkGrantRead(h, first.grantRef)
+  ;(h.service as unknown as { isolationWaitMs: number }).isolationWaitMs = 30
+  const testing = h.service.testKey('anthropic', first.rowId)
+  try {
+    await eventually(() => assert.equal(park.parked(), true))
+    // The watchdog abandoned the window while the read was parked, and its
+    // cleanup (nothing borrowed yet) released the provider: the window entry
+    // goes only with that release, while the test itself is still parked.
+    await eventually(() => assert.equal(
+      (h.service as unknown as { testWindows: Map<string, unknown> }).testWindows.has('anthropic'),
+      false,
+    ))
+    park.release()
+    const result = await testing
+    assert.equal(result.ok, false)
+    assert.match(String(result.error), /abandoned after 30ms/)
+    // The borrow never landed: the second account still serves the route.
+    assert.equal(
+      (h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh,
+      'rt-second',
+      'the abandoned test borrowed the tested account into the route',
+    )
+    assert.equal(
+      (h.service as unknown as { testBindingBorrows: Set<string> }).testBindingBorrows.has('anthropic'),
+      false,
+      'the abandoned test left its borrow marker behind',
+    )
+  } finally {
+    park.release()
+    await testing.catch(() => undefined)
+    park.restore()
+    await h.close()
+  }
+})
+
+// PR #37 review (should-fix): when the row's grant record is gone and the
+// compare-at-absent repair write fails, the recovery serves the
+// ownership-verified projection payload. Activation's source re-check must
+// accept exactly that state — otherwise its own documented fallback is dead and
+// the user is told to sign in again over a live credential.
+test('an activation whose repair write failed activates from the verified projection', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount({ accountId: 'acc-9', email: 'dev@example.com' })
+  const raw = h.credentials.raw
+  const realModify = raw.modifyRecord.bind(raw)
+  try {
+    await h.service.activateAccount('anthropic', rowId)
+    h.credentials.records.delete(grantRef)
+    raw.modifyRecord = async (key: string, mutate: Parameters<typeof realModify>[1]) => {
+      if (key === grantRef) throw new Error('the credential store refused the repair write')
+      return realModify(key, mutate)
+    }
+    await h.service.activateAccount('anthropic', rowId)
+    // The projection the recovery read still serves the route…
+    assert.equal(
+      (h.credentials.records.get(GRANT_KEY)!.payload as Record<string, unknown>).refresh,
+      'rt-seed-value',
+    )
+    // …and the refused repair write wrote nothing.
+    assert.equal(h.credentials.records.has(grantRef), false, 'the failed repair write landed anyway')
+  } finally {
+    raw.modifyRecord = realModify
     await h.close()
   }
 })

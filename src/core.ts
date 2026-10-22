@@ -6,6 +6,7 @@
  * round-robin, sticky-session, cooldown-escalation, and retry decisions
  * unit-testable without a running Harness.
  */
+import type { FinishReason } from '@deepseek-ai/dsh-llm'
 import type {
   KeyRecord,
   KeyStatus,
@@ -330,7 +331,7 @@ export const KEY_LIMIT = MAX_KEYS_PER_PROVIDER
  * error`, so `length`/`toolUse` were never completions. Shared with the tests
  * so the implementation and its fixtures cannot drift apart again.
  */
-export const TEST_SUCCESS_FINISH_KINDS = ['stop', 'tool-calls', 'max-tokens'] as const
+export const TEST_SUCCESS_FINISH_KINDS = ['stop', 'tool-calls', 'max-tokens'] as const satisfies ReadonlyArray<FinishReason['kind']>
 
 /** Re-export the shared update type for callers that only import core. */
 export type { ManagerSettings }

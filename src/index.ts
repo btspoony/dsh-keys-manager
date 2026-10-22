@@ -989,6 +989,13 @@ interface ActivationPreparation {
   payload: OAuthGrantPayload
   written: string
   baseline: ActivationBaseline
+  /**
+   * The payload came from the ownership-verified projection and this
+   * activation's repair write did not persist it, so the grant ref may stay
+   * absent or unusable. The source re-check accepts exactly that state; a ref
+   * holding anything else is still a concurrent writer.
+   */
+  recoveredFromProjection: boolean
   /** The route's owner classification before this activation claimed it. */
   classification: ActivationClassification
 }
@@ -3759,9 +3766,16 @@ export class KeysManagerService {
       // changes. A same-ref rotation that lands while the activation waits in
       // the queue is the uncovered case.
       const source = await records.readRecord(prepared.grantRef)
-      if (source === undefined
+      const sourceMatches = source !== undefined
+        && source.kind === 'grant'
+        && JSON.stringify(source.payload) === prepared.written
+      // The preparation can carry a payload its own repair write did not
+      // persist: the ownership-verified projection is then the live credential,
+      // and an absent or unusable ref is that state — not a concurrent writer.
+      const sourceAbsentOrUnusable = source === undefined
         || source.kind !== 'grant'
-        || JSON.stringify(source.payload) !== prepared.written) {
+        || !isOAuthGrantPayload(source.payload)
+      if (!sourceMatches && !(prepared.recoveredFromProjection && sourceAbsentOrUnusable)) {
         throw new Error(`The grant payload for "${accountId}" on ${provider} could not be projected; activate the account again`)
       }
     }
@@ -3927,15 +3941,22 @@ export class KeysManagerService {
    * The row's own grant payload, recovered from the live projection when the
    * plugin-scope record is gone. The projection IS the route's credential, so a
    * matching payload is written back (compare-at-absent) and used immediately.
+   *
+   * `recoveredFromProjection` marks the payload the repair write did not
+   * persist: the ref stays absent or unusable, so a caller that re-reads it
+   * must treat the payload as the ownership-verified live credential instead of
+   * a concurrent writer's record.
    */
   private async recoverGrantPayload(
     provider: string,
     row: KeyRecord,
     records: CredentialRecordsLike,
-  ): Promise<OAuthGrantPayload | undefined> {
+  ): Promise<{ payload: OAuthGrantPayload; recoveredFromProjection: boolean } | undefined> {
     const grantRef = row.oauth!.grantRef
     const stored = await records.readRecord(grantRef)
-    if (stored !== undefined && stored.kind === 'grant' && isOAuthGrantPayload(stored.payload)) return stored.payload
+    if (stored !== undefined && stored.kind === 'grant' && isOAuthGrantPayload(stored.payload)) {
+      return { payload: stored.payload, recoveredFromProjection: false }
+    }
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     const live = await records.readRecord(projectionKey)
     if (live === undefined || live.kind !== 'grant' || !isOAuthGrantPayload(live.payload)) return undefined
@@ -3946,7 +3967,9 @@ export class KeysManagerService {
     // `row` is a snapshot taken before the reads: a removal or a re-sign-in can
     // have detached or repointed it since, and the repair must not land on a
     // ref this row no longer names.
-    if (oauthRows.find(candidate => candidate.id === row.id)?.oauth?.grantRef !== grantRef) return live.payload
+    if (oauthRows.find(candidate => candidate.id === row.id)?.oauth?.grantRef !== grantRef) {
+      return { payload: live.payload, recoveredFromProjection: true }
+    }
     try {
       // Compare-at-absent: an occupied ref returns `current`, which the seam
       // keeps, so a concurrent login's or rotation's record wins the ref.
@@ -3955,12 +3978,14 @@ export class KeysManagerService {
       // The ref may have been taken while this read was parked: the record's
       // payload is the credential the caller must borrow now, not the
       // projection this repair declined to write over it.
-      if (liveNow !== undefined && liveNow.kind === 'grant' && isOAuthGrantPayload(liveNow.payload)) return liveNow.payload
+      if (liveNow !== undefined && liveNow.kind === 'grant' && isOAuthGrantPayload(liveNow.payload)) {
+        return { payload: liveNow.payload, recoveredFromProjection: false }
+      }
     } catch (error) {
       // Best-effort repair: the projection still served this read.
       this.warn(`could not restore ${grantRef} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
     }
-    return live.payload
+    return { payload: live.payload, recoveredFromProjection: true }
   }
 
   /**
@@ -3980,7 +4005,7 @@ export class KeysManagerService {
     }
     const projectionKey = `${OAUTH_GRANT_RECORD_SCOPE}/${provider}`
     const live = await records.readRecord(projectionKey)
-    const payload = structuredClone(recovered)
+    const payload = structuredClone(recovered.payload)
     // F5: the restored record decides its owner, so the classification is
     // derived from the baseline payload through the shared matcher — the same
     // rule the reconciler applies — rather than from an owner id captured
@@ -3993,6 +4018,7 @@ export class KeysManagerService {
       grantRef,
       payload,
       written: JSON.stringify(payload),
+      recoveredFromProjection: recovered.recoveredFromProjection,
       baseline: live === undefined ? { state: 'absent' } : { state: 'present', record: structuredClone(live) },
       // Captured with the baseline, before the turn claims the route: the
       // compensation has to put back the classification that matches the
@@ -4860,6 +4886,52 @@ export class KeysManagerService {
     })
   }
 
+  /**
+   * Whether this test may still borrow the route, or the result it must report
+   * instead: the window is live, shutdown has not begun, and the row is neither
+   * retiring nor gone.
+   *
+   * Read before the borrow and again after every await that precedes it. The
+   * grant recovery is one: it outlives the isolation deadline on a slow seam,
+   * and a window the watchdog already released no longer compensates its late
+   * borrow (that branch is guarded by `abandonedWindows.get(provider) === window`).
+   */
+  private borrowBarrier(window: RowTestWindow, provider: string, row: KeyRecord): KeyTestResult | undefined {
+    if (window.cleaned) {
+      // QC fix wave 2: the watchdog abandoned this window while an await was in
+      // flight. Starting (or resuming) the borrow now would land it after the
+      // cleanup that already ran, so the test stops here.
+      return this.abandonedTestResult()
+    }
+    if (this.shutdownRequested) {
+      // PR review round 30: shutdown abandons the chain parked here, so the
+      // borrow write must not land after `close()`. Round 34: the marker
+      // is up from shutdown's entry, so the pre-close restoration is covered
+      // too — it does not borrow, and this test must not either.
+      return this.shutdownEntryResult()
+    }
+    // PR review round 12: the reads and the recovery above are awaits, so a
+    // removal can have deleted the provider or this row while they were in
+    // flight (a test that registered and one that did not are covered: the
+    // marker refuses the latter, this re-check the former). Never write the
+    // borrow — and never re-project the removed account's grant — on that state.
+    // PR review round 15: the existence check alone still holds while a removal
+    // is deleting credentials (the row is spliced only after its grant delete),
+    // so the row's retirement mark is part of the assertion. The provider-wide
+    // marker is deliberately not read here: a removal that began while this
+    // test is registered waits for it in {@link settleTestBeforeRemoval} and is
+    // the designed handshake, while the row mark is only set by a removal that
+    // already passed that check.
+    const live = this.store.provider(provider)
+    const removing = this.retiringAccounts.has(row)
+    if (removing || live === undefined || !live.keys.some(candidate => candidate.id === row.id)) {
+      return removing
+        ? { ok: false, latencyMs: 0, error: `Provider "${provider}" is being removed; the test did not borrow its credential` }
+        : { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could borrow it` }
+    }
+    return undefined
+  }
+
   /** One request with the row's grant temporarily projected as the route's credential. */
   private async runOAuthRowTest(
     provider: string,
@@ -4884,39 +4956,9 @@ export class KeysManagerService {
       // the updater's `current` and make the borrow look unchanged.
       const previous = captured === undefined ? undefined : structuredClone(captured)
       const previousKey = previous === undefined ? undefined : JSON.stringify(previous)
-      if (window.cleaned) {
-        // QC fix wave 2: the watchdog abandoned this window while the read was
-        // in flight. Starting (or resuming) the borrow now would land it after
-        // the cleanup that already ran, so the test stops here.
-        result = this.abandonedTestResult()
-        return
-      }
-      if (this.shutdownRequested) {
-        // PR review round 30: shutdown abandons the chain parked here, so the
-        // borrow write below must not land after `close()`. Round 34: the
-        // marker is up from shutdown's entry, so the pre-close restoration is
-        // covered too — it does not borrow, and this test must not either.
-        result = this.shutdownEntryResult()
-        return
-      }
-      // PR review round 12: both reads above are awaits, so a removal can have
-      // deleted the provider or this row while they were in flight (a test that
-      // registered and one that did not are covered: the marker refuses the
-      // latter, this re-check the former). Never write the borrow — and never
-      // re-project the removed account's grant — on that state.
-      // PR review round 15: the existence check alone still holds while a
-      // removal is deleting credentials (the row is spliced only after its
-      // grant delete), so the row's retirement mark is part of the assertion.
-      // The provider-wide marker is deliberately not read here: a removal that
-      // began while this test is registered waits for it in
-      // {@link settleTestBeforeRemoval} and is the designed handshake, while
-      // the row mark is only set by a removal that already passed that check.
-      const live = this.store.provider(provider)
-      const removing = this.retiringAccounts.has(row)
-      if (removing || live === undefined || !live.keys.some(candidate => candidate.id === row.id)) {
-        result = removing
-          ? { ok: false, latencyMs: 0, error: `Provider "${provider}" is being removed; the test did not borrow its credential` }
-          : { ok: false, latencyMs: 0, error: `Key "${row.id}" was removed from ${provider} before its test could borrow it` }
+      const blocked = this.borrowBarrier(window, provider, row)
+      if (blocked !== undefined) {
+        result = blocked
         return
       }
       // The recovery writes a grant record, so it runs only once this test is
@@ -4930,7 +4972,16 @@ export class KeysManagerService {
         }
         return
       }
-      const borrowed = structuredClone(recovered)
+      const borrowed = structuredClone(recovered.payload)
+      // PR #37 review (must-fix): the recovery is an untimed seam round trip
+      // and can outlive the isolation deadline, after which the window's
+      // cleanup has already run and released the window. Registering facts or
+      // borrowing now would land them with no owner: re-run the barrier first.
+      const lateBlocked = this.borrowBarrier(window, provider, row)
+      if (lateBlocked !== undefined) {
+        result = lateBlocked
+        return
+      }
       // QC fix wave 2: record the borrow before the write, so an abandoned
       // window can restore a borrow whose write lands after the watchdog
       // looked. The restore decides by payload, so the facts are safe to hold
