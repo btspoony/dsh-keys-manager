@@ -24,7 +24,7 @@ manager.
 - OAuth account sign-in for seven pi-ai-backed providers, stored beside
   the API keys.
 - A companion transport component for providers the vendored pi-ai cannot
-  speak — Cursor (`cursor`) today — installed with the plugin.
+  speak — Cursor (`cursor`) and Devin (`devin`) — installed with the plugin.
 
 ### Extra providers
 
@@ -101,7 +101,7 @@ Installing `dsh-keys-manager` installs two bundle components. The published
 package depends on `dsh-llm-omp-transports`, so one install resolves both npm
 packages, and the plugin page lists both `dsh-keys-manager` and
 `llm-omp-transports`. Enable both: the manager owns credentials and routing,
-the transport component owns the Cursor wire protocol.
+the transport component owns the Cursor and Devin wire protocols.
 
 ### Install — local checkout
 
@@ -193,7 +193,7 @@ position. Nothing is written to `llm-pi-ai/<provider>` for these routes.
 **A login flow is not a transport.** These two routes serve through the normal
 pi-ai key pool and take part in sticky selection, round-robin, retry failover
 and cooldowns. The `llm-omp-transports` surface described below is the other
-thing entirely: one route, one grant, its own section.
+thing entirely: one grant per route, each with its own section.
 
 ### Cursor transport
 
@@ -213,6 +213,28 @@ automatically on the credential seam.
 - The client is unofficial and presents Cursor's vendor-internal OAuth
   identity. Read the [transports package docs](packages/llm-omp/README.md)
   before relying on it; the risks and limits are listed there.
+
+### Devin transport
+
+Devin is the second route served by the same `dsh-llm-omp-transports`
+component, on its own `devin` route with the same one-grant record at
+`llm-omp-transports/devin`.
+
+- Sign in from the **Transport accounts** section. omp finishes this login
+  through a loopback listener that only Bun provides, so this plugin opens the
+  authorize page and asks you to paste back the address the browser landed on
+  (the full URL or `code#state`). Nothing listens on the redirect port, so the
+  page itself fails to load and the code stays in the address bar.
+- **There is no refresh.** The record is a static bearer whose expiry is
+  derived from the token (JWT `exp` minus five minutes, else one year). A
+  grant with no `expires` is served as a static bearer and reported `active`
+  with no expiry cell; once a readable expiry passes, sign in again by hand.
+- Models come from the pinned catalog (two rows, `swe-1-6` and `swe-1-6-fast`)
+  generated into the transport at build time.
+- The client is unofficial and presents the released Devin CLI identity; the
+  real endpoints and protocol behavior are unverified. Read the
+  [transports package known limits](packages/llm-omp/docs/known-limits.md)
+  before relying on it.
 
 ### Selection and failure policy
 
@@ -292,7 +314,7 @@ This repository is a pnpm workspace with two published packages:
 | Path | npm package | Role |
 |---|---|---|
 | root | `dsh-keys-manager` | Host plugin, Keys Manager Web client, bundle patch |
-| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor (and future) transport component |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor and Devin transport component |
 
 The root package declares the transports package as a dependency, so the
 published Keys Manager tarball pulls the transport in rather than vendoring
@@ -306,7 +328,7 @@ it. Both packages are released together and carry the same version; see
 | [Development](docs/development.md) | build and dev workflow, repository layout |
 | [Release](docs/release.md) | CI checks and the npm release flow |
 | [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
-| [Transports package](packages/llm-omp/README.md) | Cursor transport: support status, risks, build/test, release |
+| [Transports package](packages/llm-omp/README.md) | Cursor and Devin transports: support status, risks, build/test, release |
 
 Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
 files in `docs/` — [开发](docs/development.zh-CN.md) ·

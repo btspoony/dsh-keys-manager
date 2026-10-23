@@ -173,7 +173,7 @@ interface AuthorizationLike {
 
 /** One question the authorization seam can put to the human. */
 export interface AuthorizationPrompt {
-  readonly kind: 'text' | 'secret' | 'select'
+  readonly kind: 'text' | 'secret' | 'manual-code' | 'select'
   readonly message: string
   readonly placeholder?: string
   readonly options?: readonly { id: string; label: string; description?: string }[]
@@ -298,7 +298,9 @@ export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAu
           onAuthUrl: url => session.notify({ message: 'Open this page to sign in to Devin.', url }),
           prompt: () =>
             session.prompt({
-              kind: 'text',
+              // The pasted callback carries the authorization code, so the
+              // shared dialog must mask it and offer the paste hint.
+              kind: 'manual-code',
               message:
                 'Your browser will land on a 127.0.0.1:59653 page that cannot load. Paste the whole address (or just the code) here.',
               placeholder: 'http://127.0.0.1:59653/callback?code=…&state=…',

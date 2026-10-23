@@ -19,7 +19,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 - 既有 Models 提供商卡片内出现"由 Keys Manager 托管"徽标。
 - 额外内置提供商以普通 `llm-pi-ai` 路由安装。
 - 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，凭据与 API key 并存管理。
-- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——目前是 Cursor（`cursor`）。
+- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——目前是 Cursor（`cursor`）与 Devin（`devin`）。
 
 ### 额外提供商
 
@@ -87,7 +87,7 @@ CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<
 dsh plugin --profile web add dsh-keys-manager
 ```
 
-安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责 Cursor 的线协议。
+安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责 Cursor 与 Devin 的线协议。
 
 ### 安装 —— 本地检出
 
@@ -131,7 +131,7 @@ dsh plugin --profile web link .
 
 两者签发的都是**静态凭据**——一个 token 或一个 `id.secret` key——以普通的 key 行存入同一个池，标记为 `signin:kilo` / `signin:zai-coding-plan`。它们不是可刷新的授权，因此行菜单里的**重新登录**是唯一的续期方式：它会就地替换该行的字面量，保留行 ID 与位置。这两条路由不会向 `llm-pi-ai/<provider>` 写入任何内容。
 
-**登录流程不等于传输。** 这两条路由走常规 pi-ai key 池，参与会话粘滞、轮询、重试切换与冷却。下面描述的 `llm-omp-transports` 是另一套机制：一条路由、一条授权、独立区块。
+**登录流程不等于传输。** 这两条路由走常规 pi-ai key 池，参与会话粘滞、轮询、重试切换与冷却。下面描述的 `llm-omp-transports` 是另一套机制：每条路由一条授权，各自独立区块。
 
 ### Cursor 传输
 
@@ -141,6 +141,15 @@ Cursor 由随附的 `dsh-llm-omp-transports` 组件在独立 `cursor` 路由上�
 - 在 Keys Manager 页面的 **传输账户**（`Transport accounts`）区块登录：浏览器页面加轮询。账户行显示身份、有效期与状态；授权过期或被拒后需要手动重新登录。
 - 暂不转发图片。路由按纯文本宣告输入，遇到图片块以类型化错误拒绝，而不是静默丢弃。
 - 该客户端是非官方实现，会呈现 Cursor 厂商内部的 OAuth 身份。依赖它之前请阅读[传输包文档](packages/llm-omp/README.md)，风险与限制列在那里。
+
+### Devin 传输
+
+Devin 是同一个 `dsh-llm-omp-transports` 组件服务的第二条路由：独立 `devin` 路由，同样在 `llm-omp-transports/devin` 只保留一条授权。
+
+- 在 **传输账户**（`Transport accounts`）区块登录。omp 完成该登录需要一个只有 Bun 才提供的本地回环监听器，因此本插件打开授权页面后，要求你粘贴浏览器最终落到的地址（完整 URL 或 `code#state`）。重定向端口上没有任何监听，页面本身打不开，授权码会留在地址栏里供你复制。
+- **没有刷新。** 该记录是静态 bearer，其有效期由令牌推导（JWT `exp` 减五分钟，否则一年）。没有 `expires` 的授权按静态 bearer 服务，状态显示为 `active`，不显示有效期；可读的有效期一旦过期，需要手动重新登录。
+- 模型来自固定的目录（两行：`swe-1-6` 与 `swe-1-6-fast`），构建时生成进传输包。
+- 该客户端是非官方实现，呈现已发布的 Devin CLI 身份；真实端点与协议行为均未验证。依赖它之前请阅读[传输包的已知限制](packages/llm-omp/docs/known-limits.md)。
 
 ### 选择与故障策略
 
@@ -194,7 +203,7 @@ $DSH_HOME/keys-manager/state.json
 | 路径 | npm 包 | 职责 |
 |---|---|---|
 | 根目录 | `dsh-keys-manager` | Host 插件、Keys Manager Web 客户端、bundle patch |
-| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor（及后续）传输组件 |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor 与 Devin 传输组件 |
 
 根包把传输包声明为依赖，因此已发布的 Keys Manager tarball 会拉取传输包，而不是把它 vendor 进来。两个包一起发布且版本号一致，详见[发布](docs/release.zh-CN.md)。
 
@@ -205,7 +214,7 @@ $DSH_HOME/keys-manager/state.json
 | [开发](docs/development.zh-CN.md) | 构建与开发工作流、仓库布局 |
 | [发布](docs/release.zh-CN.md) | CI 检查与 npm 发布流程 |
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含延后提供商 |
-| [传输包（英文）](packages/llm-omp/README.md) | Cursor 传输：支持状态、风险、构建/测试与发布 |
+| [传输包（英文）](packages/llm-omp/README.md) | Cursor 与 Devin 传输：支持状态、风险、构建/测试与发布 |
 
 英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
 

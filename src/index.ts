@@ -660,10 +660,14 @@ function transportGrantOf(record: CredentialRecordLike | undefined): TransportGr
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined
   const source = payload as Record<string, unknown>
   if (typeof source.access !== 'string' || source.access.length === 0) return undefined
-  if (typeof source.expires !== 'number' || !Number.isFinite(source.expires)) return undefined
+  // No `expires` is the documented static-bearer shape (devin's adapter serves
+  // it), so only a PRESENT but unreadable value is a corrupt record.
+  if (source.expires !== undefined && (typeof source.expires !== 'number' || !Number.isFinite(source.expires))) {
+    return undefined
+  }
   return {
     access: source.access,
-    expires: source.expires,
+    ...(source.expires === undefined ? {} : { expires: source.expires }),
     ...(typeof source.refresh === 'string' && source.refresh.length > 0 ? { refresh: source.refresh } : {}),
     ...(typeof source.email === 'string' && source.email.length > 0 ? { email: source.email } : {}),
     ...(typeof source.accountId === 'string' && source.accountId.length > 0 ? { accountId: source.accountId } : {}),
@@ -680,14 +684,19 @@ function transportGrantOf(record: CredentialRecordLike | undefined): TransportGr
  * exists while signed out, so the UI can offer the sign-in that writes it.
  */
 function transportAccountOf(flow: AuthorizationFlowEntry, record: CredentialRecordLike | undefined, now: number): TransportAccountView {
+  const route = flow.key.slice(TRANSPORT_CREDENTIAL_SCOPE.length + 1)
   const grant = transportGrantOf(record)
-  const status: TransportAccountStatus = grant !== undefined
-    ? grant.expires > now
-      ? 'active'
-      : grant.refresh === undefined ? 'needs-reauth' : 'expired'
-    : record === undefined ? 'signed-out' : 'needs-reauth'
+  const status: TransportAccountStatus = grant === undefined
+    ? record === undefined ? 'signed-out' : 'needs-reauth'
+    : grant.expires === undefined
+      // Only the devin resolver serves an expiry-less record; cursor's needs a
+      // dated grant and throws on one, so there the row is not usable.
+      ? route === DEVIN_ROUTE ? 'active' : 'needs-reauth'
+      : grant.expires > now
+        ? 'active'
+        : grant.refresh === undefined ? 'needs-reauth' : 'expired'
   return {
-    id: flow.key.slice(TRANSPORT_CREDENTIAL_SCOPE.length + 1),
+    id: route,
     scope: flow.key,
     displayName: flow.label,
     ...(grant?.email === undefined ? {} : { email: grant.email }),
@@ -722,14 +731,25 @@ const DEVIN_ROUTE = 'devin'
  * the installed transport build may predate its export. The function is
  * therefore probed on the module namespace instead of imported by name — an
  * absent export yields an empty catalog instead of breaking this plugin's
- * import graph. An older build that still registers the route then has no list
- * to narrow, so the picker offers the all-models state.
+ * import graph. An empty list is indistinguishable from the legitimate
+ * all-models state, so `onMissing` reports it instead of the picker rendering
+ * a silent `[]`.
  */
-function transportCatalogOf(route: string): TransportCatalogModel[] {
+function transportCatalogOf(
+  route: string,
+  onMissing?: (route: string) => void,
+): TransportCatalogModel[] {
   if (route === CURSOR_ROUTE) return cursorCatalogModels()
-  if (route !== DEVIN_ROUTE) return []
+  if (route !== DEVIN_ROUTE) {
+    onMissing?.(route)
+    return []
+  }
   const probe = (transportModule as Record<string, unknown>).devinCatalogModels
-  return typeof probe === 'function' ? (probe as () => TransportCatalogModel[])() : []
+  if (typeof probe !== 'function') {
+    onMissing?.(route)
+    return []
+  }
+  return (probe as () => TransportCatalogModel[])()
 }
 
 /** Env names that are a single API-key credential, not an OAuth/federation token. */
@@ -1095,6 +1115,8 @@ export class KeysManagerService {
   private attemptSequence = 0
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
+  /** Transport routes already reported as having no shipped catalog. */
+  private readonly catalogReports = new Set<string>()
   settings: SettingsLike | undefined
   /**
    * Test/embedding seam for the in-process sign-in drivers (the same pattern
@@ -2687,6 +2709,21 @@ export class KeysManagerService {
   }
 
   /**
+   * Report once per route that a registered transport flow has no catalog.
+   *
+   * An empty list is also the legitimate all-models state, so the only honest
+   * way to tell a stale transport build apart is to say so: otherwise the
+   * picker renders `[]` until a save fails.
+   */
+  private reportMissingCatalog(route: string): void {
+    if (this.catalogReports.has(route)) return
+    this.catalogReports.add(route)
+    this.pushWarning(
+      `The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`,
+    )
+  }
+
+  /**
    * Remote: read one transport route's catalog and configured allow-list.
    *
    * @remarks
@@ -2698,7 +2735,7 @@ export class KeysManagerService {
   async transportModels(route: string): Promise<TransportModelsView> {
     this.assertTransportRoute(route)
     const configured = this.transportModelIds(route)
-    const catalog = transportCatalogOf(route)
+    const catalog = transportCatalogOf(route, missing => this.reportMissingCatalog(missing))
     // A settings profile can outlive a catalog id; the picker renders the
     // catalog, so an unknown id would count toward {n} of {total} while
     // matching no checkbox and failing every save.
@@ -2717,7 +2754,7 @@ export class KeysManagerService {
     if (!Array.isArray(models) || models.some(id => typeof id !== 'string')) {
       throw new TypeError('models must be a list of model ids')
     }
-    const catalog = transportCatalogOf(route)
+    const catalog = transportCatalogOf(route, missing => this.reportMissingCatalog(missing))
     if (catalog.length === 0) throw new Error(`Provider "${route}" offers no model list`)
     const known = new Map(catalog.map(row => [row.id, row.name]))
     const selected = [...new Set(models)]
@@ -7416,8 +7453,20 @@ export class KeysManagerService {
         return this.buildState()
       }
 
-      const { models, failure } = await this.discoverModels(extra, input.value)
-      if (models.length === 0) throw new Error('No models were discovered and the seed catalog is empty')
+      // A sign-in already proved the credential, so its commit seeds the catalog
+      // instead of probing the endpoint: discovery may hold this serialized
+      // mutation for its whole 20 s timeout before the row appears (F3).
+      const found: { models: ModelRecord[]; failure?: string } = importedFrom === null
+        ? await this.discoverModels(extra, input.value)
+        : { models: normalizeModels(extra.models) }
+      const { models, failure } = found
+      // The sign-in branch never probed the endpoint, so it cannot report a
+      // discovery result.
+      if (models.length === 0) {
+        throw new Error(importedFrom === null
+          ? 'No models were discovered and the seed catalog is empty'
+          : 'The plugin catalog is empty for this provider')
+      }
       if (failure !== undefined) this.pushWarning(`Model discovery failed; installed ${models.length} seed models instead: ${failure}`)
       const brokerRef = brokerRefFor(extraId)
       const profile = {

@@ -37,7 +37,9 @@
     "bundle",
     "locale",
     "icon.svg",
-    "scripts"
+    "scripts",
+    "!lib/omp-oauth/metafile.json",
+    "!scripts/omp-oauth"
   ],
   "dsh": {
     "bundle": {

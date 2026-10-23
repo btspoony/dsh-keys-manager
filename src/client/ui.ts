@@ -304,6 +304,9 @@ function Modal({ title, children, onClose, footer, busy }: ModalProps): React.Re
   busyRef.current = busy
 
   React.useEffect(() => {
+    // Focus trapping is a browser facility; a DOM-less mount (SSR, the no-DOM
+    // test renderer) has nothing to trap.
+    if (typeof document === 'undefined') return undefined
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = dialogRef.current
     const inerted: HTMLElement[] = []
@@ -914,11 +917,13 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
     ),
     // The expiry column stays a clock, not a countdown: the route's adapter
     // renews the grant itself, so "expired" here means "renews on next use".
-    h('div', { className: 'km-key-last' },
-      account.expiresAt === undefined
-        ? h('div', { className: 'km-key-time km-muted' }, t('never'))
-        : h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
-    ),
+    // A static-bearer row advertises no expiry, but the cell stays in the grid
+    // so its actions line up with dated rows; nothing is announced.
+    account.expiresAt === undefined
+      ? h('div', { className: 'km-key-last', 'aria-hidden': true })
+      : h('div', { className: 'km-key-last' },
+          h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
+        ),
     h('div', { className: 'km-key-actions' },
       h(Button, {
         size: 'small',
@@ -1412,6 +1417,7 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
   const [flowEnded, setFlowEnded] = React.useState(false)
   const [pollError, setPollError] = React.useState<string | null>(null)
   const [answer, setAnswer] = React.useState('')
+  const [revealed, setRevealed] = React.useState(false)
   const [answering, setAnswering] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [cancelling, setCancelling] = React.useState(false)
@@ -1431,6 +1437,9 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
     ? ''
     : `${prompt.kind}\u0000${prompt.message}\u0000${(prompt.options ?? []).map(option => option.id).join('\u0000')}`
   React.useEffect(() => {
+    // A fresh prompt starts masked: a pasted code is the only secret in the
+    // exchange, so the reveal toggle never carries over.
+    setRevealed(false)
     const options = prompt !== undefined && prompt.kind === 'select' ? prompt.options : undefined
     if (options !== undefined && options.length > 0) {
       setAnswer(current => options.some(option => option.id === current) ? current : options[0]!.id)
@@ -1528,6 +1537,9 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
       return
     }
     setAnswer('')
+    // The answered prompt may be re-asked verbatim (the Z.AI retry), which the
+    // signature effect cannot see, so the next code always starts masked.
+    setRevealed(false)
     // The answer is only an ack: poll immediately for the next state.
     pollNowRef.current?.()
   }
@@ -1592,14 +1604,31 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
               }, prompt.options.map(option => h('option', { key: option.id, value: option.id }, option.label)))
             : h('input', {
                 className: 'km-input',
-                type: prompt.kind === 'secret' ? 'password' : 'text',
+                // A pasted code is the only secret in the exchange (Z.AI's flow
+                // has no PKCE, the Devin flow sends none back), so it is masked
+                // exactly like `secret` prompts.
+                type: (prompt.kind === 'secret' || prompt.kind === 'manual-code') && !revealed ? 'password' : 'text',
                 value: answer,
                 onChange: (event: React.ChangeEvent<HTMLInputElement>) => setAnswer(event.target.value),
                 placeholder: prompt.placeholder,
                 spellCheck: false,
+                // The repo's convention for a field the browser must never fill
+                // from a saved password; `off` is ignored on password inputs.
+                autoComplete: prompt.kind === 'secret' || prompt.kind === 'manual-code' ? 'new-password' : 'off',
                 disabled: answering,
                 autoFocus: true,
               }),
+          prompt.kind === 'manual-code'
+            ? h('label', { className: 'km-muted' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: revealed,
+                  onChange: (event: React.ChangeEvent<HTMLInputElement>) => setRevealed(event.target.checked),
+                  disabled: answering,
+                }),
+                h('span', null, t('loginReveal')),
+              )
+            : null,
         ),
         error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
         h('div', { className: 'km-form-actions' },

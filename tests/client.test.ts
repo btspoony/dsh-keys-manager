@@ -2158,10 +2158,22 @@ function makePasteAttemptView(): AccountAttemptView {
     const state = makeState()
     state.providers = [makeSignInProvider()]
     const harness = makeContext()
+    // The next parked prompt, swapped in when an answer is submitted. The
+    // first re-park repeats the message verbatim (the Z.AI retry), which the
+    // prompt-signature effect cannot notice.
+    let answers = 0
+    let current = makePasteAttemptView()
     harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
       if (endpoint === 'keysManager/getState') return { ok: true, value: state }
-      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePasteAttemptView() }
-      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePasteAttemptView() }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: current }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: current }
+      if (endpoint === 'keysManager/answerAccountPrompt') {
+        answers += 1
+        current = answers === 1
+          ? { ...makePasteAttemptView(), updatedAt: 5 }
+          : { ...makePasteAttemptView(), prompt: { kind: 'manual-code', message: 'Paste the new code' }, updatedAt: 6 }
+        return { ok: true, value: null }
+      }
       return { ok: false, error: { message: `unexpected ${endpoint}` } }
     }
     const store = createStore(harness.ctx)
@@ -2182,6 +2194,49 @@ function makePasteAttemptView(): AccountAttemptView {
     // The rule's manual paste step, and the wording a `zcode://` redirect needs.
     expect(view.nodes.some(node => node.text === 'Paste the final redirect URL or the authorization code')).toBe(true)
     expect(view.nodes.some(node => node.text === '从浏览器地址栏复制完整 URL，或只粘贴授权码。')).toBe(true)
+
+    // Finding 3: a pasted code is the only secret in the exchange (Z.AI's flow
+    // has no PKCE), so the field is masked, never autofilled, and a reveal
+    // toggle unmasks it on demand.
+    const inPromptForm = (checkbox: boolean): FlatNode | undefined => {
+      const form = findByClass(view.nodes, 'km-login-prompt')[0]
+      if (form === undefined) return undefined
+      return descendants(view.nodes, form).find(node =>
+        node.type === 'input' && (node.props?.type === 'checkbox') === checkbox)
+    }
+    const pasteInput = (): FlatNode => inPromptForm(false)!
+    const reveal = (): FlatNode => inPromptForm(true)!
+    expect(pasteInput().props).toMatchObject({ type: 'password', autoComplete: 'new-password' })
+    expect(reveal().props?.checked).toBe(false)
+    ;(reveal().props!.onChange as (event: unknown) => void)({ target: { checked: true } })
+    view.render()
+    expect(pasteInput().props?.type).toBe('text')
+
+    // The safety property: the next code starts masked even when the host
+    // re-parks the identical prompt (the retry path), and again when it asks a
+    // different question.
+    const answerOnce = async (): Promise<void> => {
+      ;(pasteInput().props!.onChange as (event: unknown) => void)({ target: { value: 'the-code' } })
+      view.render()
+      const form = findByClass(view.nodes, 'km-login-prompt')[0]!
+      ;(form.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+      await view.flush()
+      // The poll that delivers the new prompt resolves after the first flush
+      // drained; its render queues the re-mask effect, so drain once more.
+      await view.flush()
+    }
+    await answerOnce()
+    expect(view.nodes.some(node => node.text === 'Paste the final redirect URL or the authorization code')).toBe(true)
+    expect(pasteInput().props?.type).toBe('password')
+    expect(reveal().props?.checked).toBe(false)
+
+    // Reveal again, then let the host ask something new.
+    ;(reveal().props!.onChange as (event: unknown) => void)({ target: { checked: true } })
+    view.render()
+    await answerOnce()
+    expect(view.nodes.some(node => node.text === 'Paste the new code')).toBe(true)
+    expect(pasteInput().props?.type).toBe('password')
+    expect(reveal().props?.checked).toBe(false)
     view.unmount()
     setRuntimeContext(null)
   })
@@ -3096,6 +3151,13 @@ describe('transport account surface', () => {
     const row = findByClass(view.nodes, 'km-transport-row')[0]!
     const inside = descendants(view.nodes, row)
     expect(inside.some(node => node.text === '未登录')).toBe(true)
+    // A signed-out row has no expiry to show: neither a dated cell nor the
+    // "never used" copy, but the cell stays in the grid so the actions line up
+    // with dated rows.
+    expect(inside.some(node => node.text.includes('有效期至') || node.text.includes('从未使用'))).toBe(false)
+    const expiryCell = findByClass(inside, 'km-key-last')
+    expect(expiryCell).toHaveLength(1)
+    expect(expiryCell[0]!.props?.['aria-hidden']).toBe(true)
     const signIn = descendants(view.nodes, row).filter(node => node.type === 'button' && node.text.includes('登录'))
     expect(signIn).toHaveLength(1)
     // No "Set active": the stored grant already is the route's live credential,
@@ -3108,6 +3170,53 @@ describe('transport account surface', () => {
     expect(loginPayload).toEqual({ args: { provider: 'cursor' } })
     // The pi-ai dialog is reused: it polls the same attempt record.
     expect(view.nodes.some(node => node.text === '等待授权…')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a parked transport paste prompt renders masked with the reveal toggle', async () => {
+    const state = makeState()
+    state.providers = [...state.providers, makeTransportProvider()]
+    state.transportAccounts = [makeTransportAccount({
+      status: 'signed-out',
+      active: false,
+      email: undefined,
+      accountId: undefined,
+      expiresAt: undefined,
+    })]
+    // The transports package asks for its callback as `manual-code`, so the
+    // shared dialog masks the pasted URL/code exactly like the Z.AI step.
+    const attempt: AccountAttemptView = {
+      ...makeTransportAttemptView(),
+      status: 'prompt',
+      prompt: { kind: 'manual-code', message: 'Paste the whole address (or just the code) here.' },
+    }
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginTransportLogin') return { ok: true, value: attempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: attempt }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    openProviderCard(view, 'cursor')
+
+    const row = findByClass(view.nodes, 'km-transport-row')[0]!
+    const signIn = descendants(view.nodes, row).filter(node => node.type === 'button' && node.text.includes('登录'))
+    expect(signIn).toHaveLength(1)
+    ;(signIn[0]!.props!.onClick as () => void)()
+    await view.flush()
+    // The dialog's first attempt read resolves after that flush drained.
+    await view.flush()
+
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form, 'the transport paste prompt is parked in the shared dialog').toBeDefined()
+    const field = descendants(view.nodes, form!).find(node => node.type === 'input' && node.props?.type !== 'checkbox')!
+    expect(field.props).toMatchObject({ type: 'password', autoComplete: 'new-password' })
+    expect(descendants(view.nodes, form!).some(node => node.type === 'input' && node.props?.type === 'checkbox')).toBe(true)
     view.unmount()
     setRuntimeContext(null)
   })

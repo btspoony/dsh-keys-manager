@@ -44,10 +44,12 @@ Current design boundaries of the Keys Manager plugin:
 
 ## OAuth accounts (increment 1)
 
-- Account sign-in is limited to the seven providers whose OAuth flows the
-  `llm-pi-ai` host implements: Anthropic, GitHub Copilot, Kimi Coding,
-  OpenAI Codex, OpenRouter, Radius, and xAI. Extending coverage through an
-  oh-my-pi extension is tracked in
+- Account sign-in through the `llm-pi-ai` seam covers the seven providers
+  whose OAuth flows that host implements: Anthropic, GitHub Copilot, Kimi
+  Coding, OpenAI Codex, OpenRouter, Radius, and xAI. Two more routes sign in
+  through this plugin's own bundled clients — Kilo and Z.AI Coding Plan; see
+  [In-process sign-in](#in-process-sign-in-kilo-zai-coding-plan) below.
+  Extending coverage beyond these routes is tracked in
   [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15).
 - Grant refresh failure is fail-loud: the account cools down. A
   key-capable route falls back to the provider's key pool; an OAuth-only
@@ -90,3 +92,25 @@ Current design boundaries of the Keys Manager plugin:
 - The minted credential is one more row in the provider's pool: there is no
   per-account rotation or ranking, exactly as with the seven pi-ai OAuth
   accounts above.
+
+## Transport routes (Cursor, Devin)
+
+- Each transport route (`cursor`, `devin`) keeps exactly one grant at
+  `llm-omp-transports/<route>`: there is no key pool behind it and no
+  per-account rotation to configure.
+- A stored grant is `active` when its `access` token is usable and its route
+  can serve it: a dated `expires` in the future, or — on `devin` only — no
+  `expires` at all, the static-bearer shape its resolver accepts. No shipped
+  flow writes such a record today (Devin derives an expiry from the token), and
+  it shows no expiry value. The Cursor resolver needs a dated grant, so the
+  same record on `cursor` reports `needs-reauth`. An `expires` that is present
+  but unreadable is a corrupt record, not a static bearer, and the route reports
+  `needs-reauth`.
+- An expired grant is not the same failure on both routes: Devin has no
+  refresh token, so it stops until you sign in again; Cursor refreshes on the
+  credential seam and keeps serving, and stops only when the refresh is
+  rejected or no refresh token is stored.
+- Both clients are unofficial and their live endpoints are unverified. The
+  Cursor and Devin specifics (vendor identities, ToS risk, no image input, no
+  Devin refresh) are in
+  [the transports package known limits](../packages/llm-omp/docs/known-limits.md).

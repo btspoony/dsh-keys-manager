@@ -345,7 +345,9 @@ describe('devin authorization flow', () => {
     const url = new URL(notices[0]!.url ?? '')
     expect(`${url.origin}${url.pathname}`).toBe(DEVIN_AUTH.authorizeUrl)
     expect(prompts).toHaveLength(1)
-    expect(prompts[0]!.kind).toBe('text')
+    // The pasted callback carries the code, so the dialog must mask it: the
+    // shared renderer treats `manual-code` as a secret with a reveal toggle.
+    expect(prompts[0]!.kind).toBe('manual-code')
     expect(prompts[0]!.placeholder).toContain('127.0.0.1:59653')
     expect(committed).toEqual([
       { kind: 'grant', payload: { access: token, expires: 2_000_000_000_000 - 5 * 60 * 1000 } },

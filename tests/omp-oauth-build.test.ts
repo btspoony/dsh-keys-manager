@@ -312,6 +312,35 @@ describe('generated omp policy slice', () => {
   })
 })
 
+describe('root packed surface', () => {
+  it('packs the sign-in bundle but not its metafile or the build scripts', () => {
+    // Publish parity: `files` must keep the built artifact reachable while the
+    // metafile and `scripts/omp-oauth/**` stay build intermediates of the repo.
+    const packed = spawnSync('npm', ['pack', '--dry-run', '--ignore-scripts', '--json'], {
+      cwd: packageRoot,
+      encoding: 'utf8',
+    })
+    expect(packed.status, packed.stderr).toBe(0)
+    const [result] = JSON.parse(packed.stdout) as [{ files: { path: string }[] }]
+    const paths = result.files.map(file => file.path)
+    expect(paths).toEqual(expect.arrayContaining(['lib/index.js', 'lib/omp-oauth/oauth.mjs']))
+    expect(paths).not.toContain('lib/omp-oauth/metafile.json')
+    expect(paths.some(path => path.startsWith('scripts/omp-oauth/'))).toBe(false)
+  })
+
+  it('pins the same omp versions as the transports package', () => {
+    // Two manifests pin one upstream: a bump applied to only one keeps both
+    // gates green while the install ships two omp versions.
+    const sibling = JSON.parse(
+      readFileSync(join(packageRoot, 'packages/llm-omp/scripts/omp-manifest.json'), 'utf8'),
+    ) as { ompVersion: string; piCatalogVersion: string; piUtilsVersion: string; esbuildVersion: string }
+    expect(sibling.ompVersion).toBe(manifest.ompVersion)
+    expect(sibling.piCatalogVersion).toBe(manifest.piCatalogVersion)
+    expect(sibling.piUtilsVersion).toBe(manifest.piUtilsVersion)
+    expect(sibling.esbuildVersion).toBe(manifest.esbuildVersion)
+  })
+})
+
 describe('omp JSON module generator', () => {
   it('keeps every key of a mixed-key JSON in the default export', async () => {
     const emitted = jsonAsEsmModule('{"a":1,"b-c":2,"3d":4}')

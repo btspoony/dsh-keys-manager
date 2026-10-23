@@ -4238,6 +4238,7 @@ test('signing in to kilo creates the extra route and one sign-in row', async () 
   const h = await harness()
   try {
     useSignInDrivers(h, signInDrivers())
+    const discover = vi.spyOn(h.llm, 'discoverModels')
     const view = await h.service.beginAccountLogin('kilo', 'Kilo work')
     await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
 
@@ -4255,6 +4256,13 @@ test('signing in to kilo creates the extra route and one sign-in row', async () 
     // the broker reference, so the minted key serves the route directly.
     const profile = h.settings.valueOf('llm-pi-ai').providers.kilo
     assert.match(profile.apiKeyEnv, /^KEYSMGR_KILO_/)
+    // F3: the commit seeds the catalog instead of probing the endpoint, so the
+    // row appears without waiting out discovery's timeout inside the queue.
+    // The call count is the point here — a seeded list would look the same if
+    // discovery had run and failed.
+    assert.equal(discover.mock.calls.length, 0)
+    assert.ok(profile.models.length > 0)
+    assert.equal(profile.models[0].id, 'anthropic/claude-opus-4.7')
 
     // The attempt names the row it produced; omp's instructions text reached the
     // dialog as a notice, and the secret never appears in the view.
@@ -13397,7 +13405,7 @@ test('a key added during the window converges the binding at window end', async 
 
 test('a transport row reports active, expired, needs-reauth and signed-out', async () => {
   const h = await transportHarness()
-  const rowOf = async (): Promise<{ status?: string; active?: boolean }> => {
+  const rowOf = async (): Promise<{ status?: string; active?: boolean; expiresAt?: number }> => {
     await h.service.refreshTransportAccounts()
     return h.service.buildState().transportAccounts?.[0] ?? {}
   }
@@ -13424,8 +13432,18 @@ test('a transport row reports active, expired, needs-reauth and signed-out', asy
     assert.equal(await statusOf(), 'needs-reauth')
     assert.equal((await rowOf()).active, false)
 
-    // A record this manager cannot read is not a usable grant either.
+    // F2: an expiry-less record is the static bearer the DEVIN resolver serves;
+    // cursor's resolver needs a dated grant and throws on one, so there the row
+    // is not usable. The devin half is pinned by
+    // 'a static-bearer grant is active only on the devin route'.
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access' } })
+    const expiryLess = await rowOf()
+    assert.equal(expiryLess.status, 'needs-reauth')
+    assert.equal(expiryLess.active, false)
+    assert.equal(expiryLess.expiresAt, undefined)
+
+    // A PRESENT but unreadable expiry is a corrupt record, not a static bearer.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access', expires: 'soon' } })
     assert.equal(await statusOf(), 'needs-reauth')
     assert.equal((await rowOf()).active, false)
 
@@ -13433,6 +13451,31 @@ test('a transport row reports active, expired, needs-reauth and signed-out', asy
     assert.equal(await statusOf(), 'signed-out')
     assert.equal((await rowOf()).active, false)
     assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a static-bearer grant is active only on the devin route', async () => {
+  const h = await harness([...piAiFlows(), TRANSPORT_FLOW, DEVIN_FLOW])
+  const rowOf = async (id: string): Promise<{ status?: string; active?: boolean; expiresAt?: number }> => {
+    await h.service.refreshTransportAccounts()
+    return h.service.buildState().transportAccounts?.find(account => account.id === id) ?? {}
+  }
+  try {
+    // F2: devin's resolver serves an expiry-less record as a static bearer.
+    h.credentials.records.set('llm-omp-transports/devin', { kind: 'grant', payload: { access: 'devin-access' } })
+    const devin = await rowOf('devin')
+    assert.equal(devin.status, 'active')
+    assert.equal(devin.active, true)
+    assert.equal(devin.expiresAt, undefined)
+
+    // The same shape on cursor is not usable: its resolver can only serve a
+    // dated grant, so the row points the user back at sign-in.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access' } })
+    const cursor = await rowOf('cursor')
+    assert.equal(cursor.status, 'needs-reauth')
+    assert.equal(cursor.active, false)
   } finally {
     await h.close()
   }
@@ -17673,6 +17716,28 @@ test('a transport route without a shipped catalog resolves to the all-models sta
     assert.deepEqual(view.models, [])
     // The existing cursor branch is untouched by the new probe.
     assert.ok((await h.service.transportModels('cursor')).catalog.length > 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a registered transport route with no shipped catalog reports why the list is empty', async () => {
+  // Finding 9: the absent-accessor fallback answered `[]`, which the picker
+  // renders as the legitimate all-models state. A stale transport build now
+  // surfaces once instead of looking like a valid empty catalog.
+  const ghost = { key: 'llm-omp-transports/ghost', label: 'Ghost', methods: [{ id: 'oauth', label: 'Sign in' }] }
+  const h = await harness([...piAiFlows(), TRANSPORT_FLOW, ghost])
+  try {
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: {} }, revision: 1 })
+    assert.deepEqual((await h.service.transportModels('ghost')).catalog, [])
+    // A second read re-renders the picker; the warning is reported once.
+    assert.deepEqual((await h.service.transportModels('ghost')).catalog, [])
+    const reported = h.service.getState().warnings.filter(message => /ships no catalog/.test(message))
+    assert.equal(reported.length, 1)
+    assert.match(reported[0]!, /"ghost"/)
+    // A route with a real catalog is not reported.
+    assert.ok((await h.service.transportModels('cursor')).catalog.length > 0)
+    assert.deepEqual(h.service.getState().warnings.filter(message => /ships no catalog/.test(message)), [])
   } finally {
     await h.close()
   }
