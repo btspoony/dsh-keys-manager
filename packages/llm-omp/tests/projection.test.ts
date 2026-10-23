@@ -28,6 +28,7 @@ import {
   GOOGLE_GEMINI_CLI_PROFILE,
   MALFORMED_TOOL_CALL,
   STREAM_CLOSED,
+  TOOL_ALIAS_COLLISION,
   TOOL_ARGUMENTS_INVALID,
   UNKNOWN_EVENT,
   UNKNOWN_FINISH,
@@ -413,6 +414,23 @@ describe('projectRequest', () => {
       },
       { role: 'user', content: [{ type: 'text', text: 'Summarize it' }], timestamp: 0 },
     ])
+  })
+
+  it('refuses a DSH tool already named like one of the route aliases', () => {
+    // A declared `dsh_read` would map back to `read` on the event stream, so it
+    // cannot coexist with the alias the route reserves.
+    expect(() =>
+      projectRequest(
+        SONNET,
+        request([], {
+          tools: [
+            { name: 'read', description: 'Read a file', parameters: {} },
+            { name: 'dsh_read', description: 'Already aliased', parameters: {} },
+          ],
+        }),
+        't',
+      ),
+    ).toThrowError(expect.objectContaining({ code: TOOL_ALIAS_COLLISION }))
   })
 
   it('replays a colliding DSH tool call under its alias and pairs the result', () => {

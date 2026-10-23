@@ -110,6 +110,8 @@ export const UNKNOWN_FINISH = 'UNKNOWN_FINISH'
 export const STREAM_CLOSED = 'STREAM_CLOSED'
 /** Machine code for a reasoning effort the selected model does not advertise. */
 export const UNSUPPORTED_REASONING_EFFORT = 'UNSUPPORTED_REASONING_EFFORT'
+/** Machine code for a DSH tool already named like one of this route's aliases. */
+export const TOOL_ALIAS_COLLISION = 'TOOL_ALIAS_COLLISION'
 /** Machine code for a turn the caller's own signal cancelled. */
 const ABORTED_CODE = 'ABORTED'
 
@@ -624,15 +626,26 @@ function projectContext(profile: RouteProfile, options: GenerateOptions): OmpCon
  * is dropped because Cursor has no deferred-loading concept; a deferred tool
  * must be callable from this route's first request or it never becomes usable.
  * A name in the profile's alias set is advertised as `dsh_<name>`; description
- * and parameters travel unchanged.
+ * and parameters travel unchanged. A DSH tool that already carries an alias
+ * name is refused: the alias maps back to the native name on the event stream,
+ * so the two declarations cannot coexist.
  * @param options - the assembled request.
  * @param profile - the route being projected.
  * @returns the declarations in request order, or `undefined` when none are active.
+ * @throws LlmError with {@link TOOL_ALIAS_COLLISION} when a declared name is
+ *   already reserved for an alias.
  */
 function projectTools(options: GenerateOptions, profile: RouteProfile): readonly OmpTool[] | undefined {
   if (options.tools === undefined || options.tools.length === 0) return undefined
   const byName = new Map<string, OmpTool>()
   for (const tool of options.tools) {
+    const reservedFor = dshToolName(tool.name, profile)
+    if (reservedFor !== tool.name) {
+      throw new LlmError(
+        `llm-omp-transports: the ${profile.provider} route reserves the tool name "${tool.name}" for the "${reservedFor}" tool; the DSH tool must be renamed`,
+        TOOL_ALIAS_COLLISION,
+      )
+    }
     const name = wireToolName(tool.name, profile)
     byName.set(name, { name, description: tool.description, parameters: tool.parameters })
   }
