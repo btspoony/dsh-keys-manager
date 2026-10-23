@@ -729,6 +729,262 @@ test('an OAuth-only provider is adoptable for accounts with zero keys', async ()
   }
 })
 
+// A catalog route has no profile until something configures it, so adoption
+// materializes one from the installed catalog. Without it the connection test
+// refuses before sending ("no settings profile yet") and Models shows a route
+// with nothing to select.
+
+test('adopting a catalog route materializes the profile its test needs', async () => {
+  const h = await harness()
+  try {
+    const state = await h.service.adoptProvider('xai')
+    const xai = state.providers.find(provider => provider.provider === 'xai')!
+    assert.equal(xai.managed, true)
+    assert.equal(xai.models.length, 2)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.deepEqual(profile.models, [
+      { id: 'discovered-chat', name: 'Discovered Chat', contextWindow: 128000, maxTokens: 8192, input: ['text'] },
+      { id: 'discovered-vision', name: 'Discovered Vision', input: ['text', 'image'] },
+    ])
+    // The route is account-served, so the materialized profile must name no
+    // credential: a broker reference here would shadow the stored grant.
+    assert.equal('apiKeyEnv' in profile, false)
+  } finally {
+    await h.close()
+  }
+})
+
+// The catalog call can run for seconds, and the user can save the route in
+// Models in that window. Their profile wins: no field of it is replaced.
+test('a profile saved while the catalog call is outstanding is never overwritten', async () => {
+  const h = await harness()
+  try {
+    let releaseCatalog: ((models: unknown[]) => void) | undefined
+    h.llm.discoverModels = () => new Promise(resolve => { releaseCatalog = resolve as (models: unknown[]) => void })
+    const adopting = h.service.adoptProvider('xai')
+    await eventually(() => assert.equal(typeof releaseCatalog, 'function'))
+    h.settings.valueOf('llm-pi-ai').providers.xai = {
+      apiKeyEnv: 'XAI_USER_REF',
+      baseURL: 'https://user.example/v1',
+      models: [{ id: 'user-model' }],
+    }
+    releaseCatalog!([{ id: 'discovered-chat', name: 'Discovered Chat' }])
+    await adopting
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.xai, {
+      apiKeyEnv: 'XAI_USER_REF',
+      baseURL: 'https://user.example/v1',
+      models: [{ id: 'user-model' }],
+    })
+  } finally {
+    await h.close()
+  }
+})
+
+// The same window with a profile that carries no models: the user owns the
+// node, so only the missing field is filled and adoption says nothing.
+test('a model-less profile saved during the catalog call gets models filled', async () => {
+  const h = await harness()
+  try {
+    let releaseCatalog: ((models: unknown[]) => void) | undefined
+    h.llm.discoverModels = () => new Promise(resolve => { releaseCatalog = resolve as (models: unknown[]) => void })
+    const adopting = h.service.adoptProvider('xai')
+    await eventually(() => assert.equal(typeof releaseCatalog, 'function'))
+    h.settings.valueOf('llm-pi-ai').providers.xai = { apiKeyEnv: 'XAI_USER_REF' }
+    releaseCatalog!([{ id: 'discovered-chat', name: 'Discovered Chat' }])
+    const state = await adopting
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.xai, {
+      apiKeyEnv: 'XAI_USER_REF',
+      models: [{ id: 'discovered-chat', name: 'Discovered Chat' }],
+    })
+    assert.doesNotMatch(state.warnings.join('\n'), /adopted without a Models profile/)
+  } finally {
+    await h.close()
+  }
+})
+
+// Rollback owns only the node it wrote. A user save landing between the
+// materialization and the refused binding must survive the rollback.
+test('a refused binding never deletes a profile saved after materialization', async () => {
+  const h = await harness()
+  try {
+    h.credentials.refs.set('XAI_API_KEY', 'sk-xai-user')
+    const originalMutate = h.settings.mutate.bind(h.settings)
+    h.settings.mutate = async (ns: string, ops: any[], revision?: number) => {
+      if (ops.some((op: any) => op.path[op.path.length - 1] === 'apiKeyEnv')) throw new Error('revision conflict')
+      return originalMutate(ns, ops, revision)
+    }
+    // Hold the projection read so the user-save window is deterministic.
+    h.credentials.raw.readRecordDelayMs = 120
+    const adopting = h.service.adoptProvider('xai')
+    await eventually(() => assert.notEqual(h.settings.valueOf('llm-pi-ai').providers.xai, undefined))
+    h.settings.valueOf('llm-pi-ai').providers.xai = {
+      apiKeyEnv: 'XAI_USER_REF',
+      baseURL: 'https://user.example/v1',
+      models: [{ id: 'user-model' }],
+    }
+    await assert.rejects(adopting, /refused the credential binding write/)
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.xai, {
+      apiKeyEnv: 'XAI_USER_REF',
+      baseURL: 'https://user.example/v1',
+      models: [{ id: 'user-model' }],
+    })
+    assert.equal(h.store.provider('xai'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+
+test('a catalog the seam cannot describe leaves the adoption without a profile', async () => {
+  const h = await harness()
+  try {
+    vi.spyOn(h.llm, 'discoverModels').mockRejectedValue(new Error('no model discovery is registered'))
+    const state = await h.service.adoptProvider('xai')
+    assert.equal(state.providers.find(provider => provider.provider === 'xai')!.managed, true)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.xai, undefined)
+    assert.match(state.warnings.join('\n'), /configure a model for it before testing/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('release keeps a materialized profile and only clears its credential reference', async () => {
+  const h = await harness()
+  try {
+    h.credentials.refs.set('XAI_API_KEY', 'sk-xai-user')
+    await h.service.adoptProvider('xai')
+    const brokerRef = h.store.provider('xai')!.brokerRef
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.xai.apiKeyEnv, brokerRef)
+    await h.service.releaseProvider('xai')
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.equal(profile.models.length, 2)
+    assert.equal('apiKeyEnv' in profile, false)
+    assert.equal(h.service.getState().providers.find(provider => provider.provider === 'xai')!.managed, false)
+  } finally {
+    await h.close()
+  }
+})
+
+// Adoption writes the materialized profile only after the imported credential
+// exists: a failed import must not leave a Models profile with no managed
+// record to roll it back.
+test('a failed import leaves no materialized profile behind', async () => {
+  const h = await harness()
+  try {
+    h.credentials.raw.failResolve = true
+    await assert.rejects(() => h.service.adoptProvider('xai'), /Could not read credential/)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.xai, undefined)
+    assert.equal(h.store.provider('xai'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+// The rollback branch owns the other side of that atomicity: a binding write
+// the pool's serving shape requires is refused after the profile was created.
+test('a refused binding write removes the profile the adoption created', async () => {
+  const h = await harness()
+  try {
+    h.credentials.refs.set('XAI_API_KEY', 'sk-xai-user')
+    const originalMutate = h.settings.mutate.bind(h.settings)
+    h.settings.mutate = async (ns: string, ops: any[], revision?: number) => {
+      if (ops.some((op: any) => op.path[op.path.length - 1] === 'apiKeyEnv')) throw new Error('revision conflict')
+      return originalMutate(ns, ops, revision)
+    }
+    await assert.rejects(() => h.service.adoptProvider('xai'), /refused the credential binding write/)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.xai, undefined)
+    assert.equal(h.store.provider('xai'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+// An adoption that predates profile materialization cannot be re-adopted (the
+// route is already managed), so the row test itself rebuilds what it needs.
+test('a row test rebuilds the catalog profile an older adoption left missing', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('xai')
+    const rowId = await signInThroughFlow(h, 'xai')
+    const record = h.store.provider('xai')!
+    // The documented state of a pre-fix installation: managed, no profile.
+    delete h.settings.valueOf('llm-pi-ai').providers.xai
+    record.createdProfile = false
+    record.hadProfile = false
+    record.models = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+    } as any)
+    const result = await h.service.testKey('xai', rowId)
+    assert.equal(result.ok, true, String(result.error))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.equal(profile.models.length, 2)
+    assert.equal('apiKeyEnv' in profile, false)
+  } finally {
+    await h.close()
+  }
+})
+
+// The other pre-fix key-pool shape: a profile carried over from Models that
+// carries the binding but no models. The test fills models and keeps the
+// binding instead of refusing with "No model is configured".
+test('a row test fills models into a carried-over key profile and keeps its binding', async () => {
+  const h = await harness()
+  try {
+    h.credentials.refs.set('XAI_API_KEY', 'sk-xai-user')
+    await h.service.adoptProvider('xai')
+    const record = h.store.provider('xai')!
+    h.settings.valueOf('llm-pi-ai').providers.xai = { apiKeyEnv: record.brokerRef }
+    let calls = 0
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      } as any)
+    }
+    const result = await h.service.testKey('xai', record.keys[0].id)
+    // The fill has to reach the wire: no refusal before a request leaves,
+    // whatever that request itself reports.
+    assert.ok(calls > 0, 'the test was refused before sending')
+    assert.doesNotMatch(String(result.error ?? ''), /No model is configured/)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.equal(profile.models.length, 2)
+    assert.equal(profile.apiKeyEnv, record.brokerRef)
+  } finally {
+    await h.close()
+  }
+})
+
+// The pre-fix key-pool shape with no profile at all: the rebuild must also
+// restore the binding the pool needs, or the test refuses before sending.
+test('a row test rebuilds a missing profile and binds a pre-fix key route', async () => {
+  const h = await harness()
+  try {
+    h.credentials.refs.set('XAI_API_KEY', 'sk-xai-user')
+    await h.service.adoptProvider('xai')
+    const record = h.store.provider('xai')!
+    delete h.settings.valueOf('llm-pi-ai').providers.xai
+    record.createdProfile = false
+    record.hadProfile = false
+    record.models = []
+    let calls = 0
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      } as any)
+    }
+    const result = await h.service.testKey('xai', record.keys[0].id)
+    assert.ok(calls > 0, 'the test was refused before sending')
+    assert.doesNotMatch(String(result.error ?? ''), /No model is configured|not served by its API-key pool/)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.equal(profile.models.length, 2)
+    assert.equal(profile.apiKeyEnv, record.brokerRef)
+  } finally {
+    await h.close()
+  }
+})
+
 test('beginAccountLogin succeeds on an adopted OAuth-only provider', async () => {
   const h = await harness()
   try {
@@ -11709,10 +11965,13 @@ test('an oauth row test restores the previous projection', async () => {
   }
 })
 
-test('a provider without a configured model refuses the test without sending a request', async () => {
+test('a provider whose catalog cannot supply models refuses the test without sending a request', async () => {
   const h = await harness()
   try {
     await h.service.adoptProvider('zai-coding-cn')
+    // The row test fills missing models from the installed catalog; without
+    // that answer the route stays model-less and must not send anything.
+    vi.spyOn(h.llm, 'discoverModels').mockRejectedValue(new Error('no model discovery is registered'))
     const target = h.store.provider('zai-coding-cn')!.keys[0]!
     let calls = 0
     h.llm.stream = () => {
