@@ -917,10 +917,10 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
     ),
     // The expiry column stays a clock, not a countdown: the route's adapter
     // renews the grant itself, so "expired" here means "renews on next use".
-    // A static-bearer row advertises no expiry at all, so the column is absent
-    // instead of borrowing the "never used" copy.
+    // A static-bearer row advertises no expiry, but the cell stays in the grid
+    // so its actions line up with dated rows; nothing is announced.
     account.expiresAt === undefined
-      ? null
+      ? h('div', { className: 'km-key-last', 'aria-hidden': true })
       : h('div', { className: 'km-key-last' },
           h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
         ),

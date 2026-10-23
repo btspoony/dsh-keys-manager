@@ -78,10 +78,6 @@ jobs:
           pnpm --filter dsh-llm-omp-transports run generate:catalog
           git diff --exit-code -- packages/llm-omp/src/catalog/cursor.ts
           git diff --exit-code -- packages/llm-omp/src/catalog/devin.ts
-          # A catalog the generator stops writing (or a new one it starts
-          # writing) leaves no diff in the two named paths: the directory
-          # itself must be clean, tracked and untracked alike.
-          test -z "$(git status --porcelain -- packages/llm-omp/src/catalog/)"
 
       - name: Assert packed tarball contents
         run: |

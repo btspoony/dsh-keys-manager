@@ -311,8 +311,9 @@ export interface AccountAttemptNotice {
 export interface AccountAttemptPrompt {
   /**
    * `manual-code` is the out-of-band paste step an OAuth-code flow parks on
-   * (a `zcode://` redirect the user copies back); it renders as a text input
-   * and carries the paste guidance, unlike a generic `text` prompt.
+   * (a `zcode://` redirect, or the Devin callback address): the dialog masks
+   * the field like a `secret`, offers a reveal toggle and carries the paste
+   * guidance, unlike a generic `text` prompt.
    */
   kind: 'text' | 'secret' | 'select' | 'manual-code'
   message: string

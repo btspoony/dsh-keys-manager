@@ -3151,6 +3151,13 @@ describe('transport account surface', () => {
     const row = findByClass(view.nodes, 'km-transport-row')[0]!
     const inside = descendants(view.nodes, row)
     expect(inside.some(node => node.text === '未登录')).toBe(true)
+    // A signed-out row has no expiry to show: neither a dated cell nor the
+    // "never used" copy, but the cell stays in the grid so the actions line up
+    // with dated rows.
+    expect(inside.some(node => node.text.includes('有效期至') || node.text.includes('从未使用'))).toBe(false)
+    const expiryCell = findByClass(inside, 'km-key-last')
+    expect(expiryCell).toHaveLength(1)
+    expect(expiryCell[0]!.props?.['aria-hidden']).toBe(true)
     const signIn = descendants(view.nodes, row).filter(node => node.type === 'button' && node.text.includes('登录'))
     expect(signIn).toHaveLength(1)
     // No "Set active": the stored grant already is the route's live credential,

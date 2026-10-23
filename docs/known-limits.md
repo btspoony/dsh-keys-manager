@@ -98,13 +98,14 @@ Current design boundaries of the Keys Manager plugin:
 - Each transport route (`cursor`, `devin`) keeps exactly one grant at
   `llm-omp-transports/<route>`: there is no key pool behind it and no
   per-account rotation to configure.
-- A stored grant is `active` while it carries a usable `access` token that is
-  still in date. An absent `expires` is the static-bearer shape the Devin
-  credential resolver accepts; no shipped flow writes one today (Devin derives
-  an expiry from the token), so such a record stays `active` with no expiry
-  cell. The Cursor resolver needs a dated grant, so the same record on `cursor`
-  reports `needs-reauth`. An `expires` that is present but unreadable is a
-  corrupt record, not a static bearer, and the route reports `needs-reauth`.
+- A stored grant is `active` when its `access` token is usable and its route
+  can serve it: a dated `expires` in the future, or — on `devin` only — no
+  `expires` at all, the static-bearer shape its resolver accepts. No shipped
+  flow writes such a record today (Devin derives an expiry from the token), and
+  it renders no expiry cell. The Cursor resolver needs a dated grant, so the
+  same record on `cursor` reports `needs-reauth`. An `expires` that is present
+  but unreadable is a corrupt record, not a static bearer, and the route reports
+  `needs-reauth`.
 - An expired grant is not the same failure on both routes: Devin has no
   refresh token, so it stops until you sign in again; Cursor refreshes on the
   credential seam and keeps serving, and stops only when the refresh is
