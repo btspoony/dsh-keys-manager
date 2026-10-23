@@ -2713,14 +2713,15 @@ export class KeysManagerService {
    *
    * An empty list is also the legitimate all-models state, so the only honest
    * way to tell a stale transport build apart is to say so: otherwise the
-   * picker renders `[]` until a save fails.
+   * picker renders `[]` until a save fails. Returns the message the first time
+   * only, so the caller can explain the empty list in the same response.
    */
-  private reportMissingCatalog(route: string): void {
-    if (this.catalogReports.has(route)) return
+  private reportMissingCatalog(route: string): string | undefined {
+    if (this.catalogReports.has(route)) return undefined
     this.catalogReports.add(route)
-    this.pushWarning(
-      `The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`,
-    )
+    const message = `The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`
+    this.pushWarning(message)
+    return message
   }
 
   /**
@@ -2735,12 +2736,14 @@ export class KeysManagerService {
   async transportModels(route: string): Promise<TransportModelsView> {
     this.assertTransportRoute(route)
     const configured = this.transportModelIds(route)
-    const catalog = transportCatalogOf(route, missing => this.reportMissingCatalog(missing))
+    let warning: string | undefined
+    const catalog = transportCatalogOf(route, missing => { warning = this.reportMissingCatalog(missing) })
     // A settings profile can outlive a catalog id; the picker renders the
     // catalog, so an unknown id would count toward {n} of {total} while
     // matching no checkbox and failing every save.
     const known = new Set(catalog.map(row => row.id))
-    return { catalog, models: configured.filter(id => known.has(id)) }
+    const models = configured.filter(id => known.has(id))
+    return warning === undefined ? { catalog, models } : { catalog, models, warning }
   }
 
   /**

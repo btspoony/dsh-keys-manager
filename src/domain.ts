@@ -248,6 +248,12 @@ export interface TransportCatalogModel {
 export interface TransportModelsView {
   catalog: TransportCatalogModel[]
   models: string[]
+  /**
+   * Why the catalog is empty, carried by the first read that finds a
+   * registered flow without a shipped catalog. Absent on later reads and for
+   * every route that does ship one.
+   */
+  warning?: string
 }
 
 /** Complete manager snapshot the UI renders. */

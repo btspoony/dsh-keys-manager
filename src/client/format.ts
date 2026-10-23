@@ -33,7 +33,8 @@ export function shapeTransportModels(value: unknown): TransportModelsView {
     }
   }
   const models = Array.isArray(record.models) ? record.models.filter((id): id is string => typeof id === 'string') : []
-  return { catalog, models }
+  const warning = typeof record.warning === 'string' && record.warning.length > 0 ? record.warning : undefined
+  return warning === undefined ? { catalog, models } : { catalog, models, warning }
 }
 
 /** Picker rows for every catalog model, preselecting the configured allow-list. */

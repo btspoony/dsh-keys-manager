@@ -17729,14 +17729,22 @@ test('a registered transport route with no shipped catalog reports why the list 
   const h = await harness([...piAiFlows(), TRANSPORT_FLOW, ghost])
   try {
     h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: {} }, revision: 1 })
-    assert.deepEqual((await h.service.transportModels('ghost')).catalog, [])
+    // The first read that finds the missing catalog explains the empty list in
+    // its own response, not only in the next state build.
+    const first = await h.service.transportModels('ghost')
+    assert.deepEqual(first.catalog, [])
+    assert.match(String(first.warning), /ships no catalog/)
     // A second read re-renders the picker; the warning is reported once.
-    assert.deepEqual((await h.service.transportModels('ghost')).catalog, [])
+    const second = await h.service.transportModels('ghost')
+    assert.deepEqual(second.catalog, [])
+    assert.equal(second.warning, undefined)
     const reported = h.service.getState().warnings.filter(message => /ships no catalog/.test(message))
     assert.equal(reported.length, 1)
     assert.match(reported[0]!, /"ghost"/)
-    // A route with a real catalog is not reported.
-    assert.ok((await h.service.transportModels('cursor')).catalog.length > 0)
+    // A route with a real catalog is not reported, and carries no explanation.
+    const cursor = await h.service.transportModels('cursor')
+    assert.ok(cursor.catalog.length > 0)
+    assert.equal(cursor.warning, undefined)
     assert.deepEqual(h.service.getState().warnings.filter(message => /ships no catalog/.test(message)), [])
   } finally {
     await h.close()
