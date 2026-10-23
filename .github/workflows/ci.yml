@@ -83,9 +83,11 @@ jobs:
           # escape them until a fresh clone. The directory must be clean.
           # Capture the status first: a failing `git status` inside `$( )` would
           # yield an empty string and pass `test -z`, so test the file size
-          # instead — git errors then abort under `set -e`.
+          # instead — git errors then abort under `set -e`. Print the offending
+          # entries too, or a red step only shows an exit code.
           git status --porcelain -- packages/llm-omp/src/catalog/ > "$RUNNER_TEMP/catalog-status.txt"
-          test ! -s "$RUNNER_TEMP/catalog-status.txt"
+          test ! -s "$RUNNER_TEMP/catalog-status.txt" \
+            || { cat "$RUNNER_TEMP/catalog-status.txt"; echo "dirty catalog entries listed above"; exit 1; }
 
       - name: Assert packed tarball contents
         run: |
