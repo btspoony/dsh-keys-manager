@@ -7455,7 +7455,13 @@ export class KeysManagerService {
         ? await this.discoverModels(extra, input.value)
         : { models: normalizeModels(extra.models) }
       const { models, failure } = found
-      if (models.length === 0) throw new Error('No models were discovered and the seed catalog is empty')
+      // The sign-in branch never probed the endpoint, so it cannot report a
+      // discovery result.
+      if (models.length === 0) {
+        throw new Error(importedFrom === null
+          ? 'No models were discovered and the seed catalog is empty'
+          : 'The plugin catalog is empty for this provider')
+      }
       if (failure !== undefined) this.pushWarning(`Model discovery failed; installed ${models.length} seed models instead: ${failure}`)
       const brokerRef = brokerRefFor(extraId)
       const profile = {

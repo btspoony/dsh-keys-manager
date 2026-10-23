@@ -1607,7 +1607,7 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
                 disabled: answering,
                 autoFocus: true,
               }),
-          prompt.kind === 'manual-code' || prompt.kind === 'secret'
+          prompt.kind === 'manual-code'
             ? h('label', { className: 'km-muted' },
                 h('input', {
                   type: 'checkbox',

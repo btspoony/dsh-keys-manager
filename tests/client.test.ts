@@ -2158,10 +2158,16 @@ function makePasteAttemptView(): AccountAttemptView {
     const state = makeState()
     state.providers = [makeSignInProvider()]
     const harness = makeContext()
+    // The next parked prompt, swapped in when the first answer is submitted.
+    let current = makePasteAttemptView()
     harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
       if (endpoint === 'keysManager/getState') return { ok: true, value: state }
-      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: makePasteAttemptView() }
-      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePasteAttemptView() }
+      if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: current }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: current }
+      if (endpoint === 'keysManager/answerAccountPrompt') {
+        current = { ...makePasteAttemptView(), prompt: { kind: 'manual-code', message: 'Paste the new code' }, updatedAt: 5 }
+        return { ok: true, value: null }
+      }
       return { ok: false, error: { message: `unexpected ${endpoint}` } }
     }
     const store = createStore(harness.ctx)
@@ -2186,16 +2192,33 @@ function makePasteAttemptView(): AccountAttemptView {
     // Finding 3: a pasted code is the only secret in the exchange (Z.AI's flow
     // has no PKCE), so the field is masked, never autofilled, and a reveal
     // toggle unmasks it on demand.
-    const promptForm = findByClass(view.nodes, 'km-login-prompt')[0]!
-    const pasteInput = (): FlatNode =>
-      descendants(view.nodes, promptForm).find(node => node.type === 'input' && node.props?.type !== 'checkbox')!
-    const reveal = (): FlatNode =>
-      descendants(view.nodes, promptForm).find(node => node.type === 'input' && node.props?.type === 'checkbox')!
+    const inPromptForm = (checkbox: boolean): FlatNode | undefined => {
+      const form = findByClass(view.nodes, 'km-login-prompt')[0]
+      if (form === undefined) return undefined
+      return descendants(view.nodes, form).find(node =>
+        node.type === 'input' && (node.props?.type === 'checkbox') === checkbox)
+    }
+    const pasteInput = (): FlatNode => inPromptForm(false)!
+    const reveal = (): FlatNode => inPromptForm(true)!
     expect(pasteInput().props).toMatchObject({ type: 'password', autoComplete: 'off' })
     expect(reveal().props?.checked).toBe(false)
     ;(reveal().props!.onChange as (event: unknown) => void)({ target: { checked: true } })
     view.render()
     expect(pasteInput().props?.type).toBe('text')
+
+    // The safety property: a new prompt re-masks, so the reveal never carries
+    // over to the next code.
+    ;(pasteInput().props!.onChange as (event: unknown) => void)({ target: { value: 'the-code' } })
+    view.render()
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]!
+    ;(form.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+    await view.flush()
+    // The poll that delivers the new prompt resolves after the first flush
+    // drained; its render queues the re-mask effect, so drain once more.
+    await view.flush()
+    expect(view.nodes.some(node => node.text === 'Paste the new code')).toBe(true)
+    expect(pasteInput().props?.type).toBe('password')
+    expect(reveal().props?.checked).toBe(false)
     view.unmount()
     setRuntimeContext(null)
   })

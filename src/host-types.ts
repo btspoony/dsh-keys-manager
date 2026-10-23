@@ -160,8 +160,9 @@ export interface TransportGrantLike {
   /** Refresh token; absent on a grant that cannot be renewed. */
   refresh?: string
   /**
-   * Epoch ms when the access token expires. Absent on a static bearer (the
-   * Devin flow mints one): no expiry is advertised, so it never goes stale.
+   * Epoch ms when the access token expires. Absent on a record the transport
+   * resolver accepts as a static bearer; no shipped flow writes one today —
+   * the Devin flow always commits a derived expiry.
    */
   expires?: number
   email?: string
