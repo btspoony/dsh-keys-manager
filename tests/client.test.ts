@@ -2182,6 +2182,20 @@ function makePasteAttemptView(): AccountAttemptView {
     // The rule's manual paste step, and the wording a `zcode://` redirect needs.
     expect(view.nodes.some(node => node.text === 'Paste the final redirect URL or the authorization code')).toBe(true)
     expect(view.nodes.some(node => node.text === '从浏览器地址栏复制完整 URL，或只粘贴授权码。')).toBe(true)
+
+    // Finding 3: a pasted code is the only secret in the exchange (Z.AI's flow
+    // has no PKCE), so the field is masked, never autofilled, and a reveal
+    // toggle unmasks it on demand.
+    const promptForm = findByClass(view.nodes, 'km-login-prompt')[0]!
+    const pasteInput = (): FlatNode =>
+      descendants(view.nodes, promptForm).find(node => node.type === 'input' && node.props?.type !== 'checkbox')!
+    const reveal = (): FlatNode =>
+      descendants(view.nodes, promptForm).find(node => node.type === 'input' && node.props?.type === 'checkbox')!
+    expect(pasteInput().props).toMatchObject({ type: 'password', autoComplete: 'off' })
+    expect(reveal().props?.checked).toBe(false)
+    ;(reveal().props!.onChange as (event: unknown) => void)({ target: { checked: true } })
+    view.render()
+    expect(pasteInput().props?.type).toBe('text')
     view.unmount()
     setRuntimeContext(null)
   })

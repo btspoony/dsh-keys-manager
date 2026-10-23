@@ -1213,7 +1213,11 @@ test('deleting the last key restores the original apiKeyEnv and removes manageme
 test('extra provider installation writes a complete pi-ai profile and release removes it', async () => {
   const h = await harness()
   try {
+    // The normal Add-provider path still probes the endpoint (F3 keeps
+    // discovery there and only skips it for a sign-in commit).
+    const discover = vi.spyOn(h.llm, 'discoverModels')
     const state = await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    assert.equal(discover.mock.calls.length, 1)
     const view = state.providers.find(entry => entry.provider === 'deepinfra')!
     assert.equal(view.managed, true)
     assert.equal(view.extra, true)
@@ -4238,6 +4242,7 @@ test('signing in to kilo creates the extra route and one sign-in row', async () 
   const h = await harness()
   try {
     useSignInDrivers(h, signInDrivers())
+    const discover = vi.spyOn(h.llm, 'discoverModels')
     const view = await h.service.beginAccountLogin('kilo', 'Kilo work')
     await eventually(() => assert.equal(h.service.getAccountAttempt(view.id)!.status, 'ready'))
 
@@ -4255,6 +4260,11 @@ test('signing in to kilo creates the extra route and one sign-in row', async () 
     // the broker reference, so the minted key serves the route directly.
     const profile = h.settings.valueOf('llm-pi-ai').providers.kilo
     assert.match(profile.apiKeyEnv, /^KEYSMGR_KILO_/)
+    // F3: the commit seeds the catalog instead of probing the endpoint, so the
+    // row appears without waiting out discovery's timeout inside the queue.
+    assert.equal(discover.mock.calls.length, 0)
+    assert.ok(profile.models.length > 0)
+    assert.equal(profile.models[0].id, 'anthropic/claude-opus-4.7')
 
     // The attempt names the row it produced; omp's instructions text reached the
     // dialog as a notice, and the secret never appears in the view.
@@ -13397,7 +13407,7 @@ test('a key added during the window converges the binding at window end', async 
 
 test('a transport row reports active, expired, needs-reauth and signed-out', async () => {
   const h = await transportHarness()
-  const rowOf = async (): Promise<{ status?: string; active?: boolean }> => {
+  const rowOf = async (): Promise<{ status?: string; active?: boolean; expiresAt?: number }> => {
     await h.service.refreshTransportAccounts()
     return h.service.buildState().transportAccounts?.[0] ?? {}
   }
@@ -13424,8 +13434,17 @@ test('a transport row reports active, expired, needs-reauth and signed-out', asy
     assert.equal(await statusOf(), 'needs-reauth')
     assert.equal((await rowOf()).active, false)
 
-    // A record this manager cannot read is not a usable grant either.
+    // F2: a usable access token with no `expires` is the documented static
+    // bearer (devin's shape, which its adapter keeps serving), so the route is
+    // active and the row carries no expiry for the UI to draw a bar from.
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access' } })
+    const staticBearer = await rowOf()
+    assert.equal(staticBearer.status, 'active')
+    assert.equal(staticBearer.active, true)
+    assert.equal(staticBearer.expiresAt, undefined)
+
+    // A PRESENT but unreadable expiry is a corrupt record, not a static bearer.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access', expires: 'soon' } })
     assert.equal(await statusOf(), 'needs-reauth')
     assert.equal((await rowOf()).active, false)
 

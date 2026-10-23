@@ -55,5 +55,6 @@
   "filterGroup": "筛选",
   "transportEmpty": "还没有传输账户。",
   "signInAgain": "重新登录",
-  "loginPasteHint": "从浏览器地址栏复制完整 URL，或只粘贴授权码。"
+  "loginPasteHint": "从浏览器地址栏复制完整 URL，或只粘贴授权码。",
+  "loginReveal": "显示粘贴的内容"
 }

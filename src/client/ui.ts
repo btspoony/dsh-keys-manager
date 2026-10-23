@@ -1412,6 +1412,7 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
   const [flowEnded, setFlowEnded] = React.useState(false)
   const [pollError, setPollError] = React.useState<string | null>(null)
   const [answer, setAnswer] = React.useState('')
+  const [revealed, setRevealed] = React.useState(false)
   const [answering, setAnswering] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
   const [cancelling, setCancelling] = React.useState(false)
@@ -1431,6 +1432,9 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
     ? ''
     : `${prompt.kind}\u0000${prompt.message}\u0000${(prompt.options ?? []).map(option => option.id).join('\u0000')}`
   React.useEffect(() => {
+    // A fresh prompt starts masked: a pasted code is the only secret in the
+    // exchange, so the reveal toggle never carries over.
+    setRevealed(false)
     const options = prompt !== undefined && prompt.kind === 'select' ? prompt.options : undefined
     if (options !== undefined && options.length > 0) {
       setAnswer(current => options.some(option => option.id === current) ? current : options[0]!.id)
@@ -1592,14 +1596,28 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
               }, prompt.options.map(option => h('option', { key: option.id, value: option.id }, option.label)))
             : h('input', {
                 className: 'km-input',
-                type: prompt.kind === 'secret' ? 'password' : 'text',
+                // A pasted code is the only secret in the exchange (Z.AI's flow
+                // has no PKCE), so it is masked exactly like `secret` prompts.
+                type: (prompt.kind === 'secret' || prompt.kind === 'manual-code') && !revealed ? 'password' : 'text',
                 value: answer,
                 onChange: (event: React.ChangeEvent<HTMLInputElement>) => setAnswer(event.target.value),
                 placeholder: prompt.placeholder,
                 spellCheck: false,
+                autoComplete: 'off',
                 disabled: answering,
                 autoFocus: true,
               }),
+          prompt.kind === 'manual-code' || prompt.kind === 'secret'
+            ? h('label', { className: 'km-muted' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: revealed,
+                  onChange: (event: React.ChangeEvent<HTMLInputElement>) => setRevealed(event.target.checked),
+                  disabled: answering,
+                }),
+                h('span', null, t('loginReveal')),
+              )
+            : null,
         ),
         error !== null ? h('div', { className: 'km-inline-error', role: 'alert' }, error) : null,
         h('div', { className: 'km-form-actions' },

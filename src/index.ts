@@ -660,10 +660,14 @@ function transportGrantOf(record: CredentialRecordLike | undefined): TransportGr
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined
   const source = payload as Record<string, unknown>
   if (typeof source.access !== 'string' || source.access.length === 0) return undefined
-  if (typeof source.expires !== 'number' || !Number.isFinite(source.expires)) return undefined
+  // No `expires` is the documented static-bearer shape (devin's adapter serves
+  // it), so only a PRESENT but unreadable value is a corrupt record.
+  if (source.expires !== undefined && (typeof source.expires !== 'number' || !Number.isFinite(source.expires))) {
+    return undefined
+  }
   return {
     access: source.access,
-    expires: source.expires,
+    ...(source.expires === undefined ? {} : { expires: source.expires }),
     ...(typeof source.refresh === 'string' && source.refresh.length > 0 ? { refresh: source.refresh } : {}),
     ...(typeof source.email === 'string' && source.email.length > 0 ? { email: source.email } : {}),
     ...(typeof source.accountId === 'string' && source.accountId.length > 0 ? { accountId: source.accountId } : {}),
@@ -682,7 +686,7 @@ function transportGrantOf(record: CredentialRecordLike | undefined): TransportGr
 function transportAccountOf(flow: AuthorizationFlowEntry, record: CredentialRecordLike | undefined, now: number): TransportAccountView {
   const grant = transportGrantOf(record)
   const status: TransportAccountStatus = grant !== undefined
-    ? grant.expires > now
+    ? grant.expires === undefined || grant.expires > now
       ? 'active'
       : grant.refresh === undefined ? 'needs-reauth' : 'expired'
     : record === undefined ? 'signed-out' : 'needs-reauth'
@@ -7444,7 +7448,13 @@ export class KeysManagerService {
         return this.buildState()
       }
 
-      const { models, failure } = await this.discoverModels(extra, input.value)
+      // A sign-in already proved the credential, so its commit seeds the catalog
+      // instead of probing the endpoint: discovery may hold this serialized
+      // mutation for its whole 20 s timeout before the row appears (F3).
+      const found: { models: ModelRecord[]; failure?: string } = importedFrom === null
+        ? await this.discoverModels(extra, input.value)
+        : { models: normalizeModels(extra.models) }
+      const { models, failure } = found
       if (models.length === 0) throw new Error('No models were discovered and the seed catalog is empty')
       if (failure !== undefined) this.pushWarning(`Model discovery failed; installed ${models.length} seed models instead: ${failure}`)
       const brokerRef = brokerRefFor(extraId)
