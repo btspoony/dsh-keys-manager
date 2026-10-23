@@ -28,9 +28,20 @@ Keys Manager 插件当前的设计边界：
 - 这些登录只能从 Keys Manager 页面发起。DSH CLI 与 Models 页面都不会触发它们，也不会写入 `llm-pi-ai/<provider>` 授权记录。
 - 签发得到的凭据就是该提供商池中的又一行：没有按账户的轮换或排名，与上述七家 pi-ai OAuth 账户一致。
 
-## 传输路由（Cursor、Devin）
+## 传输路由（Cursor、Devin、Google）
 
-- 每条传输路由（`cursor`、`devin`）在 `llm-omp-transports/<route>` 只保留一条授权：其后没有 key 池，也没有可按账户配置的轮换。
+- 每条传输路由（`cursor`、`devin`、`google-gemini-cli`、`google-antigravity`）在 `llm-omp-transports/<route>` 只保留一条授权：其后没有 key 池，也没有可按账户配置的轮换。
 - 只要授权的 `access` 令牌可用且该路由能使用它，状态就是 `active`：要么 `expires` 在未来，要么仅在 `devin` 上完全没有 `expires`（其解析器接受的静态 bearer 形态）。目前没有任何已发布流程会写入这种记录（Devin 会从令牌推导有效期），且它不显示有效期。Cursor 解析器需要带有效期的授权，因此同样的记录出现在 `cursor` 上会显示 `needs-reauth`。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。
-- 授权过期在两条路由上的后果不同：Devin 没有刷新令牌，过期后停止服务，直到重新登录；Cursor 在凭据 seam 上自动刷新并继续服务，只有刷新被拒或没有存刷新令牌时才停止。
-- 两个客户端都是非官方实现，真实端点均未验证。Cursor 与 Devin 的具体风险（厂商身份、ToS 风险、不转发图片、Devin 无刷新）见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
+- 授权过期在 Cursor 与 Devin 上的后果不同：Devin 没有刷新令牌，过期后停止服务，直到重新登录；Cursor 在凭据 seam 上自动刷新并继续服务，只有刷新被拒或没有存刷新令牌时才停止。
+- Cursor 与 Devin 两个客户端都是非官方实现，真实端点均未验证。它们的具体风险（厂商身份、ToS 风险、不转发图片、Devin 无刷新）见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
+- 两条 Google 路由共用一份生成的 `lib/omp/google.mjs` 产物，除此之外彼此独立：授权记录、账户行与模型目录都各自独立。其授权内容为 `{access, refresh, expires, projectId, email?}`，在凭据 seam 上刷新：刷新令牌仍有效时，过期的 access 令牌会自动续期；刷新被拒则该路由停止服务，直到重新登录。
+- Google 登录的监听器只在本机：`node:http` 绑定在 `127.0.0.1` 上（`google-gemini-cli` 用 `8085` 的 `/oauth2callback`，`google-antigravity` 用 `51121` 的 `/oauth-callback`），默认端口被占用时回落到其它空闲端口，中止或超时会关闭监听器。本机之外无法访问该端口。粘贴路径——浏览器最终落到的完整地址，或 `code#state`——与监听器并行作为第二条登录路径，因此重定向被阻断或不可达时仍能完成登录。
+- 登录过程还会解析该路由计费与请求所用的 Google Cloud 项目。若 Google 要求你提供 `GOOGLE_CLOUD_PROJECT`，登录会以 `AUTH_FAILED` 失败，没有无项目的回退路径。
+- `google-antigravity` 每个进程会读取一次 Google 的版本清单（5 秒预算，读取失败或超时则回落到固定版本），因此网络被阻断只会推迟、不会破坏它的首次请求。
+- 两条 Google 路由的客户端与已发布路由一样是非官方实现，会呈现厂商内部的 OAuth 身份。若令牌看起来有效但首次真实请求返回 `401`/`403`，那是需要报告给维护者的停机条件——客户端绝不会换用另一个身份重试。本仓库中所有传输相关结论都只经 fixture 验证；首次真实请求是手动冒烟检查。
+- `factory-droid` 被推迟到后续批次（跟踪号 `I-000253`），因此本版本不包含 `factory-droid` 路由。其计划的登录方式是设备码轮询——验证 URL 加用户码，不使用本地监听器——目前没有任何可配置的内容。
+
+## `muse-code`
+
+- `muse-code` 不需要传输：随附 pi-ai 的 `meta` 提供商已经服务 Muse 系列模型（`openai-responses` 走 `https://api.meta.ai/v1`），pi-ai 也自带该提供商的登录流程。
+- 该结论来自静态验证：提供商的目录条目与其客户端源码在路由形态和凭据形态上一致。开发过程中没有发起真实请求；首次真实调用属于手动冒烟检查，其结果不记录在此。

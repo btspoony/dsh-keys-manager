@@ -93,9 +93,10 @@ Current design boundaries of the Keys Manager plugin:
   per-account rotation or ranking, exactly as with the seven pi-ai OAuth
   accounts above.
 
-## Transport routes (Cursor, Devin)
+## Transport routes (Cursor, Devin, Google)
 
-- Each transport route (`cursor`, `devin`) keeps exactly one grant at
+- Each transport route (`cursor`, `devin`, `google-gemini-cli`,
+  `google-antigravity`) keeps exactly one grant at
   `llm-omp-transports/<route>`: there is no key pool behind it and no
   per-account rotation to configure.
 - A stored grant is `active` when its `access` token is usable and its route
@@ -106,11 +107,49 @@ Current design boundaries of the Keys Manager plugin:
   same record on `cursor` reports `needs-reauth`. An `expires` that is present
   but unreadable is a corrupt record, not a static bearer, and the route reports
   `needs-reauth`.
-- An expired grant is not the same failure on both routes: Devin has no
+- An expired grant does not fail the same way on Cursor and Devin: Devin has no
   refresh token, so it stops until you sign in again; Cursor refreshes on the
   credential seam and keeps serving, and stops only when the refresh is
   rejected or no refresh token is stored.
-- Both clients are unofficial and their live endpoints are unverified. The
-  Cursor and Devin specifics (vendor identities, ToS risk, no image input, no
+- The Cursor and Devin clients are unofficial and their live endpoints are
+  unverified. Their specifics (vendor identities, ToS risk, no image input, no
   Devin refresh) are in
   [the transports package known limits](../packages/llm-omp/docs/known-limits.md).
+- The two Google routes share one generated `lib/omp/google.mjs` artifact and
+  nothing else: separate grant records, account rows and catalogs. Their grant
+  is `{access, refresh, expires, projectId, email?}` and refreshes on the
+  credential seam, so an expired token is renewed while the refresh token stays
+  valid; a rejected refresh stops that route until you sign in again.
+- The Google sign-in listener is local-only: `node:http` bound on `127.0.0.1`
+  (`8085` `/oauth2callback` for `google-gemini-cli`, `51121`
+  `/oauth-callback` for `google-antigravity`), falling back to another free port
+  when the default is taken and closing on abort or timeout. Nothing outside
+  this machine can reach it. The paste path — the full address the browser
+  landed on, or `code#state` — runs as a second sign-in path beside the
+  listener, so a blocked or unreachable redirect still finishes the login.
+- Sign-in also resolves the Google Cloud project the route bills and sends. When
+  Google demands a `GOOGLE_CLOUD_PROJECT` instead, the login fails with
+  `AUTH_FAILED`; there is no project-less fallback.
+- `google-antigravity` reads a version manifest from Google once per process
+  (5 s budget, pinned fallback when the read fails or times out), so a blocked
+  network delays but does not break its first turn.
+- The Google clients are unofficial and present vendor-internal OAuth
+  identities, like the shipped routes. A `401`/`403` on the first live turn with
+  a token that looks valid is a stop to report to the maintainers — the client
+  is never retried with another identity. Every transport claim in this
+  repository is proven against fixtures only; the first live turn is a manual
+  smoke check.
+- `factory-droid` is deferred to its own follow-up batch (tracked as
+  `I-000253`), so no `factory-droid` route ships in this release. Its planned
+  sign-in is a device-code poll — verification URL plus user code, no local
+  listener — and nothing of it is available to configure yet.
+
+## `muse-code`
+
+- `muse-code` needs no transport: the vendored pi-ai `meta` provider already
+  serves the Muse models (`openai-responses` against
+  `https://api.meta.ai/v1`), and pi-ai ships that provider's own sign-in flow.
+- That verification is static: the provider's catalog entry and its client
+  source agree on the route and credential shape. No live request was made
+  while developing this; the first live call is a manual smoke check, and its
+  result is not recorded here.
