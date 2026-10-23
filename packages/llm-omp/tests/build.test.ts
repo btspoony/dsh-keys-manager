@@ -60,6 +60,12 @@ const packageRoot = dirname(testsDir)
 const CEILINGS: Readonly<Record<string, number>> = {
   cursor: 2_000_000,
   devin: 1_920_000,
+  // google: 1 303 142 bytes measured (one artifact, both Cloud Code Assist
+  // routes) -> 1 960 000. Its graph is the Cursor-sized provider plus the
+  // Anthropic image prep module and the vendor identity headers; a size above
+  // 1.5x that measurement means a catalog or another provider graph was pulled
+  // back into the bundle, not that the route grew.
+  google: 1_960_000,
 }
 
 /** One entry's measured build facts (manifest schema v2). */
@@ -68,6 +74,8 @@ interface OmpEntry {
   metafile: string
   moduleCount: number
   bytes: number
+  /** Package-relative path of the module that replaced `@oh-my-pi/pi-utils`. */
+  piUtilsShim: string
   shimImports: Record<string, string[]>
 }
 
@@ -91,6 +99,7 @@ interface Metafile {
 const EXPORTS: Readonly<Record<string, string>> = {
   cursor: 'streamCursor',
   devin: 'streamDevin',
+  google: 'streamGoogleGeminiCli',
 }
 
 const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
@@ -107,11 +116,17 @@ if (entries.length === 0 || entries.some(entry => entry.metafile === undefined))
   throw new Error('llm-omp: run `pnpm build` first — every artifact and its metafile are build outputs')
 }
 
-/** Shim module name → the same package-relative key the build records. */
-const shimPaths = {
-  'pi-utils': 'scripts/omp-shim/pi-utils.ts',
-  'bun-modules': 'scripts/omp-shim/bun-modules.ts',
-  'bun-global': 'scripts/omp-shim/bun-global.ts',
+/**
+ * Shim module name → the same package-relative key the build records.
+ * `pi-utils` comes from the entry: the Google build resolves it to the
+ * extension module, and reach is measured against that build's surface.
+ */
+function shimPaths(entry: OmpEntry): Record<string, string> {
+  return {
+    'pi-utils': entry.piUtilsShim,
+    'bun-modules': 'scripts/omp-shim/bun-modules.ts',
+    'bun-global': 'scripts/omp-shim/bun-global.ts',
+  }
 }
 
 /** Locate the installed copy of a package by walking up to its own `package.json`. */
@@ -204,6 +219,7 @@ describe('omp packed surface', () => {
       'lib/index.d.ts',
       'lib/omp/cursor.mjs',
       'lib/omp/devin.mjs',
+      'lib/omp/google.mjs',
       'bundle/cordis.patch.yml',
     ]) {
       expect(listing, path).toMatch(new RegExp(`notice\\s+\\S+\\s+${path.replace(/[.]/g, '\\.')}(\\s|$)`))
@@ -211,6 +227,7 @@ describe('omp packed surface', () => {
     // Metafiles are build intermediates, not part of the published surface.
     expect(listing).not.toContain('lib/omp/cursor.metafile.json')
     expect(listing).not.toContain('lib/omp/devin.metafile.json')
+    expect(listing).not.toContain('lib/omp/google.metafile.json')
   })
 })
 
@@ -313,7 +330,10 @@ describe('omp drift gate', () => {
 
   it('records the shim symbols each bundled graph actually reaches', () => {
     for (const { name, manifest: entry, metafile } of entries) {
-      const reached = shimImportsOf(metafile!, { packageRoot, shimPaths }) as Record<string, string[]>
+      const reached = shimImportsOf(metafile!, { packageRoot, shimPaths: shimPaths(entry) }) as Record<
+        string,
+        string[]
+      >
       // A `simplify:` member that becomes reachable changes this set, so the
       // manifest diff names it before the behaviour change ships.
       expect(reached, name).toEqual(entry.shimImports)

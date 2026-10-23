@@ -46,18 +46,38 @@ const packageRoot = dirname(scriptsDir)
 const ENTRIES = [
   { name: 'cursor', entry: join(scriptsDir, 'omp-entry.ts'), out: join(packageRoot, 'lib', 'omp', 'cursor.mjs') },
   { name: 'devin', entry: join(scriptsDir, 'omp-entry-devin.ts'), out: join(packageRoot, 'lib', 'omp', 'devin.mjs') },
+  // One artifact, two routes: the Google provider dispatches on `model.provider`.
+  // It alone reads the SSE/retry helpers, so it gets the shim extension.
+  {
+    name: 'google',
+    entry: join(scriptsDir, 'omp-entry-google.ts'),
+    out: join(packageRoot, 'lib', 'omp', 'google.mjs'),
+    piUtils: join(scriptsDir, 'omp-shim', 'pi-utils-google.ts'),
+  },
+  // `factory-droid` is deliberately absent (plan risk A2): its graph pulls omp's
+  // whole builtin provider registry (register-builtins → anthropic → the 12.4 MB
+  // model catalog), which measured 16.99 MB / 327 modules against a 2.79 MB
+  // "stop" bound. A later iteration owns that route.
 ]
 const MANIFEST = join(scriptsDir, 'omp-manifest.json')
 
 const PI_UTILS_SHIM = join(scriptsDir, 'omp-shim', 'pi-utils.ts')
+const SHIM_DIR = join(scriptsDir, 'omp-shim')
 const BUN_SHIM = join(scriptsDir, 'omp-shim', 'bun-modules.ts')
 const BUN_GLOBAL_SHIM = join(scriptsDir, 'omp-shim', 'bun-global.ts')
 
-/** Shim module name → its path as esbuild keys the metafile (relative to the package root). */
-const SHIM_PATHS = {
-  'pi-utils': relative(packageRoot, PI_UTILS_SHIM).split('\\').join('/'),
-  'bun-modules': relative(packageRoot, BUN_SHIM).split('\\').join('/'),
-  'bun-global': relative(packageRoot, BUN_GLOBAL_SHIM).split('\\').join('/'),
+/**
+ * Shim module name → its path as esbuild keys the metafile (relative to the
+ * package root). `pi-utils` is per entry: the Google build resolves it to the
+ * extension module, so the recorded reach is that build's surface.
+ * @param piUtils - the entry's `@oh-my-pi/pi-utils` replacement.
+ */
+function shimPaths(piUtils) {
+  return {
+    'pi-utils': relative(packageRoot, piUtils).split('\\').join('/'),
+    'bun-modules': relative(packageRoot, BUN_SHIM).split('\\').join('/'),
+    'bun-global': relative(packageRoot, BUN_GLOBAL_SHIM).split('\\').join('/'),
+  }
 }
 
 /** Resolve the on-disk root of an installed package (its `package.json` owner). */
@@ -153,14 +173,14 @@ const ompJsonAsEsm = () => ({
   },
 })
 
-const ompShims = () => ({
+const ompShims = piUtils => ({
   name: 'omp-node-shims',
   setup(build_) {
     build_.onResolve({ filter: /^@oh-my-pi\/pi-utils(\/.*)?$/ }, args => {
-      // The shim re-exports omp's real JSON parser instead of reimplementing it;
-      // redirecting that import would resolve straight back to the shim.
-      if (args.importer === PI_UTILS_SHIM) return undefined
-      return { path: PI_UTILS_SHIM }
+      // The shims re-export omp's real JSON/SSE/retry implementations instead of
+      // reimplementing them; redirecting those imports would resolve back here.
+      if (args.importer.startsWith(SHIM_DIR)) return undefined
+      return { path: piUtils }
     })
     build_.onResolve({ filter: /^bun(:.*)?$/ }, () => ({ path: BUN_SHIM }))
   },
@@ -194,20 +214,28 @@ async function bundleEntry(entry) {
     // Free `Bun` identifiers (the runtime global, not the `bun:*` modules) resolve
     // to the Node shim, so the artifact carries no unmet runtime global.
     inject: [BUN_GLOBAL_SHIM],
-    plugins: [ompJsonAsEsm(), ompShims()],
+    plugins: [ompJsonAsEsm(), ompShims(entry.piUtils ?? PI_UTILS_SHIM)],
   })
 
   const metafilePath = join(dirname(entry.out), `${entry.name}.metafile.json`)
   await writeFile(metafilePath, `${JSON.stringify(result.metafile)}\n`)
 
   const artifact = await readFile(entry.out)
+  const piUtilsShim = shimPaths(entry.piUtils ?? PI_UTILS_SHIM)['pi-utils']
   return {
     record: {
       entry: outputKey(entry.out),
       metafile: outputKey(metafilePath),
       moduleCount: Object.keys(result.metafile.inputs).length,
       bytes: artifact.byteLength,
-      shimImports: shimImportsOf(result.metafile, { packageRoot, shimPaths: SHIM_PATHS }),
+      // Which module replaced `@oh-my-pi/pi-utils` for this entry: the base shim,
+      // or the Google entry's extension of it. The drift test re-derives reach
+      // with the same path, so the recorded surface is this build's surface.
+      piUtilsShim,
+      shimImports: shimImportsOf(result.metafile, {
+        packageRoot,
+        shimPaths: shimPaths(entry.piUtils ?? PI_UTILS_SHIM),
+      }),
     },
     metafile: result.metafile,
   }
@@ -254,6 +282,22 @@ async function main() {
     '@oh-my-pi/pi-catalog/src/wire/devin.ts': join(piCatalogRoot, 'src/wire/devin.ts'),
     '@oh-my-pi/pi-catalog/src/wire/devin-proto.ts': join(piCatalogRoot, 'src/wire/devin-proto.ts'),
     '@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl': join(piCatalogRoot, 'src/compat/rules/auth/devin.kdl'),
+    // The Google graph: one provider shared by both Cloud Code Assist routes,
+    // its wire types and helpers, the image-prep module the static `Bun.Image`
+    // reference lives in, the vendor identity headers, and both auth rules.
+    '@oh-my-pi/pi-ai/src/providers/google-gemini-cli.ts': join(piAiRoot, 'src/providers/google-gemini-cli.ts'),
+    '@oh-my-pi/pi-ai/src/providers/google-shared.ts': join(piAiRoot, 'src/providers/google-shared.ts'),
+    '@oh-my-pi/pi-ai/src/providers/google-types.ts': join(piAiRoot, 'src/providers/google-types.ts'),
+    '@oh-my-pi/pi-ai/src/providers/anthropic-images.ts': join(piAiRoot, 'src/providers/anthropic-images.ts'),
+    '@oh-my-pi/pi-catalog/src/wire/gemini-headers.ts': join(piCatalogRoot, 'src/wire/gemini-headers.ts'),
+    '@oh-my-pi/pi-catalog/src/compat/rules/auth/google-gemini-cli.kdl': join(
+      piCatalogRoot,
+      'src/compat/rules/auth/google-gemini-cli.kdl',
+    ),
+    '@oh-my-pi/pi-catalog/src/compat/rules/auth/google-antigravity.kdl': join(
+      piCatalogRoot,
+      'src/compat/rules/auth/google-antigravity.kdl',
+    ),
   }
 
   const sourceHashes = {}

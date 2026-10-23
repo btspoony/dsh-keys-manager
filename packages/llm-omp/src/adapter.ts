@@ -28,17 +28,43 @@ import type {
 
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
+import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
+import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 import { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
-import { CURSOR_PROFILE, DEVIN_PROFILE, abortedFinish, projectDevinRequest, projectEvents, projectRequest } from './projection.js'
+import {
+  CURSOR_PROFILE,
+  DEVIN_PROFILE,
+  GOOGLE_ANTIGRAVITY_PROFILE,
+  GOOGLE_GEMINI_CLI_PROFILE,
+  abortedFinish,
+  projectDevinRequest,
+  projectEvents,
+  projectGoogleRequest,
+  projectRequest,
+} from './projection.js'
 import type { RouteProfile } from './projection.js'
 import type { OmpAssistantMessageEvent, OmpContext } from './omp.js'
-import type { CursorModelRow, DevinModelRow, OmpCursorModel, OmpCursorOptions, OmpDevinModel, OmpDevinOptions } from './omp.js'
+import type {
+  CursorModelRow,
+  DevinModelRow,
+  GoogleModelRow,
+  OmpCursorModel,
+  OmpCursorOptions,
+  OmpDevinModel,
+  OmpDevinOptions,
+  OmpGoogleModel,
+  OmpGoogleOptions,
+} from './omp.js'
 
 /** The Cursor provider route this adapter owns. */
 export const CURSOR_ROUTE = 'cursor'
 /** The Devin provider route this adapter owns. */
 export const DEVIN_ROUTE = 'devin'
+/** The Gemini CLI provider route this adapter owns. */
+export const GOOGLE_GEMINI_CLI_ROUTE = 'google-gemini-cli'
+/** The Antigravity provider route this adapter owns. */
+export const GOOGLE_ANTIGRAVITY_ROUTE = 'google-antigravity'
 
 /** Machine code for a model id the generated catalog does not contain. */
 export const UNKNOWN_MODEL = 'UNKNOWN_MODEL'
@@ -97,7 +123,7 @@ export interface ProjectedTransportRequest<Model, Options> {
 /** What differs between the routes: identity, catalog, projection and credential record. */
 export interface TransportRoute<Row extends TransportRow, Model, Options extends TransportOptions> {
   /** Provider id; also the registered route set the projection's profile accepts. */
-  readonly id: 'cursor' | 'devin'
+  readonly id: 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
   /** Models-page / provider-info display name. */
   readonly displayName: string
   /** The `ctx.credentials` record this route reads. */
@@ -136,6 +162,36 @@ export const DEVIN_TRANSPORT_ROUTE: TransportRoute<DevinModelRow, OmpDevinModel,
   profile: DEVIN_PROFILE,
   models: DEVIN_MODELS,
   project: projectDevinRequest,
+}
+
+/**
+ * The two Google routes' facts.
+ *
+ * One artifact serves both: `streamGoogleGeminiCli` dispatches on
+ * `model.provider`, so only the profile, the catalog and the credential record
+ * differ. The credential key is the route id under the package namespace
+ * (`llm-omp-transports/<route>`), as it is for cursor and devin; the Google
+ * resolver reads and writes those records.
+ */
+export const GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE: TransportRoute<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> = {
+  id: GOOGLE_GEMINI_CLI_ROUTE,
+  displayName: 'Google Gemini CLI',
+  credentialKey: `llm-omp-transports/${GOOGLE_GEMINI_CLI_ROUTE}`,
+  profile: GOOGLE_GEMINI_CLI_PROFILE,
+  models: GOOGLE_GEMINI_CLI_MODELS,
+  project: (row, options) => projectGoogleRequest(row, GOOGLE_GEMINI_CLI_PROFILE, options),
+  efforts: row => row.thinking?.efforts,
+}
+
+/** The Antigravity route's facts: the same provider over its own catalog and endpoint family. */
+export const GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE: TransportRoute<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> = {
+  id: GOOGLE_ANTIGRAVITY_ROUTE,
+  displayName: 'Google Antigravity',
+  credentialKey: `llm-omp-transports/${GOOGLE_ANTIGRAVITY_ROUTE}`,
+  profile: GOOGLE_ANTIGRAVITY_PROFILE,
+  models: GOOGLE_ANTIGRAVITY_MODELS,
+  project: (row, options) => projectGoogleRequest(row, GOOGLE_ANTIGRAVITY_PROFILE, options),
+  efforts: row => row.thinking?.efforts,
 }
 
 /** What an adapter needs from its host plugin. */
@@ -329,5 +385,22 @@ export type OmpDevinAdapterConfig = OmpAdapterOptions<OmpDevinModel, OmpDevinOpt
 export class OmpDevinAdapter extends OmpTransportAdapter<DevinModelRow, OmpDevinModel, OmpDevinOptions> {
   constructor(options: OmpDevinAdapterConfig) {
     super({ route: DEVIN_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The DSH llm adapter configuration for a Google route. */
+export type OmpGoogleAdapterConfig = OmpAdapterOptions<OmpGoogleModel, OmpGoogleOptions>
+
+/** The Gemini CLI adapter: the bundled `streamGoogleGeminiCli` over the Gemini CLI catalog. */
+export class OmpGoogleGeminiCliAdapter extends OmpTransportAdapter<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> {
+  constructor(options: OmpGoogleAdapterConfig) {
+    super({ route: GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The Antigravity adapter: the same artifact and transport over the Antigravity catalog. */
+export class OmpGoogleAntigravityAdapter extends OmpTransportAdapter<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> {
+  constructor(options: OmpGoogleAdapterConfig) {
+    super({ route: GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE, ...options })
   }
 }

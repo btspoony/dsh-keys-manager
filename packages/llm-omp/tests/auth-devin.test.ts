@@ -156,6 +156,11 @@ describe('devin callback parser', () => {
     expect(parseDevinCallback('abc#s1')).toEqual({ code: 'abc', state: 's1' })
     // A URL without a state is a bare code with extra shape.
     expect(parseDevinCallback('http://127.0.0.1:59653/callback?code=abc')).toEqual({ code: 'abc' })
+    // The parser reads `code`/`state` only: an `error` parameter beside a code
+    // does not change what Devin's paste path always did.
+    expect(parseDevinCallback('http://127.0.0.1:59653/callback?error=access_denied&code=abc')).toEqual({
+      code: 'abc',
+    })
   })
 
   it('refuses an empty paste or one without a code', () => {

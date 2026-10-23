@@ -24,10 +24,21 @@ import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 
-import { CURSOR_ROUTE, DEVIN_ROUTE, OmpCursorAdapter, OmpDevinAdapter } from './adapter.js'
+import {
+  CURSOR_ROUTE,
+  DEVIN_ROUTE,
+  GOOGLE_ANTIGRAVITY_ROUTE,
+  GOOGLE_GEMINI_CLI_ROUTE,
+  OmpCursorAdapter,
+  OmpDevinAdapter,
+  OmpGoogleAntigravityAdapter,
+  OmpGoogleGeminiCliAdapter,
+} from './adapter.js'
 import type { OmpTransportOf } from './adapter.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
+import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
+import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { loginCursor } from './cursor/auth.js'
 import type { CursorFetch } from './cursor/auth.js'
 import { CURSOR_CREDENTIAL_KEY, createCursorAccess } from './cursor/credentials.js'
@@ -35,6 +46,12 @@ import type { CredentialRecordsLike } from './cursor/credentials.js'
 import { DevinAuthError, loginDevin } from './devin/auth.js'
 import type { DevinFetch, DevinGrant } from './devin/auth.js'
 import { DEVIN_CREDENTIAL_KEY, createDevinAccess } from './devin/credentials.js'
+import { loginGoogle } from './google/auth.js'
+import type { GoogleFetch, GoogleLoginResult } from './google/auth.js'
+import { GoogleAuthError } from './google/callback-listener.js'
+import { createGoogleAccess, googleCredentialKey } from './google/credentials.js'
+import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from './google/route.js'
+import type { GoogleRouteFacts } from './google/route.js'
 
 /** Machine code for a transport artifact that cannot be loaded. */
 export const TRANSPORT_UNAVAILABLE = 'TRANSPORT_UNAVAILABLE'
@@ -53,10 +70,15 @@ export interface TransportProviderProfile {
   models: TransportModelProfile[]
 }
 
+/** The route ids this plugin registers: the shipped pair, then the Google pair. */
+type TransportRouteId = 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
+
 /** The `providers` profile a volatile config reference snapshots. */
 export interface TransportProvidersProfile {
   cursor?: TransportProviderProfile
   devin?: TransportProviderProfile
+  'google-gemini-cli'?: TransportProviderProfile
+  'google-antigravity'?: TransportProviderProfile
 }
 
 /** A live config reference (cosmokit `Volatile`) a volatile schema node resolves to. */
@@ -104,8 +126,35 @@ export const Config = z.object({
           )
           .default([]),
       }),
+      // The two Google routes are configured like the shipped ones: an empty
+      // default advertises each route's whole catalog.
+      'google-gemini-cli': z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
+      'google-antigravity': z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
     })
-    .default({ cursor: { models: [] }, devin: { models: [] } })
+    .default({
+      cursor: { models: [] },
+      devin: { models: [] },
+      'google-gemini-cli': { models: [] },
+      'google-antigravity': { models: [] },
+    })
     .volatile(),
 })
 
@@ -134,6 +183,29 @@ export function devinCatalogModels(): TransportCatalogModel[] {
   return DEVIN_MODELS.map(row => ({ id: row.id, name: row.name }))
 }
 
+/**
+ * The full Gemini CLI catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * The twin of {@link cursorCatalogModels}. Both Google routes share one bundled
+ * artifact but keep separate route ids and tables, so the picker hands the row
+ * list of the route the user is configuring.
+ */
+export function googleGeminiCliCatalogModels(): TransportCatalogModel[] {
+  return GOOGLE_GEMINI_CLI_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
+/**
+ * The full Antigravity catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * Same shape and source pin as {@link googleGeminiCliCatalogModels}; the rows
+ * differ because the routes advertise different models and wire ids.
+ */
+export function googleAntigravityCatalogModels(): TransportCatalogModel[] {
+  return GOOGLE_ANTIGRAVITY_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
 export const name = 'llm-omp-transports'
 
 /**
@@ -157,6 +229,24 @@ const DEVIN_PROVIDER = {
   displayName: 'Devin',
   settingsNs: 'llm-omp-transports',
   settingsPath: ['providers', 'devin'],
+  declared: false,
+} as const
+
+/** The Gemini CLI route's Models-page entry, beside the two shipped routes. */
+const GOOGLE_GEMINI_CLI_PROVIDER = {
+  provider: GOOGLE_GEMINI_CLI_ROUTE,
+  displayName: 'Google Gemini CLI',
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'google-gemini-cli'],
+  declared: false,
+} as const
+
+/** The Antigravity route's Models-page entry: one artifact, its own catalog and settings path. */
+const GOOGLE_ANTIGRAVITY_PROVIDER = {
+  provider: GOOGLE_ANTIGRAVITY_ROUTE,
+  displayName: 'Google Antigravity',
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'google-antigravity'],
   declared: false,
 } as const
 
@@ -320,6 +410,106 @@ export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAu
   }
 }
 
+/** Test seams for the Google flows; the plugin uses the real network, clock and ports. */
+export interface GoogleFlowOptions {
+  readonly fetch?: GoogleFetch
+  readonly now?: () => number
+  /** Fixed state, so a test can script the listener and the paste. */
+  readonly state?: string
+  /** Preferred loopback port; `0` binds an ephemeral one. */
+  readonly port?: number
+  readonly env?: Readonly<Record<string, string | undefined>>
+  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+  /** How long to wait for the browser before failing the attempt; defaults to five minutes. */
+  readonly waitMs?: number
+}
+
+/**
+ * Build one Google route's sign-in flow.
+ *
+ * @remarks
+ * Both routes share the flow: each is an authorize page, a loopback callback (or
+ * a paste when the browser cannot reach it), a form token exchange, userinfo and
+ * a project-discovery script. Only the facts differ, so only the {@link facts}
+ * argument differs. `projectId` is committed with the grant because the transport
+ * sends it on every request and a refresh must not lose it.
+ */
+function googleAuthorizationFlow(facts: GoogleRouteFacts, options: GoogleFlowOptions): CursorAuthorizationFlow {
+  const credentialKey = googleCredentialKey(facts.id)
+  const callbackPlaceholder = `http://${facts.callback.hostname}:${facts.callback.port}${facts.callback.path}?code=…&state=…`
+  return {
+    key: credentialKey,
+    label: facts.label,
+    methods: [{ id: 'oauth', label: `Sign in with ${facts.label}` }],
+    async run(session) {
+      let grant: GoogleLoginResult
+      try {
+        grant = await loginGoogle(facts, {
+          ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+          ...(options.now === undefined ? {} : { now: options.now }),
+          ...(options.state === undefined ? {} : { state: options.state }),
+          ...(options.port === undefined ? {} : { port: options.port }),
+          ...(options.env === undefined ? {} : { env: options.env }),
+          ...(options.sleep === undefined ? {} : { sleep: options.sleep }),
+          ...(options.waitMs === undefined ? {} : { waitMs: options.waitMs }),
+          signal: session.signal,
+          onAuthUrl: url =>
+            session.notify({ message: `Open this page to sign in to ${facts.label}.`, url }),
+          onProgress: message => session.notify({ message }),
+          // The paste half exists for browsers that cannot reach the loopback;
+          // it is cancelled once the listener already has the code.
+          prompt: signal =>
+            session.prompt({
+              kind: 'manual-code',
+              message:
+                'If the browser cannot reach this machine, paste the address it landed on (or just the code) here.',
+              placeholder: callbackPlaceholder,
+              signal,
+            }),
+        })
+      } catch (cause) {
+        // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
+        if (session.signal.aborted) throw cause
+        if (cause instanceof GoogleAuthError) {
+          throw new LlmError(`llm-omp-transports: ${facts.label} sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
+            cause,
+          })
+        }
+        throw cause
+      }
+      await session.commit({
+        kind: 'grant',
+        payload: {
+          access: grant.access,
+          expires: grant.expires,
+          projectId: grant.projectId,
+          // The seam validates the payload as a JSON value, so an absent field
+          // must be absent, not `undefined`.
+          ...(grant.refresh === undefined ? {} : { refresh: grant.refresh }),
+          ...(grant.email === undefined ? {} : { email: grant.email }),
+        },
+      })
+    },
+  }
+}
+
+/**
+ * The `llm-omp-transports/google-gemini-cli` sign-in flow.
+ *
+ * @remarks
+ * Signing in here also provisions the Cloud Code Assist project the transport
+ * names on every request; a Workspace account may need `GOOGLE_CLOUD_PROJECT` set
+ * for that step, which surfaces as an `AUTH_FAILED` message naming the variable.
+ */
+export function googleGeminiCliAuthorizationFlow(options: GoogleFlowOptions = {}): CursorAuthorizationFlow {
+  return googleAuthorizationFlow(GOOGLE_GEMINI_CLI_FACTS, options)
+}
+
+/** The `llm-omp-transports/google-antigravity` sign-in flow: same shape, its own client and project. */
+export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = {}): CursorAuthorizationFlow {
+  return googleAuthorizationFlow(GOOGLE_ANTIGRAVITY_FACTS, options)
+}
+
 /**
  * Load one bundled omp transport on first use.
  *
@@ -329,8 +519,8 @@ export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAu
  * request and its failure reaches that request as a typed `LlmError`.
  */
 function bundledTransport<Model, Options>(
-  artifact: 'cursor' | 'devin',
-  exportName: 'streamCursor' | 'streamDevin',
+  artifact: 'cursor' | 'devin' | 'google',
+  exportName: 'streamCursor' | 'streamDevin' | 'streamGoogleGeminiCli',
   label: string,
 ): OmpTransportOf<Model, Options> {
   return (model, context, options) =>
@@ -385,6 +575,44 @@ export function createDevinAdapter(credentials: CredentialRecordsLike, models?: 
   })
 }
 
+/**
+ * Build the Gemini CLI adapter this plugin registers.
+ *
+ * @remarks
+ * The twin of {@link createCursorAdapter}. The access resolver returns the
+ * structured JSON envelope the transport parses (token, project, refresh, expiry),
+ * and the bundled artifact still loads on the first request.
+ */
+export function createGoogleGeminiCliAdapter(
+  credentials: CredentialRecordsLike,
+  models?: () => readonly string[] | undefined,
+): OmpGoogleGeminiCliAdapter {
+  return new OmpGoogleGeminiCliAdapter({
+    access: createGoogleAccess(credentials, GOOGLE_GEMINI_CLI_FACTS),
+    transport: bundledTransport('google', 'streamGoogleGeminiCli', 'Google Gemini CLI'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
+/**
+ * Build the Antigravity adapter this plugin registers.
+ *
+ * @remarks
+ * Same artifact as {@link createGoogleGeminiCliAdapter} — the transport dispatches
+ * on `model.provider` — over its own catalog, credential record and discovery
+ * facts.
+ */
+export function createGoogleAntigravityAdapter(
+  credentials: CredentialRecordsLike,
+  models?: () => readonly string[] | undefined,
+): OmpGoogleAntigravityAdapter {
+  return new OmpGoogleAntigravityAdapter({
+    access: createGoogleAccess(credentials, GOOGLE_ANTIGRAVITY_FACTS),
+    transport: bundledTransport('google', 'streamGoogleGeminiCli', 'Google Antigravity'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
   const host = ctx as Context & {
     credentials: CredentialRecordsLike
@@ -394,15 +622,33 @@ export function apply(ctx: Context, config: Config = {}): void {
   const providers = config.providers
   // A settings file is user input: drop a malformed row instead of throwing
   // from `listModels`/`stream`, which would take the whole route down.
-  const models = (route: 'cursor' | 'devin') => (): readonly string[] | undefined =>
+  const models = (route: TransportRouteId) => (): readonly string[] | undefined =>
     providers?.get()[route]?.models?.flatMap(row => (typeof row?.id === 'string' ? [row.id] : []))
+  // Stable order: the two shipped routes first, the Google pair last. Every
+  // artifact stays lazy, so a missing one cannot fail `apply`.
   ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models('cursor')))
   ctx.llm.registerAdapter([DEVIN_ROUTE], createDevinAdapter(host.credentials, models('devin')))
-  ctx.llm.registerConfigurableProviders([CURSOR_PROVIDER, DEVIN_PROVIDER])
+  ctx.llm.registerAdapter(
+    [GOOGLE_GEMINI_CLI_ROUTE],
+    createGoogleGeminiCliAdapter(host.credentials, models('google-gemini-cli')),
+  )
+  ctx.llm.registerAdapter(
+    [GOOGLE_ANTIGRAVITY_ROUTE],
+    createGoogleAntigravityAdapter(host.credentials, models('google-antigravity')),
+  )
+  ctx.llm.registerConfigurableProviders([
+    CURSOR_PROVIDER,
+    DEVIN_PROVIDER,
+    GOOGLE_GEMINI_CLI_PROVIDER,
+    GOOGLE_ANTIGRAVITY_PROVIDER,
+  ])
   host.authorization.registerFlow(cursorAuthorizationFlow())
   host.authorization.registerFlow(devinAuthorizationFlow())
+  host.authorization.registerFlow(googleGeminiCliAuthorizationFlow())
+  host.authorization.registerFlow(googleAntigravityAuthorizationFlow())
 }
 
-export { CURSOR_ROUTE, DEVIN_ROUTE } from './adapter.js'
+export { CURSOR_ROUTE, DEVIN_ROUTE, GOOGLE_ANTIGRAVITY_ROUTE, GOOGLE_GEMINI_CLI_ROUTE } from './adapter.js'
 export { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 export { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
+export { GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY, GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'

@@ -74,10 +74,11 @@ import type {
   ToolResultMessage,
 } from '@deepseek-ai/dsh-llm'
 
-import { attributionPreservingFetch } from './devin/transport.js'
+import { attributionPreservingFetch } from './transport/fetch.js'
 import type {
   CursorModelRow,
   DevinModelRow,
+  GoogleModelRow,
   OmpAssistantMessage,
   OmpAssistantMessageEvent,
   OmpContentBlock,
@@ -86,6 +87,9 @@ import type {
   OmpCursorOptions,
   OmpDevinModel,
   OmpDevinOptions,
+  OmpGoogleModel,
+  OmpGoogleOptions,
+  OmpGoogleThinking,
   OmpHistoryMessage,
   OmpTool,
   OmpToolCallBlock,
@@ -122,9 +126,9 @@ type FinishChunk = Extract<StreamChunk, { type: 'finish' }>
  */
 export interface RouteProfile {
   /** Provider route id: history identity and the label inside error messages. */
-  readonly provider: 'cursor' | 'devin'
+  readonly provider: 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
   /** omp's `Api` for the route. */
-  readonly api: 'cursor-agent' | 'devin-agent'
+  readonly api: 'cursor-agent' | 'devin-agent' | 'google-gemini-cli'
   /** Provider-neutral code an unclassified transport failure maps to. */
   readonly fallbackErrorCode: string
   /**
@@ -164,6 +168,32 @@ export const DEVIN_PROFILE = {
   api: 'devin-agent',
   fallbackErrorCode: 'PROVIDER_ERROR',
 } as const satisfies RouteProfile
+
+/**
+ * The Google routes' projection facts.
+ *
+ * Both routes carry `api: 'google-gemini-cli'`: one provider serves them and
+ * dispatches on `model.provider`. No transport-resolved marker — the provider
+ * emits tool calls for DSH's own loop, so every call in the stream is DSH's.
+ */
+export interface GoogleRouteProfile extends RouteProfile {
+  readonly provider: 'google-gemini-cli' | 'google-antigravity'
+  readonly api: 'google-gemini-cli'
+}
+
+/** The Gemini CLI route's projection facts. */
+export const GOOGLE_GEMINI_CLI_PROFILE = {
+  provider: 'google-gemini-cli',
+  api: 'google-gemini-cli',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies GoogleRouteProfile
+
+/** The Antigravity route's projection facts: same artifact, different endpoint family. */
+export const GOOGLE_ANTIGRAVITY_PROFILE = {
+  provider: 'google-antigravity',
+  api: 'google-gemini-cli',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies GoogleRouteProfile
 
 /** Token counters of a historical assistant message; the transport never re-prices history. */
 const EMPTY_USAGE: OmpUsage = Object.freeze({
@@ -292,6 +322,215 @@ export function projectDevinRequest(
       fetch: attributionPreservingFetch,
     },
   }
+}
+
+/** The Google request projection's three positional transport arguments. */
+export interface ProjectedGoogleRequest {
+  readonly model: OmpGoogleModel
+  readonly context: OmpContext
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpGoogleOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/**
+ * Per-effort thinking budgets omp falls back to when a row pins none
+ * (`@oh-my-pi/pi-ai@18.12.3` `src/stream.ts` `GOOGLE_THINKING`).
+ */
+const GOOGLE_THINKING: Readonly<Record<string, number>> = {
+  minimal: 1024,
+  low: 4096,
+  medium: 8192,
+  high: 16384,
+  xhigh: 24575,
+  max: 32768,
+}
+
+/** Fallback output cap when the caller sets none (omp's `OUTPUT_CAP_WHEN_UNKNOWN`). */
+const OUTPUT_CAP_WHEN_UNKNOWN = 64_000
+
+/** Output tokens kept free of the thinking budget (omp's `MIN_OUTPUT_TOKENS`). */
+const MIN_OUTPUT_TOKENS = 1024
+
+/** One Google request's thinking-derived wire fields. */
+interface GoogleWireRoute {
+  /** `requestModelId ?? id`, routed through `effortRouting` for collapsed tiers. */
+  readonly requestModelId: string
+  readonly thinking: OmpGoogleThinking
+  /** Output cap to send; absent means the transport's own default. */
+  readonly maxTokens?: number
+}
+
+/**
+ * Project one DSH request onto the omp Google transport's arguments.
+ *
+ * The Cloud Code Assist wire carries both routes' requests, so one projection
+ * serves them: the profile only supplies the route id the model object and the
+ * error wording name.
+ *
+ * Thinking is the one place where the two Google families differ, and the
+ * selected effort decides the shape:
+ *
+ * - `google-level` rows (Gemini 3+) send `thinkingConfig.thinkingLevel`;
+ * - `budget` rows (Gemini 2.x, the Anthropic-shaped Antigravity rows) send a
+ *   token budget, taken from the row's `effortBudgets` or omp's per-effort
+ *   table, with the output cap grown by the budget exactly as omp does — Cloud
+ *   Code Assist's `maxOutputTokens` includes the thinking tokens, so forwarding
+ *   the caller's cap unchanged would let thinking eat the answer.
+ * - a row with `requiresEffort` has no thinking-off wire form upstream, so a
+ *   request that selects no effort is refused instead of sending a config the
+ *   server rejects.
+ *
+ * @param row - catalog row for the requested model.
+ * @param profile - the Google route being projected.
+ * @param options - the assembled DSH request.
+ * @param accessToken - the structured credential JSON already resolved for this
+ *   call; omit it to project before the credential is read.
+ * @returns the transport arguments, ready to hand to `streamGoogleGeminiCli`.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for an effort the
+ *   model does not advertise, and for no effort on a `requiresEffort` row.
+ */
+export function projectGoogleRequest(
+  row: GoogleModelRow,
+  profile: GoogleRouteProfile,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedGoogleRequest {
+  const wire = googleWireRoute(row, options)
+  const context = projectContext(profile, options)
+  return {
+    model: { api: profile.api, provider: profile.provider, ...row },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      // The Cloud Code Assist envelope has its own `sessionId`, which the
+      // provider fills from the option when present.
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(wire.maxTokens !== undefined ? { maxTokens: wire.maxTokens } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      requestModelId: wire.requestModelId,
+      thinking: wire.thinking,
+      // A fresh map per request: the provider keeps its endpoint-failover state
+      // in it, and a last-good endpoint must not be inherited from another turn
+      // (or another route) that happened to share this option object.
+      ...(profile.provider === 'google-antigravity' ? { providerSessionState: new Map<string, unknown>() } : {}),
+      // The vendor `user-agent` is the client identity here; attribution is
+      // filled only where the request left it absent.
+      fetch: attributionPreservingFetch,
+    },
+  }
+}
+
+/**
+ * Resolve the thinking fields for one Google request.
+ *
+ * @param row - catalog row whose `thinking` describes the advertised efforts.
+ * @param options - the assembled request, for the effort and the output cap.
+ * @returns the wire model id, the thinking config and the capped output budget.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for an unadvertised
+ *   effort, and for no effort on a row that requires one.
+ */
+function googleWireRoute(row: GoogleModelRow, options: GenerateOptions): GoogleWireRoute {
+  const effort = options.reasoningEffort
+  const thinking = row.thinking
+  if (effort !== undefined && (thinking === undefined || !thinking.efforts.includes(effort))) {
+    throw new LlmError(
+      `llm-omp-transports: google model "${row.id}" does not advertise reasoning effort "${effort}"`,
+      UNSUPPORTED_REASONING_EFFORT,
+    )
+  }
+  if (effort === undefined) {
+    // A mandatory-reasoning row has no thinking-off form: Cloud Code Assist
+    // re-applies the baked default or rejects the request, so guessing here
+    // would decide the user's effort for them.
+    if (thinking?.requiresEffort === true) {
+      throw new LlmError(
+        `llm-omp-transports: google model "${row.id}" requires an explicit reasoning effort (${thinking.efforts.join(', ')})`,
+        UNSUPPORTED_REASONING_EFFORT,
+      )
+    }
+    // Thinking off is not the same as capping off: the caller's budget still
+    // travels, untouched by a thinking budget the row will not spend.
+    return {
+      requestModelId: googleWireModelId(row, undefined),
+      thinking: googleThinkingOff(row),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+    }
+  }
+  const requestModelId = googleWireModelId(row, effort)
+  if (thinking?.mode === 'google-level') {
+    return {
+      requestModelId,
+      thinking: { enabled: true, level: googleThinkingLevel(row, effort) },
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+    }
+  }
+  const budget = thinking?.effortBudgets?.[effort] ?? GOOGLE_THINKING[effort] ?? 0
+  const maxTokens = Math.min((options.maxTokens ?? OUTPUT_CAP_WHEN_UNKNOWN) + budget, row.maxTokens)
+  // omp's clamp: when the row's own cap cannot hold the budget plus a minimal
+  // answer, the budget shrinks; at zero it falls back to the thinking-off form.
+  const effective = maxTokens <= budget ? Math.max(0, maxTokens - MIN_OUTPUT_TOKENS) : budget
+  if (effective <= 0) {
+    return {
+      requestModelId,
+      thinking: googleThinkingOff(row),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+    }
+  }
+  return { requestModelId, thinking: { enabled: true, budgetTokens: effective }, maxTokens }
+}
+
+/**
+ * The thinking-off config for one row.
+ *
+ * `suppressWhenOff` rows need the suppression spelled out: CCA re-applies the
+ * per-id baked server default when `thinkingConfig` is omitted, so the switch
+ * only takes effect as an explicit minimal level or a zero budget.
+ */
+function googleThinkingOff(row: GoogleModelRow): OmpGoogleThinking {
+  if (row.reasoning && row.thinking?.suppressWhenOff === true) {
+    return {
+      enabled: false,
+      suppress: row.thinking.mode === 'google-level' ? { level: 'MINIMAL' } : { budget: 0 },
+    }
+  }
+  return { enabled: false }
+}
+
+/**
+ * Map a selected effort onto Google's `thinkingLevel` enum.
+ *
+ * Mirrors omp's `mapEffortToGoogleThinkingLevel`: a collapsed family that
+ * routes `minimal` onto the same wire id as `low` must send `LOW`, because
+ * Cloud Code Assist rejects `MINIMAL` on those `-low` SKUs; `xhigh`/`max`
+ * collapse onto `HIGH` (the wire has no finer tier).
+ */
+function googleThinkingLevel(row: GoogleModelRow, effort: string): 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' {
+  if (effort === 'minimal') {
+    const routing = row.thinking?.effortRouting
+    return routing?.minimal !== undefined && routing.minimal === routing.low ? 'LOW' : 'MINIMAL'
+  }
+  if (effort === 'low') return 'LOW'
+  if (effort === 'medium') return 'MEDIUM'
+  return 'HIGH'
+}
+
+/**
+ * The wire model id for one effort: the routed tier, else the row's pinned id.
+ *
+ * Mirrors omp's `resolveWireModelId`: an effort with no routing entry (and
+ * thinking off) sends `requestModelId ?? id`, which is exactly what the
+ * transport itself falls back to.
+ */
+function googleWireModelId(row: GoogleModelRow, effort: string | undefined): string {
+  return row.thinking?.effortRouting?.[effort ?? 'off'] ?? row.requestModelId ?? row.id
 }
 
 /**

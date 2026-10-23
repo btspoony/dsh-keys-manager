@@ -14,7 +14,16 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 
-import { CURSOR_ROUTE, DEVIN_ROUTE, OmpCursorAdapter, OmpDevinAdapter } from '../src/adapter.js'
+import {
+  CURSOR_ROUTE,
+  DEVIN_ROUTE,
+  GOOGLE_ANTIGRAVITY_ROUTE,
+  GOOGLE_GEMINI_CLI_ROUTE,
+  OmpCursorAdapter,
+  OmpDevinAdapter,
+  OmpGoogleAntigravityAdapter,
+  OmpGoogleGeminiCliAdapter,
+} from '../src/adapter.js'
 import {
   CURSOR_AUTH,
   CursorAuthError,
@@ -646,7 +655,7 @@ describe('llm-omp-transports registration', () => {
     }
   }
 
-  it('registers both adapters, their Models-page entries and both flows', () => {
+  it('registers all four adapters, their Models-page entries and all four flows', () => {
     const host = fakeHost()
     apply(host.ctx)
 
@@ -655,13 +664,24 @@ describe('llm-omp-transports registration', () => {
     expect(host.calls).toEqual([
       `adapter:${CURSOR_ROUTE}`,
       `adapter:${DEVIN_ROUTE}`,
+      `adapter:${GOOGLE_GEMINI_CLI_ROUTE}`,
+      `adapter:${GOOGLE_ANTIGRAVITY_ROUTE}`,
       'providers',
       'flow:llm-omp-transports/cursor',
       'flow:llm-omp-transports/devin',
+      'flow:llm-omp-transports/google-gemini-cli',
+      'flow:llm-omp-transports/google-antigravity',
     ])
-    expect(host.adapters.map(entry => entry.providers)).toEqual([[CURSOR_ROUTE], [DEVIN_ROUTE]])
+    expect(host.adapters.map(entry => entry.providers)).toEqual([
+      [CURSOR_ROUTE],
+      [DEVIN_ROUTE],
+      [GOOGLE_GEMINI_CLI_ROUTE],
+      [GOOGLE_ANTIGRAVITY_ROUTE],
+    ])
     expect(host.adapters[0]!.adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(host.adapters[1]!.adapter).toBeInstanceOf(OmpDevinAdapter)
+    expect(host.adapters[2]!.adapter).toBeInstanceOf(OmpGoogleGeminiCliAdapter)
+    expect(host.adapters[3]!.adapter).toBeInstanceOf(OmpGoogleAntigravityAdapter)
     expect(host.directories).toEqual([
       [
         {
@@ -678,6 +698,20 @@ describe('llm-omp-transports registration', () => {
           settingsPath: ['providers', 'devin'],
           declared: false,
         },
+        {
+          provider: 'google-gemini-cli',
+          displayName: 'Google Gemini CLI',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'google-gemini-cli'],
+          declared: false,
+        },
+        {
+          provider: 'google-antigravity',
+          displayName: 'Google Antigravity',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'google-antigravity'],
+          declared: false,
+        },
       ],
     ])
     expect(host.flows().map(flow => ({ key: flow.key, label: flow.label, methods: flow.methods }))).toEqual([
@@ -690,6 +724,16 @@ describe('llm-omp-transports registration', () => {
         key: 'llm-omp-transports/devin',
         label: 'Devin',
         methods: [{ id: 'oauth', label: 'Sign in with Devin' }],
+      },
+      {
+        key: 'llm-omp-transports/google-gemini-cli',
+        label: 'Google Gemini CLI',
+        methods: [{ id: 'oauth', label: 'Sign in with Google Gemini CLI' }],
+      },
+      {
+        key: 'llm-omp-transports/google-antigravity',
+        label: 'Google Antigravity',
+        methods: [{ id: 'oauth', label: 'Sign in with Google Antigravity' }],
       },
     ])
     // Registration is start-up safe: no credential is read and no bundle is imported.

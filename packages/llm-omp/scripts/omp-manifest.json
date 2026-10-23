@@ -9,6 +9,7 @@
       "metafile": "lib/omp/cursor.metafile.json",
       "moduleCount": 133,
       "bytes": 1392691,
+      "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
         "pi-utils": [
           "$env",
@@ -45,6 +46,7 @@
       "metafile": "lib/omp/devin.metafile.json",
       "moduleCount": 121,
       "bytes": 1278632,
+      "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
         "pi-utils": [
           "$env",
@@ -64,6 +66,41 @@
           "parseJsonWithRepair",
           "parseStreamingJsonThrottled",
           "sanitizeText",
+          "stringifyJson",
+          "structuredCloneJSON",
+          "wrapFetchForExtraCa"
+        ],
+        "bun-modules": [],
+        "bun-global": [
+          "Bun"
+        ]
+      }
+    },
+    "google": {
+      "entry": "lib/omp/google.mjs",
+      "metafile": "lib/omp/google.metafile.json",
+      "moduleCount": 131,
+      "bytes": 1303142,
+      "piUtilsShim": "scripts/omp-shim/pi-utils-google.ts",
+      "shimImports": {
+        "pi-utils": [
+          "$env",
+          "$flag",
+          "LRUCache",
+          "classifyJsonPrefix",
+          "escapeXmlText",
+          "extractHttpStatusFromError",
+          "extractRetryHint",
+          "fetchWithRetry",
+          "getLogsDir",
+          "isBunTestRuntime",
+          "isEnoent",
+          "isRecord",
+          "isRetryableError",
+          "isUnexpectedSocketCloseMessage",
+          "logger",
+          "parseJsonWithRepair",
+          "readSseJson",
           "stringifyJson",
           "structuredCloneJSON",
           "wrapFetchForExtraCa"
@@ -140,6 +177,13 @@
     "@oh-my-pi/pi-catalog/src/discovery/protobuf.ts": "sha256:aff266ce3d1375dcbedaca27cb2db35571e78f9d37424caaedc6ea46195383e5",
     "@oh-my-pi/pi-catalog/src/wire/devin.ts": "sha256:dd31b7c80fdeb1063780eab4b60db9b3ab1cbfb3d9dcd8d542b4c66535c0c68a",
     "@oh-my-pi/pi-catalog/src/wire/devin-proto.ts": "sha256:a4d0e43ba2f3a24df749ea61ed4180fee9c25e425d16b6f31f5fc6d2811bf88b",
-    "@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl": "sha256:bb6de7869e3a6fce610ff517087fb8b64491a3b5a38df7ff91bea61e5ad7ba49"
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl": "sha256:bb6de7869e3a6fce610ff517087fb8b64491a3b5a38df7ff91bea61e5ad7ba49",
+    "@oh-my-pi/pi-ai/src/providers/google-gemini-cli.ts": "sha256:f5d59b6639dcf0153dbdd1f977deb08e352d5c9d3f9a996146979762373a6476",
+    "@oh-my-pi/pi-ai/src/providers/google-shared.ts": "sha256:85145665024481bf4d8a439f2c3563db33a8e7b25bc0cd5d295c42ef8dd099ad",
+    "@oh-my-pi/pi-ai/src/providers/google-types.ts": "sha256:817303f60b6ae82a5cffcd31db3d422d647ba65cde3eeea458f1e9b20a42b9d3",
+    "@oh-my-pi/pi-ai/src/providers/anthropic-images.ts": "sha256:b4daf8e329a5abf49abe7b6d858c279b61073f2f4b0f1311cd9b637542430217",
+    "@oh-my-pi/pi-catalog/src/wire/gemini-headers.ts": "sha256:39f9533ee0021195b8c5bea2442a966fa947e0c2e0574be78598cce56e92550a",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/google-gemini-cli.kdl": "sha256:a681b993a441a0db450e1c76f996fbf6024e1eaf8452eded3bfdf7fd117caa4c",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/google-antigravity.kdl": "sha256:f5102c481a585403bf3a7611ebbb32a679fce9263d1793ebe53905ea15ba6c6d"
   }
 }
