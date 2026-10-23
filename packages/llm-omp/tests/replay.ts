@@ -24,6 +24,9 @@ import type {
   OmpDevinModel,
   OmpDevinOptions,
   OmpDevinTransport,
+  OmpGoogleModel,
+  OmpGoogleOptions,
+  OmpGoogleTransport,
 } from '../src/omp.js'
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
@@ -86,6 +89,35 @@ export function scriptedDevinTransport(name: string): {
 } {
   const script = recordedScript(name)
   const calls: DevinTransportCall[] = []
+  return {
+    calls,
+    transport: async function* (model, context, options) {
+      calls.push({ model, context, options })
+      yield* script
+    },
+  }
+}
+
+/** One Google transport invocation, captured for assertions about the projected request. */
+export interface GoogleTransportCall {
+  readonly model: OmpGoogleModel
+  readonly context: OmpContext
+  readonly options: OmpGoogleOptions
+}
+
+/**
+ * The Google twin of {@link scriptedTransport}: same event scripts, the Cloud
+ * Code Assist route's model/options types. One transport serves both Google
+ * routes, so this shape covers each of them.
+ * @param name - fixture file name under `tests/fixtures/`.
+ * @returns the scripted transport plus the calls it received.
+ */
+export function scriptedGoogleTransport(name: string): {
+  transport: OmpGoogleTransport
+  calls: GoogleTransportCall[]
+} {
+  const script = recordedScript(name)
+  const calls: GoogleTransportCall[] = []
   return {
     calls,
     transport: async function* (model, context, options) {

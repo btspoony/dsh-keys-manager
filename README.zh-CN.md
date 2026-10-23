@@ -19,7 +19,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 - 既有 Models 提供商卡片内出现"由 Keys Manager 托管"徽标。
 - 额外内置提供商以普通 `llm-pi-ai` 路由安装。
 - 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，凭据与 API key 并存管理。
-- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——目前是 Cursor（`cursor`）与 Devin（`devin`）。
+- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——共四条路由：Cursor（`cursor`）、Devin（`devin`）、Google Gemini CLI（`google-gemini-cli`）与 Google Antigravity（`google-antigravity`）。
 
 ### 额外提供商
 
@@ -87,7 +87,7 @@ CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<
 dsh plugin --profile web add dsh-keys-manager
 ```
 
-安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责 Cursor 与 Devin 的线协议。
+安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责其四条路由（Cursor、Devin 与两条 Google 路由）的线协议。
 
 ### 安装 —— 本地检出
 
@@ -133,6 +133,8 @@ dsh plugin --profile web link .
 
 **登录流程不等于传输。** 这两条路由走常规 pi-ai key 池，参与会话粘滞、轮询、重试切换与冷却。下面描述的 `llm-omp-transports` 是另一套机制：每条路由一条授权，各自独立区块。
 
+**`muse-code` 不需要传输。** 它已由随附 pi-ai 的 `meta` 路由提供（`openai-responses` 走 `https://api.meta.ai/v1`，目录键为 `meta`），因此按普通 pi-ai 提供商的路径管理即可。证明目录条目与提供商在该路由形态和凭据形态上一致的检查是静态的，没有发起真实请求；首次真实调用属于手动冒烟检查，详见[已知限制](docs/known-limits.zh-CN.md)。
+
 ### Cursor 传输
 
 Cursor 由随附的 `dsh-llm-omp-transports` 组件在独立 `cursor` 路由上提供。它不经过 pi-ai key 池：该路由在 `llm-omp-transports/cursor` 只保留一条授权，并在凭据 seam 上自动刷新。
@@ -150,6 +152,15 @@ Devin 是同一个 `dsh-llm-omp-transports` 组件服务的第二条路由：独
 - **没有刷新。** 该记录是静态 bearer，其有效期由令牌推导（JWT `exp` 减五分钟，否则一年）。没有 `expires` 的授权按静态 bearer 服务，状态显示为 `active`，不显示有效期；可读的有效期一旦过期，需要手动重新登录。
 - 模型来自固定的目录（两行：`swe-1-6` 与 `swe-1-6-fast`），构建时生成进传输包。
 - 该客户端是非官方实现，呈现已发布的 Devin CLI 身份；真实端点与协议行为均未验证。依赖它之前请阅读[传输包的已知限制](packages/llm-omp/docs/known-limits.md)。
+
+### Google 传输
+
+两条 Google 路由由同一个 `dsh-llm-omp-transports` 组件提供。它们共用一份生成的 `lib/omp/google.mjs` 产物，由产物内的提供商按模型分派；除此之外两者彼此独立：`google-gemini-cli` 与 `google-antigravity` 各自在 `llm-omp-transports/<route>` 保留一条授权，各有独立的账户行与模型目录。
+
+- 在 **传输账户**（`Transport accounts`）区块登录。该登录由插件自身完成：`127.0.0.1` 上的 `node:http` 监听器接收浏览器重定向（`google-gemini-cli` 用 `8085` 的 `/oauth2callback`，`google-antigravity` 用 `51121` 的 `/oauth-callback`；默认端口被占用时回落到其它空闲端口）。同一个对话框始终提供粘贴路径——粘贴浏览器最终落到的完整地址，或 `code#state`——用于浏览器无法访问该监听器的情形。
+- 授权内容为 `{access, refresh, expires, projectId, email?}`，在凭据 seam 上刷新：刷新令牌仍有效时，过期的 access 令牌会自动续期而无需重新登录。登录过程还会解析该路由计费与请求所用的 Google Cloud 项目。
+- 模型来自构建时固定的目录：`google-gemini-cli` 七行，`google-antigravity` 22 行。
+- 两个客户端都是非官方实现，会呈现厂商内部的 OAuth 身份；两条路由的首次真实请求都是手动冒烟检查。依赖它们之前请阅读[已知限制](docs/known-limits.zh-CN.md)，其中说明了监听器、antigravity 的版本读取以及 401/403 姿态。
 
 ### 选择与故障策略
 
@@ -203,7 +214,7 @@ $DSH_HOME/keys-manager/state.json
 | 路径 | npm 包 | 职责 |
 |---|---|---|
 | 根目录 | `dsh-keys-manager` | Host 插件、Keys Manager Web 客户端、bundle patch |
-| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor 与 Devin 传输组件 |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor、Devin 与 Google 传输组件 |
 
 根包把传输包声明为依赖，因此已发布的 Keys Manager tarball 会拉取传输包，而不是把它 vendor 进来。两个包一起发布且版本号一致，详见[发布](docs/release.zh-CN.md)。
 
@@ -214,7 +225,7 @@ $DSH_HOME/keys-manager/state.json
 | [开发](docs/development.zh-CN.md) | 构建与开发工作流、仓库布局 |
 | [发布](docs/release.zh-CN.md) | CI 检查与 npm 发布流程 |
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含延后提供商 |
-| [传输包（英文）](packages/llm-omp/README.md) | Cursor 与 Devin 传输：支持状态、风险、构建/测试与发布 |
+| [传输包（英文）](packages/llm-omp/README.md) | 传输路由：支持状态、风险、构建/测试与发布 |
 
 英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
 

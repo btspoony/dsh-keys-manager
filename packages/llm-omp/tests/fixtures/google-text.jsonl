@@ -1,0 +1,10 @@
+{"type":"start"}
+{"type":"thinking_start","contentIndex":0}
+{"type":"thinking_delta","contentIndex":0,"delta":"The user "}
+{"type":"thinking_delta","contentIndex":0,"delta":"greets me."}
+{"type":"thinking_end","contentIndex":0,"content":"The user greets me."}
+{"type":"text_start","contentIndex":1}
+{"type":"text_delta","contentIndex":1,"delta":"Hello "}
+{"type":"text_delta","contentIndex":1,"delta":"from Gemini"}
+{"type":"text_end","contentIndex":1,"content":"Hello from Gemini"}
+{"type":"done","reason":"stop","message":{"role":"assistant","model":"gemini-2.5-flash","api":"google-gemini-cli","provider":"google-gemini-cli","stopReason":"stop","timestamp":1760000000100,"content":[{"type":"thinking","thinking":"The user greets me."},{"type":"text","text":"Hello from Gemini"}],"usage":{"input":1100,"output":22,"cacheRead":0,"cacheWrite":0,"totalTokens":1122,"reasoningTokens":9}}}

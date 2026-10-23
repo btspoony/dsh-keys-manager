@@ -14,6 +14,12 @@ import { KeysManagerStore, sanitizeState } from '../src/store'
 import { cursorCatalogModels } from 'dsh-llm-omp-transports'
 import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
 
+// The transport routes added by the sibling track do not exist in this
+// worktree's installed transport build. The automock keeps every real export
+// working while letting a test stage the accessor the merged build will ship
+// (projection path) and remove it again (stale-build path).
+vi.mock('dsh-llm-omp-transports', { spy: true })
+
 const ORIGINAL = Symbol.for('cordis.original')
 
 function applyOps(root: any, ops: any): any {
@@ -18011,6 +18017,46 @@ test('a registered transport route with no shipped catalog reports why the list 
     await h.close()
   }
 })
+
+// R1 hand-off: each route the sibling track adds projects its own catalog into
+// the picker through the accessor the transport package exports for it, and a
+// stale install that lacks that accessor explains the empty list on the read
+// instead of answering a silent `[]`.
+const SIBLING_CATALOG_ROUTES = [
+  { route: 'google-gemini-cli', exportName: 'googleGeminiCliCatalogModels' },
+  { route: 'google-antigravity', exportName: 'googleAntigravityCatalogModels' },
+  { route: 'factory-droid', exportName: 'factoryDroidCatalogModels' },
+] as const
+
+test.each(SIBLING_CATALOG_ROUTES)(
+  'the $route transport catalog is projected into the picker and reports when absent',
+  async ({ route, exportName }) => {
+    const flow = { key: `llm-omp-transports/${route}`, label: route, methods: [{ id: 'oauth', label: 'Sign in' }] }
+    const h = await harness([...piAiFlows(), flow])
+    const transports = await import('dsh-llm-omp-transports') as Record<string, unknown>
+    const shipped = transports[exportName]
+    try {
+      h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: {} }, revision: 1 })
+      const catalog: TransportCatalogModel[] = [{ id: 'sibling-test-model', name: 'Sibling Test Model' }]
+      transports[exportName] = () => catalog
+      const projected = await h.service.transportModels(route)
+      assert.deepEqual(projected.catalog, catalog)
+      assert.equal(projected.warning, undefined)
+      // The merged transport build ships the accessor; a build predating it
+      // registers the route but no catalog, which the read must explain rather
+      // than present as the legitimate all-models state.
+      delete transports[exportName]
+      const absent = await h.service.transportModels(route)
+      assert.deepEqual(absent.catalog, [])
+      assert.match(String(absent.warning), /ships no catalog/)
+      assert.ok(String(absent.warning).includes(`"${route}"`))
+    } finally {
+      if (shipped === undefined) delete transports[exportName]
+      else transports[exportName] = shipped
+      await h.close()
+    }
+  },
+)
 
 test('reads and saves the cursor transport model allow-list through settings', async () => {
   const h = await transportHarness()

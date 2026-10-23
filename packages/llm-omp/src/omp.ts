@@ -95,6 +95,88 @@ export interface OmpDevinModel extends DevinModelRow {
   readonly provider: 'devin'
 }
 
+/**
+ * The wire family a Google row speaks.
+ *
+ * omp's Google provider switches on `identity.class` (Anthropic-shaped Claude
+ * rows vs Gemini rows), and the projection forwards the whole record.
+ */
+export interface GoogleModelIdentity {
+  /** `gemini`, `anthropic`, …: decides request/response shape on the wire. */
+  readonly class: string
+  /** Vendor lineage; rows the class alone classifies omit it. */
+  readonly family?: string
+  /** Model generation; rows the catalog does not version omit it. */
+  readonly revision?: string
+}
+
+/** Google's thinking-effort metadata: the offered efforts and their wire models. */
+export interface GoogleModelThinking {
+  readonly mode: string
+  readonly efforts: readonly string[]
+  /** Effort → wire model id (`off` means the row's own id). */
+  readonly effortRouting?: Readonly<Record<string, string>>
+  /** Mandatory-reasoning endpoints reject a disabled thinking config. */
+  readonly requiresEffort?: boolean
+  /** Off maps to the lowest supported effort instead of an explicit disable. */
+  readonly suppressWhenOff?: boolean
+  readonly prefixBinding?: boolean
+  /** Per-effort thinking budgets when the catalog pins them. */
+  readonly effortBudgets?: Readonly<Record<string, number>>
+}
+
+/**
+ * The per-model wire flags omp's Google provider reads.
+ *
+ * Copied whole from the pinned catalog: the transport dereferences members
+ * across request building, schema normalization and usage labels, so a
+ * hand-picked subset would drop a wire decision on an omp bump.
+ */
+export type GoogleModelCompat = Readonly<Record<string, boolean | number | string | undefined>>
+
+/** One row of the generated Google model tables (both Cloud Code Assist routes). */
+export interface GoogleModelRow {
+  readonly id: string
+  readonly name: string
+  readonly baseUrl: string
+  /** Combined request and response context window in tokens. */
+  readonly contextWindow: number
+  /** Per-response output cap the catalog advertises. */
+  readonly maxTokens: number
+  readonly input: ('text' | 'image')[]
+  readonly cost: ModelCost
+  readonly reasoning: boolean
+  readonly identity: GoogleModelIdentity
+  readonly compat: GoogleModelCompat
+  readonly thinking?: GoogleModelThinking
+  /** Wire model id to request when it differs from {@link id}. */
+  readonly requestModelId?: string
+}
+
+/** The omp model object for a Google row: one catalog row plus the transport identity. */
+export interface OmpGoogleModel extends GoogleModelRow {
+  readonly api: 'google-gemini-cli'
+  readonly provider: 'google-gemini-cli' | 'google-antigravity'
+}
+
+/** Explicit thinking-off suppression: CCA re-applies the baked per-id default when omitted. */
+export type OmpGoogleThinkingSuppress = { readonly level: 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' } | { readonly budget: number }
+
+/**
+ * The Google provider's thinking configuration.
+ *
+ * Mirrors `GoogleGeminiCliOptions['thinking']`: `budgetTokens` for the
+ * budget-mode rows (Gemini 2.x, the Anthropic-shaped Antigravity rows) and
+ * `level` for the `google-level` rows (Gemini 3+).
+ */
+export interface OmpGoogleThinking {
+  readonly enabled: boolean
+  readonly budgetTokens?: number
+  readonly level?: 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH'
+  /** Present only when thinking is off on a `suppressWhenOff` row. */
+  readonly suppress?: OmpGoogleThinkingSuppress
+}
+
 /** Token counters omp reports for one turn. */
 export interface OmpUsage {
   /** Uncached prompt tokens. */
@@ -309,6 +391,37 @@ export interface OmpDevinOptions {
   readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 }
 
+/**
+ * Request options handed to the omp Google transport (`streamGoogleGeminiCli`).
+ *
+ * No `headers`: caller headers merge last on the Cloud Code Assist wire and
+ * would overwrite the vendor `user-agent` the provider sets (`GeminiCLI/…`,
+ * `antigravity/hub/…`). Attribution travels through `fetch` instead.
+ */
+export interface OmpGoogleOptions {
+  /**
+   * The provider's credential envelope, as JSON:
+   * `{token, projectId, refreshToken?, expiresAt?, email?}`.
+   *
+   * omp's `parseGeminiCliCredentials` reads it and refuses a missing `token` or
+   * `projectId`, so the plugin hands the parsed record over verbatim.
+   */
+  readonly apiKey: string
+  readonly signal?: AbortSignal
+  /** Forwarded as the Cloud Code Assist request's own `sessionId`. */
+  readonly sessionId?: string
+  /** Forwarded output cap; the thinking budget is added on top, as omp does. */
+  readonly maxTokens?: number
+  readonly temperature?: number
+  /** Wire model id selected by thinking-effort routing. */
+  readonly requestModelId?: string
+  readonly thinking?: OmpGoogleThinking
+  /** Antigravity endpoint-failover state; the provider keys it itself. */
+  readonly providerSessionState?: Map<string, unknown>
+  /** Fill-absent attribution wrapper (`src/transport/fetch.ts`). */
+  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+}
+
 /** One fully projected request: the devin transport's three positional arguments. */
 export interface OmpContext {
   readonly systemPrompt?: readonly string[]
@@ -334,3 +447,10 @@ export type OmpDevinTransport = (
   options: OmpDevinOptions,
 ) => AsyncIterable<OmpAssistantMessageEvent>
 
+
+/** The injected Google transport shape: omp's `streamGoogleGeminiCli` for both routes. */
+export type OmpGoogleTransport = (
+  model: OmpGoogleModel,
+  context: OmpContext,
+  options: OmpGoogleOptions,
+) => AsyncIterable<OmpAssistantMessageEvent>

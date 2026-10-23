@@ -16,6 +16,7 @@
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
+import { parseCallbackUrl } from '../google/callback-listener.js'
 import { jwtExpiry } from '../jwt.js'
 
 /**
@@ -98,34 +99,21 @@ export interface DevinCallback {
 /**
  * Parse a pasted callback URL, a bare code, or `code#state`.
  *
+ * The parser itself is shared with the Google routes
+ * (`src/google/callback-listener.ts`), which take the same code and state
+ * through a loopback listener; this wrapper keeps Devin's own error type, so a
+ * failed paste still reaches the flow as a {@link DevinAuthError}.
+ *
  * @param text - exactly what the prompt returned.
  * @returns the code and, when the paste carried one, the state it claimed.
  * @throws DevinAuthError when the paste names no code.
  */
 export function parseDevinCallback(text: string): DevinCallback {
-  const trimmed = text.trim()
-  if (trimmed === '') throw new DevinAuthError('the pasted callback is empty')
-
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
-    let url: URL
-    try {
-      url = new URL(trimmed)
-    } catch {
-      throw new DevinAuthError('the pasted callback URL is malformed')
-    }
-    const code = url.searchParams.get('code')?.trim()
-    if (code === undefined || code === '') throw new DevinAuthError('the pasted callback URL names no code')
-    const state = url.searchParams.get('state')?.trim()
-    return { code, ...(state === undefined || state === '' ? {} : { state }) }
+  try {
+    return parseCallbackUrl(text)
+  } catch (cause) {
+    throw new DevinAuthError(cause instanceof Error ? cause.message : String(cause))
   }
-
-  // A bare code the human copied out of the address bar, optionally with the
-  // state after a `#` (the page fragments nothing else).
-  const hash = trimmed.indexOf('#')
-  const code = (hash === -1 ? trimmed : trimmed.slice(0, hash)).trim()
-  const state = hash === -1 ? '' : trimmed.slice(hash + 1).trim()
-  if (code === '') throw new DevinAuthError('the pasted callback names no code')
-  return { code, ...(state === '' ? {} : { state }) }
 }
 
 /** Options for {@link exchangeDevinCode}; `fetch` and `now` are the test seams. */

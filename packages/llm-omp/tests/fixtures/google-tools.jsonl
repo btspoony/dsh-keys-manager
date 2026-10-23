@@ -1,0 +1,4 @@
+{"type":"start"}
+{"type":"toolcall_start","contentIndex":0,"partial":{"role":"assistant","model":"gemini-2.5-flash","api":"google-gemini-cli","provider":"google-gemini-cli","stopReason":"toolUse","timestamp":1760000000100,"content":[{"type":"toolCall","id":"call-google-1","name":"lookup_doc","arguments":{"query":"hello"}}],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0}}}
+{"type":"toolcall_end","contentIndex":0,"toolCall":{"type":"toolCall","id":"call-google-1","name":"lookup_doc","arguments":{"query":"hello"}}}
+{"type":"done","reason":"toolUse","message":{"role":"assistant","model":"gemini-2.5-flash","api":"google-gemini-cli","provider":"google-gemini-cli","stopReason":"toolUse","timestamp":1760000000100,"content":[{"type":"toolCall","id":"call-google-1","name":"lookup_doc","arguments":{"query":"hello"}}],"usage":{"input":800,"output":14,"cacheRead":0,"cacheWrite":0,"totalTokens":814}}}
