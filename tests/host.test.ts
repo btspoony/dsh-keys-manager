@@ -784,6 +784,21 @@ test('release keeps a materialized profile and only clears its credential refere
   }
 })
 
+// Adoption writes the materialized profile only after the imported credential
+// exists: a failed import must not leave a Models profile with no managed
+// record to roll it back.
+test('a failed import leaves no materialized profile behind', async () => {
+  const h = await harness()
+  try {
+    h.credentials.raw.failResolve = true
+    await assert.rejects(() => h.service.adoptProvider('xai'), /Could not read credential/)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.xai, undefined)
+    assert.equal(h.store.provider('xai'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
 // An adoption that predates profile materialization cannot be re-adopted (the
 // route is already managed), so the row test itself rebuilds what it needs.
 test('a row test rebuilds the catalog profile an older adoption left missing', async () => {

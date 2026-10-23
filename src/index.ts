@@ -7240,12 +7240,17 @@ export class KeysManagerService {
       // managed state or imported credential exists.
       if (!descriptor.writable) throw new Error('The active profile is read-only')
       const piAiRoute = !(entry.settingsNs.includes('deepseek') || provider === 'deepseek-official')
+      const hit = await this.findImport(entry, profile)
+      let imported: KeyRecord | undefined
+      if (hit !== undefined) imported = await this.createKeyRecord(provider, 'Imported', hit.value, hit.ref)
       // A pi-ai catalog route has no profile until something configures it, and
       // the connection test (as well as the Models page) resolves this route's
       // models from that profile. Materialize it from the installed catalog so
       // adopting in Keys Manager does not leave a route nothing can test. A
       // hand-declared route is refused above and keeps its "configure in
       // Models first" rule; the DeepSeek adapter keeps this path untouched.
+      // The import runs first: a failed credential read would otherwise leave
+      // this profile behind with no managed record to roll it back.
       let materialized: ModelRecord[] | undefined
       if (piAiRoute && profile === undefined) {
         materialized = await this.materializeCatalogProfile(entry.settingsNs, entry.settingsPath, provider)
@@ -7253,9 +7258,6 @@ export class KeysManagerService {
           this.pushWarning(`The ${provider} route was adopted without a Models profile; configure a model for it before testing the connection.`)
         }
       }
-      const hit = await this.findImport(entry, profile)
-      let imported: KeyRecord | undefined
-      if (hit !== undefined) imported = await this.createKeyRecord(provider, 'Imported', hit.value, hit.ref)
       const record: ProviderRecord = {
         provider,
         displayName: extra?.name ?? entry.displayName ?? provider,
