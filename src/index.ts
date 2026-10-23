@@ -5150,11 +5150,6 @@ export class KeysManagerService {
    */
   private async runRowTest(record: ProviderRecord, row: KeyRecord, window: RowTestWindow): Promise<KeyTestResult> {
     const provider = record.provider
-    // An adoption that predates profile materialization has nothing to test
-    // against, and no UI action would give it a profile. Rebuild it from the
-    // catalog before the route read; a route this call cannot rebuild keeps
-    // the explicit "no settings profile" refusal below.
-    await this.ensureCatalogProfile(record)
     // QC B6: the serving source is decided from projection ownership, which a
     // restarted process hydrates asynchronously. Until that read lands the
     // shape is unknown, so the honest answer is a refusal with no request
@@ -5162,6 +5157,11 @@ export class KeysManagerService {
     if (!await this.awaitProjectionOwnership(provider)) {
       return { ok: false, latencyMs: 0, error: 'Account ownership is still loading; try again in a moment' }
     }
+    // An adoption that predates profile materialization has nothing to test
+    // against, and no UI action would give it a profile. Rebuild it (and bind
+    // a key-pool route) before the route read; a route this call cannot repair
+    // keeps the explicit "no settings profile" refusal below.
+    await this.ensureCatalogProfile(record)
     const route = this.testRouteProfile(record)
     if ('error' in route) return { ok: false, latencyMs: 0, error: route.error }
     const profile = route.profile
@@ -7159,21 +7159,49 @@ export class KeysManagerService {
   }
 
   /**
-   * Write the installed catalog's models into a route's missing profile. The
-   * written profile names no credential reference and no endpoint: pi-ai falls
-   * back to the catalog for both, and a broker reference here would shadow a
-   * stored OAuth grant.
+   * Write the installed catalog's models into a route's missing profile, or
+   * into one that exists without models. The written profile names no
+   * credential reference and no endpoint: pi-ai falls back to the catalog for
+   * both, and a broker reference here would shadow a stored OAuth grant.
+   *
+   * A profile created while the catalog call was outstanding belongs to the
+   * user, so the write re-reads it and only fills models a working profile
+   * still lacks. `created` distinguishes the node this call created from a
+   * user profile it filled, because rollback may only remove the former.
    */
   private async materializeCatalogProfile(
     settingsNs: string,
     settingsPath: readonly string[],
     provider: string,
-  ): Promise<ModelRecord[] | undefined> {
+  ): Promise<{ models: ModelRecord[]; created: boolean } | undefined> {
     const models = await this.catalogModelsFor(settingsNs, provider)
     if (models === undefined || models.length === 0) return undefined
+    const live = this.profileAt(settingsNs, settingsPath)
+    if (live !== undefined) {
+      // A profile with models is the user's answer; never replace it.
+      if (normalizeModels(live.models).length > 0) return undefined
+      try {
+        const written = await this.mutateSettings(
+          settingsNs,
+          [{ op: 'set', path: [...settingsPath, 'models'], value: models }],
+          () => {
+            const current = this.profileAt(settingsNs, settingsPath)
+            return current !== undefined && normalizeModels(current.models).length === 0
+          },
+        )
+        return written ? { models, created: false } : undefined
+      } catch (error) {
+        this.warn(`the ${provider} profile could not be completed: ${error instanceof Error ? error.message : String(error)}`)
+        return undefined
+      }
+    }
     try {
-      await this.mutateSettings(settingsNs, [{ op: 'set', path: [...settingsPath], value: { models } }])
-      return models
+      const written = await this.mutateSettings(
+        settingsNs,
+        [{ op: 'set', path: [...settingsPath], value: { models } }],
+        () => this.profileAt(settingsNs, settingsPath) === undefined,
+      )
+      return written ? { models, created: true } : undefined
     } catch (error) {
       this.warn(`the ${provider} profile could not be created: ${error instanceof Error ? error.message : String(error)}`)
       return undefined
@@ -7181,19 +7209,29 @@ export class KeysManagerService {
   }
 
   /**
-   * Rebuild the profile an adoption before this build left missing, so a row
-   * test on an already-managed route does not keep refusing with no action the
-   * user could take. Only a profile this manager never had is rebuilt: one the
-   * user deleted or released stays deleted.
+   * Repair the profile a row test needs on an already-managed route: a route
+   * adopted before profiles were materialized has none, and a key-pool profile
+   * carried over from Models may lack models.
+   *
+   * Rules: a profile carrying models is never touched; one missing them is
+   * filled; a missing profile is rebuilt only when the record gives no sign of
+   * ever having had one. A pre-fix adoption records neither `hadProfile` nor
+   * `createdProfile`, so a profile the user deletes there cannot be told apart
+   * from a route that never had one — it is rebuilt, and the row test is the
+   * only caller.
    */
   private async ensureCatalogProfile(record: ProviderRecord): Promise<void> {
     if (record.extraId !== null || record.adapter !== 'pi-ai') return
-    if (record.hadProfile || record.createdProfile) return
-    if (this.profileAt(record.settingsNs, record.settingsPath) !== undefined) return
-    const models = await this.materializeCatalogProfile(record.settingsNs, record.settingsPath, record.provider)
-    if (models === undefined) return
-    record.models = models
-    record.createdProfile = true
+    const live = this.profileAt(record.settingsNs, record.settingsPath)
+    if (live !== undefined && normalizeModels(live.models).length > 0) return
+    if (live === undefined && (record.hadProfile || record.createdProfile)) return
+    const materialized = await this.materializeCatalogProfile(record.settingsNs, record.settingsPath, record.provider)
+    if (materialized === undefined) return
+    record.models = materialized.models
+    if (materialized.created) record.createdProfile = true
+    // A key-pool route needs the binding a materialized profile does not carry;
+    // an OAuth-served route stays unbound (the authority decides).
+    await this.syncBrokerBinding(record.provider)
     this.store.touch()
   }
 
@@ -7251,10 +7289,12 @@ export class KeysManagerService {
       // Models first" rule; the DeepSeek adapter keeps this path untouched.
       // The import runs first: a failed credential read would otherwise leave
       // this profile behind with no managed record to roll it back.
-      let materialized: ModelRecord[] | undefined
+      let materialized: { models: ModelRecord[]; created: boolean } | undefined
       if (piAiRoute && profile === undefined) {
         materialized = await this.materializeCatalogProfile(entry.settingsNs, entry.settingsPath, provider)
-        if (materialized === undefined) {
+        // A profile that appeared while the catalog call was outstanding is
+        // the user's, and adoption proceeds against it without a warning.
+        if (materialized === undefined && this.profileAt(entry.settingsNs, entry.settingsPath) === undefined) {
           this.pushWarning(`The ${provider} route was adopted without a Models profile; configure a model for it before testing the connection.`)
         }
       }
@@ -7267,12 +7307,12 @@ export class KeysManagerService {
         adapter: piAiRoute ? 'pi-ai' : 'deepseek',
         brokerRef,
         originalApiKeyEnv,
-        createdProfile: materialized !== undefined,
+        createdProfile: materialized?.created === true,
         hadProfile: profile !== undefined,
         extraId: extra?.id ?? null,
         api: (profile?.api as string | undefined) ?? extra?.api ?? null,
         baseURL: (profile?.baseURL as string | undefined) ?? extra?.baseURL ?? entry.defaultBaseURL ?? null,
-        models: materialized ?? (profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? []),
+        models: materialized?.models ?? (profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? []),
         adoptedAt: Date.now(),
         cursor: 0,
         keys: imported !== undefined ? [imported] : [],
