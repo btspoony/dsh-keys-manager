@@ -176,9 +176,10 @@ records — not a second code path.
 - **Colliding DSH tools are aliased, not dropped.** The transport keeps
   Cursor's own `read`/`bash`/`write`/`delete`/`ls`/`grep`/`todo` names off the
   MCP advertisement, so a DSH tool with one of those names is advertised as
-  `dsh_<name>` and its call is mapped back to the DSH name on the event stream
-  and in history replay; other tool names travel unchanged. Cursor-native exec
-  frames (`read`, `shell`, `write`, `delete`, `grep`, `ls`, `diagnostics`,
+  `dsh_<name>`; the event stream restores the DSH name on the tool call, while
+  history replay keeps the advertised alias so the follow-up request stays
+  consistent. Other tool names travel unchanged. Cursor-native exec frames
+  (`read`, `shell`, `write`, `delete`, `grep`, `ls`, `diagnostics`,
   streamed edits) are still answered by the transport with `Tool not available`
   and are **not** executed by DSH (live reachability unverified).
 - **Advisory request knobs are ignored.** Cursor's agent protocol has no field
