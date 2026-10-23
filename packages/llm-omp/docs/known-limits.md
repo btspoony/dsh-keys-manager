@@ -1,7 +1,7 @@
 # Known limits
 
 Current limits and risks of the `dsh-llm-omp-transports` component, as shipped
-for the `cursor` and `devin` routes. Details and rationale are in the
+for the `cursor`, `devin`, `google-gemini-cli` and `google-antigravity` routes. Details and rationale are in the
 [package README](../README.md); the bilingual plugin surface lives in the
 repository root docs.
 
@@ -49,6 +49,54 @@ repository root docs.
   address bar to paste. A full callback URL or `code#state` is state-checked; a
   bare code skips the check (documented weakening of CSRF protection).
 
+## Google clients
+
+- The two Google routes are **unofficial clients** of Google's Cloud Code
+  Assist surface. They reuse the OAuth clients and identities the pinned omp
+  rules capture: `GeminiCLI/0.46.0/<model> (platform; arch; terminal)` with
+  `Client-Metadata` for `google-gemini-cli`, and
+  `antigravity/hub/<version> (aidev_client; os_type=darwin; arch=arm64;
+  cl=963137146)` for `google-antigravity`.
+- Same posture as the other routes: the MIT license covers the code, not the
+  service. A first live turn rejected with `401`/`403` on a valid token stops
+  the route until the decision recorded as stop condition **S4** — never a
+  retry under another identity.
+- **Sign-in is a real loopback listener** on `127.0.0.1` (`:8085/oauth2callback`
+  and `:51121/oauth-callback`). If the port is taken the listener binds an
+  ephemeral one and the authorize page carries that port; the pasted
+  address/code is the fallback. The whole browser wait is **bounded at five
+  minutes** (`GoogleFlowOptions.waitMs` in tests): expiry closes the socket,
+  fails with `AUTH_FAILED` and commits nothing. An aborted attempt reads as a
+  cancellation instead.
+- One grant per route is stored at `llm-omp-transports/google-gemini-cli` and
+  `llm-omp-transports/google-antigravity`, as
+  `{access, refresh, expires, projectId, email?}`. The adapter converts it to
+  the structured JSON envelope omp's transport parses.
+- The resolver refreshes when `expires - 60 s <= now`, once, under the
+  credential store's per-key lock: it keeps the `projectId` and an un-rotated
+  refresh token, and reports a missing or rejected refresh token as
+  `REAUTH_REQUIRED`.
+- **Attribution deviates on both routes.** The wire needs its vendor
+  `user-agent`, so DSH's attribution `user-agent` is filled only where a
+  request left the header absent — the same wrapper the Devin handshake uses.
+- **The Antigravity version is discovered, not pinned.** The first request
+  reads the public update manifest (D11) because the backend gates newer models
+  on the client version; a failed lookup is silent and falls back to `2.19.1`
+  for ten minutes, and `PI_AI_ANTIGRAVITY_VERSION` skips the lookup. This is
+  the only outbound call besides the vendor API.
+- **Images are refused.** Both routes advertise text-only input and reject
+  image blocks with `CONTENT_UNSUPPORTED`. omp's Antigravity image path decodes
+  through `Bun.Image`, absent under Node, so the path is dead by construction.
+- **The real endpoints are unverified.** `tests/adapter-wire-google.test.ts`
+  drives the bundled transport end to end with a stubbed `fetch` (URL, request
+  envelope, headers, SSE text/thinking/tool-call/usage, in-band errors,
+  Antigravity daily→sandbox failover, manifest lookup), but no test calls
+  Google. A first live sign-in and turn is a manual smoke check.
+- **`factory-droid` is deferred.** Its omp graph measures 327 modules /
+  16 991 893 B at the current pin (it imports every builtin provider), so the
+  route waits for its own plan, tracked as issue `I-000253`; nothing here reads
+  or registers it.
+
 ## Model coverage
 
 - Models come only from the pinned `@oh-my-pi/pi-catalog@18.12.3` Cursor
@@ -63,6 +111,12 @@ repository root docs.
   text-only.
 - The Cursor route ignores `maxTokens`, `temperature`, `stop` and auxiliary
   `purpose`: Cursor's agent protocol has no fields for them.
+- The Google catalogs have 7 (`google-gemini-cli`) and 22 (`google-antigravity`)
+  pinned rows. Rows with `requiresEffort` refuse a turn that selects no effort;
+  budget-mode rows send `thinkingConfig.thinkingBudget`, Gemini-3+ rows send
+  `thinkingLevel`. Antigravity rewrites `maxOutputTokens` to the captured
+  per-wire-id cap (e.g. 65 535 for `gemini-pro-agent`, 64 000 for Claude), as
+  the real client does.
 - The Devin catalog has 2 pinned rows (`swe-1-6`, `swe-1-6-fast`) and no
   reasoning efforts. The projection forwards `maxTokens`, `temperature` and
   `stop` (as `stopPatterns`) and reuses `sessionId` as the cascade id; `purpose`
@@ -92,7 +146,10 @@ repository root docs.
   inside the bundled omp transport) and is never persisted. A lost, evicted or
   restarted cache rebuilds from the request history, so a multi-step turn
   replays its history.
-- No Cursor state is shared between DSH hosts or Harness homes.
+- Antigravity keeps one piece of per-request state: the `Map` the adapter
+  creates for endpoint failover (last-good host, agent/trajectory ids). It is
+  per request and never persisted.
+- No route state is shared between DSH hosts or Harness homes.
 
 ## Build and runtime
 
@@ -105,6 +162,7 @@ repository root docs.
   or a shim gap, fails before runtime.
 - The generated catalogs are not hand-editable; run
   `pnpm -C packages/llm-omp run generate:catalog` after a pin bump.
-- Two artifacts are built from one pin: `lib/omp/cursor.mjs` and
-  `lib/omp/devin.mjs`, each with its own calibrated size ceiling and source
-  hashes in `scripts/omp-manifest.json`.
+- Three artifacts are built from one pin: `lib/omp/cursor.mjs`,
+  `lib/omp/devin.mjs` and `lib/omp/google.mjs` (shared by the two Google
+  routes), each with its own calibrated size ceiling and source hashes in
+  `scripts/omp-manifest.json`.

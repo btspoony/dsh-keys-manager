@@ -11,16 +11,17 @@ and the plugin page lists both bundle components
 |---|---|
 | npm package | `dsh-llm-omp-transports` |
 | Plugin id | `llm-omp-transports` |
-| Routes | `cursor`, `devin` (the seam is provider-generic) |
-| Credential scope | `llm-omp-transports/<provider>`: `llm-omp-transports/cursor`, `llm-omp-transports/devin` |
+| Routes | `cursor`, `devin`, `google-gemini-cli`, `google-antigravity` (the seam is provider-generic) |
+| Credential scope | `llm-omp-transports/<provider>`: `llm-omp-transports/cursor`, `llm-omp-transports/devin`, `llm-omp-transports/google-gemini-cli`, `llm-omp-transports/google-antigravity` |
 | Runtime | Node 24 (the bundle imports Node builtins only) |
 | License | MIT |
 
 The plugin registers its own route on the DSH `llm` seam, so it depends on no
 upstream DSH change. `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-catalog` are used at
 **build time only**: the build inlines the pinned omp transports into one ESM
-artifact per route (`lib/omp/cursor.mjs`, `lib/omp/devin.mjs`), and the
-published package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
+artifact per route (`lib/omp/cursor.mjs`, `lib/omp/devin.mjs`), plus one shared
+artifact for the two Google routes (`lib/omp/google.mjs`), and the published
+package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
 
 ## Cursor support status
 
@@ -72,6 +73,53 @@ published package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
 - **Images** — not yet, same as Cursor: text-only input, image blocks refused
   with `CONTENT_UNSUPPORTED`.
 
+## Google support status
+
+Two routes share one artifact: `google-gemini-cli` (Google's Gemini CLI client)
+and `google-antigravity` (the Antigravity hub client). The bundled
+`streamGoogleGeminiCli` dispatches on `model.provider`, so the route is a data
+difference — separate OAuth client, catalogs, hosts, scopes and credential
+records — not a second code path.
+
+- **Text streaming** — yes, including reasoning parts and usage.
+- **Reasoning streaming** — yes, with each row's own effort ladder: the
+  budget-mode rows send `thinkingConfig.thinkingBudget`, the Gemini-3+ rows send
+  `thinkingLevel`. A row with `requiresEffort` refuses a turn that selects no
+  effort (`UNSUPPORTED_REASONING_EFFORT`), exactly as omp does.
+- **Tool-call handoff** — yes, native to DSH's tool loop, like Devin: the
+  transport emits the call and finishes the turn `toolUse`. Antigravity's
+  default tool mode (`VALIDATED`) is sent on every request that declares tools.
+- **Sign-in** — yes, with a real loopback listener on `127.0.0.1`:
+  `:8085/oauth2callback` for Gemini CLI and `:51121/oauth-callback` for
+  Antigravity, as the pinned rules declare. The browser redirect completes the
+  flow automatically; if the port is taken the listener falls back to an
+  ephemeral port and the authorize page names the port it actually bound. The
+  address the browser landed on (or the bare code) can also be pasted. The
+  listener closes on the callback, on an aborted attempt and **on a timeout**
+  (five minutes, `GoogleFlowOptions.waitMs` for tests): an expired wait fails
+  with `AUTH_FAILED` and commits nothing.
+- **Refresh** — yes. The resolver refreshes once, under the credential store's
+  per-key lock, when `expires - 60 s <= now`, keeps the `projectId` and an
+  un-rotated `refresh_token`, and reports a dead sign-in as `REAUTH_REQUIRED`.
+- **Credential record** — `llm-omp-transports/<route>` with
+  `{access, refresh, expires, projectId, email?}`. The adapter hands the
+  transport the structured JSON envelope (`token`, `projectId`, `refreshToken`,
+  `expiresAt`, `email`) that omp parses.
+- **Project discovery** — sign-in finishes with the Cloud Code Assist project:
+  `loadCodeAssist` → (tier onboarding `onboardUser` + LRO poll, or the required
+  `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT_ID` variable for a
+  `legacy-tier`/paid account). Antigravity additionally checks free-tier
+  eligibility and bounds onboarding at 30 s.
+- **Models** — generated from the pinned `@oh-my-pi/pi-catalog@18.12.3`: 7 rows
+  for `google-gemini-cli`, 22 for `google-antigravity`, served without a network
+  call.
+- **Routes** — both declared configurable, so the Models page has
+  `providers.google-gemini-cli` and `providers.google-antigravity` allow-lists.
+- **Images** — not yet, same posture as the other routes: text-only input, image
+  blocks refused with `CONTENT_UNSUPPORTED`. omp's Antigravity image path
+  decodes through `Bun.Image`, which does not exist under Node, so that path is
+  dead here by construction; the projection never reaches it.
+
 ## Hard constraints
 
 - **Pinned, build-time-only omp.** `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-catalog`
@@ -90,8 +138,9 @@ published package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
   committed manifest is unchanged after a build, so an omp bump that changes
   the contract shows up as a reviewable manifest diff before it can reach a
   request.
-- **Generated catalog.** The Cursor model table is generated from the pinned
-  catalog and is not hand-edited. An omp or catalog bump requires
+- **Generated catalogs.** The model tables (`cursor`, `devin`,
+  `google-gemini-cli`, `google-antigravity`) are generated from the pinned
+  catalog and are not hand-edited. An omp or catalog bump requires
   `pnpm -C packages/llm-omp run generate:catalog`.
 
 ## Limits and risks
@@ -147,6 +196,37 @@ published package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
   code skips the state check (the page is the only place the state could
   travel).
 
+- **Unofficial Google clients.** The Google routes reuse the OAuth clients and
+  client identities the pinned omp rules capture — Gemini CLI
+  (`GeminiCLI/0.46.0/...` plus `Client-Metadata`) and Antigravity
+  (`antigravity/hub/<version> ...`). Same posture as the Cursor and Devin
+  routes: the MIT license covers the code, not the service, and a first live
+  turn rejected with `401`/`403` on a valid token stops the route until a
+  product decision (stop condition **S4**) — never a retry under another
+  identity.
+- **Antigravity version lookup.** Before the first Antigravity request the
+  artifact reads the client version from the public update manifest (D11),
+  because the backend gates newer models on that version. A failed lookup is
+  silent and falls back to the pinned `2.19.1` for ten minutes; an explicit
+  `PI_AI_ANTIGRAVITY_VERSION` skips the lookup. That is the only outbound
+  request the routes make besides the vendor API itself.
+- **Google sign-in waits at most five minutes.** The loopback listener is
+  bounded by a wait budget (five minutes by default): a browser that never
+  returns fails the attempt with `AUTH_FAILED`, closes the socket and commits
+  nothing. An aborted attempt is reported as a cancellation, not a failure.
+  When the configured port is taken, the fallback is an ephemeral port; a host
+  that can bind neither fails the sign-in rather than silently dropping the
+  browser half (pasting still works only while the listener is up).
+- **Google attribution deviates on both routes.** The Cloud Code Assist wire
+  sets a vendor `user-agent` that the backend gates on, so DSH's attribution
+  `user-agent` is filled only where a request left the header absent — the same
+  fill-absent wrapper the Devin handshake uses.
+- **Real Google endpoints unverified.** The wire suite drives the bundled
+  transport end to end over a stubbed `fetch` (URL, envelope, headers, SSE,
+  in-band errors, Antigravity failover and the version manifest), but it never
+  calls Google. A first live sign-in and turn is a manual smoke check, not a
+  claim of server acceptance.
+
 ## Develop and test
 
 ```sh
@@ -156,10 +236,10 @@ pnpm -C packages/llm-omp test
 pnpm -C packages/llm-omp run generate:catalog
 ```
 
-`build` bundles the pinned omp graphs from `scripts/omp-entry.ts` and
-`scripts/omp-entry-devin.ts` into `lib/omp/cursor.mjs` and `lib/omp/devin.mjs`
-and rewrites `scripts/omp-manifest.json`; run it before `test` after a pin or
-shim change. CI runs the same sequence and then fails if
+`build` bundles the pinned omp graphs from `scripts/omp-entry.ts`,
+`scripts/omp-entry-devin.ts` and `scripts/omp-entry-google.ts` into
+`lib/omp/cursor.mjs`, `lib/omp/devin.mjs` and `lib/omp/google.mjs` and rewrites
+`scripts/omp-manifest.json`; run it before `test` after a pin or shim change. CI runs the same sequence and then fails if
 the committed manifest drifted.
 
 The install proof lives at the repository root and needs `pnpm` and `dsh` on
@@ -172,7 +252,7 @@ node scripts/verify-install.mjs
 It packs both packages, installs the root tarball into a fresh DSH profile,
 and asserts that the composed profile carries both loader rows
 (`dsh-keys-manager` and `llm-omp-transports`). It does not exercise the
-plugin-manager UI or any Cursor network behavior.
+plugin-manager UI or any provider network behavior.
 
 ## Release
 
@@ -190,3 +270,12 @@ plugin surface.
 ## License
 
 Released under the [MIT License](../../LICENSE).
+
+## Deferred
+
+`factory-droid` is **not** part of this component yet. Its omp graph pulls
+`providers/register-builtins`, which statically imports every builtin provider,
+measuring 327 modules / 16 991 893 B at the current pin — far past the plan's
+stop rule — so the route waits for its own plan (tracked as issue `I-000253`,
+with a build-substitution remedy as one candidate). Nothing in this package
+reads or registers a `factory-droid` route.

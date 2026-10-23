@@ -1,0 +1,5 @@
+# Generated from the pinned `@oh-my-pi/pi-catalog` auth rules at build time.
+# Google's public installed-app client values must never be committed: GitHub
+# push protection treats them as secrets. `pnpm run build` (and the
+# `typecheck`/`test` scripts) regenerate this file; it is not tracked.
+src/google/client-facts.generated.ts

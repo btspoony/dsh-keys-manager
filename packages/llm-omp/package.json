@@ -43,9 +43,10 @@
   },
   "scripts": {
     "generate:catalog": "node scripts/generate-catalog.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "node scripts/build-omp.mjs && tsc -p tsconfig.build.json",
-    "test": "vitest run",
+    "generate:client-facts": "node scripts/generate-google-client-facts.mjs",
+    "typecheck": "node scripts/generate-google-client-facts.mjs && tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/generate-google-client-facts.mjs && node scripts/build-omp.mjs && tsc -p tsconfig.build.json",
+    "test": "node scripts/generate-google-client-facts.mjs && vitest run",
     "prepare": "pnpm run build",
     "prepack": "pnpm run build"
   },
