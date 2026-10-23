@@ -107,7 +107,7 @@ Current design boundaries of the Keys Manager plugin:
   same record on `cursor` reports `needs-reauth`. An `expires` that is present
   but unreadable is a corrupt record, not a static bearer, and the route reports
   `needs-reauth`.
-- An expired grant is not the same failure on both routes: Devin has no
+- An expired grant does not fail the same way on Cursor and Devin: Devin has no
   refresh token, so it stops until you sign in again; Cursor refreshes on the
   credential seam and keeps serving, and stops only when the refresh is
   rejected or no refresh token is stored.
