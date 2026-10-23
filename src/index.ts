@@ -533,6 +533,23 @@ function discoveredModel(model: DiscoveredModel): ModelRecord | undefined {
   })
 }
 
+/**
+ * Normalize one discovery answer for a profile write: unusable and duplicate
+ * rows dropped, capped at the same limit discovery itself applies.
+ */
+function discoveredModels(discovered: readonly DiscoveredModel[]): ModelRecord[] {
+  const models: ModelRecord[] = []
+  const seen = new Set<string>()
+  for (const model of discovered) {
+    const normalized = discoveredModel(model)
+    if (normalized === undefined || seen.has(normalized.id)) continue
+    seen.add(normalized.id)
+    models.push(normalized)
+    if (models.length >= 60) break
+  }
+  return models
+}
+
 /** Credential-bearing header names the carrier must never persist as plain settings. */
 const CREDENTIAL_HEADER_NAMES = new Set(['authorization', 'proxy-authorization', 'cookie', 'api-key', 'apikey', 'x-api-key'])
 
@@ -5133,6 +5150,11 @@ export class KeysManagerService {
    */
   private async runRowTest(record: ProviderRecord, row: KeyRecord, window: RowTestWindow): Promise<KeyTestResult> {
     const provider = record.provider
+    // An adoption that predates profile materialization has nothing to test
+    // against, and no UI action would give it a profile. Rebuild it from the
+    // catalog before the route read; a route this call cannot rebuild keeps
+    // the explicit "no settings profile" refusal below.
+    await this.ensureCatalogProfile(record)
     // QC B6: the serving source is decided from projection ownership, which a
     // restarted process hydrates asynchronously. Until that read lands the
     // shape is unknown, so the honest answer is a refusal with no request
@@ -7118,6 +7140,63 @@ export class KeysManagerService {
     return undefined
   }
 
+  /**
+   * The installed catalog's models for one route, normalized for a profile
+   * write, or `undefined` when the seam cannot answer. A `provider`-only
+   * discovery request reads pi-ai's bundled catalog instead of the endpoint,
+   * so materializing a profile for an unconfigured route uses no network and
+   * no credential.
+   */
+  private async catalogModelsFor(settingsNs: string, provider: string): Promise<ModelRecord[] | undefined> {
+    try {
+      return discoveredModels(
+        await this.ctx.llm.discoverModels(settingsNs, { provider }, AbortSignal.timeout(5_000)),
+      )
+    } catch (error) {
+      this.warn(`the installed catalog could not describe ${provider}: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+  }
+
+  /**
+   * Write the installed catalog's models into a route's missing profile. The
+   * written profile names no credential reference and no endpoint: pi-ai falls
+   * back to the catalog for both, and a broker reference here would shadow a
+   * stored OAuth grant.
+   */
+  private async materializeCatalogProfile(
+    settingsNs: string,
+    settingsPath: readonly string[],
+    provider: string,
+  ): Promise<ModelRecord[] | undefined> {
+    const models = await this.catalogModelsFor(settingsNs, provider)
+    if (models === undefined || models.length === 0) return undefined
+    try {
+      await this.mutateSettings(settingsNs, [{ op: 'set', path: [...settingsPath], value: { models } }])
+      return models
+    } catch (error) {
+      this.warn(`the ${provider} profile could not be created: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+  }
+
+  /**
+   * Rebuild the profile an adoption before this build left missing, so a row
+   * test on an already-managed route does not keep refusing with no action the
+   * user could take. Only a profile this manager never had is rebuilt: one the
+   * user deleted or released stays deleted.
+   */
+  private async ensureCatalogProfile(record: ProviderRecord): Promise<void> {
+    if (record.extraId !== null || record.adapter !== 'pi-ai') return
+    if (record.hadProfile || record.createdProfile) return
+    if (this.profileAt(record.settingsNs, record.settingsPath) !== undefined) return
+    const models = await this.materializeCatalogProfile(record.settingsNs, record.settingsPath, record.provider)
+    if (models === undefined) return
+    record.models = models
+    record.createdProfile = true
+    this.store.touch()
+  }
+
   /** Remote: take over one existing provider route. */
   adoptProvider(provider: string): Promise<StateView> {
     return this.run(async () => {
@@ -7160,6 +7239,20 @@ export class KeysManagerService {
       // A read-only profile cannot carry the binding; refuse before any
       // managed state or imported credential exists.
       if (!descriptor.writable) throw new Error('The active profile is read-only')
+      const piAiRoute = !(entry.settingsNs.includes('deepseek') || provider === 'deepseek-official')
+      // A pi-ai catalog route has no profile until something configures it, and
+      // the connection test (as well as the Models page) resolves this route's
+      // models from that profile. Materialize it from the installed catalog so
+      // adopting in Keys Manager does not leave a route nothing can test. A
+      // hand-declared route is refused above and keeps its "configure in
+      // Models first" rule; the DeepSeek adapter keeps this path untouched.
+      let materialized: ModelRecord[] | undefined
+      if (piAiRoute && profile === undefined) {
+        materialized = await this.materializeCatalogProfile(entry.settingsNs, entry.settingsPath, provider)
+        if (materialized === undefined) {
+          this.pushWarning(`The ${provider} route was adopted without a Models profile; configure a model for it before testing the connection.`)
+        }
+      }
       const hit = await this.findImport(entry, profile)
       let imported: KeyRecord | undefined
       if (hit !== undefined) imported = await this.createKeyRecord(provider, 'Imported', hit.value, hit.ref)
@@ -7169,15 +7262,15 @@ export class KeysManagerService {
         source: extra !== undefined ? 'extra' : 'dsh',
         settingsNs: entry.settingsNs,
         settingsPath: [...entry.settingsPath],
-        adapter: entry.settingsNs.includes('deepseek') || provider === 'deepseek-official' ? 'deepseek' : 'pi-ai',
+        adapter: piAiRoute ? 'pi-ai' : 'deepseek',
         brokerRef,
         originalApiKeyEnv,
-        createdProfile: false,
+        createdProfile: materialized !== undefined,
         hadProfile: profile !== undefined,
         extraId: extra?.id ?? null,
         api: (profile?.api as string | undefined) ?? extra?.api ?? null,
         baseURL: (profile?.baseURL as string | undefined) ?? extra?.baseURL ?? entry.defaultBaseURL ?? null,
-        models: profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? [],
+        models: materialized ?? (profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? []),
         adoptedAt: Date.now(),
         cursor: 0,
         keys: imported !== undefined ? [imported] : [],
@@ -7300,8 +7393,9 @@ export class KeysManagerService {
    * Undo an adoption whose initial binding write was refused (PR review
    * round 2): drop the managed record and its broker entry, delete the
    * plugin-scope copy this call created, and put back a pre-adoption
-   * reference that landed despite the refusal. The source credential and the
-   * profile's other fields are never touched — adoption only read them.
+   * reference that landed despite the refusal. The source credential is never
+   * touched, and a profile this adoption materialized is removed whole — it
+   * had no pre-adoption content to keep.
    */
   private async rollbackAdoption(record: ProviderRecord, imported: KeyRecord | undefined): Promise<void> {
     const provider = record.provider
@@ -7313,6 +7407,15 @@ export class KeysManagerService {
       } catch (error) {
         this.warn(`adoption rollback could not delete the imported credential ${imported.ref} for ${provider}: ${error instanceof Error ? error.message : String(error)}`)
       }
+    }
+    if (record.createdProfile) {
+      try {
+        await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: record.settingsPath }])
+      } catch (error) {
+        this.warn(`adoption rollback could not remove the ${provider} profile it created: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      this.store.touch()
+      return
     }
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, record.settingsNs)
@@ -7351,15 +7454,7 @@ export class KeysManagerService {
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error)
     }
-    const models: ModelRecord[] = []
-    const seen = new Set<string>()
-    for (const model of discovered) {
-      const normalized = discoveredModel(model)
-      if (normalized === undefined || seen.has(normalized.id)) continue
-      seen.add(normalized.id)
-      models.push(normalized)
-      if (models.length >= 60) break
-    }
+    const models = discoveredModels(discovered)
     if (models.length > 0) return { models, failure }
     return { models: normalizeModels(extra.models), failure }
   }

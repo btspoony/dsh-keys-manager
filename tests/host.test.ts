@@ -729,6 +729,88 @@ test('an OAuth-only provider is adoptable for accounts with zero keys', async ()
   }
 })
 
+// A catalog route has no profile until something configures it, so adoption
+// materializes one from the installed catalog. Without it the connection test
+// refuses before sending ("no settings profile yet") and Models shows a route
+// with nothing to select.
+
+test('adopting a catalog route materializes the profile its test needs', async () => {
+  const h = await harness()
+  try {
+    const state = await h.service.adoptProvider('xai')
+    const xai = state.providers.find(provider => provider.provider === 'xai')!
+    assert.equal(xai.managed, true)
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.deepEqual(profile.models, [
+      { id: 'discovered-chat', name: 'Discovered Chat', contextWindow: 128000, maxTokens: 8192, input: ['text'] },
+      { id: 'discovered-vision', name: 'Discovered Vision', input: ['text', 'image'] },
+    ])
+    // The route is account-served, so the materialized profile must name no
+    // credential: a broker reference here would shadow the stored grant.
+    assert.equal('apiKeyEnv' in profile, false)
+    const managed = h.store.provider('xai')!
+    assert.equal(managed.createdProfile, true)
+    assert.equal(managed.hadProfile, false)
+    assert.equal(managed.models.length, 2)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a catalog the seam cannot describe leaves the adoption without a profile', async () => {
+  const h = await harness()
+  try {
+    vi.spyOn(h.llm, 'discoverModels').mockRejectedValue(new Error('no model discovery is registered'))
+    const state = await h.service.adoptProvider('xai')
+    assert.equal(state.providers.find(provider => provider.provider === 'xai')!.managed, true)
+    assert.equal(h.settings.valueOf('llm-pi-ai').providers.xai, undefined)
+    assert.equal(h.store.provider('xai')!.createdProfile, false)
+    assert.match(state.warnings.join('\n'), /configure a model for it before testing/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('release keeps a materialized profile and only clears its credential reference', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('xai')
+    await h.service.releaseProvider('xai')
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.equal(profile.models.length, 2)
+    assert.equal('apiKeyEnv' in profile, false)
+  } finally {
+    await h.close()
+  }
+})
+
+// An adoption that predates profile materialization cannot be re-adopted (the
+// route is already managed), so the row test itself rebuilds what it needs.
+test('a row test rebuilds the catalog profile an older adoption left missing', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('xai')
+    const rowId = await signInThroughFlow(h, 'xai')
+    const record = h.store.provider('xai')!
+    // The documented state of a pre-fix installation: managed, no profile.
+    delete h.settings.valueOf('llm-pi-ai').providers.xai
+    record.createdProfile = false
+    record.hadProfile = false
+    record.models = []
+    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+    } as any)
+    const result = await h.service.testKey('xai', rowId)
+    assert.equal(result.ok, true, String(result.error))
+    const profile = h.settings.valueOf('llm-pi-ai').providers.xai
+    assert.equal(profile.models.length, 2)
+    assert.equal('apiKeyEnv' in profile, false)
+    assert.equal(record.createdProfile, true)
+  } finally {
+    await h.close()
+  }
+})
+
 test('beginAccountLogin succeeds on an adopted OAuth-only provider', async () => {
   const h = await harness()
   try {
