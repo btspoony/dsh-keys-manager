@@ -52,6 +52,7 @@
   "transportModelsLoading": "正在加载模型…",
   "transportModelsClear": "清除选择",
   "transportModelsHint": "不勾选任何模型表示使用全部模型；保存后该路由的模型列表随之收窄。",
+  "transportModelsMissingCatalog": "已安装的传输构建没有为该路由提供模型目录；列表会一直为空，直到重新构建或升级 dsh-llm-omp-transports。",
   "filterGroup": "筛选",
   "transportEmpty": "还没有传输账户。",
   "signInAgain": "重新登录",

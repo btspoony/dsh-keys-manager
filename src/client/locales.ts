@@ -188,6 +188,7 @@ const zh = {
       transportModelsLoading: '正在加载模型…',
       transportModelsClear: '清除选择',
       transportModelsHint: '不勾选任何模型表示使用全部模型；保存后该路由的模型列表随之收窄。',
+      transportModelsMissingCatalog: '已安装的传输构建没有为该路由提供模型目录；列表会一直为空，直到重新构建或升级 dsh-llm-omp-transports。',
     }
 
 const en = {
@@ -374,6 +375,7 @@ const en = {
       transportModelsLoading: 'Loading models…',
       transportModelsClear: 'Clear selection',
       transportModelsHint: 'Leave every model unchecked to use the full catalog; saving narrows the list this route advertises.',
+      transportModelsMissingCatalog: 'The installed transport build ships no model catalog for this route; the list stays empty until dsh-llm-omp-transports is rebuilt or upgraded.',
     }
 
 /** Dictionaries registered under the plugin's locale namespace. */

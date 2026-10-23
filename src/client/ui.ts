@@ -1026,6 +1026,11 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
   }
 
   const rows = view === null ? [] : modelPickerRows(view)
+  // One predicate disables Save on an empty grid, which would otherwise end in
+  // the host's un-localized "no model list"; the hint on top of it also needs
+  // the host's warning.
+  const emptyCatalog = view !== null && view.catalog.length === 0
+  const warning = view === null ? undefined : view.warning
   const errorLine = error === null ? null : h('div', { className: 'km-inline-error', role: 'alert' }, error)
   return h('div', { className: 'km-models' },
     h('button', {
@@ -1064,8 +1069,15 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
               }),
               h('span', null, row.name),
             ))),
+      // An empty grid is also the all-models state: only the host's report of
+      // a missing catalog explains it.
+      emptyCatalog && warning !== undefined
+        ? h('div', { className: 'km-field-hint', role: 'status' }, t('transportModelsMissingCatalog'))
+        : null,
       h('div', { className: 'km-models-actions' },
-        h(Button, { size: 'small', variant: 'primary', onClick: () => void save(), disabled: busy || view === null },
+        // Save cannot fix a route the host has no catalog for; clicking it
+        // would only surface the un-localized "no model list" error.
+        h(Button, { size: 'small', variant: 'primary', onClick: () => void save(), disabled: busy || view === null || emptyCatalog },
           busy ? t('saving') : t('save')),
         h(Button, {
           size: 'small',

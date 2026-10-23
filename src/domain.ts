@@ -248,6 +248,13 @@ export interface TransportCatalogModel {
 export interface TransportModelsView {
   catalog: TransportCatalogModel[]
   models: string[]
+  /**
+   * Why the catalog is empty. Rides every read whose catalog accessor is
+   * missing, so a remounted or reloaded picker still explains the empty list;
+   * absent for every route that does ship a catalog. The one-shot part of this
+   * report is the {@link StateView.warnings} entry, not this field.
+   */
+  warning?: string
 }
 
 /** Complete manager snapshot the UI renders. */

@@ -52,6 +52,7 @@
   "transportModelsLoading": "Loading models…",
   "transportModelsClear": "Clear selection",
   "transportModelsHint": "Leave every model unchecked to use the full catalog; saving narrows the list this route advertises.",
+  "transportModelsMissingCatalog": "The installed transport build ships no model catalog for this route; the list stays empty until dsh-llm-omp-transports is rebuilt or upgraded.",
   "filterGroup": "Filters",
   "transportEmpty": "No transport accounts yet.",
   "signInAgain": "Sign in again",

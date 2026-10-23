@@ -59,6 +59,18 @@ describe('transport model picker shaping', () => {
   test('an absent payload shapes to an empty picker', () => {
     expect(shapeTransportModels(null)).toEqual({ catalog: [], models: [] })
   })
+
+  test('carries the missing-catalog explanation only when the wire has one', () => {
+    expect(shapeTransportModels({ catalog: [], models: [], warning: 'ships no catalog' }).warning)
+      .toBe('ships no catalog')
+    // A malformed or blank field is not an explanation the picker should show.
+    expect(shapeTransportModels({ catalog: [], models: [], warning: 7 })).toEqual({ catalog: [], models: [] })
+    expect(shapeTransportModels({ catalog: [], models: [], warning: '' })).toEqual({ catalog: [], models: [] })
+    // A warning does not replace the catalog: both survive shaping, and the
+    // picker's own empty-grid guard decides whether the hint is shown.
+    expect(shapeTransportModels({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], warning: 'ships no catalog' }))
+      .toEqual({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], warning: 'ships no catalog' })
+  })
 })
 
 describe('transport model picker copy', () => {
@@ -69,6 +81,7 @@ describe('transport model picker copy', () => {
     'transportModelsLoading',
     'transportModelsClear',
     'transportModelsHint',
+    'transportModelsMissingCatalog',
   ] as const
 
   test('exists in both dictionaries and mirrors locale/*.json', () => {
