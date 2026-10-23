@@ -32,6 +32,7 @@ import {
 } from '@oh-my-pi/pi-catalog/discovery/cursor-proto'
 import type { AgentClientMessage, AgentServerMessage, McpResult } from '@oh-my-pi/pi-catalog/discovery/cursor-proto'
 import { create, encodeJsonValue, fromBinary, toBinary } from '@oh-my-pi/pi-catalog/discovery/protobuf'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -44,7 +45,7 @@ vi.mock('@oh-my-pi/pi-utils', () => ({
 
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
 import type { OmpAssistantMessageEvent, OmpCursorContext, OmpCursorModel, OmpCursorOptions } from '../src/omp.js'
-import { projectEvents } from '../src/projection.js'
+import { projectEvents, projectRequest } from '../src/projection.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -389,6 +390,58 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(success.content).toHaveLength(1)
     expect(success.content[0].content.case).toBe('text')
     expect(success.content[0].content.value?.text).toBe(HANDOFF_TEXT)
+  })
+
+  it('advertises a colliding DSH tool under its alias and hands the aliased call back as the DSH name', async () => {
+    // The pinned transport filters `read` out of the MCP list, so the
+    // projection advertises `dsh_read`; the server calls that name, and the
+    // projection restores the DSH one for the tool loop.
+    const projected = projectRequest(SONNET_ROW, {
+      provider: 'cursor',
+      model: 'claude-4.5-sonnet',
+      messages: [createUserMessage({ content: [{ type: 'text', text: 'Read README.md' }], source: { kind: 'user' } })],
+      tools: [{ name: 'read', description: 'Read a file', parameters: { type: 'object' } }],
+    })
+    const { events, wire } = await run(
+      'cursor-wire-handoff-alias.jsonl',
+      { externalToolExecutor: true },
+      { tools: projected.context.tools },
+    )
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({ type: 'toolCall', name: 'dsh_read', arguments: { path: 'README.md' } })
+
+    // The handshake advertises the alias, never the filtered native name.
+    const contextReply = decodeClientFrame(wire.written[1])
+    const contextClient =
+      contextReply.message.case === 'execClientMessage' ? contextReply.message.value : undefined
+    const contextResult = (contextClient?.message.case === 'requestContextResult'
+      ? contextClient.message.value
+      : undefined) as { result: { case?: string; value?: { requestContext?: { tools: { toolName: string }[] } } } }
+    expect((contextResult.result.value?.requestContext?.tools ?? []).map(tool => tool.toolName)).toEqual(['dsh_read'])
+
+    // The exec reply is the handoff, not an adapter-side execution.
+    const reply = decodeClientFrame(wire.written[2])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    const result = (client?.message.case === 'mcpResult' ? client.message.value : undefined) as McpResult | undefined
+    const success = (result?.result.case === 'success' ? result.result.value : undefined) as {
+      content: { content: { value?: { text?: string } } }[]
+    }
+    expect(success.content[0].content.value?.text).toBe(HANDOFF_TEXT)
+
+    // Through the projection, DSH gets the tool it declared.
+    const chunks: StreamChunk[] = []
+    for await (const chunk of projectEvents(
+      (async function* () {
+        yield* events
+      })(),
+    )) {
+      chunks.push(chunk)
+    }
+    const blockEnd = chunks.find(
+      (chunk): chunk is Extract<StreamChunk, { type: 'block-end' }> => chunk.type === 'block-end',
+    )
+    expect(blockEnd?.block).toMatchObject({ type: 'tool-call', name: 'read' })
   })
 
   it('answers a native read frame itself and leaves no unresolved call for DSH', async () => {

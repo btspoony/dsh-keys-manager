@@ -1,0 +1,4 @@
+{"kind":"requestContext"}
+{"kind":"exec","name":"dsh_read","toolName":"dsh_read","toolCallId":"call-wire-alias-1","args":{"path":"README.md"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":6,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

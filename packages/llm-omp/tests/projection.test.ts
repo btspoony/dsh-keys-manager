@@ -20,16 +20,21 @@ import type { GenerateOptions, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-
 import { describe, expect, it } from 'vitest'
 
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
+import { DEVIN_MODELS } from '../src/catalog/devin.js'
+import { GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 import type { OmpAssistantMessage, OmpAssistantMessageEvent, OmpToolCallBlock, OmpUsage } from '../src/omp.js'
 import {
   CONTENT_UNSUPPORTED,
+  GOOGLE_GEMINI_CLI_PROFILE,
   MALFORMED_TOOL_CALL,
   STREAM_CLOSED,
   TOOL_ARGUMENTS_INVALID,
   UNKNOWN_EVENT,
   UNKNOWN_FINISH,
   UNSUPPORTED_REASONING_EFFORT,
+  projectDevinRequest,
   projectEvents,
+  projectGoogleRequest,
   projectRequest,
 } from '../src/projection.js'
 
@@ -46,6 +51,11 @@ if (UNROUTED.thinking?.effortRouting !== undefined) {
 /** A routed K3 row: the family whose thinking the transport replays. */
 const K3 = CURSOR_MODELS.find(row => row.id === 'kimi-k3-high')
 if (K3 === undefined) throw new Error('the generated catalog lost kimi-k3-high')
+const DEVIN = DEVIN_MODELS[0]
+if (DEVIN === undefined) throw new Error('the generated catalog lost its Devin rows')
+/** A plain Google row: no thinking config, so no effort is required. */
+const GOOGLE = GOOGLE_GEMINI_CLI_MODELS.find(row => row.id === 'gemini-2.0-flash')
+if (GOOGLE === undefined) throw new Error('the generated catalog lost gemini-2.0-flash')
 
 const IMAGE = {
   type: 'image' as const,
@@ -342,6 +352,32 @@ describe('projectRequest', () => {
     expect(projected.options.externalToolExecutor).toBe(true)
   })
 
+  it('advertises a colliding DSH tool under its alias, on the Cursor route only', () => {
+    // The pinned transport drops these names from the MCP declaration list, so
+    // the route needs the alias to hand the tool to DSH at all.
+    const tools = [
+      { name: 'read', description: 'Read a file', parameters: { type: 'object' } },
+      { name: 'lookup_doc', description: 'Look a document up', parameters: {} },
+    ]
+    const messages = [createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } })]
+    const wireNames = (context: { tools?: readonly { name: string }[] }): string[] =>
+      (context.tools ?? []).map(tool => tool.name)
+
+    expect(wireNames(projectRequest(SONNET, request(messages, { tools }), 't').context)).toEqual([
+      'dsh_read',
+      'lookup_doc',
+    ])
+    const devin = projectDevinRequest(DEVIN, { provider: 'devin', model: DEVIN.id, messages, tools }, 't')
+    expect(wireNames(devin.context)).toEqual(['read', 'lookup_doc'])
+    const google = projectGoogleRequest(
+      GOOGLE,
+      GOOGLE_GEMINI_CLI_PROFILE,
+      { provider: 'google-gemini-cli', model: GOOGLE.id, messages, tools },
+      't',
+    )
+    expect(wireNames(google.context)).toEqual(['read', 'lookup_doc'])
+  })
+
   it('replays assistant tool calls and their results as paired history steps', () => {
     const projected = projectRequest(
       SONNET,
@@ -376,6 +412,36 @@ describe('projectRequest', () => {
         timestamp: 0,
       },
       { role: 'user', content: [{ type: 'text', text: 'Summarize it' }], timestamp: 0 },
+    ])
+  })
+
+  it('replays a colliding DSH tool call under its alias and pairs the result', () => {
+    // History has to agree with the declaration set the same request
+    // advertises: the server saw `dsh_read`, so the replay must say so too.
+    const projected = projectRequest(
+      SONNET,
+      request([
+        createUserMessage({ content: [{ type: 'text', text: 'Read it' }], source: { kind: 'user' } }),
+        createAssistantMessage({
+          content: [{ type: 'tool-call', id: ToolCallId('call-1'), name: 'read', arguments: '{"path":"a.ts"}' }],
+          source: { provider: 'cursor', model: 'claude-4.5-sonnet' },
+        }),
+        createToolResultMessage({
+          callId: ToolCallId('call-1'),
+          content: [{ type: 'text', text: 'file body' }],
+          isError: false,
+        }),
+      ]),
+      't',
+    )
+
+    expect(projected.context.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'Read it' }], timestamp: 0 },
+      expect.objectContaining({
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'call-1', name: 'dsh_read', arguments: { path: 'a.ts' } }],
+      }),
+      expect.objectContaining({ role: 'toolResult', toolCallId: 'call-1', toolName: 'dsh_read' }),
     ])
   })
 
@@ -637,6 +703,37 @@ describe('projectEvents', () => {
       },
       { type: 'usage', usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 } },
       { type: 'finish', reason: { kind: 'tool-calls' } },
+    ])
+  })
+
+  it('restores the DSH tool name behind an alias on the event stream', async () => {
+    // The server calls the advertised MCP name; DSH's tool loop knows the
+    // original one.
+    const partial: OmpAssistantMessage = {
+      role: 'assistant',
+      model: 'claude-4.5-sonnet',
+      content: [{ type: 'toolCall', id: 'call-1', name: 'dsh_read', arguments: {} }],
+      usage: usage(),
+      stopReason: 'stop',
+    }
+    const chunks = await collect([
+      { type: 'toolcall_start', contentIndex: 0, partial },
+      { type: 'toolcall_delta', contentIndex: 0, delta: '{"path":"README.md"}', partial },
+      {
+        type: 'toolcall_end',
+        contentIndex: 0,
+        toolCall: { type: 'toolCall', id: 'call-1', name: 'dsh_read', arguments: { path: 'README.md' } },
+      },
+      { type: 'done', reason: 'stop', message: partial },
+    ])
+
+    expect(chunks.filter(chunk => chunk.type === 'tool-call-delta' || chunk.type === 'block-end')).toEqual([
+      { type: 'tool-call-delta', index: 0, id: ToolCallId('call-1'), name: 'read', argumentsDelta: '{"path":"README.md"}' },
+      {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'tool-call', id: ToolCallId('call-1'), name: 'read', arguments: '{"path":"README.md"}' },
+      },
     ])
   })
 
