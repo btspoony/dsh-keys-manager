@@ -78,3 +78,32 @@ not pay that price for a protocol the host can already speak.
 - [ ] Fixture-only suites at all five layers; no live endpoint in any test.
 - [ ] `docs/known-limits.md` names the unofficial client, the no-refresh/expiry contract, the attribution deviation and the manual smoke check.
 - [ ] `.changes/unreleased/` fragment with **single-line** bullets (wrapped bullets are silently dropped by `prepare-release.mjs`).
+
+## Lessons from the Google family (issue #15 batch 5, iteration `iter-2026-Q4-omp-batch3`)
+
+Two routes (`google-gemini-cli`, `google-antigravity`) that share one provider file shipped as **one**
+artifact serving **two** route registrations, plus one Node loopback sign-in. Four rules earned there:
+
+1. **Keep released artifacts byte-identical with a per-entry shim, not a shared-shim edit.** Adding
+   `fetchWithRetry` / `readSseJson` to the shared `pi-utils.ts` changed the released cursor/devin
+   bytes. The fix is a per-entry composition module (`scripts/omp-shim/pi-utils-google.ts`) that
+   re-exports the base surface plus the new symbols, recorded in the manifest as that entry's
+   `piUtilsShim` and re-derived by the drift test. Marking the real modules `sideEffects: false` does
+   **not** shrink the graph — measure before trusting a bundler trick.
+2. **A provider that imports `providers/register-builtins` inherits the whole catalog.** `factory-droid`
+   measured 327 modules / 16 991 893 B because the registry pulls every builtin provider and
+   `getBundledModel()`, retaining the 12.46 MB `models.json`. The stop rule (>2× cursor) fired and the
+   route was deferred with its measurement (`I-000253`). The two remedies for its own batch: ship the
+   full graph with a calibrated ceiling, or a build-time redirect to a lean registry module + lean
+   `getBundledModel` (≈4–5 MB) — the latter is a new build-substitution category and needs its own
+   design decision.
+3. **A shared callback parser must stay provider-agnostic.** Hoisting Devin's paste parser into the
+   Google listener made a Google-only policy (`error=` query) run on Devin's shipped path. Keep the
+   parser to `code`/`state` and malformed-URL handling; put provider-specific rejection
+   (`refusedSignIn`) at each caller. A loopback listener must also wrap its request-target parsing:
+   one malformed raw target otherwise throws synchronously and can exit the host.
+4. **Structured credentials and identity-preserving refresh.** When omp's transport parses a JSON
+   `apiKey` (Google's `{token, projectId, refreshToken, expiresAt}`), the plugin resolves that envelope
+   and refreshes inside `modifyRecord`, carrying identity fields (`projectId`) across the refresh that
+   the token endpoint never returns. Attribution stays a *fill-absent* `fetch` wrapper: the transport
+   merges caller headers last, so passing headers destroys the vendor identity.
