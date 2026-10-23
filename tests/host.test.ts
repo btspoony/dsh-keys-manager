@@ -780,6 +780,61 @@ test('a profile saved while the catalog call is outstanding is never overwritten
   }
 })
 
+// The same window with a profile that carries no models: the user owns the
+// node, so only the missing field is filled and adoption says nothing.
+test('a model-less profile saved during the catalog call gets models filled', async () => {
+  const h = await harness()
+  try {
+    let releaseCatalog: ((models: unknown[]) => void) | undefined
+    h.llm.discoverModels = () => new Promise(resolve => { releaseCatalog = resolve as (models: unknown[]) => void })
+    const adopting = h.service.adoptProvider('xai')
+    await eventually(() => assert.equal(typeof releaseCatalog, 'function'))
+    h.settings.valueOf('llm-pi-ai').providers.xai = { apiKeyEnv: 'XAI_USER_REF' }
+    releaseCatalog!([{ id: 'discovered-chat', name: 'Discovered Chat' }])
+    const state = await adopting
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.xai, {
+      apiKeyEnv: 'XAI_USER_REF',
+      models: [{ id: 'discovered-chat', name: 'Discovered Chat' }],
+    })
+    assert.doesNotMatch(state.warnings.join('\n'), /adopted without a Models profile/)
+  } finally {
+    await h.close()
+  }
+})
+
+// Rollback owns only the node it wrote. A user save landing between the
+// materialization and the refused binding must survive the rollback.
+test('a refused binding never deletes a profile saved after materialization', async () => {
+  const h = await harness()
+  try {
+    h.credentials.refs.set('XAI_API_KEY', 'sk-xai-user')
+    const originalMutate = h.settings.mutate.bind(h.settings)
+    h.settings.mutate = async (ns: string, ops: any[], revision?: number) => {
+      if (ops.some((op: any) => op.path[op.path.length - 1] === 'apiKeyEnv')) throw new Error('revision conflict')
+      return originalMutate(ns, ops, revision)
+    }
+    // Hold the projection read so the user-save window is deterministic.
+    h.credentials.raw.readRecordDelayMs = 120
+    const adopting = h.service.adoptProvider('xai')
+    await eventually(() => assert.notEqual(h.settings.valueOf('llm-pi-ai').providers.xai, undefined))
+    h.settings.valueOf('llm-pi-ai').providers.xai = {
+      apiKeyEnv: 'XAI_USER_REF',
+      baseURL: 'https://user.example/v1',
+      models: [{ id: 'user-model' }],
+    }
+    await assert.rejects(adopting, /refused the credential binding write/)
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers.xai, {
+      apiKeyEnv: 'XAI_USER_REF',
+      baseURL: 'https://user.example/v1',
+      models: [{ id: 'user-model' }],
+    })
+    assert.equal(h.store.provider('xai'), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+
 test('a catalog the seam cannot describe leaves the adoption without a profile', async () => {
   const h = await harness()
   try {
@@ -880,12 +935,17 @@ test('a row test fills models into a carried-over key profile and keeps its bind
     await h.service.adoptProvider('xai')
     const record = h.store.provider('xai')!
     h.settings.valueOf('llm-pi-ai').providers.xai = { apiKeyEnv: record.brokerRef }
-    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
-      yield { type: 'finish', reason: { kind: 'max-tokens' } }
-    } as any)
+    let calls = 0
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      } as any)
+    }
     const result = await h.service.testKey('xai', record.keys[0].id)
-    // The point is the fill, not the send: a request may now reach the route
-    // instead of being refused before it left.
+    // The fill has to reach the wire: no refusal before a request leaves,
+    // whatever that request itself reports.
+    assert.ok(calls > 0, 'the test was refused before sending')
     assert.doesNotMatch(String(result.error ?? ''), /No model is configured/)
     const profile = h.settings.valueOf('llm-pi-ai').providers.xai
     assert.equal(profile.models.length, 2)
@@ -907,10 +967,15 @@ test('a row test rebuilds a missing profile and binds a pre-fix key route', asyn
     record.createdProfile = false
     record.hadProfile = false
     record.models = []
-    h.llm.stream = (options: Record<string, any>) => h.service.streamListener(options as any, async function* () {
-      yield { type: 'finish', reason: { kind: 'max-tokens' } }
-    } as any)
+    let calls = 0
+    h.llm.stream = (options: Record<string, any>) => {
+      calls += 1
+      return h.service.streamListener(options as any, async function* () {
+        yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      } as any)
+    }
     const result = await h.service.testKey('xai', record.keys[0].id)
+    assert.ok(calls > 0, 'the test was refused before sending')
     assert.doesNotMatch(String(result.error ?? ''), /No model is configured|not served by its API-key pool/)
     const profile = h.settings.valueOf('llm-pi-ai').providers.xai
     assert.equal(profile.models.length, 2)

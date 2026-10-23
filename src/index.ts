@@ -463,6 +463,16 @@ function asProfile(value: unknown): ProfileShape | undefined {
   return value !== null && typeof value === 'object' ? (value as ProfileShape) : undefined
 }
 
+/**
+ * Whether a live profile still holds exactly the node a materialized adoption
+ * wrote: `models` and nothing else. Any additional field, or a different model
+ * list, means a user took the node over.
+ */
+function isMaterializedProfile(profile: ProfileShape, models: readonly ModelRecord[]): boolean {
+  const keys = Object.keys(profile)
+  return keys.length === 1 && keys[0] === 'models' && JSON.stringify(profile.models) === JSON.stringify(models)
+}
+
 /** Stable broker credential reference for one provider route. */
 function brokerRefFor(provider: string): string {
   const stem = provider.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 34)
@@ -7298,6 +7308,13 @@ export class KeysManagerService {
           this.pushWarning(`The ${provider} route was adopted without a Models profile; configure a model for it before testing the connection.`)
         }
       }
+      // A user profile that appeared after the snapshot above is the record's
+      // source of truth. The node this adoption created is not: it carries no
+      // pre-adoption settings, and `originalApiKeyEnv` stays what adoption found
+      // so the takeover never replaces a reference the user saved meanwhile.
+      const adoptedProfile = profile !== undefined || materialized?.created === true
+        ? profile
+        : this.profileAt(entry.settingsNs, entry.settingsPath)
       const record: ProviderRecord = {
         provider,
         displayName: extra?.name ?? entry.displayName ?? provider,
@@ -7308,11 +7325,11 @@ export class KeysManagerService {
         brokerRef,
         originalApiKeyEnv,
         createdProfile: materialized?.created === true,
-        hadProfile: profile !== undefined,
+        hadProfile: adoptedProfile !== undefined,
         extraId: extra?.id ?? null,
-        api: (profile?.api as string | undefined) ?? extra?.api ?? null,
-        baseURL: (profile?.baseURL as string | undefined) ?? extra?.baseURL ?? entry.defaultBaseURL ?? null,
-        models: materialized?.models ?? (profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? []),
+        api: (adoptedProfile?.api as string | undefined) ?? extra?.api ?? null,
+        baseURL: (adoptedProfile?.baseURL as string | undefined) ?? extra?.baseURL ?? entry.defaultBaseURL ?? null,
+        models: materialized?.models ?? (adoptedProfile !== undefined ? normalizeModels(adoptedProfile.models) : extra?.models ?? []),
         adoptedAt: Date.now(),
         cursor: 0,
         keys: imported !== undefined ? [imported] : [],
@@ -7436,8 +7453,9 @@ export class KeysManagerService {
    * round 2): drop the managed record and its broker entry, delete the
    * plugin-scope copy this call created, and put back a pre-adoption
    * reference that landed despite the refusal. The source credential is never
-   * touched, and a profile this adoption materialized is removed whole — it
-   * had no pre-adoption content to keep.
+   * touched, and a profile this adoption materialized is removed whole only
+   * while it still holds exactly that materialized node: a user save landing
+   * between the write and the rollback owns the profile, so it keeps it.
    */
   private async rollbackAdoption(record: ProviderRecord, imported: KeyRecord | undefined): Promise<void> {
     const provider = record.provider
@@ -7451,13 +7469,18 @@ export class KeysManagerService {
       }
     }
     if (record.createdProfile) {
-      try {
-        await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: record.settingsPath }])
-      } catch (error) {
-        this.warn(`adoption rollback could not remove the ${provider} profile it created: ${error instanceof Error ? error.message : String(error)}`)
+      const live = this.profileAt(record.settingsNs, record.settingsPath)
+      if (live !== undefined && isMaterializedProfile(live, record.models)) {
+        try {
+          await this.mutateSettings(record.settingsNs, [{ op: 'unset', path: record.settingsPath }])
+        } catch (error) {
+          this.warn(`adoption rollback could not remove the ${provider} profile it created: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        this.store.touch()
+        return
       }
-      this.store.touch()
-      return
+      // A user took the node over while the adoption was settling, so it falls
+      // through to the apiKeyEnv-only compensation below: never delete theirs.
     }
     const descriptor = this.describeSettings()
     const namespace = this.namespace(descriptor, record.settingsNs)
