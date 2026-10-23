@@ -197,23 +197,31 @@ export async function startCallbackListener(options: CallbackListenerOptions): P
       respond(response, 405, 'Method not allowed', 'The sign-in callback is a GET request.')
       return
     }
+    // A callback this attempt did not mint is answered and dropped, never fatal:
+    // any page (or local process) can GET this port during the minutes-long
+    // window, and letting one bogus request kill the sign-in is a denial of
+    // service on the flow itself. Only a state-matching code settles the attempt;
+    // the flow's own deadline and abort remain its ways to fail.
     const error = url.searchParams.get('error')?.trim()
     if (error !== undefined && error !== '') {
-      const description = url.searchParams.get('error_description')?.trim()
-      respond(response, 400, 'Sign-in refused', 'Google refused the sign-in. Return to the terminal.')
-      defer(() => stop(new GoogleAuthError(`Google refused the sign-in: ${error}${description ? ` (${description})` : ''}`)))
+      // A real refusal is reported by the human through the paste path, which is
+      // the only channel a local request cannot forge.
+      respond(
+        response,
+        400,
+        'Sign-in refused',
+        'Google refused this attempt. If that was you, paste the full address the browser landed on back in the terminal.',
+      )
       return
     }
     const state = url.searchParams.get('state')?.trim()
     if (state !== expectedState) {
       respond(response, 400, 'Wrong state', 'This callback does not belong to the running sign-in attempt.')
-      defer(() => stop(new GoogleAuthError('the callback state does not match this sign-in attempt')))
       return
     }
     const code = url.searchParams.get('code')?.trim()
     if (code === undefined || code === '') {
       respond(response, 400, 'Missing code', 'Google returned no authorization code.')
-      defer(() => stop(new GoogleAuthError('the callback names no authorization code')))
       return
     }
     respond(response, 200, 'Signed in', 'You can close this window and return to the terminal.')

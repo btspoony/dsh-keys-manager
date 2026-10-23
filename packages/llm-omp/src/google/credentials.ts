@@ -142,9 +142,6 @@ export function createGoogleAccess(
           ...(options.now === undefined ? {} : { now: options.now }),
           ...(signal === undefined ? {} : { signal }),
         })
-        // A turn cancelled while the exchange ran must not commit a token it will
-        // never use; the refresh already happened, so the next turn refreshes again.
-        throwIfAborted(signal)
         return {
           kind: 'grant',
           payload: {
@@ -161,6 +158,10 @@ export function createGoogleAccess(
       }),
     )
 
+    // The refreshed record is committed before the cancellation is reported: a
+    // rotated refresh token must not be discarded with the turn that rotated it,
+    // or the next turn would have to start over with a new sign-in.
+    throwIfAborted(signal)
     const resolved = readGoogleGrant(stored)
     if (resolved === undefined) {
       throw new LlmError(

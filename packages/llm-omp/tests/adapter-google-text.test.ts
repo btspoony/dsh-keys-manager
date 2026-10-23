@@ -39,7 +39,6 @@ const ROUTES = [
     providerState: false,
     // A budget-mode row: the wire takes a token budget and the cap grows by it.
     thinking: { enabled: true, budgetTokens: 4096 },
-    growsCap: true,
   },
   {
     id: GOOGLE_ANTIGRAVITY_ROUTE,
@@ -52,7 +51,6 @@ const ROUTES = [
     adapter: OmpGoogleAntigravityAdapter,
     providerState: true,
     thinking: { enabled: true, budgetTokens: 4096 },
-    growsCap: true,
   },
 ] as const
 
@@ -136,9 +134,10 @@ describe.each(ROUTES)('OmpGoogleAdapter on $label', route => {
     expect(options.signal).toBe(controller.signal)
     expect(options.sessionId).toBe('session-1')
     expect(options.temperature).toBe(0.2)
-    // A budget-mode row grows the caller's cap by the budget; a level-mode row
-    // forwards the cap untouched, as omp does.
-    expect(options.maxTokens).toBe(route.growsCap ? 512 + 4096 : 512)
+    // Both pinned rows are budget-mode: the caller's cap grows by the budget, as
+    // omp does. A level-mode row would forward the cap untouched (see
+    // `projection-google.test.ts`).
+    expect(options.maxTokens).toBe(512 + 4096)
     const routedRow = rowOf(route.models, route.model)
     expect(options.requestModelId).toBe(routedRow.thinking?.effortRouting?.low ?? route.model)
     expect(options.thinking).toEqual(route.thinking)
