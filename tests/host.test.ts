@@ -17724,7 +17724,7 @@ test('a transport route without a shipped catalog resolves to the all-models sta
 test('a registered transport route with no shipped catalog reports why the list is empty', async () => {
   // Finding 9: the absent-accessor fallback answered `[]`, which the picker
   // renders as the legitimate all-models state. A stale transport build now
-  // surfaces once instead of looking like a valid empty catalog.
+  // explains itself on every read, while its state warning surfaces once.
   const ghost = { key: 'llm-omp-transports/ghost', label: 'Ghost', methods: [{ id: 'oauth', label: 'Sign in' }] }
   const h = await harness([...piAiFlows(), TRANSPORT_FLOW, ghost])
   try {

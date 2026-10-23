@@ -1026,8 +1026,9 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
   }
 
   const rows = view === null ? [] : modelPickerRows(view)
-  // One predicate for the empty grid: it explains the list and disables Save,
-  // which would otherwise end in the host's un-localized "no model list".
+  // One predicate disables Save on an empty grid, which would otherwise end in
+  // the host's un-localized "no model list"; the hint on top of it also needs
+  // the host's warning.
   const emptyCatalog = view !== null && view.catalog.length === 0
   const warning = view === null ? undefined : view.warning
   const errorLine = error === null ? null : h('div', { className: 'km-inline-error', role: 'alert' }, error)
