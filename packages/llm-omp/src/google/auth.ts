@@ -439,15 +439,28 @@ async function onboardAntigravityUser(
 /** Refuse an account whose free tier is explicitly unavailable. */
 function assertAntigravityFreeTierEligible(status: JsonBody): void {
   const allowed = status.allowedTiers
-  if (Array.isArray(allowed) && allowed.some(tier => tierIdOf(tier) === FREE_TIER_ID)) return
+  const hasAllowList = Array.isArray(allowed)
+  if (hasAllowList && allowed.some(tier => tierIdOf(tier) === FREE_TIER_ID)) return
   const ineligible = status.ineligibleTiers
-  if (!Array.isArray(ineligible)) return
-  const tier = ineligible.find(candidate => tierIdOf(candidate, 'tierId') === FREE_TIER_ID)
-  if (typeof tier !== 'object' || tier === null) return
-  const reason = stringField(tier as JsonBody, 'reasonMessage')
-  if (reason === undefined) return
-  const validationUrl = stringField(tier as JsonBody, 'validationUrl')
-  throw new GoogleAuthError(`${reason}${validationUrl === undefined ? '' : `\n${validationUrl}`}`)
+  if (Array.isArray(ineligible)) {
+    const tier = ineligible.find(candidate => tierIdOf(candidate, 'tierId') === FREE_TIER_ID)
+    if (typeof tier === 'object' && tier !== null) {
+      const reason = stringField(tier as JsonBody, 'reasonMessage')
+      if (reason !== undefined) {
+        const validationUrl = stringField(tier as JsonBody, 'validationUrl')
+        throw new GoogleAuthError(`${reason}${validationUrl === undefined ? '' : `\n${validationUrl}`}`)
+      }
+    }
+  }
+  // No allow-list at all is an older answer: let onboarding decide. A list that
+  // exists but omits the free tier will reject `onboardUser`, so say why here
+  // rather than spending a provisioning call on it.
+  if (hasAllowList) {
+    const tiers = allowed.map(tier => tierIdOf(tier)).filter(id => id !== undefined)
+    throw new GoogleAuthError(
+      `the account's allowed tiers do not include ${FREE_TIER_ID}${tiers.length === 0 ? '' : ` (allowed: ${tiers.join(', ')})`}`,
+    )
+  }
 }
 
 /** The id of one tier object in either shape the scripts read. */
@@ -573,7 +586,15 @@ export async function loginGoogle(
     const refusal = refusedSignIn(text)
     if (refusal !== undefined) throw new GoogleAuthError(`Google refused the sign-in: ${refusal}`)
     const callback = parseCallbackUrl(text)
-    if (callback.state !== undefined && callback.state !== state) {
+    // The listener only settles a state-matching code, so the paste half must not
+    // be the weaker door: without the state, a pasted code is exactly what an
+    // attacker-chosen callback would look like and is refused.
+    if (callback.state === undefined) {
+      throw new GoogleAuthError(
+        'the pasted callback carries no state; paste the full address the browser landed on (it contains state=…)',
+      )
+    }
+    if (callback.state !== state) {
       throw new GoogleAuthError('the pasted callback state does not match this sign-in attempt')
     }
     return callback
@@ -592,7 +613,7 @@ export async function loginGoogle(
     answering.abort()
     await listener.close()
   }
-  if (callback.state !== undefined && callback.state !== state) {
+  if (callback.state !== state) {
     throw new GoogleAuthError('the callback state does not match this sign-in attempt')
   }
 

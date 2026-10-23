@@ -94,10 +94,14 @@ records — not a second code path.
   Antigravity, as the pinned rules declare. The browser redirect completes the
   flow automatically; if the port is taken the listener falls back to an
   ephemeral port and the authorize page names the port it actually bound. The
-  address the browser landed on (or the bare code) can also be pasted. The
-  listener closes on the callback, on an aborted attempt and **on a timeout**
-  (five minutes, `GoogleFlowOptions.waitMs` for tests): an expired wait fails
-  with `AUTH_FAILED` and commits nothing.
+  full address the browser landed on (or `code#state`) can also be pasted; a
+  pasted code without the state is refused, because that is exactly the shape a
+  forged callback would have. Anything the listener does not recognise — a
+  foreign `state`, an `error=`, a missing code — is answered `400` and dropped
+  without ending the attempt, so a stray request cannot kill the sign-in. The
+  listener closes on the matching callback, on an aborted attempt and **on a
+  timeout** (five minutes, `GoogleFlowOptions.waitMs` for tests): an expired wait
+  fails with `AUTH_FAILED` and commits nothing.
 - **Refresh** — yes. The resolver refreshes once, under the credential store's
   per-key lock, when `expires - 60 s <= now`, keeps the `projectId` and an
   un-rotated `refresh_token`, and reports a dead sign-in as `REAUTH_REQUIRED`.

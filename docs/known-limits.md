@@ -132,7 +132,9 @@ Current design boundaries of the Keys Manager plugin:
   `AUTH_FAILED`; there is no project-less fallback.
 - `google-antigravity` reads a version manifest from Google once per process
   (5 s budget, pinned fallback when the read fails or times out), so a blocked
-  network delays but does not break its first turn.
+  network delays but does not break its first turn. A failed read is not retried
+  for ten minutes, so a flaky network costs one 5 s delay per window rather than
+  one per turn; `PI_AI_ANTIGRAVITY_VERSION` skips the lookup entirely.
 - The Google clients are unofficial and present vendor-internal OAuth
   identities, like the shipped routes. A `401`/`403` on the first live turn with
   a token that looks valid is a stop to report to the maintainers — the client

@@ -117,27 +117,19 @@ describe('loopback listener', () => {
     })
   })
 
-  it('refuses a state that this attempt did not mint', async () => {
+  it('answers 400 to a state this attempt did not mint and keeps listening', async () => {
     await withListener(async listener => {
-      const response = await fetch(`${listener.redirectUri}?code=abc&state=someone-else`)
-      expect(response.status).toBe(400)
-      await expect(listener.callback).rejects.toThrowError(/state does not match/)
-    })
-  })
+      // Any page or local process can reach this port during the sign-in window;
+      // one bogus GET must not be able to kill the attempt.
+      const bogus = await fetch(`${listener.redirectUri}?code=attacker&state=someone-else`)
+      expect(bogus.status).toBe(400)
+      // The same holds for an error callback and a code-less one.
+      expect((await fetch(`${listener.redirectUri}?error=access_denied&state=state-1`)).status).toBe(400)
+      expect((await fetch(`${listener.redirectUri}?state=state-1`)).status).toBe(400)
 
-  it('refuses an error callback and a callback without a code', async () => {
-    await withListener(async listener => {
-      const refused = await fetch(`${listener.redirectUri}?error=access_denied&state=state-1`)
-      expect(refused.status).toBe(400)
-      await expect(listener.callback).rejects.toThrowError(/refused the sign-in: access_denied/)
-    }, { expectedState: 'state-1' })
-  })
-
-  it('refuses a code-less callback', async () => {
-    await withListener(async listener => {
-      const response = await fetch(`${listener.redirectUri}?state=state-1`)
-      expect(response.status).toBe(400)
-      await expect(listener.callback).rejects.toThrowError(/names no authorization code/)
+      const response = await fetch(`${listener.redirectUri}?code=abc&state=state-1`)
+      expect(response.status).toBe(200)
+      await expect(listener.callback).resolves.toEqual({ code: 'abc', state: 'state-1' })
     })
   })
 

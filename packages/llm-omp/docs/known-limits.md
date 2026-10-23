@@ -64,7 +64,11 @@ repository root docs.
 - **Sign-in is a real loopback listener** on `127.0.0.1` (`:8085/oauth2callback`
   and `:51121/oauth-callback`). If the port is taken the listener binds an
   ephemeral one and the authorize page carries that port; the pasted
-  address/code is the fallback. The whole browser wait is **bounded at five
+  address is the fallback, and a pasted callback must carry this attempt's
+  `state` (`code#state` is enough) — a bare code is refused. A callback the
+  listener did not mint answers `400` and is dropped without ending the attempt;
+  only a state-matching code, the deadline or the abort settles it, so one stray
+  request cannot cancel a sign-in. The whole browser wait is **bounded at five
   minutes** (`GoogleFlowOptions.waitMs` in tests): expiry closes the socket,
   fails with `AUTH_FAILED` and commits nothing. An aborted attempt reads as a
   cancellation instead.

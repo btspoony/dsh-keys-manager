@@ -36,6 +36,16 @@ import type { CredentialRecordsLike, StoredCredentialRecord } from '../src/curso
 import { googleAntigravityAuthorizationFlow, googleGeminiCliAuthorizationFlow } from '../src/index.js'
 import type { AuthorizationPrompt } from '../src/index.js'
 
+/** Wait for a value a concurrent flow fills in, without a fixed sleep. */
+async function waitFor(read: () => string, timeoutMs = 2_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (read() === '') {
+    if (Date.now() > deadline) throw new Error('timed out waiting for the authorize URL')
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  return read()
+}
+
 const NOW = 1_700_000_000_000
 const SKEW_MS = 5 * 60 * 1000
 
@@ -321,6 +331,17 @@ describe('google project discovery', () => {
       discoverGoogleProject(GOOGLE_ANTIGRAVITY_FACTS, 'a', { fetch: stub.fetch }),
     ).rejects.toThrowError(/not eligible in this country/)
   })
+
+  it('names the allowed tiers when the free tier is absent from the allow-list', async () => {
+    // No ineligible reason is spelled out, but onboarding a tier the account may
+    // not use is a wasted provisioning call; the error says what is on offer.
+    const stub = stubFetch(() => json({ allowedTiers: [{ id: 'legacy-tier' }, { id: 'standard-tier' }] }))
+    await expect(
+      discoverGoogleProject(GOOGLE_ANTIGRAVITY_FACTS, 'a', { fetch: stub.fetch }),
+    ).rejects.toThrowError(/allowed tiers do not include free-tier \(allowed: legacy-tier, standard-tier\)/)
+    // Nothing was provisioned.
+    expect(stub.calls.every(call => !call.url.includes('onboardUser'))).toBe(true)
+  })
 })
 
 describe('google login', () => {
@@ -359,9 +380,10 @@ describe('google login', () => {
       },
     })
 
-    // The authorize page advertises the port the listener actually got.
-    await new Promise(resolve => setTimeout(resolve, 10))
-    const redirectUri = new URL(authorizeUrl).searchParams.get('redirect_uri')
+    // The authorize page advertises the port the listener actually got; poll for
+    // it rather than sleeping a fixed amount and racing a slow bind.
+    const advertised = await waitFor(() => authorizeUrl)
+    const redirectUri = new URL(advertised).searchParams.get('redirect_uri')
     expect(redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/oauth2callback$/)
 
     await fetch(`${redirectUri}?code=code-1&state=state-1`)
@@ -404,6 +426,16 @@ describe('google login', () => {
         prompt: async () => 'http://127.0.0.1:8085/oauth2callback?error=access_denied&code=c&state=state-1',
       }),
     ).rejects.toThrowError(/Google refused the sign-in: access_denied/)
+  })
+
+  it('refuses a pasted bare code, which carries no state', async () => {
+    await expect(
+      loginGoogle(GOOGLE_GEMINI_CLI_FACTS, {
+        state: 'state-1',
+        port: 0,
+        prompt: async () => 'code-without-state',
+      }),
+    ).rejects.toThrowError(/carries no state/)
   })
 
   it('refuses a pasted callback that carries another attempt’s state', async () => {
@@ -530,6 +562,34 @@ describe('google credential resolver', () => {
     ) as Record<string, unknown>
     expect(envelope.token).toBe('stored-access')
     expect(stub.calls).toHaveLength(0)
+  })
+
+  it('commits a rotated refresh token even when the turn is cancelled mid-refresh', async () => {
+    const controller = new AbortController()
+    let record: StoredCredentialRecord | undefined = grantRecord({ ...fresh(), expires: NOW - 1 })
+    const store: CredentialRecordsLike = {
+      readRecord: async () => record,
+      modifyRecord: async (_key, mutate) => {
+        record = (await mutate(record)) ?? record
+        return record
+      },
+    }
+    const stub = stubFetch(() => {
+      // The caller goes away while the exchange is in flight.
+      controller.abort()
+      return json({ access_token: 'new', refresh_token: 'rotated', expires_in: 3600 })
+    })
+
+    await expect(
+      createGoogleAccess(store, GOOGLE_GEMINI_CLI_FACTS, { now: () => NOW, fetch: stub.fetch })(controller.signal),
+    ).rejects.toThrow()
+
+    // Losing the rotated token with the turn would force a new sign-in.
+    expect(record?.kind === 'grant' ? record.payload : undefined).toMatchObject({
+      access: 'new',
+      refresh: 'rotated',
+      projectId: 'project-1',
+    })
   })
 
   it('reports a grant without a refresh token as a dead sign-in', async () => {
