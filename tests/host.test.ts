@@ -17678,6 +17678,28 @@ test('a transport route without a shipped catalog resolves to the all-models sta
   }
 })
 
+test('a registered transport route with no shipped catalog reports why the list is empty', async () => {
+  // Finding 9: the absent-accessor fallback answered `[]`, which the picker
+  // renders as the legitimate all-models state. A stale transport build now
+  // surfaces once instead of looking like a valid empty catalog.
+  const ghost = { key: 'llm-omp-transports/ghost', label: 'Ghost', methods: [{ id: 'oauth', label: 'Sign in' }] }
+  const h = await harness([...piAiFlows(), TRANSPORT_FLOW, ghost])
+  try {
+    h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: {} }, revision: 1 })
+    assert.deepEqual((await h.service.transportModels('ghost')).catalog, [])
+    // A second read re-renders the picker; the warning is reported once.
+    assert.deepEqual((await h.service.transportModels('ghost')).catalog, [])
+    const reported = h.service.getState().warnings.filter(message => /ships no catalog/.test(message))
+    assert.equal(reported.length, 1)
+    assert.match(reported[0]!, /"ghost"/)
+    // A route with a real catalog is not reported.
+    assert.ok((await h.service.transportModels('cursor')).catalog.length > 0)
+    assert.deepEqual(h.service.getState().warnings.filter(message => /ships no catalog/.test(message)), [])
+  } finally {
+    await h.close()
+  }
+})
+
 test('reads and saves the cursor transport model allow-list through settings', async () => {
   const h = await transportHarness()
   try {

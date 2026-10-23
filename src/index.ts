@@ -722,14 +722,25 @@ const DEVIN_ROUTE = 'devin'
  * the installed transport build may predate its export. The function is
  * therefore probed on the module namespace instead of imported by name — an
  * absent export yields an empty catalog instead of breaking this plugin's
- * import graph. An older build that still registers the route then has no list
- * to narrow, so the picker offers the all-models state.
+ * import graph. An empty list is indistinguishable from the legitimate
+ * all-models state, so `onMissing` reports it instead of the picker rendering
+ * a silent `[]`.
  */
-function transportCatalogOf(route: string): TransportCatalogModel[] {
+function transportCatalogOf(
+  route: string,
+  onMissing?: (route: string) => void,
+): TransportCatalogModel[] {
   if (route === CURSOR_ROUTE) return cursorCatalogModels()
-  if (route !== DEVIN_ROUTE) return []
+  if (route !== DEVIN_ROUTE) {
+    onMissing?.(route)
+    return []
+  }
   const probe = (transportModule as Record<string, unknown>).devinCatalogModels
-  return typeof probe === 'function' ? (probe as () => TransportCatalogModel[])() : []
+  if (typeof probe !== 'function') {
+    onMissing?.(route)
+    return []
+  }
+  return (probe as () => TransportCatalogModel[])()
 }
 
 /** Env names that are a single API-key credential, not an OAuth/federation token. */
@@ -1095,6 +1106,8 @@ export class KeysManagerService {
   private attemptSequence = 0
   private readonly switches = new Map<string, { count: number; at: number }>()
   private warnings: string[] = []
+  /** Transport routes already reported as having no shipped catalog. */
+  private readonly catalogReports = new Set<string>()
   settings: SettingsLike | undefined
   /**
    * Test/embedding seam for the in-process sign-in drivers (the same pattern
@@ -2687,6 +2700,21 @@ export class KeysManagerService {
   }
 
   /**
+   * Report once per route that a registered transport flow has no catalog.
+   *
+   * An empty list is also the legitimate all-models state, so the only honest
+   * way to tell a stale transport build apart is to say so: otherwise the
+   * picker renders `[]` until a save fails.
+   */
+  private reportMissingCatalog(route: string): void {
+    if (this.catalogReports.has(route)) return
+    this.catalogReports.add(route)
+    this.pushWarning(
+      `The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`,
+    )
+  }
+
+  /**
    * Remote: read one transport route's catalog and configured allow-list.
    *
    * @remarks
@@ -2698,7 +2726,7 @@ export class KeysManagerService {
   async transportModels(route: string): Promise<TransportModelsView> {
     this.assertTransportRoute(route)
     const configured = this.transportModelIds(route)
-    const catalog = transportCatalogOf(route)
+    const catalog = transportCatalogOf(route, missing => this.reportMissingCatalog(missing))
     // A settings profile can outlive a catalog id; the picker renders the
     // catalog, so an unknown id would count toward {n} of {total} while
     // matching no checkbox and failing every save.
@@ -2717,7 +2745,7 @@ export class KeysManagerService {
     if (!Array.isArray(models) || models.some(id => typeof id !== 'string')) {
       throw new TypeError('models must be a list of model ids')
     }
-    const catalog = transportCatalogOf(route)
+    const catalog = transportCatalogOf(route, missing => this.reportMissingCatalog(missing))
     if (catalog.length === 0) throw new Error(`Provider "${route}" offers no model list`)
     const known = new Map(catalog.map(row => [row.id, row.name]))
     const selected = [...new Set(models)]
