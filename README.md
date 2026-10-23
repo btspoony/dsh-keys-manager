@@ -24,7 +24,9 @@ manager.
 - OAuth account sign-in for seven pi-ai-backed providers, stored beside
   the API keys.
 - A companion transport component for providers the vendored pi-ai cannot
-  speak — Cursor (`cursor`) and Devin (`devin`) — installed with the plugin.
+  speak — four routes: Cursor (`cursor`), Devin (`devin`), Google Gemini CLI
+  (`google-gemini-cli`) and Google Antigravity (`google-antigravity`) —
+  installed with the plugin.
 
 ### Extra providers
 
@@ -101,7 +103,8 @@ Installing `dsh-keys-manager` installs two bundle components. The published
 package depends on `dsh-llm-omp-transports`, so one install resolves both npm
 packages, and the plugin page lists both `dsh-keys-manager` and
 `llm-omp-transports`. Enable both: the manager owns credentials and routing,
-the transport component owns the Cursor and Devin wire protocols.
+the transport component owns the wire protocols of its four routes (Cursor,
+Devin, and the two Google routes).
 
 ### Install — local checkout
 
@@ -195,6 +198,13 @@ pi-ai key pool and take part in sticky selection, round-robin, retry failover
 and cooldowns. The `llm-omp-transports` surface described below is the other
 thing entirely: one grant per route, each with its own section.
 
+**`muse-code` needs no transport.** It is already served by the vendored pi-ai
+`meta` route (`openai-responses` against `https://api.meta.ai/v1`, catalog key
+`meta`), so it is managed through the ordinary pi-ai provider path. The check
+that the catalog entry and the provider agree on that route and credential
+shape was static; no live request was made. The first live call is a manual
+smoke check, as described in [Known limits](docs/known-limits.md).
+
 ### Cursor transport
 
 Cursor is served by the companion `dsh-llm-omp-transports` component on its
@@ -235,6 +245,33 @@ component, on its own `devin` route with the same one-grant record at
   real endpoints and protocol behavior are unverified. Read the
   [transports package known limits](packages/llm-omp/docs/known-limits.md)
   before relying on it.
+
+### Google transports
+
+Two Google routes are served by the same `dsh-llm-omp-transports` component.
+They share one generated `lib/omp/google.mjs` artifact and the provider inside
+it dispatches on the model, but each route is separate everywhere else:
+`google-gemini-cli` and `google-antigravity`, each with its own one-grant
+record at `llm-omp-transports/<route>`, its own account row and its own model
+catalog.
+
+- Sign in from the **Transport accounts** section. This login finishes in the
+  plugin itself: a `node:http` listener on `127.0.0.1` receives the browser
+  redirect (`8085` `/oauth2callback` for `google-gemini-cli`, `51121`
+  `/oauth-callback` for `google-antigravity`, with a free-port fallback when
+  the default is taken). The same dialog always offers the paste path — the
+  full address the browser landed on, or `code#state` — for a browser that
+  cannot reach the listener.
+- The grant is `{access, refresh, expires, projectId, email?}` and refreshes
+  on the credential seam, so an expired token is renewed without re-login
+  while the refresh token stays valid. Sign-in also resolves the Google Cloud
+  project the route bills and sends.
+- Models come from the pinned catalog at build time: seven rows for
+  `google-gemini-cli`, 22 for `google-antigravity`.
+- The clients are unofficial and present vendor-internal OAuth identities; the
+  first live turn on either route is a manual smoke check. Read the
+  [Known limits](docs/known-limits.md) for the listener, the antigravity
+  version read and the 401/403 posture before relying on them.
 
 ### Selection and failure policy
 
@@ -314,7 +351,7 @@ This repository is a pnpm workspace with two published packages:
 | Path | npm package | Role |
 |---|---|---|
 | root | `dsh-keys-manager` | Host plugin, Keys Manager Web client, bundle patch |
-| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor and Devin transport component |
+| `packages/llm-omp` | `dsh-llm-omp-transports` | Cursor, Devin and Google transport component |
 
 The root package declares the transports package as a dependency, so the
 published Keys Manager tarball pulls the transport in rather than vendoring
@@ -328,7 +365,7 @@ it. Both packages are released together and carry the same version; see
 | [Development](docs/development.md) | build and dev workflow, repository layout |
 | [Release](docs/release.md) | CI checks and the npm release flow |
 | [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
-| [Transports package](packages/llm-omp/README.md) | Cursor and Devin transports: support status, risks, build/test, release |
+| [Transports package](packages/llm-omp/README.md) | Transport routes: support status, risks, build/test, release |
 
 Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
 files in `docs/` — [开发](docs/development.zh-CN.md) ·
