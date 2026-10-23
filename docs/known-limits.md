@@ -44,10 +44,12 @@ Current design boundaries of the Keys Manager plugin:
 
 ## OAuth accounts (increment 1)
 
-- Account sign-in is limited to the seven providers whose OAuth flows the
-  `llm-pi-ai` host implements: Anthropic, GitHub Copilot, Kimi Coding,
-  OpenAI Codex, OpenRouter, Radius, and xAI. Extending coverage through an
-  oh-my-pi extension is tracked in
+- Account sign-in through the `llm-pi-ai` seam covers the seven providers
+  whose OAuth flows that host implements: Anthropic, GitHub Copilot, Kimi
+  Coding, OpenAI Codex, OpenRouter, Radius, and xAI. Two more routes sign in
+  through this plugin's own bundled clients — Kilo and Z.AI Coding Plan; see
+  [In-process sign-in](#in-process-sign-in-kilo-zai-coding-plan) below.
+  Extending coverage beyond these routes is tracked in
   [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15).
 - Grant refresh failure is fail-loud: the account cools down. A
   key-capable route falls back to the provider's key pool; an OAuth-only
@@ -90,3 +92,19 @@ Current design boundaries of the Keys Manager plugin:
 - The minted credential is one more row in the provider's pool: there is no
   per-account rotation or ranking, exactly as with the seven pi-ai OAuth
   accounts above.
+
+## Transport routes (Cursor, Devin)
+
+- Each transport route (`cursor`, `devin`) keeps exactly one grant at
+  `llm-omp-transports/<route>`: there is no key pool behind it and no
+  per-account rotation to configure.
+- A stored grant is `active` while it carries a usable `access` token and
+  either no `expires` or one still in the future. A grant with no `expires` is
+  a static bearer — the Devin flow mints exactly that — so it stays `active`
+  with no expiry line. An `expires` that is present but unreadable is a corrupt
+  record, not a static bearer, and the route reports `needs-reauth`. A readable
+  expiry in the past stops the route until you sign in again.
+- Both clients are unofficial and their live endpoints are unverified. The
+  Cursor and Devin specifics (vendor identities, ToS risk, no image input, no
+  Devin refresh) are in
+  [the transports package known limits](../packages/llm-omp/docs/known-limits.md).

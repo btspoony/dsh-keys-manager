@@ -14,7 +14,7 @@ Keys Manager 插件当前的设计边界：
 
 ## OAuth 账户（增量 1）
 
-- 账户登录仅限 `llm-pi-ai` host 实现了 OAuth 流的七家提供商：Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI。通过 oh-my-pi 扩展覆盖更多提供商在 [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15) 跟踪。
+- 经 `llm-pi-ai` seam 的账户登录覆盖该 host 实现了 OAuth 流的七家提供商：Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI。另有两条路由通过本插件自带的登录客户端登录——Kilo 与 Z.AI Coding Plan，见下方[内置登录](#内置登录kilo-zai-coding-plan)。在这些路由之外扩展覆盖在 [issue #15](https://github.com/btspoony/dsh-keys-manager/issues/15) 跟踪。
 - 授权刷新失败按 fail-loud 处理：账户进入冷却。支持 key 池的路由会回落到该提供商的 key 池；仅有 OAuth 的路由没有 API-key 池，将停止服务，直到重新登录账户。重新认证是手动的——从账户菜单重新登录。
 - 每个提供商同时只保留一个活跃授权。
 - 条件删除是凭证 seam 不具备的能力：凭证库只提供 `deleteRecord(key)`，没有比较/版本守卫，因此降级或补偿 `llm-pi-ai/<provider>` 投影只能是"先比较、后删除"。原生授权若落在最后一次比较与删除排队入口之间的亚微任务窗口内，即使它已不属于被移除的账户，仍可能被删除。管理器用 seam 每 key 锁内的比较加删除前复读收窄了该窗口，并有回归测试精确固定这一残留行为。上游能力请求见 store issue I-000090（credential seam: compare-and-delete / versioned delete primitive）。
@@ -27,3 +27,9 @@ Keys Manager 插件当前的设计边界：
 - Z.AI Coding Plan 流程最终签发一把 API key（`<id>.<secret>`），不是登录授权。该 key 会以 `oh-my-pi` 为名出现在 Z.AI 控制台中；在控制台删除或轮换它会使对应行失效，之后像普通 key 一样进入冷却。同一流程不覆盖 `zai-coding-cn`（中国区端点），那是独立路由。
 - 这些登录只能从 Keys Manager 页面发起。DSH CLI 与 Models 页面都不会触发它们，也不会写入 `llm-pi-ai/<provider>` 授权记录。
 - 签发得到的凭据就是该提供商池中的又一行：没有按账户的轮换或排名，与上述七家 pi-ai OAuth 账户一致。
+
+## 传输路由（Cursor、Devin）
+
+- 每条传输路由（`cursor`、`devin`）在 `llm-omp-transports/<route>` 只保留一条授权：其后没有 key 池，也没有可按账户配置的轮换。
+- 只要授权带有可用的 `access` 令牌，且没有 `expires` 或 `expires` 仍在未来，状态就是 `active`。没有 `expires` 的授权是静态 bearer——Devin 流程签发的正是这种——因此保持 `active` 且不显示有效期。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。可读的有效期一旦过期，路由停止服务，直到重新登录。
+- 两个客户端都是非官方实现，真实端点均未验证。Cursor 与 Devin 的具体风险（厂商身份、ToS 风险、不转发图片、Devin 无刷新）见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
