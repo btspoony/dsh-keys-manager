@@ -2,6 +2,29 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.5] - 2026-10-23
+
+### Added
+
+- Sign in to Kilo and Z.AI (GLM Coding Plan) from Keys Manager: Kilo polls a device-code page, Z.AI opens a browser URL and accepts the pasted redirect URL or code.
+- Both sign-ins mint a static credential stored as an ordinary key row (`signin:kilo` / `signin:zai-coding-plan`); Sign in again replaces that row's literal in place.
+- The first Kilo sign-in creates its plugin route and first key; Z.AI joins an adopted route as one more pool row, and neither writes a `llm-pi-ai` grant.
+- Add the `devin` transport route: a second omp-backed artifact (`lib/omp/devin.mjs`) speaking Devin's Connect-framed chat protocol, with its own generated catalog (`swe-1-6`, `swe-1-6-fast`), manifest entry, drift gate and calibrated size ceiling.
+- Add the `llm-omp-transports/devin` sign-in flow: PKCE authorize page plus a paste-the-callback prompt (the pinned loopback listener is Bun-only), a token exchange and a static bearer with a derived `expires`; there is no refresh.
+- Register the Devin adapter, its Models-page profile, `providers.devin.models` allow-list and provider info beside Cursor's, sharing one route-parameterised adapter and projection.
+- Fill DSH attribution headers only where a request left them absent, so Devin's chat call keeps its required `connect-go` client identity while the header-less `GetUserJwt` handshake still carries the harness `user-agent`.
+
+### Fixed
+
+- Document the `devin` transport route in the root README (EN/ZH): paste-only sign-in, no refresh token, unverified endpoints, and the corrected "one grant per route" wording.
+- Root known limits now name Kilo and Z.AI Coding Plan as in-process sign-in routes and state the transport `expires` contract per resolver.
+- The sign-in dialog masks a pasted authorization code (Z.AI and Devin) behind a reveal toggle, resets the reveal on every new prompt, and uses `autocomplete="new-password"` so a saved password is never filled in.
+- A transport grant with a usable token and no `expires` stays `active` on the Devin route with no expiry cell, while the Cursor route (which needs a dated grant) reports `needs-reauth`.
+- A transport route whose installed build ships no model catalog now reports it once in the state warnings instead of showing an empty model list without explanation.
+- Signing in to Kilo seeds the route from the plugin catalog instead of waiting for endpoint model discovery before the key row appears.
+- The model picker explains an empty catalog instead of rendering a bare empty list when the installed transport build ships no catalog for the route; Save is off until the catalog exists.
+- Adopting a catalog route that has no Models profile now creates one from the installed catalog, so the connection test and the Models page can select the route's models instead of refusing with "no settings profile yet".
+
 ## [0.2.4] - 2026-10-22
 
 ### Fixed
