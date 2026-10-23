@@ -228,7 +228,7 @@ component, on its own `devin` route with the same one-grant record at
 - **There is no refresh.** The record is a static bearer whose expiry is
   derived from the token (JWT `exp` minus five minutes, else one year). A
   grant with no `expires` is served as a static bearer and reported `active`
-  with no expiry line; once a readable expiry passes, sign in again by hand.
+  with no expiry cell; once a readable expiry passes, sign in again by hand.
 - Models come from the pinned catalog (two rows, `swe-1-6` and `swe-1-6-fast`)
   generated into the transport at build time.
 - The client is unofficial and presents the released Devin CLI identity; the

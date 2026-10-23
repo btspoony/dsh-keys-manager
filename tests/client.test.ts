@@ -2158,14 +2158,20 @@ function makePasteAttemptView(): AccountAttemptView {
     const state = makeState()
     state.providers = [makeSignInProvider()]
     const harness = makeContext()
-    // The next parked prompt, swapped in when the first answer is submitted.
+    // The next parked prompt, swapped in when an answer is submitted. The
+    // first re-park repeats the message verbatim (the Z.AI retry), which the
+    // prompt-signature effect cannot notice.
+    let answers = 0
     let current = makePasteAttemptView()
     harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
       if (endpoint === 'keysManager/getState') return { ok: true, value: state }
       if (endpoint === 'keysManager/beginAccountLogin') return { ok: true, value: current }
       if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: current }
       if (endpoint === 'keysManager/answerAccountPrompt') {
-        current = { ...makePasteAttemptView(), prompt: { kind: 'manual-code', message: 'Paste the new code' }, updatedAt: 5 }
+        answers += 1
+        current = answers === 1
+          ? { ...makePasteAttemptView(), updatedAt: 5 }
+          : { ...makePasteAttemptView(), prompt: { kind: 'manual-code', message: 'Paste the new code' }, updatedAt: 6 }
         return { ok: true, value: null }
       }
       return { ok: false, error: { message: `unexpected ${endpoint}` } }
@@ -2200,22 +2206,34 @@ function makePasteAttemptView(): AccountAttemptView {
     }
     const pasteInput = (): FlatNode => inPromptForm(false)!
     const reveal = (): FlatNode => inPromptForm(true)!
-    expect(pasteInput().props).toMatchObject({ type: 'password', autoComplete: 'off' })
+    expect(pasteInput().props).toMatchObject({ type: 'password', autoComplete: 'new-password' })
     expect(reveal().props?.checked).toBe(false)
     ;(reveal().props!.onChange as (event: unknown) => void)({ target: { checked: true } })
     view.render()
     expect(pasteInput().props?.type).toBe('text')
 
-    // The safety property: a new prompt re-masks, so the reveal never carries
-    // over to the next code.
-    ;(pasteInput().props!.onChange as (event: unknown) => void)({ target: { value: 'the-code' } })
+    // The safety property: the next code starts masked even when the host
+    // re-parks the identical prompt (the retry path), and again when it asks a
+    // different question.
+    const answerOnce = async (): Promise<void> => {
+      ;(pasteInput().props!.onChange as (event: unknown) => void)({ target: { value: 'the-code' } })
+      view.render()
+      const form = findByClass(view.nodes, 'km-login-prompt')[0]!
+      ;(form.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
+      await view.flush()
+      // The poll that delivers the new prompt resolves after the first flush
+      // drained; its render queues the re-mask effect, so drain once more.
+      await view.flush()
+    }
+    await answerOnce()
+    expect(view.nodes.some(node => node.text === 'Paste the final redirect URL or the authorization code')).toBe(true)
+    expect(pasteInput().props?.type).toBe('password')
+    expect(reveal().props?.checked).toBe(false)
+
+    // Reveal again, then let the host ask something new.
+    ;(reveal().props!.onChange as (event: unknown) => void)({ target: { checked: true } })
     view.render()
-    const form = findByClass(view.nodes, 'km-login-prompt')[0]!
-    ;(form.props!.onSubmit as (event: { preventDefault(): void }) => void)({ preventDefault() {} })
-    await view.flush()
-    // The poll that delivers the new prompt resolves after the first flush
-    // drained; its render queues the re-mask effect, so drain once more.
-    await view.flush()
+    await answerOnce()
     expect(view.nodes.some(node => node.text === 'Paste the new code')).toBe(true)
     expect(pasteInput().props?.type).toBe('password')
     expect(reveal().props?.checked).toBe(false)
@@ -3145,6 +3163,53 @@ describe('transport account surface', () => {
     expect(loginPayload).toEqual({ args: { provider: 'cursor' } })
     // The pi-ai dialog is reused: it polls the same attempt record.
     expect(view.nodes.some(node => node.text === '等待授权…')).toBe(true)
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
+  test('a parked transport paste prompt renders masked with the reveal toggle', async () => {
+    const state = makeState()
+    state.providers = [...state.providers, makeTransportProvider()]
+    state.transportAccounts = [makeTransportAccount({
+      status: 'signed-out',
+      active: false,
+      email: undefined,
+      accountId: undefined,
+      expiresAt: undefined,
+    })]
+    // The transports package asks for its callback as `manual-code`, so the
+    // shared dialog masks the pasted URL/code exactly like the Z.AI step.
+    const attempt: AccountAttemptView = {
+      ...makeTransportAttemptView(),
+      status: 'prompt',
+      prompt: { kind: 'manual-code', message: 'Paste the whole address (or just the code) here.' },
+    }
+    const harness = makeContext()
+    harness.ctx.connection.rpc.call = async (_channel, endpoint) => {
+      if (endpoint === 'keysManager/getState') return { ok: true, value: state }
+      if (endpoint === 'keysManager/beginTransportLogin') return { ok: true, value: attempt }
+      if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: attempt }
+      return { ok: false, error: { message: `unexpected ${endpoint}` } }
+    }
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    openProviderCard(view, 'cursor')
+
+    const row = findByClass(view.nodes, 'km-transport-row')[0]!
+    const signIn = descendants(view.nodes, row).filter(node => node.type === 'button' && node.text.includes('登录'))
+    expect(signIn).toHaveLength(1)
+    ;(signIn[0]!.props!.onClick as () => void)()
+    await view.flush()
+    // The dialog's first attempt read resolves after that flush drained.
+    await view.flush()
+
+    const form = findByClass(view.nodes, 'km-login-prompt')[0]
+    expect(form, 'the transport paste prompt is parked in the shared dialog').toBeDefined()
+    const field = descendants(view.nodes, form!).find(node => node.type === 'input' && node.props?.type !== 'checkbox')!
+    expect(field.props).toMatchObject({ type: 'password', autoComplete: 'new-password' })
+    expect(descendants(view.nodes, form!).some(node => node.type === 'input' && node.props?.type === 'checkbox')).toBe(true)
     view.unmount()
     setRuntimeContext(null)
   })

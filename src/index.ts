@@ -684,14 +684,19 @@ function transportGrantOf(record: CredentialRecordLike | undefined): TransportGr
  * exists while signed out, so the UI can offer the sign-in that writes it.
  */
 function transportAccountOf(flow: AuthorizationFlowEntry, record: CredentialRecordLike | undefined, now: number): TransportAccountView {
+  const route = flow.key.slice(TRANSPORT_CREDENTIAL_SCOPE.length + 1)
   const grant = transportGrantOf(record)
-  const status: TransportAccountStatus = grant !== undefined
-    ? grant.expires === undefined || grant.expires > now
-      ? 'active'
-      : grant.refresh === undefined ? 'needs-reauth' : 'expired'
-    : record === undefined ? 'signed-out' : 'needs-reauth'
+  const status: TransportAccountStatus = grant === undefined
+    ? record === undefined ? 'signed-out' : 'needs-reauth'
+    : grant.expires === undefined
+      // Only the devin resolver serves an expiry-less record; cursor's needs a
+      // dated grant and throws on one, so there the row is not usable.
+      ? route === DEVIN_ROUTE ? 'active' : 'needs-reauth'
+      : grant.expires > now
+        ? 'active'
+        : grant.refresh === undefined ? 'needs-reauth' : 'expired'
   return {
-    id: flow.key.slice(TRANSPORT_CREDENTIAL_SCOPE.length + 1),
+    id: route,
     scope: flow.key,
     displayName: flow.label,
     ...(grant?.email === undefined ? {} : { email: grant.email }),

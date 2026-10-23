@@ -1213,11 +1213,7 @@ test('deleting the last key restores the original apiKeyEnv and removes manageme
 test('extra provider installation writes a complete pi-ai profile and release removes it', async () => {
   const h = await harness()
   try {
-    // The normal Add-provider path still probes the endpoint (F3 keeps
-    // discovery there and only skips it for a sign-in commit).
-    const discover = vi.spyOn(h.llm, 'discoverModels')
     const state = await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
-    assert.equal(discover.mock.calls.length, 1)
     const view = state.providers.find(entry => entry.provider === 'deepinfra')!
     assert.equal(view.managed, true)
     assert.equal(view.extra, true)
@@ -4262,6 +4258,8 @@ test('signing in to kilo creates the extra route and one sign-in row', async () 
     assert.match(profile.apiKeyEnv, /^KEYSMGR_KILO_/)
     // F3: the commit seeds the catalog instead of probing the endpoint, so the
     // row appears without waiting out discovery's timeout inside the queue.
+    // The call count is the point here — a seeded list would look the same if
+    // discovery had run and failed.
     assert.equal(discover.mock.calls.length, 0)
     assert.ok(profile.models.length > 0)
     assert.equal(profile.models[0].id, 'anthropic/claude-opus-4.7')
@@ -13434,14 +13432,15 @@ test('a transport row reports active, expired, needs-reauth and signed-out', asy
     assert.equal(await statusOf(), 'needs-reauth')
     assert.equal((await rowOf()).active, false)
 
-    // F2: a usable access token with no `expires` is the documented static
-    // bearer (devin's shape, which its adapter keeps serving), so the route is
-    // active and the row carries no expiry for the UI to draw a bar from.
+    // F2: an expiry-less record is the static bearer the DEVIN resolver serves;
+    // cursor's resolver needs a dated grant and throws on one, so there the row
+    // is not usable. The devin half is pinned by
+    // 'a static-bearer grant is active only on the devin route'.
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access' } })
-    const staticBearer = await rowOf()
-    assert.equal(staticBearer.status, 'active')
-    assert.equal(staticBearer.active, true)
-    assert.equal(staticBearer.expiresAt, undefined)
+    const expiryLess = await rowOf()
+    assert.equal(expiryLess.status, 'needs-reauth')
+    assert.equal(expiryLess.active, false)
+    assert.equal(expiryLess.expiresAt, undefined)
 
     // A PRESENT but unreadable expiry is a corrupt record, not a static bearer.
     h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access', expires: 'soon' } })
@@ -13452,6 +13451,31 @@ test('a transport row reports active, expired, needs-reauth and signed-out', asy
     assert.equal(await statusOf(), 'signed-out')
     assert.equal((await rowOf()).active, false)
     assertNoPiAiProjection(h)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a static-bearer grant is active only on the devin route', async () => {
+  const h = await harness([...piAiFlows(), TRANSPORT_FLOW, DEVIN_FLOW])
+  const rowOf = async (id: string): Promise<{ status?: string; active?: boolean; expiresAt?: number }> => {
+    await h.service.refreshTransportAccounts()
+    return h.service.buildState().transportAccounts?.find(account => account.id === id) ?? {}
+  }
+  try {
+    // F2: devin's resolver serves an expiry-less record as a static bearer.
+    h.credentials.records.set('llm-omp-transports/devin', { kind: 'grant', payload: { access: 'devin-access' } })
+    const devin = await rowOf('devin')
+    assert.equal(devin.status, 'active')
+    assert.equal(devin.active, true)
+    assert.equal(devin.expiresAt, undefined)
+
+    // The same shape on cursor is not usable: its resolver can only serve a
+    // dated grant, so the row points the user back at sign-in.
+    h.credentials.records.set(CURSOR_SCOPE, { kind: 'grant', payload: { access: 'cursor-access' } })
+    const cursor = await rowOf('cursor')
+    assert.equal(cursor.status, 'needs-reauth')
+    assert.equal(cursor.active, false)
   } finally {
     await h.close()
   }

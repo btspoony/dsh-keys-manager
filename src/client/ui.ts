@@ -304,6 +304,9 @@ function Modal({ title, children, onClose, footer, busy }: ModalProps): React.Re
   busyRef.current = busy
 
   React.useEffect(() => {
+    // Focus trapping is a browser facility; a DOM-less mount (SSR, the no-DOM
+    // test renderer) has nothing to trap.
+    if (typeof document === 'undefined') return undefined
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const dialog = dialogRef.current
     const inerted: HTMLElement[] = []
@@ -914,11 +917,13 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
     ),
     // The expiry column stays a clock, not a countdown: the route's adapter
     // renews the grant itself, so "expired" here means "renews on next use".
-    h('div', { className: 'km-key-last' },
-      account.expiresAt === undefined
-        ? h('div', { className: 'km-key-time km-muted' }, t('never'))
-        : h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
-    ),
+    // A static-bearer row advertises no expiry at all, so the column is absent
+    // instead of borrowing the "never used" copy.
+    account.expiresAt === undefined
+      ? null
+      : h('div', { className: 'km-key-last' },
+          h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
+        ),
     h('div', { className: 'km-key-actions' },
       h(Button, {
         size: 'small',
@@ -1532,6 +1537,9 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
       return
     }
     setAnswer('')
+    // The answered prompt may be re-asked verbatim (the Z.AI retry), which the
+    // signature effect cannot see, so the next code always starts masked.
+    setRevealed(false)
     // The answer is only an ack: poll immediately for the next state.
     pollNowRef.current?.()
   }
@@ -1597,13 +1605,16 @@ function LoginDialog({ provider, attemptId, cancellable = false, onClose }: Logi
             : h('input', {
                 className: 'km-input',
                 // A pasted code is the only secret in the exchange (Z.AI's flow
-                // has no PKCE), so it is masked exactly like `secret` prompts.
+                // has no PKCE, the Devin flow sends none back), so it is masked
+                // exactly like `secret` prompts.
                 type: (prompt.kind === 'secret' || prompt.kind === 'manual-code') && !revealed ? 'password' : 'text',
                 value: answer,
                 onChange: (event: React.ChangeEvent<HTMLInputElement>) => setAnswer(event.target.value),
                 placeholder: prompt.placeholder,
                 spellCheck: false,
-                autoComplete: 'off',
+                // The repo's convention for a field the browser must never fill
+                // from a saved password; `off` is ignored on password inputs.
+                autoComplete: prompt.kind === 'secret' || prompt.kind === 'manual-code' ? 'new-password' : 'off',
                 disabled: answering,
                 autoFocus: true,
               }),
