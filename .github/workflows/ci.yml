@@ -81,7 +81,11 @@ jobs:
           # The two diffs above only see the files they name: a catalog the
           # generator newly writes (a third route) would stay untracked and
           # escape them until a fresh clone. The directory must be clean.
-          test -z "$(git status --porcelain -- packages/llm-omp/src/catalog/)"
+          # Capture the status first: a failing `git status` inside `$( )` would
+          # yield an empty string and pass `test -z`, so test the file size
+          # instead — git errors then abort under `set -e`.
+          git status --porcelain -- packages/llm-omp/src/catalog/ > "$RUNNER_TEMP/catalog-status.txt"
+          test ! -s "$RUNNER_TEMP/catalog-status.txt"
 
       - name: Assert packed tarball contents
         run: |
