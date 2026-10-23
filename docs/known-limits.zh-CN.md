@@ -31,5 +31,6 @@ Keys Manager 插件当前的设计边界：
 ## 传输路由（Cursor、Devin）
 
 - 每条传输路由（`cursor`、`devin`）在 `llm-omp-transports/<route>` 只保留一条授权：其后没有 key 池，也没有可按账户配置的轮换。
-- 只要授权带有可用的 `access` 令牌，且没有 `expires` 或 `expires` 仍在未来，状态就是 `active`。没有 `expires` 的授权是静态 bearer——Devin 流程签发的正是这种——因此保持 `active` 且不显示有效期。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。可读的有效期一旦过期，路由停止服务，直到重新登录。
+- 只要授权带有可用的 `access` 令牌，且没有 `expires` 或 `expires` 仍在未来，状态就是 `active`。缺少 `expires` 是 Devin 凭据解析器接受的静态 bearer 形态；目前没有任何已发布流程会写入这种记录（Devin 会从令牌推导有效期），因此它保持 `active` 且不显示有效期。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。
+- 授权过期在两条路由上的后果不同：Devin 没有刷新令牌，过期后停止服务，直到重新登录；Cursor 在凭据 seam 上自动刷新并继续服务，只有刷新被拒或没有存刷新令牌时才停止。
 - 两个客户端都是非官方实现，真实端点均未验证。Cursor 与 Devin 的具体风险（厂商身份、ToS 风险、不转发图片、Devin 无刷新）见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
