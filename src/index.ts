@@ -750,28 +750,38 @@ function transportMethodOf(flow: AuthorizationFlowEntry): string | undefined {
 const DEVIN_ROUTE = 'devin'
 
 /**
+ * The catalog accessor each transport route ships in the transports package.
+ *
+ * One exported function per route, the `cursorCatalogModels`/`devinCatalogModels`
+ * shape. The routes after `devin` are delivered by a sibling track in the same
+ * iteration, so an installed transport build may predate their exports.
+ */
+const TRANSPORT_CATALOG_EXPORTS: Readonly<Record<string, string>> = Object.freeze({
+  [DEVIN_ROUTE]: 'devinCatalogModels',
+  'google-gemini-cli': 'googleGeminiCliCatalogModels',
+  'google-antigravity': 'googleAntigravityCatalogModels',
+  'factory-droid': 'factoryDroidCatalogModels',
+})
+
+/**
  * The catalog a transport route advertises to its model picker.
  *
  * A route without a catalog projection reports no models rather than borrowing
  * another route's. The catalog is the transport package's own data, not this
- * plugin's: `devin` is delivered by a sibling track in the same iteration, so
- * the installed transport build may predate its export. The function is
- * therefore probed on the module namespace instead of imported by name — an
- * absent export yields an empty catalog instead of breaking this plugin's
- * import graph. An empty list is indistinguishable from the legitimate
- * all-models state, so `onMissing` reports it instead of the picker rendering
- * a silent `[]`.
+ * plugin's: these routes ship from a sibling track, so the installed transport
+ * build may predate their exports. Each accessor is therefore probed on the
+ * module namespace instead of imported by name — an absent export yields an
+ * empty catalog instead of breaking this plugin's import graph. An empty list
+ * is indistinguishable from the legitimate all-models state, so `onMissing`
+ * reports it instead of the picker rendering a silent `[]`.
  */
 function transportCatalogOf(
   route: string,
   onMissing?: (route: string) => void,
 ): TransportCatalogModel[] {
   if (route === CURSOR_ROUTE) return cursorCatalogModels()
-  if (route !== DEVIN_ROUTE) {
-    onMissing?.(route)
-    return []
-  }
-  const probe = (transportModule as Record<string, unknown>).devinCatalogModels
+  const exportName = TRANSPORT_CATALOG_EXPORTS[route]
+  const probe = exportName === undefined ? undefined : (transportModule as Record<string, unknown>)[exportName]
   if (typeof probe !== 'function') {
     onMissing?.(route)
     return []
