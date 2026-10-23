@@ -1064,13 +1064,15 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
               }),
               h('span', null, row.name),
             ))),
-      // An empty grid is also the all-models state: only the host's one-time
-      // report of a missing catalog explains it.
+      // An empty grid is also the all-models state: only the host's report of
+      // a missing catalog explains it.
       view !== null && rows.length === 0 && view.warning !== undefined
         ? h('div', { className: 'km-field-hint', role: 'status' }, t('transportModelsMissingCatalog'))
         : null,
       h('div', { className: 'km-models-actions' },
-        h(Button, { size: 'small', variant: 'primary', onClick: () => void save(), disabled: busy || view === null },
+        // Saving a catalog the host could not serve would only surface its
+        // un-localized error, so the report disables Save too.
+        h(Button, { size: 'small', variant: 'primary', onClick: () => void save(), disabled: busy || view === null || view.warning !== undefined },
           busy ? t('saving') : t('save')),
         h(Button, {
           size: 'small',

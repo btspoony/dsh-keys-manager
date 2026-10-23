@@ -17729,15 +17729,17 @@ test('a registered transport route with no shipped catalog reports why the list 
   const h = await harness([...piAiFlows(), TRANSPORT_FLOW, ghost])
   try {
     h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: {} }, revision: 1 })
-    // The first read that finds the missing catalog explains the empty list in
-    // its own response, not only in the next state build.
+    // The read that finds the missing catalog explains the empty list in its
+    // own response, not only in the next state build.
     const first = await h.service.transportModels('ghost')
     assert.deepEqual(first.catalog, [])
     assert.match(String(first.warning), /ships no catalog/)
-    // A second read re-renders the picker; the warning is reported once.
+    // Every later read explains itself too: a save or a remount re-reads, and a
+    // once-only field would leave the empty grid unexplained again. Only the
+    // state warning stays one-shot.
     const second = await h.service.transportModels('ghost')
     assert.deepEqual(second.catalog, [])
-    assert.equal(second.warning, undefined)
+    assert.match(String(second.warning), /ships no catalog/)
     const reported = h.service.getState().warnings.filter(message => /ships no catalog/.test(message))
     assert.equal(reported.length, 1)
     assert.match(reported[0]!, /"ghost"/)

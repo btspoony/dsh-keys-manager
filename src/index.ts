@@ -2709,18 +2709,20 @@ export class KeysManagerService {
   }
 
   /**
-   * Report once per route that a registered transport flow has no catalog.
+   * Explain a registered transport flow that has no catalog.
    *
    * An empty list is also the legitimate all-models state, so the only honest
-   * way to tell a stale transport build apart is to say so: otherwise the
-   * picker renders `[]` until a save fails. Returns the message the first time
-   * only, so the caller can explain the empty list in the same response.
+   * way to tell a stale transport build apart is to say so. The message rides
+   * every read whose accessor is missing — a once-only gate would leave the
+   * picker unexplained after a save or a remount — while `catalogReports`
+   * keeps the state warning to one push per route.
    */
-  private reportMissingCatalog(route: string): string | undefined {
-    if (this.catalogReports.has(route)) return undefined
-    this.catalogReports.add(route)
+  private reportMissingCatalog(route: string): string {
     const message = `The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`
-    this.pushWarning(message)
+    if (!this.catalogReports.has(route)) {
+      this.catalogReports.add(route)
+      this.pushWarning(message)
+    }
     return message
   }
 

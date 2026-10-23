@@ -1,4 +1,4 @@
 ---
 category: Fixed
 ---
-- The model picker explains an empty catalog in the same read that finds it: a transport route whose installed build ships no catalog now shows the reason instead of a bare empty list.
+- The model picker explains an empty catalog instead of rendering a bare empty list when the installed transport build ships no catalog for the route; Save is off until the catalog exists.

@@ -2985,14 +2985,14 @@ describe('transport account surface', () => {
   })
 
   // I-000274: an empty catalog is also the all-models state, so the picker
-  // explains it only when the host's one-time `warning` accompanies the read.
+  // explains it only when the host's `warning` accompanies the read.
   test('an empty model catalog explains itself only when the host reports the missing build', async () => {
     const state = makeState()
     state.providers = [...state.providers, makeTransportProvider()]
     state.transportAccounts = [makeTransportAccount()]
-    let missing = true
+    let payload: Record<string, unknown> = { catalog: [], models: [], warning: 'ships no catalog for "cursor"' }
     const harness = makeContext(endpoint => endpoint === 'keysManager/transportModels'
-      ? { ok: true, value: { catalog: [], models: [], ...(missing ? { warning: 'ships no catalog for "cursor"' } : {}) } }
+      ? { ok: true, value: payload }
       : { ok: true, value: state })
 
     const openPicker = async (): Promise<{ inside: FlatNode[]; unmount: () => void }> => {
@@ -3007,19 +3007,33 @@ describe('transport account surface', () => {
       await view.flush()
       return { inside: descendants(view.nodes, panel), unmount: () => view.unmount() }
     }
+    const saveButton = (inside: FlatNode[]): FlatNode =>
+      inside.find(node => node.type === 'button' && node.text === '保存')!
 
     const reported = await openPicker()
     expect(reported.inside.some(node => node.text.includes('已安装的传输构建没有为该路由提供模型目录'))).toBe(true)
+    // There is no catalog to save against, so Save is off rather than raising
+    // the host's un-localized error on click.
+    expect(saveButton(reported.inside).props!.disabled).toBe(true)
     reported.unmount()
     setRuntimeContext(null)
 
     // The same empty catalog without the host's report is the legitimate
-    // all-models state and stays unexplained.
-    missing = false
+    // all-models state: unexplained, and still saveable as "all models".
+    payload = { catalog: [], models: [] }
     const plain = await openPicker()
-    expect(findByClass(plain.inside, 'km-models-grid')).toHaveLength(1)
     expect(plain.inside.some(node => node.text.includes('已安装的传输构建没有为该路由提供模型目录'))).toBe(false)
+    expect(saveButton(plain.inside).props!.disabled).toBe(false)
     plain.unmount()
+    setRuntimeContext(null)
+
+    // A warning next to real rows never replaces them, and the hint is the
+    // empty-grid branch's job: non-empty catalogs stay unexplained.
+    payload = { catalog: [{ id: 'model-a', name: 'Model A' }], models: [], warning: 'ships no catalog for "cursor"' }
+    const full = await openPicker()
+    expect(findByClass(full.inside, 'km-model-option')).toHaveLength(1)
+    expect(full.inside.some(node => node.text.includes('已安装的传输构建没有为该路由提供模型目录'))).toBe(false)
+    full.unmount()
     setRuntimeContext(null)
   })
 

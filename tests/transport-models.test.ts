@@ -66,6 +66,10 @@ describe('transport model picker shaping', () => {
     // A malformed or blank field is not an explanation the picker should show.
     expect(shapeTransportModels({ catalog: [], models: [], warning: 7 })).toEqual({ catalog: [], models: [] })
     expect(shapeTransportModels({ catalog: [], models: [], warning: '' })).toEqual({ catalog: [], models: [] })
+    // A warning does not replace the catalog: both survive shaping, and the
+    // picker's own empty-grid guard decides whether the hint is shown.
+    expect(shapeTransportModels({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], warning: 'ships no catalog' }))
+      .toEqual({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], warning: 'ships no catalog' })
   })
 })
 
