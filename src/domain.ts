@@ -249,9 +249,10 @@ export interface TransportModelsView {
   catalog: TransportCatalogModel[]
   models: string[]
   /**
-   * Why the catalog is empty, carried by the first read that finds a
-   * registered flow without a shipped catalog. Absent on later reads and for
-   * every route that does ship one.
+   * Why the catalog is empty. Rides every read whose catalog accessor is
+   * missing, so a re-read after a save or a remount still explains the empty
+   * picker; absent for every route that does ship a catalog. The one-shot part
+   * of this report is the {@link StateView.warnings} entry, not this field.
    */
   warning?: string
 }

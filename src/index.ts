@@ -2713,9 +2713,9 @@ export class KeysManagerService {
    *
    * An empty list is also the legitimate all-models state, so the only honest
    * way to tell a stale transport build apart is to say so. The message rides
-   * every read whose accessor is missing — a once-only gate would leave the
-   * picker unexplained after a save or a remount — while `catalogReports`
-   * keeps the state warning to one push per route.
+   * every read whose accessor is missing — a once-only gate would leave a
+   * remounted or reloaded picker unexplained — while `catalogReports` keeps
+   * the state warning to one push per route.
    */
   private reportMissingCatalog(route: string): string {
     const message = `The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`

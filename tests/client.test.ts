@@ -3019,20 +3019,22 @@ describe('transport account surface', () => {
     setRuntimeContext(null)
 
     // The same empty catalog without the host's report is the legitimate
-    // all-models state: unexplained, and still saveable as "all models".
+    // all-models state: unexplained, but nothing to save either — the host
+    // would reject the write with its un-localized "no model list".
     payload = { catalog: [], models: [] }
     const plain = await openPicker()
     expect(plain.inside.some(node => node.text.includes('已安装的传输构建没有为该路由提供模型目录'))).toBe(false)
-    expect(saveButton(plain.inside).props!.disabled).toBe(false)
+    expect(saveButton(plain.inside).props!.disabled).toBe(true)
     plain.unmount()
     setRuntimeContext(null)
 
-    // A warning next to real rows never replaces them, and the hint is the
-    // empty-grid branch's job: non-empty catalogs stay unexplained.
+    // A warning next to real rows never replaces them: the hint is the
+    // empty-grid branch's job, and a catalog that exists stays saveable.
     payload = { catalog: [{ id: 'model-a', name: 'Model A' }], models: [], warning: 'ships no catalog for "cursor"' }
     const full = await openPicker()
     expect(findByClass(full.inside, 'km-model-option')).toHaveLength(1)
     expect(full.inside.some(node => node.text.includes('已安装的传输构建没有为该路由提供模型目录'))).toBe(false)
+    expect(saveButton(full.inside).props!.disabled).toBe(false)
     full.unmount()
     setRuntimeContext(null)
   })
