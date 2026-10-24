@@ -637,6 +637,53 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(call?.arguments).toEqual({ file_path: 'src/app.ts:10+' })
   })
 
+  it('leaves a read selector below line 1 (`:0`) in the path, as OMP rejects it', async () => {
+    // `isReadRangeList` returns false for `start < 1`, so this is not a
+    // selector: no offset may be invented from it.
+    const { events } = await run('cursor-wire-native-read-range-zero.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts:0' })
+  })
+
+  it('leaves a read window starting below line 1 (`:0-5`) in the path', async () => {
+    const { events } = await run('cursor-wire-native-read-range-zero-range.jsonl', {
+      externalToolExecutor: true,
+    })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts:0-5' })
+  })
+
+  it('leaves a zero count in the path instead of asking for a zero-line read', async () => {
+    const { events } = await run('cursor-wire-native-read-range-count-zero.jsonl', {
+      externalToolExecutor: true,
+    })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // OMP requires `end >= 1`; `limit: 0` would read as an empty file.
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts:10+0' })
+  })
+
+  it('leaves a comma list untouched when any chunk is not a selector', async () => {
+    const { events } = await run('cursor-wire-native-read-range-list-bad.jsonl', {
+      externalToolExecutor: true,
+    })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // `isReadRangeList` validates every chunk and rejects the whole list.
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts:10-20,abc' })
+  })
+
+  it('keeps a zero-padded line number valid, as OMP parses it to its number', async () => {
+    const { events } = await run('cursor-wire-native-read-range-leading-zero.jsonl', {
+      externalToolExecutor: true,
+    })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 7 })
+  })
+
   it('leaves a backwards read window in the path instead of emitting a bad limit', async () => {
     const { events } = await run('cursor-wire-native-read-range-reversed.jsonl', { externalToolExecutor: true })
 

@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"read","name":"read","toolName":"read","toolCallId":"call-read-leading-zero","args":{"path":"src/app.ts:007"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"read","name":"read","toolName":"read","toolCallId":"call-read-list-bad","args":{"path":"src/app.ts:10-20,abc"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

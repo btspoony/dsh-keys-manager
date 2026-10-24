@@ -1,5 +1,5 @@
 diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
-index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..b9fbc9da7009f38590593681cf5b5aa082e55f27 100644
+index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1c847ac3b 100644
 --- a/src/providers/cursor.ts
 +++ b/src/providers/cursor.ts
 @@ -2162,6 +2162,7 @@ async function handleShellStreamArgs(
@@ -313,7 +313,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..b9fbc9da7009f38590593681cf5b5aa0
  			);
  			sendExecClientMessage(runTransport, execMsg, "miniSweAgentBashResult", sanitizeShellExecResult(execResult));
  			return;
-@@ -4971,6 +5092,82 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
+@@ -4971,6 +5092,103 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
  
  const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
  
@@ -348,6 +348,35 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..b9fbc9da7009f38590593681cf5b5aa0
 +/** One chunk of an OMP read selector: `N`, `N-M`, `N..M`, `N+M`, any with an `L` prefix. */
 +const READ_HANDOFF_SELECTOR_RE = /^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$/i;
 +
++/** One validated read selector chunk, with the numbers `parseInt` produced. */
++interface ReadSelectorChunk {
++	readonly start: number;
++	readonly separator: string | undefined;
++	readonly end: number | undefined;
++}
++
++/**
++ * Validate one read selector chunk exactly as `isReadRangeList` does, so a tail
++ * OMP would leave in the path is never stripped here.
++ *
++ * The two families have different rules: `N-M`/`N..M` may omit its end ("to the
++ * end of the file") but must not run backwards, while `N+M` requires a count of
++ * at least one — `N+0` would otherwise become a zero-line read that reads as an
++ * empty file. A leading zero is fine (`007` is line 7) but a line below 1 is
++ * not a selector at all.
++ */
++function readSelectorChunk(value: string): ReadSelectorChunk | null {
++	const match = READ_HANDOFF_SELECTOR_RE.exec(value);
++	if (match === null) return null;
++	const start = Number.parseInt(match[1] ?? "", 10);
++	if (!Number.isFinite(start) || start < 1) return null;
++	const separator = match[2];
++	const end = separator === undefined || match[3] === undefined ? undefined : Number.parseInt(match[3], 10);
++	if (separator === "+") return end !== undefined && end >= 1 ? { start, separator, end } : null;
++	if (separator !== undefined && end !== undefined && end < start) return null;
++	return { start, separator, end };
++}
++
 +/**
 + * Split an OMP read selector out of a path before handing it to an external
 + * read tool.
@@ -356,9 +385,9 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..b9fbc9da7009f38590593681cf5b5aa0
 + * describe the range a coding-agent read would have applied, but the external
 + * tool takes a literal filename plus `offset`/`limit`, so the raw string makes
 + * it look for a file whose name ends in `:10-20` and fails. Explicit
-+ * `offset`/`limit` fields win over the selector; only the first chunk of a
-+ * comma list is honoured, and a selector the grammar does not cover is left in
-+ * the path rather than guessed at.
++ * `offset`/`limit` fields win over the selector. A comma list is a selector
++ * only when every chunk is valid — OMP rejects the whole list otherwise — and
++ * the first chunk supplies the range, which is what the docs promise.
 + */
 +function handoffReadArgs(args: { path: string; offset?: number; limit?: number }): {
 +	path: string;
@@ -367,28 +396,20 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..b9fbc9da7009f38590593681cf5b5aa0
 +} {
 +	const chunks = args.path.split(":");
 +	const last = chunks.at(-1);
-+	const match = last === undefined ? null : READ_HANDOFF_SELECTOR_RE.exec(last.split(",")[0] ?? "");
-+	if (match !== null) chunks.pop();
++	const parsed = (last?.split(",") ?? []).map(readSelectorChunk);
++	const selector = parsed.length > 0 && parsed.every(chunk => chunk !== null) ? parsed[0]! : null;
++	if (selector !== null) chunks.pop();
 +	// `:raw` is a verbatim-read selector with no external counterpart.
 +	if (chunks.at(-1)?.toLowerCase() === "raw") chunks.pop();
 +	const path = chunks.join(":");
-+	if (match === null) return { path, offset: args.offset, limit: args.limit };
-+	const start = Number.parseInt(match[1] ?? "", 10);
-+	const separator = match[2];
-+	const end = separator === undefined ? undefined : match[3] ? Number.parseInt(match[3], 10) : undefined;
-+	// The two families are not symmetric. `N-`/`N..` with no end is a valid
-+	// selector meaning "to the end of the file", so it stays a bare offset. `N+`
-+	// requires a count: without one the tail is not a selector OMP would have
-+	// honoured, so it must not be stripped here either. Only a backwards
-+	// *window* is turned away, rather than mapped to a negative or zero limit.
-+	if ((separator === "+" && end === undefined) || (separator !== "+" && end !== undefined && end < start)) {
-+		return { path: args.path, offset: args.offset, limit: args.limit };
-+	}
-+	const limitFromSelector =
-+		end === undefined ? undefined : separator === "+" ? end : end - start + 1;
++	if (selector === null) return { path, offset: args.offset, limit: args.limit };
++	const { start, separator, end } = selector;
++	// `N-M`/`N..M` name an inclusive line window, so the external tool's limit is
++	// its length; `N+M` already carries a count.
++	const limitFromSelector = end === undefined ? undefined : separator === "+" ? end : end - start + 1;
 +	return {
 +		path,
-+		offset: args.offset ?? (Number.isFinite(start) ? start : undefined),
++		offset: args.offset ?? start,
 +		limit: args.limit ?? limitFromSelector,
 +	};
 +}

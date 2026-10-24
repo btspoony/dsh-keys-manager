@@ -224,10 +224,11 @@ repository root docs.
   for any of Cursor's `GrepArgs` refinements, so the handoff keeps only
   `pattern`, `path` and `glob`→`include` and drops `caseInsensitive`,
   `contextBefore`/`contextAfter`/`context`, `offset`, `headLimit`, `multiline`,
-  `sort`/`sortAscending`, `type` and `outputMode`. Two of them change the answer:
-  `caseInsensitive` silently inverts to case-sensitive (a request for "foo"
-  stops matching "Foo"), and `offset` is the page cursor the local tool would
-  take as `skip`, so a page-2 request returns page 1 instead of advancing.
+  `sort`/`sortAscending`, `type`, `outputMode` and `sandboxPolicy`. Two of them
+  change the answer: `caseInsensitive` silently inverts to case-sensitive (a
+  request for "foo" stops matching "Foo"), and `offset` is the page cursor the
+  local tool would take as `skip`, so a page-2 request returns page 1 instead of
+  advancing.
   `shell`'s millisecond budget is dropped and its working directory is folded
   into the command as a leading `cd <dir> && …`, with the directory
   single-quoted (POSIX `'\''` for an embedded quote) so a space or a
