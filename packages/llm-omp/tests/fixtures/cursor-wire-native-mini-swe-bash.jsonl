@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"miniSweBash","name":"bash","toolName":"bash","toolCallId":"call-mini-swe","args":{"command":"npm run lint","workingDirectory":"/tmp/my project"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

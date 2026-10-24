@@ -94,7 +94,7 @@ type WireLine =
   | {
       kind: 'exec'
       /** Which exec frame to send; `mcp` is Cursor's call for an advertised tool. */
-      frame?: 'mcp' | 'read' | 'shell' | 'shellStream' | 'grep' | 'write' | 'delete'
+      frame?: 'mcp' | 'read' | 'shell' | 'shellStream' | 'miniSweBash' | 'grep' | 'write' | 'delete'
       name: string
       toolName: string
       toolCallId: string
@@ -168,8 +168,14 @@ function frameFor(line: WireLine): Buffer {
               return { case: 'readArgs' as const, value: create(ReadArgsSchema, { toolCallId, path: String(line.args.path ?? '') }) }
             case 'shell':
             case 'shellStream':
+            case 'miniSweBash':
               return {
-                case: line.frame === 'shell' ? ('shellArgs' as const) : ('shellStreamArgs' as const),
+                case:
+                  line.frame === 'shell'
+                    ? ('shellArgs' as const)
+                    : line.frame === 'shellStream'
+                      ? ('shellStreamArgs' as const)
+                      : ('miniSweAgentBashArgs' as const),
                 value: create(ShellArgsSchema, { toolCallId, command: String(line.args.command ?? ''), workingDirectory: String(line.args.workingDirectory ?? '') }),
               }
             case 'grep':
@@ -529,7 +535,7 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(call).toMatchObject({
       type: 'toolCall',
       name: 'bash',
-      arguments: { command: 'cd /tmp/demo && ls -la' },
+      arguments: { command: "cd '/tmp/demo' && ls -la" },
     })
 
     const reply = decodeClientFrame(wire.written[1])
@@ -594,7 +600,7 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(call).toMatchObject({
       type: 'toolCall',
       name: 'bash',
-      arguments: { command: 'cd /tmp/demo && npm test' },
+      arguments: { command: "cd '/tmp/demo' && npm test" },
     })
     expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).not.toContain(
       'provider.block.cursorExecResolved',
@@ -686,6 +692,47 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     })
     expect(streamEvents.map(event => event.case)).toEqual(['start', 'rejected', 'exit'])
     expect(streamEvents[1]!.value).toMatchObject({ reason: 'Tool not available' })
+  })
+
+  it('quotes the folded working directory so a space in it still changes directory', async () => {
+    const { events } = await run('cursor-wire-native-shell-space.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // Exact string: an unquoted fold yields `cd /tmp/my project && ls`, which
+    // fails in the shell and silently drops the directory.
+    expect(call?.arguments).toEqual({ command: "cd '/tmp/my project' && ls" })
+  })
+
+  it('escapes a single quote in the folded working directory instead of closing the quote', async () => {
+    const { events } = await run('cursor-wire-native-shell-quote.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // POSIX `'\''` (quote, backslash, quote, quote): the directory stays one
+    // word and cannot inject a command. Written with String.raw so the expected
+    // value is the shell text itself, not an escaped JS literal — `\\` here
+    // would emit two backslashes and fail.
+    expect(call?.arguments).toEqual({ command: String.raw`cd '/tmp/it'\''s here' && ls` })
+  })
+
+  it('hands a mini-swe-agent bash frame to DSH with the quoted working directory', async () => {
+    const { events, wire } = await run('cursor-wire-native-mini-swe-bash.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({ type: 'toolCall', name: 'bash' })
+    expect(call?.arguments).toEqual({ command: "cd '/tmp/my project' && npm run lint" })
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).not.toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('miniSweAgentBashResult')
+    const result =
+      client?.message.case === 'miniSweAgentBashResult'
+        ? (client.message.value as { result: { case?: string; value?: { reason?: string } } })
+        : undefined
+    expect(result?.result.case).toBe('rejected')
+    expect(result?.result.value?.reason).toBe(HANDOFF_TEXT)
   })
 
   it('still rejects a native delete frame with no unresolved call for DSH', async () => {

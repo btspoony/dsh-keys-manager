@@ -206,13 +206,16 @@ repository root docs.
   unverified).
 - **The `pi*` exec frames have no handoff and are not gated client-side.**
   `piReadArgs`/`piBashArgs`/`piEditArgs`/`piWriteArgs`/`piGrepArgs`/
-  `piFindArgs`/`piLsArgs` are dispatched whenever Cursor's server sends them:
-  this client advertises no capability set that would suppress them, so they
-  *can* reach a live DSH session. Unanswered, each one synthesizes a settled
-  call and answers the server with a `Tool not available` error result, so a
-  turn that chooses one gains nothing. If one shows up in a live seat it needs
-  its own translation — the Pi result schemas differ from the modern ones
-  (`PiBashExecResult` carries `output`/`truncation`, not `stdout`/`exitCode`).
+  `piFindArgs`/`piLsArgs` are dispatched whenever Cursor's server sends them.
+  The transport does declare its MCP tool set — the `requestContextArgs`
+  handshake answers with the projected `tools` list — but no exec-frame
+  capability is negotiated, so nothing suppresses these frames on the client
+  side and they *can* reach a live DSH session. Unanswered, each one
+  synthesizes a settled call and answers the server with a `Tool not available`
+  error result, so a turn that chooses one gains nothing. If one shows up in a
+  live seat it needs its own translation — the Pi result schemas differ from the
+  modern ones (`PiBashExecResult` carries `output`/`truncation`, not
+  `stdout`/`exitCode`).
 - A streamed shell frame that is handed off is answered with `start` →
   `rejected` (handoff reason) → `exit` code 1 instead of running the command,
   mirroring the batch branch's refusal. A server that needs streamed stdout to
@@ -220,9 +223,11 @@ repository root docs.
 - The exec-frame handoff translation is **lossy**. `grep`'s `ignoreCase`,
   `literal`, `context` and `offset` flags have no slot in DSH's `grep` tool and
   are dropped; `shell`'s millisecond budget is dropped and its working
-  directory is folded into the command as a leading `cd <dir> && …`. The model
-  sees the DSH tool's own schema, so a call that needed a dropped flag may
-  behave differently than under Cursor's native tool.
+  directory is folded into the command as a leading `cd <dir> && …`, with the
+  directory single-quoted (POSIX `'\''` for an embedded quote) so a space or a
+  metacharacter cannot change the command. The model sees the DSH tool's own
+  schema, so a call that needed a dropped flag may behave differently than under
+  Cursor's native tool.
 - Tool declarations travel as MCP definitions. `toolHistory` is accepted but
   cannot be replayed — the active declaration set is what the request
   projects.

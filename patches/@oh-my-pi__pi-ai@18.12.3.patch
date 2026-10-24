@@ -1,5 +1,5 @@
 diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
-index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..8faeafe167bf68fc3f19f02a49a1014563456004 100644
+index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1fc8f07bf3 100644
 --- a/src/providers/cursor.ts
 +++ b/src/providers/cursor.ts
 @@ -2162,6 +2162,7 @@ async function handleShellStreamArgs(
@@ -193,7 +193,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..8faeafe167bf68fc3f19f02a49a10145
 +				shellHandoff
 +					? {
 +							command: args.workingDirectory
-+								? `cd ${args.workingDirectory} && ${args.command}`
++								? `cd ${shellQuoteForCd(args.workingDirectory)} && ${args.command}`
 +								: args.command,
 +						}
 +					: {
@@ -245,7 +245,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..8faeafe167bf68fc3f19f02a49a10145
 +				streamHandoff
 +					? {
 +							command: args.workingDirectory
-+								? `cd ${args.workingDirectory} && ${args.command}`
++								? `cd ${shellQuoteForCd(args.workingDirectory)} && ${args.command}`
 +								: args.command,
 +						}
 +					: {
@@ -284,7 +284,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..8faeafe167bf68fc3f19f02a49a10145
 +				miniSweHandoff
 +					? {
 +							command: args.workingDirectory
-+								? `cd ${args.workingDirectory} && ${args.command}`
++								? `cd ${shellQuoteForCd(args.workingDirectory)} && ${args.command}`
 +								: args.command,
 +						}
 +					: {
@@ -312,7 +312,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..8faeafe167bf68fc3f19f02a49a10145
  			);
  			sendExecClientMessage(runTransport, execMsg, "miniSweAgentBashResult", sanitizeShellExecResult(execResult));
  			return;
-@@ -4971,6 +5091,23 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
+@@ -4971,6 +5091,34 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
  
  const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
  
@@ -331,6 +331,17 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..8faeafe167bf68fc3f19f02a49a10145
 +	tool: keyof CursorExecHandlers,
 +): boolean {
 +	return externalToolExecutor === true && execHandlers?.[tool] === undefined;
++}
++
++/**
++ * Quote one directory for a `cd` prefix, POSIX single-quote style: the value
++ * comes from the server, so it must never reach the shell as a bare word — a
++ * space would split it and a metacharacter (`;`, `&&`, `$(...)`, backticks)
++ * would change the command instead of the working directory. Only the
++ * directory is quoted; the server's own `command` runs untouched.
++ */
++function shellQuoteForCd(dir: string): string {
++	return `'${dir.replace(/'/g, `'\\''`)}'`;
 +}
 +
  function buildMcpExternalHandoffResult() {
