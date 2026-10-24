@@ -107,7 +107,13 @@ describe('google drift gate', () => {
     // A per-route artifact would mean the shared-provider decision (design §1)
     // was reversed without the manifest saying so. The other entries are the
     // independent routes, one artifact each.
-    expect(Object.keys(manifest.entries).sort()).toEqual(['cursor', 'devin', 'factory-droid', 'google'])
+    expect(Object.keys(manifest.entries).sort()).toEqual([
+      'cursor',
+      'devin',
+      'factory-droid',
+      'gitlab-duo-agent',
+      'google',
+    ])
   })
 
   it('hashes the Google transport sources the bundle was built from', () => {

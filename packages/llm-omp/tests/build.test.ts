@@ -74,6 +74,11 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // stopped firing (the metafile assertions in `tests/build-factory-droid.test.ts`
   // name which), not that the route grew.
   'factory-droid': 3_120_000,
+  // gitlab-duo-agent: 1 001 890 bytes measured (118 modules) -> 1 500 000. The
+  // graph is the Duo Workflow transport plus its catalog helpers, built from the
+  // existing shims; a size near this ceiling means a provider registry or the
+  // model catalog was pulled in, not that the route grew.
+  'gitlab-duo-agent': 1_500_000,
 }
 
 /** One entry's measured build facts (manifest schema v2). */
@@ -109,6 +114,7 @@ const EXPORTS: Readonly<Record<string, string>> = {
   devin: 'streamDevin',
   google: 'streamGoogleGeminiCli',
   'factory-droid': 'streamFactoryDroid',
+  'gitlab-duo-agent': 'streamGitLabDuoWorkflow',
 }
 
 const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
@@ -230,6 +236,7 @@ describe('omp packed surface', () => {
       'lib/omp/devin.mjs',
       'lib/omp/google.mjs',
       'lib/omp/factory-droid.mjs',
+      'lib/omp/gitlab-duo-agent.mjs',
       'bundle/cordis.patch.yml',
     ]) {
       expect(listing, path).toMatch(new RegExp(`notice\\s+\\S+\\s+${path.replace(/[.]/g, '\\.')}(\\s|$)`))
@@ -239,6 +246,7 @@ describe('omp packed surface', () => {
     expect(listing).not.toContain('lib/omp/devin.metafile.json')
     expect(listing).not.toContain('lib/omp/google.metafile.json')
     expect(listing).not.toContain('lib/omp/factory-droid.metafile.json')
+    expect(listing).not.toContain('lib/omp/gitlab-duo-agent.metafile.json')
   })
 })
 

@@ -1,10 +1,11 @@
 /**
  * The `llm-omp-transports/factory-droid` credential: record shape and access resolution.
  *
- * The record is a WorkOS grant — `{ access, refresh, expires, email?,
- * accountId?, orgId?, region?, inferenceRegion? }` — and this module owns both
- * halves: the flow writes it, the adapter reads it through
- * {@link createFactoryDroidAccess}. The pinned rule *has* a refresh
+ * The record is a WorkOS grant — `{ access, refresh?, expires?, email?,
+ * accountId?, orgId?, region?, inferenceRegion? }`: the tokens the flow commits
+ * plus the account scope the transport needs for its API host. This module owns
+ * both halves — the flow writes the record, the adapter reads it through
+ * {@link createFactoryDroidAccess} and forwards the scope as `oauthIdentity`. The pinned rule *has* a refresh
  * (`refresh { after-refresh hook="factory-droid-region" }`), so the resolver is
  * Cursor-shaped rather than Devin-shaped: a fresh grant answers without touching
  * the write path, an expiring one is renewed once under the store's per-key lock,

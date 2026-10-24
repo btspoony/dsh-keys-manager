@@ -66,6 +66,19 @@ const ENTRIES = [
     piUtils: join(scriptsDir, 'omp-shim', 'pi-utils-factory-droid.ts'),
     substitutions: true,
   },
+  // The GitLab Duo agent route: one WebSocket workflow transport, no provider
+  // registry (it imports the workflow module directly), so the existing shims
+  // cover it unmodified.
+  {
+    name: 'gitlab-duo-agent',
+    entry: join(scriptsDir, 'omp-entry-gitlab-agent.ts'),
+    out: join(packageRoot, 'lib', 'omp', 'gitlab-duo-agent.mjs'),
+    // The workflow transport resolves its optional trace-file path from Bun's
+    // `import.meta.dir` at module scope, which Node does not have; the Node
+    // equivalent (`import.meta.dirname`) is a one-token substitution, kept
+    // entry-scoped so the released artifacts cannot change.
+    define: { 'import.meta.dir': 'import.meta.dirname' },
+  },
 ]
 const MANIFEST = join(scriptsDir, 'omp-manifest.json')
 
@@ -300,6 +313,7 @@ async function bundleEntry(entry) {
     // Free `Bun` identifiers (the runtime global, not the `bun:*` modules) resolve
     // to the Node shim, so the artifact carries no unmet runtime global.
     inject: [BUN_GLOBAL_SHIM],
+    ...(entry.define === undefined ? {} : { define: entry.define }),
     plugins: [
       ompJsonAsEsm(),
       ompShims(entry.piUtils ?? PI_UTILS_SHIM),
@@ -415,6 +429,25 @@ async function main() {
     '@oh-my-pi/pi-catalog/src/compat/rules/auth/factory-droid.kdl': join(
       piCatalogRoot,
       'src/compat/rules/auth/factory-droid.kdl',
+    ),
+    // The GitLab Duo agent graph: the workflow transport, its checkpoint/chatml
+    // companions, the catalog's namespace discovery, the static model row and the
+    // declarative auth rule with its exact redirect.
+    '@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow.ts': join(
+      piAiRoot,
+      'src/providers/gitlab-duo-workflow.ts',
+    ),
+    '@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow-chatml-note.md': join(
+      piAiRoot,
+      'src/providers/gitlab-duo-workflow-chatml-note.md',
+    ),
+    '@oh-my-pi/pi-catalog/src/discovery/gitlab-duo-workflow.ts': join(
+      piCatalogRoot,
+      'src/discovery/gitlab-duo-workflow.ts',
+    ),
+    '@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo-agent.kdl': join(
+      piCatalogRoot,
+      'src/compat/rules/auth/gitlab-duo-agent.kdl',
     ),
   }
 

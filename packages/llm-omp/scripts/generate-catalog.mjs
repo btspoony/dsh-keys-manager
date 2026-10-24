@@ -217,6 +217,31 @@ function reduceFactoryDroid(row) {
 }
 
 /**
+ * Reduce one GitLab Duo **agent** row.
+ *
+ * The roster is the single static row its pinned catalog declares; the live
+ * GraphQL discovery is a non-goal, so nothing is fetched at build time. The row's
+ * `maxTokens` is `null` in the pin (this model omits the field), so an absent cap
+ * is carried as absent rather than as a sentinel number.
+ *
+ * @param row - one `models.json` `gitlab-duo-agent` row.
+ * @returns the generated row.
+ */
+function reduceGitLabDuoAgent(row) {
+  const out = {
+    id: row.id,
+    name: row.name,
+    baseUrl: row.baseUrl,
+    contextWindow: row.contextWindow,
+    input: [...row.input],
+    cost: reduceCost(row.cost),
+    reasoning: row.reasoning === true,
+  }
+  if (typeof row.maxTokens === 'number') out.maxTokens = row.maxTokens
+  return out
+}
+
+/**
  * One generated table. The prose and the drift-gate file are per route; the
  * rendering, sort order and provenance shape are shared.
  */
@@ -300,6 +325,31 @@ const PROVIDERS = [
  * carries the per-model wire flags whole.
  *
  * @module dsh-llm-omp-transports/catalog/google-gemini-cli
+ */`,
+  },
+  {
+    key: 'gitlab-duo-agent',
+    out: join(packageRoot, 'src', 'catalog', 'gitlab-duo-agent.ts'),
+    constName: 'GITLAB_DUO_AGENT_MODELS',
+    sourceConst: 'GITLAB_DUO_AGENT_CATALOG_SOURCE',
+    rowType: 'GitLabDuoAgentModelRow',
+    sourceFile: 'src/models.json',
+    select: (data, key) => data[key],
+    summary: 'The one static GitLab Duo agent model the pinned catalog declares.',
+    reduce: reduceGitLabDuoAgent,
+    doc: ({ version, rowCount, sourceHash }) => `/**
+ * Generated GitLab Duo agent model table — do not edit by hand.
+ *
+ * Source: \`@oh-my-pi/pi-catalog@${version}\` \`src/models.json\` key
+ * \`gitlab-duo-agent\` (${rowCount} row, ${sourceHash}). Regenerate with
+ * \`pnpm -C packages/llm-omp run generate:catalog\`.
+ *
+ * The route's live GraphQL discovery is a non-goal for this slice, so the picker
+ * offers this one row; the server may still pin another model through
+ * \`pinnedModel\`, which is harmless. The drift gate in
+ * \`tests/build-gitlab.test.ts\` pins the same package version and source hash.
+ *
+ * @module dsh-llm-omp-transports/catalog/gitlab-duo-agent
  */`,
   },
   {

@@ -30,21 +30,29 @@ import {
   FACTORY_DROID_CREDENTIAL_KEY,
   FACTORY_DROID_ROUTE,
   FACTORY_DROID_TRANSPORT_ROUTE,
+  GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+  GITLAB_DUO_AGENT_ROUTE,
+  GITLAB_DUO_AGENT_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
   OmpFactoryDroidAdapter,
+  OmpGitLabDuoAgentAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
 } from './adapter.js'
 import type { OmpTransportOf } from './adapter.js'
 import { FactoryDroidAuthError, loginFactoryDroid } from './factory-droid/auth.js'
 import type { FactoryDroidFetch } from './factory-droid/auth.js'
-import { createFactoryDroidAccess } from './factory-droid/credentials.js'
+import { createFactoryDroidAccess, readFactoryDroidGrant } from './factory-droid/credentials.js'
+import { GitLabAuthError, loginGitLab } from './gitlab/auth.js'
+import type { GitLabFetch } from './gitlab/auth.js'
+import { createGitLabDuoAgentAccess, readGitLabGrant } from './gitlab/credentials.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
 import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { loginCursor } from './cursor/auth.js'
@@ -79,7 +87,13 @@ export interface TransportProviderProfile {
 }
 
 /** The route ids this plugin registers, in registration order. */
-type TransportRouteId = 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity' | 'factory-droid'
+type TransportRouteId =
+  | 'cursor'
+  | 'devin'
+  | 'google-gemini-cli'
+  | 'google-antigravity'
+  | 'factory-droid'
+  | 'gitlab-duo-agent'
 
 /** The `providers` profile a volatile config reference snapshots. */
 export interface TransportProvidersProfile {
@@ -88,6 +102,7 @@ export interface TransportProvidersProfile {
   'google-gemini-cli'?: TransportProviderProfile
   'google-antigravity'?: TransportProviderProfile
   'factory-droid'?: TransportProviderProfile
+  'gitlab-duo-agent'?: TransportProviderProfile
 }
 
 /** A live config reference (cosmokit `Volatile`) a volatile schema node resolves to. */
@@ -148,6 +163,16 @@ export const Config = z.object({
           .default([]),
       }),
       'google-antigravity': z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
+      'gitlab-duo-agent': z.object({
         models: z
           .array(
             z.object({
@@ -237,6 +262,18 @@ export function factoryDroidCatalogModels(): TransportCatalogModel[] {
   return FACTORY_DROID_MODELS.map(row => ({ id: row.id, name: row.name }))
 }
 
+/**
+ * The one GitLab Duo agent row, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * Same shape as the other route pickers. The route's roster is a single static
+ * row: GitLab's live model discovery is a non-goal for this slice, so the picker
+ * offers what the pinned catalog declares.
+ */
+export function gitlabDuoAgentCatalogModels(): TransportCatalogModel[] {
+  return GITLAB_DUO_AGENT_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
 export const name = 'llm-omp-transports'
 
 /**
@@ -287,6 +324,15 @@ const FACTORY_DROID_PROVIDER = {
   displayName: FACTORY_DROID_TRANSPORT_ROUTE.displayName,
   settingsNs: 'llm-omp-transports',
   settingsPath: ['providers', 'factory-droid'],
+  declared: false,
+} as const
+
+/** The GitLab Duo agent route's Models-page entry. */
+const GITLAB_DUO_AGENT_PROVIDER = {
+  provider: GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id,
+  displayName: GITLAB_DUO_AGENT_TRANSPORT_ROUTE.displayName,
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'gitlab-duo-agent'],
   declared: false,
 } as const
 
@@ -620,6 +666,81 @@ export function factoryDroidAuthorizationFlow(options: FactoryDroidFlowOptions =
   }
 }
 
+/** Test seams for the GitLab Duo agent flow; the plugin uses the real network. */
+export interface GitLabFlowOptions {
+  readonly fetch?: GitLabFetch
+  readonly now?: () => number
+  /** Fixed PKCE material, so a test can script the pasted callback. */
+  readonly state?: string
+  readonly verifier?: string
+}
+
+/**
+ * The `llm-omp-transports/gitlab-duo-agent` sign-in flow.
+ *
+ * @remarks
+ * GitLab's rule is `callback manual-only #true redirect-uri="vscode://…"`: the
+ * browser hands the code to VS Code, so there is no loopback listener at all and
+ * the human pastes the full `vscode://` URL back. The state is mandatory — with no
+ * listener, it is the only thing tying the pasted code to this attempt — and the
+ * exchange echoes the vscode redirect the client is registered with.
+ */
+export function gitlabDuoAgentAuthorizationFlow(options: GitLabFlowOptions = {}): CursorAuthorizationFlow {
+  return {
+    key: GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+    label: 'GitLab Duo Agent',
+    methods: [{ id: 'oauth', label: 'Sign in with GitLab Duo Agent' }],
+    async run(session) {
+      let grant
+      try {
+        grant = await loginGitLab({
+          fetch: options.fetch,
+          now: options.now,
+          state: options.state,
+          verifier: options.verifier,
+          signal: session.signal,
+          onAuthUrl: url =>
+            session.notify({
+              message:
+                'Open this page and approve the GitLab sign-in. Your browser will hand the code to VS Code; paste the full vscode:// address it lands on back here.',
+              url,
+            }),
+          prompt: () =>
+            session.prompt({
+              // The pasted callback carries the authorization code, so the shared
+              // dialog must mask it and offer the paste hint.
+              kind: 'manual-code',
+              message:
+                'Paste the full callback URL from VS Code (or your browser address bar). It starts with vscode://gitlab.gitlab-workflow/authentication.',
+              placeholder: 'vscode://gitlab.gitlab-workflow/authentication?code=…&state=…',
+              signal: session.signal,
+            }),
+        })
+      } catch (cause) {
+        // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
+        if (session.signal.aborted) throw cause
+        if (cause instanceof GitLabAuthError) {
+          throw new LlmError(`llm-omp-transports: GitLab Duo Agent sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
+            cause,
+          })
+        }
+        throw cause
+      }
+      await session.commit({
+        kind: 'grant',
+        // The seam validates the payload as a JSON value, so an absent field must
+        // be absent rather than `undefined`.
+        payload: {
+          access: grant.access,
+          refresh: grant.refresh,
+          expires: grant.expires,
+          ...(grant.email === undefined ? {} : { email: grant.email }),
+        },
+      })
+    },
+  }
+}
+
 /**
  * Load one bundled omp transport on first use.
  *
@@ -629,8 +750,13 @@ export function factoryDroidAuthorizationFlow(options: FactoryDroidFlowOptions =
  * request and its failure reaches that request as a typed `LlmError`.
  */
 function bundledTransport<Model, Options>(
-  artifact: 'cursor' | 'devin' | 'google' | 'factory-droid',
-  exportName: 'streamCursor' | 'streamDevin' | 'streamGoogleGeminiCli' | 'streamFactoryDroid',
+  artifact: 'cursor' | 'devin' | 'google' | 'factory-droid' | 'gitlab-duo-agent',
+  exportName:
+    | 'streamCursor'
+    | 'streamDevin'
+    | 'streamGoogleGeminiCli'
+    | 'streamFactoryDroid'
+    | 'streamGitLabDuoWorkflow',
   label: string,
 ): OmpTransportOf<Model, Options> {
   return (model, context, options) =>
@@ -724,6 +850,24 @@ export function createGoogleAntigravityAdapter(
 }
 
 /**
+ * Build the GitLab Duo agent adapter this plugin registers.
+ *
+ * @remarks
+ * The twin of {@link createFactoryDroidAdapter}: the bundled workflow transport,
+ * lazy, over the one static row and its own credential record.
+ */
+export function createGitLabDuoAgentAdapter(
+  credentials: CredentialRecordsLike,
+  models?: () => readonly string[] | undefined,
+): OmpGitLabDuoAgentAdapter {
+  return new OmpGitLabDuoAgentAdapter({
+    access: createGitLabDuoAgentAccess(credentials),
+    transport: bundledTransport('gitlab-duo-agent', 'streamGitLabDuoWorkflow', 'GitLab Duo Agent'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
+/**
  * Build the Factory Droid adapter this plugin registers.
  *
  * @remarks
@@ -737,6 +881,19 @@ export function createFactoryDroidAdapter(
 ): OmpFactoryDroidAdapter {
   return new OmpFactoryDroidAdapter({
     access: createFactoryDroidAccess(credentials),
+    // The transport needs the account scope to pick the API host; it lives in the
+    // same record the token comes from, so read it beside the credential.
+    identity: async () => {
+      const grant = readFactoryDroidGrant(await credentials.readRecord(FACTORY_DROID_CREDENTIAL_KEY))
+      const scope = {
+        ...(grant?.orgId === undefined ? {} : { orgId: grant.orgId }),
+        ...(grant?.region === undefined ? {} : { region: grant.region }),
+        ...(grant?.inferenceRegion === undefined ? {} : { inferenceRegion: grant.inferenceRegion }),
+      }
+      // An empty scope is the transport's own graceful fallback (it reads the
+      // token's `external_org_id` claim); only a known scope is forwarded.
+      return Object.keys(scope).length === 0 ? undefined : { oauthIdentity: scope }
+    },
     transport: bundledTransport('factory-droid', 'streamFactoryDroid', 'Factory Droid'),
     ...(models === undefined ? {} : { models }),
   })
@@ -769,18 +926,24 @@ export function apply(ctx: Context, config: Config = {}): void {
     [FACTORY_DROID_TRANSPORT_ROUTE.id],
     createFactoryDroidAdapter(host.credentials, models('factory-droid')),
   )
+  ctx.llm.registerAdapter(
+    [GITLAB_DUO_AGENT_ROUTE],
+    createGitLabDuoAgentAdapter(host.credentials, models('gitlab-duo-agent')),
+  )
   ctx.llm.registerConfigurableProviders([
     CURSOR_PROVIDER,
     DEVIN_PROVIDER,
     GOOGLE_GEMINI_CLI_PROVIDER,
     GOOGLE_ANTIGRAVITY_PROVIDER,
     FACTORY_DROID_PROVIDER,
+    GITLAB_DUO_AGENT_PROVIDER,
   ])
   host.authorization.registerFlow(cursorAuthorizationFlow())
   host.authorization.registerFlow(devinAuthorizationFlow())
   host.authorization.registerFlow(googleGeminiCliAuthorizationFlow())
   host.authorization.registerFlow(googleAntigravityAuthorizationFlow())
   host.authorization.registerFlow(factoryDroidAuthorizationFlow())
+  host.authorization.registerFlow(gitlabDuoAgentAuthorizationFlow())
 }
 
 export {
@@ -789,10 +952,17 @@ export {
   FACTORY_DROID_CREDENTIAL_KEY,
   FACTORY_DROID_ROUTE,
   FACTORY_DROID_TRANSPORT_ROUTE,
+  GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+  GITLAB_DUO_AGENT_ROUTE,
+  GITLAB_DUO_AGENT_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
 } from './adapter.js'
 export { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+export { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
+export { createGitLabDuoAgentAccess } from './gitlab/credentials.js'
+export { loginGitLab } from './gitlab/auth.js'
+export type { GitLabGrant } from './gitlab/auth.js'
 export { loginFactoryDroid } from './factory-droid/auth.js'
 export type { FactoryDroidGrant, FactoryDroidIdentity } from './factory-droid/auth.js'
 export { createFactoryDroidAccess } from './factory-droid/credentials.js'

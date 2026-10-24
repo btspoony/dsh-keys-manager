@@ -251,6 +251,33 @@ describe('OmpFactoryDroidAdapter catalog', () => {
     await expect(adapter.listModels('openai')).rejects.toMatchObject({ code: UNKNOWN_PROVIDER })
   })
 
+  it('forwards the stored account scope as the transport oauthIdentity', async () => {
+    const { transport, calls } = scriptedFactoryDroidTransport('factory-droid-text.jsonl')
+    const adapter = new OmpFactoryDroidAdapter({
+      access: async () => 'test-token',
+      transport,
+      identity: async () => ({ oauthIdentity: { orgId: 'org-1', region: 'eu', inferenceRegion: 'eu' } }),
+    })
+
+    await collect(adapter.stream(request()))
+
+    // The transport reads this to pick the EU host; without it the route falls
+    // back to the token's `external_org_id` claim and the global base URL.
+    expect(calls[0]!.options).toHaveProperty('oauthIdentity', {
+      orgId: 'org-1',
+      region: 'eu',
+      inferenceRegion: 'eu',
+    })
+  })
+
+  it('merges no identity for a route that has none', async () => {
+    const { adapter, calls } = adapterFor('factory-droid-text.jsonl')
+
+    await collect(adapter.stream(request()))
+
+    expect(calls[0]!.options).not.toHaveProperty('oauthIdentity')
+  })
+
   it('names its credential record in the route facts', () => {
     expect(FACTORY_DROID_TRANSPORT_ROUTE.credentialKey).toBe('llm-omp-transports/factory-droid')
     expect(FACTORY_DROID_CREDENTIAL_KEY).toBe(FACTORY_DROID_TRANSPORT_ROUTE.credentialKey)

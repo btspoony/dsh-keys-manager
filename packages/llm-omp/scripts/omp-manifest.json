@@ -157,6 +157,39 @@
           "Bun"
         ]
       }
+    },
+    "gitlab-duo-agent": {
+      "entry": "lib/omp/gitlab-duo-agent.mjs",
+      "metafile": "lib/omp/gitlab-duo-agent.metafile.json",
+      "moduleCount": 118,
+      "bytes": 1001890,
+      "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
+      "shimImports": {
+        "pi-utils": [
+          "$env",
+          "$flag",
+          "LRUCache",
+          "classifyJsonPrefix",
+          "escapeXmlText",
+          "extractHttpStatusFromError",
+          "extractRetryHint",
+          "getLogsDir",
+          "isBunTestRuntime",
+          "isEnoent",
+          "isRecord",
+          "isRetryableError",
+          "isUnexpectedSocketCloseMessage",
+          "logger",
+          "parseJsonWithRepair",
+          "stringifyJson",
+          "structuredCloneJSON",
+          "wrapFetchForExtraCa"
+        ],
+        "bun-modules": [],
+        "bun-global": [
+          "Bun"
+        ]
+      }
     }
   },
   "shimSymbols": {
@@ -246,6 +279,10 @@
     "@oh-my-pi/pi-catalog/src/wire/factory-droid.ts": "sha256:c43cae345a4f418e64b216008cdeb81d426f7b9822109984b2c0a2ddef037035",
     "@oh-my-pi/pi-catalog/src/compat/factory-droid.ts": "sha256:fe507dd59c32e6988b60569ed931445f763acf056e373a65e9b444d7e5e4bc8d",
     "@oh-my-pi/pi-catalog/src/compat/rules.json": "sha256:2688dfbeda4b9c9973a9790784ba0c107b3417eafdaf4a66b45ef000a3fbfcd1",
-    "@oh-my-pi/pi-catalog/src/compat/rules/auth/factory-droid.kdl": "sha256:da78b2ffafc1233de69829a1d20a6b3d82e3dbcbe4f3a774b2d2472151242988"
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/factory-droid.kdl": "sha256:da78b2ffafc1233de69829a1d20a6b3d82e3dbcbe4f3a774b2d2472151242988",
+    "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow.ts": "sha256:4423bf48c93c1d09e42b110c060d6fcd0c3a0554085f227d8a93b966eec314b1",
+    "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow-chatml-note.md": "sha256:9f737714289af4e2d5193c8e60216b9ca1978113bd438cd71b4c4cb6226c078b",
+    "@oh-my-pi/pi-catalog/src/discovery/gitlab-duo-workflow.ts": "sha256:74b884bd4b2a319e514fb15226772a262deec7402fd1f47099d4a2955e5f956e",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo-agent.kdl": "sha256:c02c7f89fcf52375cbb6f01491c5dec4f4b71f6fc5c99c22412271e9b7ed44c9"
   }
 }

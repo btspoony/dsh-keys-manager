@@ -179,6 +179,27 @@ export interface FactoryDroidModelRow {
   readonly reasoning: boolean
 }
 
+/**
+ * One row of the generated GitLab Duo **agent** table.
+ *
+ * The route's roster is the single static row its pinned catalog declares
+ * (`models.json` key `gitlab-duo-agent`): the provider's live GraphQL discovery
+ * is a non-goal for this slice, so the picker offers one model and the server may
+ * still pin another (`pinnedModel`), harmlessly. `maxTokens` is absent because the
+ * row declares `null` (the API omits the output-token field for this model).
+ */
+export interface GitLabDuoAgentModelRow {
+  readonly id: string
+  readonly name: string
+  readonly baseUrl: string
+  /** Combined request and response context window in tokens (1M for this row). */
+  readonly contextWindow: number
+  readonly maxTokens?: number
+  readonly input: ('text' | 'image')[]
+  readonly cost: ModelCost
+  readonly reasoning: boolean
+}
+
 /** The omp model object for a Google row: one catalog row plus the transport identity. */
 export interface OmpGoogleModel extends GoogleModelRow {
   readonly api: 'google-gemini-cli'
@@ -507,6 +528,45 @@ export type OmpDevinTransport = (
   options: OmpDevinOptions,
 ) => AsyncIterable<OmpAssistantMessageEvent>
 
+
+/** The omp model object for a GitLab Duo agent row: the catalog row is the model. */
+export interface OmpGitLabDuoAgentModel extends GitLabDuoAgentModelRow {}
+
+/**
+ * Request options handed to the omp GitLab Duo Workflow transport
+ * (`streamGitLabDuoWorkflow`).
+ *
+ * No `headers` and no `fetch`: the transport builds its own REST/WebSocket
+ * requests with the GitLab bearer and its own identity, and DSH adds no
+ * attribution to them. The route's session state is a fresh `Map` per request
+ * (plan A6): a turn without the previous map re-seeds a workflow whose goal
+ * transcript replays the history, which is the transport's own correct path.
+ */
+export interface OmpGitLabDuoWorkflowOptions {
+  /** Bare GitLab token (OAuth access token or `GITLAB_TOKEN`). */
+  readonly apiKey: string
+  readonly signal?: AbortSignal
+  /** Threads turns and seeds the transport's request ids. */
+  readonly sessionId?: string
+  /** Workflow definition; the transport defaults to `ambient`. */
+  readonly workflowDefinition?: 'ambient' | 'software_development' | 'chat'
+  /** Working directory the transport resolves the namespace/project from. */
+  readonly cwd?: string
+  /** Per-request workflow state; a fresh map means "re-seed from the transcript". */
+  readonly providerSessionState?: Map<string, unknown>
+  /** WebSocket constructor seam; the shipped default is Node's global `WebSocket`. */
+  readonly webSocketFactory?: (
+    url: string,
+    options: { headers: Record<string, string>; protocols?: string[] },
+  ) => unknown
+}
+
+/** The injected GitLab Duo agent transport shape: omp's `streamGitLabDuoWorkflow`. */
+export type OmpGitLabDuoAgentTransport = (
+  model: OmpGitLabDuoAgentModel,
+  context: OmpContext,
+  options: OmpGitLabDuoWorkflowOptions,
+) => AsyncIterable<OmpAssistantMessageEvent>
 
 /** The injected Factory Droid transport shape: omp's `streamFactoryDroid`. */
 export type OmpFactoryDroidTransport = (
