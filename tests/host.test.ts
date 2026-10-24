@@ -1852,7 +1852,12 @@ test('adding coreweave installs the seed catalog without running model discovery
     // Discovery cannot carry the declared header, so the probe would only fail.
     assert.equal(discover.mock.calls.length, 0)
     const profile = h.settings.valueOf('llm-pi-ai').providers.coreweave
-    assert.equal(profile.models.length, 44)
+    // The installed profile IS the catalog entry, not an inventory count: a
+    // catalog edit moves this assertion with it, and a profile filled with the
+    // right number of wrong models cannot pass.
+    const seed = EXTRA_PROVIDER_MAP.get('coreweave')!
+    assert.deepEqual(profile.models.map((row: { id: string }) => row.id), seed.models.map(row => row.id))
+    assert.deepEqual(profile.models.map((row: { name?: string }) => row.name), seed.models.map(row => row.name))
     assert.doesNotMatch(state.warnings.join('\n'), /Model discovery failed/)
   } finally {
     await h.close()
