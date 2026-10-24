@@ -512,7 +512,9 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     // The synthesized call carries no `cursorExecResolved` mark, so it is DSH's
     // to run; its arguments are in DSH's read-tool dialect.
     const call = events.find(event => event.type === 'toolcall_end')?.toolCall
-    expect(call).toMatchObject({ type: 'toolCall', name: 'read', arguments: { file_path: 'README.md' } })
+    // Exact equality: a plain path must carry no offset/limit keys at all.
+    expect(call).toMatchObject({ type: 'toolCall', name: 'read' })
+    expect(call?.arguments).toEqual({ file_path: 'README.md' })
     expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).not.toContain(
       'provider.block.cursorExecResolved',
     )
