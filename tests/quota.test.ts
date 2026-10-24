@@ -11,7 +11,16 @@ import {
 } from '../src/quota/model'
 import { QuotaCache } from '../src/quota/cache'
 import type { QuotaFetch } from '../src/quota/fetch'
-import { claudeQuotaProbe, codexQuotaProbe, quotaProbe, resolveQuota } from '../src/quota/providers'
+import {
+  claudeQuotaProbe,
+  codexQuotaProbe,
+  kimiQuotaProbe,
+  minimaxQuotaProbe,
+  opencodeGoQuotaProbe,
+  quotaProbe,
+  resolveQuota,
+  zaiQuotaProbe,
+} from '../src/quota/providers'
 
 const CLAUDE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const CODEX_URL = 'https://chatgpt.com/backend-api/wham/usage'
@@ -225,12 +234,245 @@ test('codex probe derives the reset time from reset_after_seconds', async () => 
   assert.ok(reset >= before + 3_600_000 && reset <= Date.now() + 3_600_000 + 1_000)
 })
 
+test('zai probe sends the bare key and classifies windows by unit', async () => {
+  const captured: Captured = {}
+  const snapshot = await zaiQuotaProbe({
+    token: 'zhipu-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: {
+          limits: [
+            { type: 'TOKENS_LIMIT', percentage: 40, unit: 3, number: 5, nextResetTime: 1_700_000_000_000 },
+            { type: 'TIME_LIMIT', percentage: 75, unit: 6, number: 1, nextResetTime: 1_700_600_000_000 },
+            { type: 'TIME_LIMIT', percentage: 90, unit: 5, number: 1, nextResetTime: 1_700_900_000_000 },
+          ],
+        },
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.headers?.Authorization, 'zhipu-key')
+  assert.equal(snapshot.status, 'ok')
+  const session = snapshot.windows.find((window) => window.id === 'session')
+  const week = snapshot.windows.find((window) => window.id === 'week')
+  assert.ok(session !== undefined && week !== undefined)
+  near(session.usedFraction, 0.4)
+  assert.equal(session.resetsAt, 1_700_000_000_000)
+  near(week.usedFraction, 0.75)
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['session', 'week'],
+  )
+})
+
+test('zai probe prefers exact counters over the rounded percentage', async () => {
+  const snapshot = await zaiQuotaProbe({
+    token: 'key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: {
+          limits: [
+            {
+              type: 'CREDIT_LIMIT',
+              percentage: 11,
+              currentValue: 1438,
+              usage: 12000,
+              unit: 3,
+              number: 5,
+              nextResetTime: 1_700_000_000_000,
+            },
+          ],
+        },
+      }),
+    ),
+  })
+  assert.equal(snapshot.status, 'ok')
+  near(snapshot.windows[0]?.usedFraction, 1438 / 12000)
+})
+
+test('zai probe treats an explicit rejection or empty limits as error', async () => {
+  const rejected = await zaiQuotaProbe({
+    token: 'key',
+    fetch: fakeFetch(jsonResponse(200, { success: false, code: 401 })),
+  })
+  assert.equal(rejected.status, 'error')
+  assert.equal(rejected.reason, 'usage request rejected')
+
+  const noWindows = await zaiQuotaProbe({
+    token: 'key',
+    fetch: fakeFetch(jsonResponse(200, { success: true, data: { limits: [{ unit: 5, percentage: 10 }] } })),
+  })
+  assert.equal(noWindows.status, 'error')
+})
+
+test('kimi probe reads string counters and classifies window durations', async () => {
+  const captured: Captured = {}
+  const snapshot = await kimiQuotaProbe({
+    token: 'kimi-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        usage: { limit: '1000', remaining: '250', resetTime: '2023-11-20T00:00:00.000Z' },
+        limits: [
+          { window: { duration: 300, time_unit: 'minute' }, detail: { limit: '100', remaining: '70', resetTime: 1_700_000_000 } },
+          { window: { duration: 168, timeUnit: 'hour' }, detail: { limit: '1000', remaining: '900' } },
+        ],
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.headers?.Authorization, 'Bearer kimi-token')
+  assert.equal(snapshot.status, 'ok')
+  const session = snapshot.windows.find((window) => window.id === 'session')
+  const week = snapshot.windows.find((window) => window.id === 'week')
+  assert.ok(session !== undefined && week !== undefined)
+  near(session.usedFraction, 0.3)
+  assert.equal(session.resetsAt, 1_700_000_000_000)
+  // The aggregate usage row (75% used) outrank the 168h limits row (10% used).
+  near(week.usedFraction, 0.75)
+  assert.equal(week.resetsAt, Date.parse('2023-11-20T00:00:00.000Z'))
+})
+
+test('minimax probe derives both windows from the plan buckets and keeps the tightest', async () => {
+  const captured: Captured = {}
+  const snapshot = await minimaxQuotaProbe({
+    token: 'mm-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        base_resp: { status_code: 0 },
+        model_remains: [
+          {
+            model_name: 'general',
+            current_interval_total_count: 100,
+            current_interval_usage_count: 30,
+            current_interval_remaining_count: 70,
+            end_time: 1_700_000_000_000,
+            remains_time: 3_600_000,
+            current_weekly_total_count: 1000,
+            current_weekly_usage_count: 400,
+            weekly_end_time: 1_700_600_000_000,
+          },
+          {
+            model_name: 'video',
+            current_interval_total_count: 100,
+            current_interval_usage_count: 80,
+            current_interval_remaining_count: 20,
+            end_time: 1_700_000_500_000,
+            current_weekly_total_count: 1000,
+            current_weekly_usage_count: 500,
+            weekly_end_time: 1_700_600_500_000,
+          },
+        ],
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.headers?.Authorization, 'Bearer mm-key')
+  assert.equal(snapshot.status, 'ok')
+  const session = snapshot.windows.find((window) => window.id === 'session')
+  const week = snapshot.windows.find((window) => window.id === 'week')
+  assert.ok(session !== undefined && week !== undefined)
+  near(session.usedFraction, 0.8)
+  assert.equal(session.resetsAt, 1_700_000_500_000)
+  near(week.usedFraction, 0.5)
+  assert.equal(week.resetsAt, 1_700_600_500_000)
+})
+
+test('minimax probe treats a non-zero base_resp as error and falls back to remains_time', async () => {
+  const rejected = await minimaxQuotaProbe({
+    token: 'mm-key',
+    fetch: fakeFetch(jsonResponse(200, { base_resp: { status_code: 1004 } })),
+  })
+  assert.equal(rejected.status, 'error')
+
+  const before = Date.now()
+  const relative = await minimaxQuotaProbe({
+    token: 'mm-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        base_resp: { status_code: 0 },
+        model_remains: [
+          {
+            model_name: 'general',
+            current_interval_total_count: 100,
+            current_interval_remaining_count: 60,
+            remains_time: 7_200_000,
+          },
+        ],
+      }),
+    ),
+  })
+  assert.equal(relative.status, 'ok')
+  near(relative.windows[0]?.usedFraction, 0.4)
+  const resetsAt = relative.windows[0]?.resetsAt ?? 0
+  assert.ok(resetsAt >= before + 7_200_000 && resetsAt <= Date.now() + 7_200_000 + 1_000)
+})
+
+test('opencode-go probe maps rolling and weekly windows and honours rate-limited', async () => {
+  const captured: Captured = {}
+  const snapshot = await opencodeGoQuotaProbe({
+    token: 'oc-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        usage: {
+          rolling: { status: 'ok', percent: 25, resetsAt: '2023-11-14T23:00:00.000Z' },
+          weekly: { status: 'rate-limited', percent: 80, resets_at: '2023-11-20T00:00:00.000Z' },
+          monthly: { status: 'ok', percent: 99, resetsAt: '2023-12-01T00:00:00.000Z' },
+        },
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.headers?.Authorization, 'Bearer oc-key')
+  assert.equal(snapshot.status, 'ok')
+  const session = snapshot.windows.find((window) => window.id === 'session')
+  const week = snapshot.windows.find((window) => window.id === 'week')
+  assert.ok(session !== undefined && week !== undefined)
+  near(session.usedFraction, 0.25)
+  assert.equal(session.resetsAt, Date.parse('2023-11-14T23:00:00.000Z'))
+  assert.equal(week.usedFraction, 1)
+  assert.equal(week.resetsAt, Date.parse('2023-11-20T00:00:00.000Z'))
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['session', 'week'],
+  )
+})
+
 test('unknown route ids have no probe and resolve to absent', async () => {
-  assert.equal(quotaProbe('kimi'), undefined)
+  assert.equal(quotaProbe('no-such-provider'), undefined)
   assert.notEqual(quotaProbe('claude'), undefined)
-  const snapshot = await resolveQuota('kimi', { token: 'tok' })
+  const snapshot = await resolveQuota('no-such-provider', { token: 'tok' })
   assert.equal(snapshot.status, 'absent')
   assert.deepEqual(snapshot.windows, [])
+})
+
+test('route id variants resolve to their provider probe', () => {
+  const variants: Array<[string, string]> = [
+    ['claude', 'claude'],
+    ['anthropic', 'claude'],
+    ['codex', 'codex'],
+    ['openai-codex', 'codex'],
+    ['zai', 'zai'],
+    ['zai-coding-cn', 'zai'],
+    ['zhipu-coding-plan', 'zai'],
+    ['kimi', 'kimi'],
+    ['kimi-code', 'kimi'],
+    ['kimi-coding', 'kimi'],
+    ['minimax', 'minimax'],
+    ['minimax-code', 'minimax'],
+    ['minimax-code-cn', 'minimax'],
+    ['opencode-go', 'opencode-go'],
+  ]
+  for (const [route, canonical] of variants) {
+    assert.equal(quotaProbe(route), quotaProbe(canonical), `${route} → ${canonical}`)
+  }
+  assert.equal(quotaProbe('opencode'), undefined)
+  assert.equal(quotaProbe('github-copilot'), undefined)
 })
 
 test('cache serves one snapshot for the whole TTL window', async () => {
