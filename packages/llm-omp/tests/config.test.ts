@@ -214,6 +214,10 @@ interface RegisteredHost {
   readonly records: string[]
   /** Fire a `credentials/record-updated` at the listener `apply` registered. */
   readonly emitRecordUpdated: (key: string) => void
+  /** The lines `ctx.logger.warn` received. */
+  readonly warnings: string[]
+  /** Make subsequent `listRecords` reads reject (the reconcile swallows it). */
+  readonly failReads: (error: Error) => void
 }
 
 /** Let pending reconcile chains settle (each does one async read + sync replaces). */
@@ -223,14 +227,18 @@ async function flushReconcile(): Promise<void> {
 }
 
 /** A fake `ctx` implementing exactly the seams `apply` reaches. */
-function fakeHost(record: { access: string; expires: number; projectId: string } = {
-  access: 'google-token',
-  expires: FAR_FUTURE,
-  projectId: 'project-1',
-}): RegisteredHost {
+function fakeHost(
+  record: { access: string; expires: number; projectId: string } = {
+    access: 'google-token',
+    expires: FAR_FUTURE,
+    projectId: 'project-1',
+  },
+  options: { omitListRecords?: boolean } = {},
+): RegisteredHost {
   const adapters: RegisteredHost['adapters'][number][] = []
   const providers: { provider: string; settingsPath: readonly string[] }[] = []
   const flows: RegisteredHost['flows'][number][] = []
+  const warnings: string[] = []
   // All seven records by default, so the registration-order pins below see the
   // full post-reconcile set; the signed-in tests overwrite `records`.
   const records = [
@@ -243,10 +251,19 @@ function fakeHost(record: { access: string; expires: number; projectId: string }
     'llm-omp-transports/gitlab-duo-agent',
   ]
   const listeners: ((key: unknown) => unknown)[] = []
-  const credentials = {
+  let readFailure: Error | undefined
+  const credentials: Record<string, unknown> = {
     readRecord: async () => ({ kind: 'grant' as const, payload: record }),
     modifyRecord: async () => ({ kind: 'grant' as const, payload: record }),
-    listRecords: async () => records.map(key => ({ key, kind: 'grant' as const })),
+    // A missing `listRecords` simulates the seam degradation path.
+    ...(options.omitListRecords
+      ? {}
+      : {
+          listRecords: async () => {
+            if (readFailure !== undefined) throw readFailure
+            return records.map(key => ({ key, kind: 'grant' as const }))
+          },
+        }),
   }
   return {
     adapters,
@@ -255,6 +272,10 @@ function fakeHost(record: { access: string; expires: number; projectId: string }
     records,
     emitRecordUpdated: key => {
       for (const listener of listeners) listener(key)
+    },
+    warnings,
+    failReads: error => {
+      readFailure = error
     },
     ctx: {
       llm: {
@@ -288,7 +309,11 @@ function fakeHost(record: { access: string; expires: number; projectId: string }
         if (name === 'credentials/record-updated') listeners.push(listener as (key: unknown) => unknown)
         return () => {}
       },
-      logger: { warn() {} },
+      logger: {
+        warn: (...args: unknown[]) => {
+          warnings.push(args.map(String).join(' '))
+        },
+      },
     } as unknown as Context,
   }
 }
@@ -584,5 +609,37 @@ describe('signed-in reconcile', () => {
     expect(host.providers.map(entry => entry.provider)).not.toContain('devin')
     expect(host.adapters[1]!.providers).toEqual([])
     expect(host.providers).toHaveLength(6)
+  })
+})
+
+describe('reconcile degradation paths', () => {
+  it('a failing read after a successful reconcile keeps both sets and logs instead of rejecting', async () => {
+    const host = fakeHost()
+    apply(host.ctx)
+    await flushReconcile()
+    expect(host.providers).toHaveLength(7)
+
+    host.failReads(new Error('store gone'))
+    host.emitRecordUpdated('llm-omp-transports/cursor')
+    await flushReconcile()
+
+    // The previous set survives; the listener swallowed the rejection.
+    expect(host.providers).toHaveLength(7)
+    expect(host.adapters.map(adapter => adapter.providers)).toHaveLength(7)
+    expect(host.adapters.every(adapter => adapter.providers.length === 1)).toBe(true)
+    expect(host.warnings.filter(line => line.includes('provider reconcile failed'))).toHaveLength(1)
+  })
+
+  it('a seam without listRecords keeps all seven routes registered and warns once', async () => {
+    const host = fakeHost(undefined, { omitListRecords: true })
+    host.records.length = 0
+    apply(host.ctx)
+    await flushReconcile()
+
+    // No reconcile ran: the initial all-or-nothing registration is the live set.
+    expect(host.providers.map(entry => entry.provider)).toEqual(TRANSPORT_PROVIDERS.map(entry => entry.provider))
+    expect(host.adapters).toHaveLength(7)
+    expect(host.adapters.every(adapter => adapter.providers.length === 1)).toBe(true)
+    expect(host.warnings.filter(line => line.includes('no listRecords'))).toHaveLength(1)
   })
 })

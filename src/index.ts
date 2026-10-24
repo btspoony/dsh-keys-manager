@@ -6870,7 +6870,6 @@ export class KeysManagerService {
     }
   }
 
-  /** Find one directory entry by route id. */
   /**
    * Build one provider view from a directory entry (live or the transports
    * package's static list, which unions the signed-out transport routes back
@@ -6937,6 +6936,7 @@ export class KeysManagerService {
     }
   }
 
+  /** Find one directory entry by route id. */
   private directoryEntry(provider: string): DirectoryEntry | undefined {
     return this.ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider)
   }

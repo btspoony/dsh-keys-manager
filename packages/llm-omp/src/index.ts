@@ -1118,32 +1118,43 @@ export function apply(ctx: Context, config: Config = {}): void {
   )
   const directoryHandle: DirectoryRegistrationHandle = ctx.llm.registerConfigurableProviders(TRANSPORT_PROVIDERS)
 
-  // Serialize reconciles through one chain: a second credential event while a
-  // read is in flight must not interleave two `replace` sequences.
-  let chain: Promise<void> = Promise.resolve()
-  const reconcile = (): void => {
-    chain = chain
-      .then(async () => {
-        const records = await (host.credentials as Partial<CredentialRecordListLike>).listRecords!()
-        const present = new Set(records.map(record => record.key))
-        const entries = TRANSPORT_PROVIDERS.filter((_, index) => present.has(TRANSPORT_CREDENTIAL_KEYS[index]!))
-        for (const [index, handle] of adapterHandles.entries()) {
-          handle.replace(present.has(TRANSPORT_CREDENTIAL_KEYS[index]!) ? [TRANSPORT_PROVIDERS[index]!.provider] : [])
-        }
-        directoryHandle.replace(entries)
-      })
-      .catch(cause => {
-        // The listener must never reject: keep the previous set and log.
-        ctx.logger?.warn?.('llm-omp-transports: provider reconcile failed — %s', cause instanceof Error ? cause.message : String(cause))
-      })
+  if (TRANSPORT_PROVIDERS.length !== TRANSPORT_CREDENTIAL_KEYS.length) {
+    // Loud failure beats a silent half-route: the two arrays are paired only
+    // by index, so an uneven pair would quietly reconcile a route away.
+    throw new Error(
+      `llm-omp-transports: TRANSPORT_PROVIDERS (${TRANSPORT_PROVIDERS.length}) and TRANSPORT_CREDENTIAL_KEYS (${TRANSPORT_CREDENTIAL_KEYS.length}) drifted apart`,
+    )
   }
-
   const listRecords = (host.credentials as Partial<CredentialRecordListLike>).listRecords
   if (typeof listRecords === 'function') {
+    // Serialize reconciles through one chain: a second credential event while
+    // a read is in flight must not interleave two `replace` sequences.
+    let chain: Promise<void> = Promise.resolve()
+    const reconcile = (): void => {
+      chain = chain
+        .then(async () => {
+          const records = await listRecords.call(host.credentials)
+          const present = new Set(records.map(record => record.key))
+          const entries = TRANSPORT_PROVIDERS.filter((_, index) => present.has(TRANSPORT_CREDENTIAL_KEYS[index]!))
+          for (const [index, handle] of adapterHandles.entries()) {
+            handle.replace(present.has(TRANSPORT_CREDENTIAL_KEYS[index]!) ? [TRANSPORT_PROVIDERS[index]!.provider] : [])
+          }
+          directoryHandle.replace(entries)
+        })
+        .catch(cause => {
+          // The listener must never reject: keep the previous set and log.
+          ctx.logger?.warn?.('llm-omp-transports: provider reconcile failed — %s', cause instanceof Error ? cause.message : String(cause))
+        })
+    }
     reconcile()
     // Registered on the plugin fiber, so disposal removes it with the plugin.
     const on = (ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => unknown) => () => void }).on
     if (typeof on === 'function') on.call(ctx, 'credentials/record-updated', () => reconcile())
+    else {
+      // Parity with the root package's `warnSubscriptionLost`: without the
+      // event the route set freezes at the first reconcile.
+      ctx.logger?.warn?.('llm-omp-transports: the host exposes no credentials/record-updated subscription; the route set will not follow sign-in changes')
+    }
   } else {
     ctx.logger?.warn?.('llm-omp-transports: the credential seam exposes no listRecords; all seven routes stay registered')
   }
