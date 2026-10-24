@@ -1,7 +1,7 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
+import type { ActionOutcome, ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import {
@@ -1150,6 +1150,11 @@ function quotaRow(row: KeyView, t: T, now: number): React.ReactElement {
   )
 }
 
+/** Snapshot fingerprint: one stable string per account row. */
+function quotaSignature(provider: ProviderView): string {
+  return provider.keys.map(key => `${key.id}:${key.quota?.status ?? '-'}:${key.quota?.fetchedAt ?? 0}`).join('|')
+}
+
 /**
  * The expanded card's usage strip. Pull-only (D2): it asks for a refresh when
  * a row has no snapshot or its snapshot is past the TTL, and shows the cached
@@ -1161,30 +1166,52 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
   const [refreshing, setRefreshing] = React.useState(false)
   // A rejected refresh leaves the rows unchanged, so the signature cannot
   // move on its own; remembering the attempted signature keeps a failed read
-  // from retrying on every minute tick. Fresh data clears it.
+  // from retrying on every minute tick. A successful answer clears it.
   const attempted = React.useRef<string | null>(null)
+  // The request itself owns the busy flag. A minute tick re-runs this effect
+  // and React cleans up the previous run, so clearing the flag from that run's
+  // closure could drop the only `setRefreshing(false)` and leave the label on
+  // screen for good (QC FIX-1).
+  const pending = React.useRef<Promise<ActionOutcome> | null>(null)
+  // A successful answer that left the rows unchanged may be a server cache
+  // hit; it earns exactly one later retry, and this records the state that
+  // already spent it so a stale row cannot be re-read forever.
+  const retried = React.useRef<string | null>(null)
   const quotas = provider.keys.map(key => key.quota)
   const needsRefresh = quotaNeedsRefresh(quotas, now)
   // Re-evaluated once a minute so a TTL expiry refreshes an already-open card
   // without a timer of its own (the page tick supplies `now`).
   const minute = Math.floor(now / 60_000)
-  const signature = provider.keys.map(key => `${key.id}:${key.quota?.status ?? '-'}:${key.quota?.fetchedAt ?? 0}`).join('|')
+  const signature = quotaSignature(provider)
 
   React.useEffect(() => {
     if (!needsRefresh) {
       attempted.current = null
+      retried.current = null
       return undefined
     }
     if (attempted.current === signature) return undefined
+    if (retried.current === signature) return undefined
     attempted.current = signature
-    let live = true
     setRefreshing(true)
-    void runtime.store.refreshQuota(provider.provider).then(() => {
-      if (live) setRefreshing(false)
+    const request = runtime.store.refreshQuota(provider.provider)
+    pending.current = request
+    void request.then(outcome => {
+      // A newer read owns the flag now; this answer is stale news.
+      if (pending.current !== request) return
+      pending.current = null
+      setRefreshing(false)
+      if (!outcome.ok) return
+      // A successful answer that moved the rows is fresh data; one that did
+      // not may be a server cache hit or a last-good reply, so it is not
+      // terminal — it earns one later retry. A rejection keeps the one-shot
+      // lock, so a failing RPC cannot loop.
+      const latest = runtime.store.getSnapshot().state?.providers.find(row => row.provider === provider.provider)
+      const moved = latest === undefined || quotaSignature(latest) !== signature
+      attempted.current = null
+      retried.current = moved ? null : signature
     })
-    return () => {
-      live = false
-    }
+    return undefined
   }, [provider.provider, signature, minute, needsRefresh])
 
   return h('div', { className: 'km-quota-strip' },

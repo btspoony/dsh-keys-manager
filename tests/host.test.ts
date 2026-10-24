@@ -10,6 +10,7 @@ import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOf
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import type { OmpOAuthAdapter } from '../src/oauth/adapter'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
+import { resolveQuota } from '../src/quota/providers'
 import { KeysManagerStore, sanitizeState } from '../src/store'
 import { cursorCatalogModels } from 'dsh-llm-omp-transports'
 import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
@@ -18310,6 +18311,35 @@ test('a quota refresh never marks durable state dirty', async () => {
     await h.service.quotaRefresh('anthropic')
     assert.equal(touch.mock.calls.length, 0)
     touch.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('quotaRefresh guards its input and never resolves a prototype key', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    await assert.rejects(() => h.service.quotaRefresh(''), TypeError)
+    // gated on the guard, not on the probe table
+    const prototypeKey = await h.service.quotaRefresh('constructor')
+    assert.equal(prototypeKey.providers.some(provider => provider.provider === 'constructor'), false)
+    // A prototype key must not reach a probe either.
+    const snapshot = await resolveQuota('constructor', { token: 'tok' })
+    assert.equal(snapshot.status, 'absent')
+  } finally {
+    await h.close()
+  }
+})
+
+test('the projected quota carries no host-side reason', async () => {
+  const { h } = await harnessWithSeededAccount()
+  try {
+    h.service.quotaFetch = quotaFetchStub({ message: 'vendor is down' }, { status: 500 })
+    const state = await h.service.quotaRefresh('anthropic')
+    const row = keyRows(state, 'anthropic').find(candidate => candidate.kind === 'oauth')!
+    assert.equal(row.quota?.status, 'error')
+    assert.equal(Object.hasOwn(row.quota!, 'reason'), false)
+    assert.deepEqual(row.quota?.windows, [])
   } finally {
     await h.close()
   }

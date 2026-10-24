@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import React from 'react'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
-import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
+import { cooldownMinutes, cooldownMs, graceMinutes, graceMs, quotaNeedsRefresh } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
 import { KeysManagerBody, KeysManagerCard, oauthCapable, originOf } from '../src/client/ui'
 import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, QuotaView, QuotaWindowId, QuotaWindowView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
@@ -3876,8 +3876,10 @@ describe('quota surface', () => {
   async function mountExpanded(
     state: StateView,
     answer?: RpcAnswer,
+    decorate?: (harness: Harness) => void,
   ): Promise<{ view: ReturnType<typeof mountView>; harness: Harness; store: ReturnType<typeof createStore> }> {
     const harness = makeContext(answer ?? { ok: true, value: state })
+    decorate?.(harness)
     const store = createStore(harness.ctx)
     setRuntimeContext({ ctx: harness.ctx, store })
     const view = mountView(KeysManagerBody)
@@ -4032,9 +4034,9 @@ describe('quota surface', () => {
     const base = Date.now()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
     try {
-      // The host stamps `fetchedAt: 0` on absent answers; treating that as
-      // stale would re-issue the RPC every minute for a plan that can never
-      // report (review finding F1).
+      // The host's cache owns `fetchedAt` for every status and owns non-`ok`
+      // retry (backoff); only `ok` snapshots age on the client, so a
+      // non-reporting row is never asked again (review findings F1/FIX-6).
       const { view, harness, store } = await mountExpanded(
         quotaState({ status: 'absent', fetchedAt: 0, windows: [] }),
       )
@@ -4090,6 +4092,93 @@ describe('quota surface', () => {
       clock.mockRestore()
       setRuntimeContext(null)
     }
+  })
+
+  test('a slow coalesced read clears the busy state after a minute tick', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const empty = quotaState(undefined)
+    const filled = quotaState({
+      status: 'ok',
+      fetchedAt: base + 60_000,
+      windows: [quotaWindow('week', 0.5, 30)],
+    })
+    const { view, harness, store } = await mountExpanded(empty, undefined, context => {
+      const rpc = context.ctx.connection.rpc as { call: ClientContext['connection']['rpc']['call'] }
+      rpc.call = async (channel, endpoint, payload) => {
+        context.calls.push({ channel, endpoint, payload })
+        if (endpoint === 'keysManager/quotaRefresh') {
+          await gate
+          return { ok: true, value: filled }
+        }
+        return { ok: true, value: empty }
+      }
+    })
+    try {
+      // The read is in flight and shown as busy…
+      expect(hostNodes(view.nodes).map(node => node.text).join('')).toContain('刷新中…')
+      expect(quotaRefreshes(harness)).toBe(1)
+      // …then a minute tick re-runs the effect while the SAME promise is still
+      // pending (coalesced), whose cleanup used to drop the only reset.
+      clock.mockReturnValue(base + 60_000)
+      store.tick()
+      view.render()
+      await view.flush()
+      release()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      await view.flush()
+      expect(hostNodes(view.nodes).map(node => node.text).join('')).not.toContain('刷新中…')
+      expect(findByClass(view.nodes, 'km-quota-strip')).toHaveLength(1)
+      // Bounded: the coalesced tick did not start a second read.
+      expect(quotaRefreshes(harness)).toBe(1)
+    } finally {
+      view.unmount()
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a successful cache-hit answer retries at most once for the same stale state', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    // `fetchedAt: 0` is what a server cache hit or a last-good reply returns;
+    // it stays stale from the client's point of view forever.
+    const stale = quotaState({ status: 'ok', fetchedAt: 0, windows: [quotaWindow('week', 0.5, 30)] })
+    const { view, harness, store } = await mountExpanded(stale, { ok: true, value: stale })
+    try {
+      const afterExpand = quotaRefreshes(harness)
+      expect(afterExpand).toBeGreaterThanOrEqual(1)
+      // At most the first attempt plus the one retry an unchanged answer earns.
+      expect(afterExpand).toBeLessThanOrEqual(2)
+      for (let minute = 1; minute <= 3; minute += 1) {
+        clock.mockReturnValue(base + minute * 60_000)
+        store.tick()
+        view.render()
+        await view.flush()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+      expect(quotaRefreshes(harness)).toBe(afterExpand)
+      expect(hostNodes(view.nodes).map(node => node.text).join('')).not.toContain('刷新中…')
+      expect(progressBars(view.nodes)).toHaveLength(1)
+    } finally {
+      view.unmount()
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('the client TTL matches the server maximum freshness', async () => {
+    const fresh = { status: 'ok' as const, fetchedAt: 0, windows: [] }
+    expect(quotaNeedsRefresh([fresh], 374_999)).toBe(false)
+    expect(quotaNeedsRefresh([fresh], 375_000)).toBe(false)
+    expect(quotaNeedsRefresh([fresh], 375_001)).toBe(true)
+    // Non-`ok` statuses never age: the host owns their retry schedule.
+    expect(quotaNeedsRefresh([{ status: 'absent', fetchedAt: 0, windows: [] }], Number.MAX_SAFE_INTEGER)).toBe(false)
+    expect(quotaNeedsRefresh([undefined], 0)).toBe(true)
   })
 
   test('the quota key set holds EN+ZH parity in both locale sources', () => {

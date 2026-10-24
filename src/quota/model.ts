@@ -40,14 +40,24 @@ function clampFraction(value: number): number {
   return Math.min(1, Math.max(0, value))
 }
 
-/** Used percentage (`0`..`100`, may exceed) → used fraction; `undefined` when not finite. */
+/**
+ * Used percentage (`0`..`100`, may exceed) → used fraction. A negative count
+ * is not "0% used" — it is a vendor payload we cannot interpret, so it yields
+ * `undefined` and the caller drops the window instead of printing a fake bar.
+ * The upper clamp stays: over-100% still means exhausted.
+ */
 export function fractionFromUsed(usedPercent: number): number | undefined {
-  return Number.isFinite(usedPercent) ? clampFraction(usedPercent / 100) : undefined
+  if (!Number.isFinite(usedPercent) || usedPercent < 0) return undefined
+  return clampFraction(usedPercent / 100)
 }
 
-/** Remaining percentage (`0`..`100`) → used fraction. */
+/**
+ * Remaining percentage (`0`..`100`) → used fraction. Remaining above 100% is
+ * equally uninterpretable and yields `undefined`.
+ */
 export function fractionFromRemaining(remainingPercent: number): number | undefined {
-  return Number.isFinite(remainingPercent) ? clampFraction(1 - remainingPercent / 100) : undefined
+  if (!Number.isFinite(remainingPercent) || remainingPercent < 0 || remainingPercent > 100) return undefined
+  return clampFraction(1 - remainingPercent / 100)
 }
 
 /** Epoch seconds → epoch milliseconds. */

@@ -43,8 +43,12 @@ export function modelPickerRows(view: TransportModelsView): Array<{ id: string; 
   return view.catalog.map(row => ({ id: row.id, name: row.name, selected: selected.has(row.id) }))
 }
 
-/** How long a snapshot serves before the strip asks for a new one (D4). */
-export const QUOTA_TTL_MS = 300_000
+/**
+ * How long a snapshot serves before the strip asks for a new one (D4). This is
+ * the server's MAXIMUM freshness (`ttlMs * (1 + jitterRatio)` = 300 s × 1.25);
+ * asking earlier could be answered by a guaranteed cache hit.
+ */
+export const QUOTA_TTL_MS = 375_000
 
 /** Short window labels; technical abbreviations, identical in both locales. */
 export const QUOTA_WINDOW_LABEL: Record<QuotaWindowId, string> = { session: '5h', week: 'W' }
@@ -86,9 +90,9 @@ export function tightestQuotaWindow(quotas: ReadonlyArray<QuotaView | undefined>
 
 /**
  * True while any row still has no snapshot, or holds a usable one past its
- * TTL. Only `ok` snapshots age out: the host stamps `fetchedAt: 0` on
- * `absent`/`unauthorized`/`error` answers and caches them under its own
- * backoff, so treating those as stale would re-issue a refresh forever.
+ * TTL. The host's cache owns `fetchedAt` for every status and owns the retry
+ * schedule for non-`ok` answers (10 s / 60 s backoff); only `ok` snapshots age
+ * out on the client, otherwise a non-reporting row would be asked forever.
  */
 export function quotaNeedsRefresh(quotas: ReadonlyArray<QuotaView | undefined>, now: number): boolean {
   return quotas.some(

@@ -91,8 +91,10 @@ function resetOf(row: Record<string, unknown>, keys: readonly string[]): number 
 
 /** Used fraction from a used/limit counter pair; `undefined` when unusable. */
 function fractionFromCounts(used: number | undefined, limit: number | undefined): number | undefined {
-  if (used === undefined || limit === undefined || limit <= 0) return undefined
-  return Math.min(1, Math.max(0, used / limit))
+  // A negative used count (remaining above the limit) is not "0% used": drop
+  // the window instead of rendering a fake empty bar.
+  if (used === undefined || limit === undefined || limit <= 0 || used < 0) return undefined
+  return Math.min(1, used / limit)
 }
 
 /** A span under a day is the session window; longer spans are the weekly pool. */
@@ -150,7 +152,9 @@ export const codexQuotaProbe: QuotaProbe = async ({ token, accountId, signal, fe
   const read = await readQuotaJson(CODEX_USAGE_URL, headers, { fetch, signal })
   return snapshotFromRead(read, (body) => {
     const rateLimit = asRecord(body.rate_limit) ?? asRecord(body.rateLimit) ?? {}
-    const windows: QuotaWindow[] = []
+    // Both slots can describe the same window (a 5h primary and a 5h
+    // secondary), so collapse repeated ids and keep the tighter one.
+    const windows = new Map<QuotaWindowId, QuotaWindow>()
     const add = (raw: unknown, fallback: QuotaWindowId): void => {
       const row = asRecord(raw)
       if (row === undefined) return
@@ -163,11 +167,11 @@ export const codexQuotaProbe: QuotaProbe = async ({ token, accountId, signal, fe
       const seconds = toNumber(row.limit_window_seconds ?? row.limitWindowSeconds)
       const id: QuotaWindowId =
         seconds === undefined ? fallback : seconds >= WEEK_SECONDS_THRESHOLD ? 'week' : 'session'
-      windows.push({ id, usedFraction, resetsAt })
+      windows.set(id, tighterWindow(windows.get(id), { id, usedFraction, resetsAt }))
     }
     add(rateLimit.primary_window, 'session')
     add(rateLimit.secondary_window, 'week')
-    return windows
+    return [...windows.values()]
   })
 }
 
@@ -286,8 +290,8 @@ export const minimaxQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) =>
         const left = toNumber(row[remaining])
         const usedFraction =
           fractionFromCounts(used, limit) ??
-          (left !== undefined && limit !== undefined && limit > 0
-            ? Math.min(1, Math.max(0, 1 - left / limit))
+          (left !== undefined && limit !== undefined && limit > 0 && left <= limit
+            ? Math.min(1, 1 - left / limit)
             : undefined)
         const resetsAt =
           resetOf(row, [endTime]) ?? resetAfterMs(toNumber(row[remainsTime]))
@@ -374,7 +378,9 @@ const QUOTA_PROBES: Readonly<Record<string, QuotaProbe>> = Object.freeze({
 
 /** The probe for a route id, or `undefined` when the provider exposes no usage API. */
 export function quotaProbe(provider: string): QuotaProbe | undefined {
-  return QUOTA_PROBES[provider]
+  // Own-property check: a plain index would answer `constructor` with a
+  // function and hand it back as if it were a probe.
+  return Object.hasOwn(QUOTA_PROBES, provider) ? QUOTA_PROBES[provider] : undefined
 }
 
 /**

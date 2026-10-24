@@ -68,11 +68,66 @@ test('fraction normalizers invert used and remaining percentages', () => {
   assert.equal(fractionFromUsed(100), 1)
   assert.equal(fractionFromUsed(140), 1)
   assert.equal(fractionFromUsed(Number.NaN), undefined)
+  // A negative count is not "0% used": it yields no window at all.
+  assert.equal(fractionFromUsed(-5), undefined)
 
   assert.equal(fractionFromRemaining(100), 0)
   near(fractionFromRemaining(58), 0.42)
   assert.equal(fractionFromRemaining(0), 1)
-  assert.equal(fractionFromRemaining(-20), 1)
+  assert.equal(fractionFromRemaining(-20), undefined)
+  assert.equal(fractionFromRemaining(120), undefined)
+})
+
+test('a negative used count drops the window instead of rendering 0%', async () => {
+  const rejected = await claudeQuotaProbe({
+    token: 'tok',
+    fetch: fakeFetch(jsonResponse(200, { five_hour: { utilization: -5, resets_at: '2026-01-01T00:00:00.000Z' } })),
+  })
+  assert.equal(rejected.status, 'error')
+  assert.deepEqual(rejected.windows, [])
+
+  // The valid sibling window still renders.
+  const partial = await claudeQuotaProbe({
+    token: 'tok',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        five_hour: { utilization: -5, resets_at: '2026-01-01T00:00:00.000Z' },
+        seven_day: { utilization: 20, resets_at: '2026-01-05T00:00:00.000Z' },
+      }),
+    ),
+  })
+  assert.equal(partial.status, 'ok')
+  assert.deepEqual(partial.windows.map(window => window.id), ['week'])
+
+  const zai = await zaiQuotaProbe({
+    token: 'key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: { limits: [{ type: 'TOKENS_LIMIT', percentage: -10, unit: 3, number: 5, nextResetTime: 1_700_000_000_000 }] },
+      }),
+    ),
+  })
+  assert.equal(zai.status, 'error')
+
+  // remaining above the limit means the counters contradict each other.
+  const minimax = await minimaxQuotaProbe({
+    token: 'mm-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        base_resp: { status_code: 0 },
+        model_remains: [
+          {
+            model_name: 'general',
+            current_interval_total_count: 100,
+            current_interval_remaining_count: 130,
+            end_time: 1_700_000_000_000,
+          },
+        ],
+      }),
+    ),
+  })
+  assert.equal(minimax.status, 'error')
 })
 
 test('reset normalizers accept epoch seconds, epoch milliseconds and ISO strings', () => {
@@ -443,12 +498,36 @@ test('opencode-go probe maps rolling and weekly windows and honours rate-limited
   )
 })
 
+test('codex probe collapses two same-length windows onto the tighter one', async () => {
+  const snapshot = await codexQuotaProbe({
+    token: 'tok',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        rate_limit: {
+          primary_window: { used_percent: 40, limit_window_seconds: 18000, reset_at: 1_700_000_000 },
+          secondary_window: { used_percent: 80, limit_window_seconds: 18000, resets_at: 1_700_100_000 },
+        },
+      }),
+    ),
+  })
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(snapshot.windows.map(window => window.id), ['session'])
+  near(snapshot.windows[0]?.usedFraction, 0.8)
+  assert.equal(snapshot.windows[0]?.resetsAt, 1_700_100_000_000)
+})
+
 test('unknown route ids have no probe and resolve to absent', async () => {
   assert.equal(quotaProbe('no-such-provider'), undefined)
   assert.notEqual(quotaProbe('claude'), undefined)
   const snapshot = await resolveQuota('no-such-provider', { token: 'tok' })
   assert.equal(snapshot.status, 'absent')
   assert.deepEqual(snapshot.windows, [])
+})
+
+test('prototype keys never resolve to a probe', () => {
+  for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    assert.equal(quotaProbe(key), undefined, key)
+  }
 })
 
 test('route id variants resolve to their provider probe', () => {

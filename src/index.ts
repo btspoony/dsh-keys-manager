@@ -6832,7 +6832,10 @@ export class KeysManagerService {
    * written to disk.
    */
   async quotaRefresh(provider: string): Promise<StateView> {
-    const record = this.store.provider(provider)
+    if (typeof provider !== 'string' || provider.length === 0) throw new TypeError('provider is required')
+    // Own-property lookup: `store.provider` indexes a plain object, so a
+    // prototype key would answer a function instead of a record.
+    const record = Object.hasOwn(this.store.providers, provider) ? this.store.provider(provider) : undefined
     if (record === undefined) return this.buildState()
     const cache = this.quotaCache(provider)
     // The cache classifies probe failures; allSettled is the second line of
@@ -6898,7 +6901,20 @@ export class KeysManagerService {
 
   /** Project the cached quota of one row; a pure memory read, never a probe. */
   private quotaViewFor(provider: string, keyId: string): QuotaView | undefined {
-    return this.quotaCaches.get(provider)?.peek(provider, keyId)
+    const snapshot = this.quotaCaches.get(provider)?.peek(provider, keyId)
+    if (snapshot === undefined) return undefined
+    // Explicit projection: `reason` is a host-side diagnostic and must not
+    // cross the RPC, and `windows` is copied so a caller cannot mutate cache.
+    return {
+      status: snapshot.status,
+      fetchedAt: snapshot.fetchedAt,
+      ...(snapshot.stale === true ? { stale: true } : {}),
+      windows: snapshot.windows.map(window => ({
+        id: window.id,
+        usedFraction: window.usedFraction,
+        resetsAt: window.resetsAt,
+      })),
+    }
   }
 
   /** Find one directory entry by route id. */
