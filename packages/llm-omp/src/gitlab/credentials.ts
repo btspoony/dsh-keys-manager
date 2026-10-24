@@ -197,7 +197,13 @@ function resolveWith(
 
     // Committed before the cancellation is reported: a rotated token is never lost.
     throwIfAborted(signal)
-    const resolved = readGitLabGrant(stored)
+    let resolved = readGitLabGrant(stored)
+    if (resolved === undefined) {
+      // A `undefined` update means the callback left the record alone — another
+      // writer refreshed it, or replaced it. That is a healthy account, so read
+      // what it committed instead of reporting the grant as missing.
+      resolved = readGitLabGrant(await credentials.readRecord(key))
+    }
     if (resolved === undefined) {
       throw new LlmError(
         `llm-omp-transports: the ${label} sign-in stored at ${key} disappeared while it was refreshed; sign in again`,

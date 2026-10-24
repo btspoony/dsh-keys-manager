@@ -431,6 +431,23 @@ describe('factory droid credential resolver', () => {
     expect(calls).toEqual([])
   })
 
+  it('serves the winner\'s grant when the store reports a no-op update as undefined', async () => {
+    // Same shape as the GitLab resolver: an "unchanged" update answers `undefined`,
+    // and that means another writer committed, not that the sign-in vanished.
+    let record: StoredCredentialRecord | undefined = fresh({ expires: NOW - 1 })
+    const credentials: CredentialRecordsLike = {
+      readRecord: async () => record,
+      modifyRecord: async (_key, mutate) => {
+        record = { kind: 'grant', payload: { access: 'winner-access', refresh: 'winner-refresh', expires: NOW + 3_600_000 } }
+        return (await mutate(record)) as StoredCredentialRecord | undefined
+      },
+    }
+    const { fetch, calls } = stubFetch(() => json({ access_token: jwt({ exp: 2_000_000_000 }) }))
+
+    expect(await createFactoryDroidAccess(credentials, { now, fetch })()).toBe('winner-access')
+    expect(calls).toEqual([])
+  })
+
   it('keeps the stored identity when the post-refresh whoami fails', async () => {
     const access = jwt({ exp: 2_000_000_000 })
     const handle = store(fresh({ expires: NOW - 1 }))
