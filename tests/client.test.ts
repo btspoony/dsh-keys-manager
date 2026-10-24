@@ -4142,26 +4142,34 @@ describe('quota surface', () => {
     }
   })
 
-  test('a successful cache-hit answer retries at most once for the same stale state', async () => {
+  test('a successful but still-stale answer earns exactly one real retry', async () => {
     const base = Date.now()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
-    // `fetchedAt: 0` is what a server cache hit or a last-good reply returns;
-    // it stays stale from the client's point of view forever.
+    // Test sentinel for a permanently stale `ok` row: `fetchedAt: 0` is far
+    // past every TTL, so the client keeps considering it stale (it is not a
+    // value the host emits — the cache stamps `fetchedAt: now`).
     const stale = quotaState({ status: 'ok', fetchedAt: 0, windows: [quotaWindow('week', 0.5, 30)] })
     const { view, harness, store } = await mountExpanded(stale, { ok: true, value: stale })
     try {
-      const afterExpand = quotaRefreshes(harness)
-      expect(afterExpand).toBeGreaterThanOrEqual(1)
-      // At most the first attempt plus the one retry an unchanged answer earns.
-      expect(afterExpand).toBeLessThanOrEqual(2)
-      for (let minute = 1; minute <= 3; minute += 1) {
+      // Expand issues the first read; its answer leaves the rows unchanged.
+      expect(quotaRefreshes(harness)).toBe(1)
+      // The next minute tick must ISSUE the retry, not just plan it.
+      clock.mockReturnValue(base + 60_000)
+      store.tick()
+      view.render()
+      await view.flush()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(quotaRefreshes(harness)).toBe(2)
+      // The retry also comes back unchanged: the budget is spent, so the next
+      // ticks stay at two RPCs until the signature moves or the strip remounts.
+      for (let minute = 2; minute <= 3; minute += 1) {
         clock.mockReturnValue(base + minute * 60_000)
         store.tick()
         view.render()
         await view.flush()
         await new Promise(resolve => setTimeout(resolve, 0))
       }
-      expect(quotaRefreshes(harness)).toBe(afterExpand)
+      expect(quotaRefreshes(harness)).toBe(2)
       expect(hostNodes(view.nodes).map(node => node.text).join('')).not.toContain('刷新中…')
       expect(progressBars(view.nodes)).toHaveLength(1)
     } finally {

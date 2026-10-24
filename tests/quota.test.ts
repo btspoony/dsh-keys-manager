@@ -498,6 +498,87 @@ test('opencode-go probe maps rolling and weekly windows and honours rate-limited
   )
 })
 
+test('a counter fallback fires only when the used field is absent', async () => {
+  // Z.AI: no counter pair at all -> the rounded percentage is the read.
+  const zaiFallback = await zaiQuotaProbe({
+    token: 'key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: { limits: [{ type: 'TOKENS_LIMIT', percentage: 40, unit: 3, number: 5, nextResetTime: 1_700_000_000_000 }] },
+      }),
+    ),
+  })
+  assert.equal(zaiFallback.status, 'ok')
+  near(zaiFallback.windows[0]?.usedFraction, 0.4)
+
+  // Z.AI: the counters are present but corrupt (negative spend). Falling back
+  // to `percentage: 0` would print a healthy 0% bar from an unusable payload.
+  const zaiCorrupt = await zaiQuotaProbe({
+    token: 'key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: {
+          limits: [
+            {
+              type: 'CREDIT_LIMIT',
+              currentValue: -1,
+              usage: 100,
+              percentage: 0,
+              unit: 3,
+              number: 5,
+              nextResetTime: 1_700_000_000_000,
+            },
+          ],
+        },
+      }),
+    ),
+  })
+  assert.equal(zaiCorrupt.status, 'error')
+
+  // MiniMax: no usage counter -> remaining still derives the window.
+  const minimaxFallback = await minimaxQuotaProbe({
+    token: 'mm-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        base_resp: { status_code: 0 },
+        model_remains: [
+          {
+            model_name: 'general',
+            current_interval_total_count: 100,
+            current_interval_remaining_count: 70,
+            end_time: 1_700_000_000_000,
+          },
+        ],
+      }),
+    ),
+  })
+  assert.equal(minimaxFallback.status, 'ok')
+  near(minimaxFallback.windows[0]?.usedFraction, 0.3)
+
+  // MiniMax: negative usage with a pristine `remaining` must not become 0%.
+  const minimaxCorrupt = await minimaxQuotaProbe({
+    token: 'mm-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        base_resp: { status_code: 0 },
+        model_remains: [
+          {
+            model_name: 'general',
+            current_interval_total_count: 100,
+            current_interval_usage_count: -1,
+            current_interval_remaining_count: 100,
+            end_time: 1_700_000_000_000,
+          },
+        ],
+      }),
+    ),
+  })
+  assert.equal(minimaxCorrupt.status, 'error')
+  assert.deepEqual(minimaxCorrupt.windows, [])
+})
+
 test('codex probe collapses two same-length windows onto the tighter one', async () => {
   const snapshot = await codexQuotaProbe({
     token: 'tok',

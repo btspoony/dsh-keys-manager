@@ -1173,9 +1173,11 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
   // closure could drop the only `setRefreshing(false)` and leave the label on
   // screen for good (QC FIX-1).
   const pending = React.useRef<Promise<ActionOutcome> | null>(null)
-  // A successful answer that left the rows unchanged may be a server cache
-  // hit; it earns exactly one later retry, and this records the state that
-  // already spent it so a stale row cannot be re-read forever.
+  // A successful answer that left the rows unchanged earns exactly one later
+  // retry: `retryBudget` marks the state that has one available, and `retried`
+  // records it once that request is ISSUED (never pre-consumed in the previous
+  // answer), so the retry really fires and can never fire twice.
+  const retryBudget = React.useRef<string | null>(null)
   const retried = React.useRef<string | null>(null)
   const quotas = provider.keys.map(key => key.quota)
   const needsRefresh = quotaNeedsRefresh(quotas, now)
@@ -1188,11 +1190,18 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
     if (!needsRefresh) {
       attempted.current = null
       retried.current = null
+      retryBudget.current = null
       return undefined
     }
     if (attempted.current === signature) return undefined
     if (retried.current === signature) return undefined
     attempted.current = signature
+    // Spend the retry when this request is issued, not when the previous
+    // answer arrived, so the following run actually performs it.
+    if (retryBudget.current === signature) {
+      retried.current = signature
+      retryBudget.current = null
+    }
     setRefreshing(true)
     const request = runtime.store.refreshQuota(provider.provider)
     pending.current = request
@@ -1203,13 +1212,13 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
       setRefreshing(false)
       if (!outcome.ok) return
       // A successful answer that moved the rows is fresh data; one that did
-      // not may be a server cache hit or a last-good reply, so it is not
-      // terminal — it earns one later retry. A rejection keeps the one-shot
-      // lock, so a failing RPC cannot loop.
+      // not is still stale by this client's contract, so it is not terminal —
+      // it earns one later retry. A rejection keeps the one-shot lock, so a
+      // failing RPC cannot loop.
       const latest = runtime.store.getSnapshot().state?.providers.find(row => row.provider === provider.provider)
       const moved = latest === undefined || quotaSignature(latest) !== signature
       attempted.current = null
-      retried.current = moved ? null : signature
+      retryBudget.current = moved ? null : signature
     })
     return undefined
   }, [provider.provider, signature, minute, needsRefresh])

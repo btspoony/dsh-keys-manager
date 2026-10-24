@@ -203,9 +203,13 @@ export const zaiQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
       const id: QuotaWindowId | undefined = unit === 3 ? 'session' : unit === 6 ? 'week' : undefined
       if (id === undefined) continue
       // `percentage` is a server-rounded integer; the counters are exact.
-      const usedFraction =
-        fractionFromCounts(toNumber(row.currentValue), toNumber(row.usage)) ??
-        fractionFromUsed(toNumber(row.percentage) ?? Number.NaN)
+      // A present-but-invalid counter pair (negative spend) drops the window
+      // instead of falling back to the rounded percentage — only a MISSING
+      // field may fall back.
+      const spent = toNumber(row.currentValue)
+      const usedFraction = spent !== undefined
+        ? fractionFromCounts(spent, toNumber(row.usage))
+        : fractionFromUsed(toNumber(row.percentage) ?? Number.NaN)
       const resetsAt = resetOf(row, ['nextResetTime', 'next_reset_time'])
       if (usedFraction === undefined || resetsAt === undefined) continue
       windows.set(id, tighterWindow(windows.get(id), { id, usedFraction, resetsAt }))
@@ -288,11 +292,14 @@ export const minimaxQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) =>
         const limit = toNumber(row[total])
         const used = toNumber(row[usage])
         const left = toNumber(row[remaining])
-        const usedFraction =
-          fractionFromCounts(used, limit) ??
-          (left !== undefined && limit !== undefined && limit > 0 && left <= limit
+        // The remaining-based fallback is for a MISSING usage counter only: a
+        // present-but-negative count is corrupt data, and deriving 0% from it
+        // would render a healthy bar for a payload we cannot interpret.
+        const usedFraction = used !== undefined
+          ? fractionFromCounts(used, limit)
+          : left !== undefined && limit !== undefined && limit > 0 && left <= limit
             ? Math.min(1, 1 - left / limit)
-            : undefined)
+            : undefined
         const resetsAt =
           resetOf(row, [endTime]) ?? resetAfterMs(toNumber(row[remainsTime]))
         if (usedFraction === undefined || resetsAt === undefined) return
