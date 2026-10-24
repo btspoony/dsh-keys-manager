@@ -13,17 +13,23 @@ import { QuotaCache } from '../src/quota/cache'
 import type { QuotaFetch } from '../src/quota/fetch'
 import {
   claudeQuotaProbe,
+  clineQuotaProbe,
   codexQuotaProbe,
+  commandcodeQuotaProbe,
   kimiQuotaProbe,
   minimaxQuotaProbe,
   opencodeGoQuotaProbe,
   quotaProbe,
   resolveQuota,
+  xaiQuotaProbe,
   zaiQuotaProbe,
 } from '../src/quota/providers'
 
 const CLAUDE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const CODEX_URL = 'https://chatgpt.com/backend-api/wham/usage'
+const COMMANDCODE_URL = 'https://api.commandcode.ai/alpha/billing/credits'
+const XAI_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
+const CLINE_URL = 'https://api.cline.bot/api/v1/users/me/plan/usage-limits'
 
 interface Captured {
   url?: string
@@ -496,6 +502,342 @@ test('opencode-go probe maps rolling and weekly windows and honours rate-limited
     snapshot.windows.map((window) => window.id),
     ['session', 'week'],
   )
+})
+
+test('commandcode probe maps fiveHour and weekly window limits', async () => {
+  const captured: Captured = {}
+  const snapshot = await commandcodeQuotaProbe({
+    token: 'cc-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        data: {
+          credits: { monthlyCredits: 5, purchasedCredits: 10, freeCredits: 2, planId: 'pro' },
+          windowLimits: {
+            fiveHour: { used: 30, cap: 100, resetAt: 1_800_000_000 },
+            weekly: { used: 250, cap: 500, resetAt: 1_800_600_000 },
+          },
+        },
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.url, COMMANDCODE_URL)
+  assert.equal(captured.headers?.Authorization, 'Bearer cc-key')
+  assert.equal(snapshot.status, 'ok')
+  const session = snapshot.windows.find((window) => window.id === 'session')
+  const week = snapshot.windows.find((window) => window.id === 'week')
+  assert.ok(session !== undefined && week !== undefined)
+  near(session.usedFraction, 0.3)
+  // Epoch seconds are normalized to milliseconds by the shared reset reader.
+  assert.equal(session.resetsAt, 1_800_000_000_000)
+  near(week.usedFraction, 0.5)
+  assert.equal(week.resetsAt, 1_800_600_000_000)
+})
+
+test('commandcode probe accepts an unwrapped body and drops unusable windows', async () => {
+  // No `data` envelope, one ISO reset, and a second window with no reset.
+  const snapshot = await commandcodeQuotaProbe({
+    token: 'cc-key',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        windowLimits: {
+          fiveHour: { used: 12, cap: 48, resetAt: '2023-11-14T23:00:00.000Z' },
+          weekly: { used: 10, cap: 100 },
+        },
+      }),
+    ),
+  })
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['session'],
+  )
+  assert.equal(snapshot.windows[0]?.resetsAt, Date.parse('2023-11-14T23:00:00.000Z'))
+})
+
+test('commandcode probe refuses a credit balance that carries no window', async () => {
+  // Pay-as-you-go accounts report only credits; there is no window to render,
+  // so this is `error` rather than an invented 0% usage.
+  const snapshot = await commandcodeQuotaProbe({
+    token: 'cc-key',
+    fetch: fakeFetch(jsonResponse(200, { data: { credits: { monthlyCredits: 5, purchasedCredits: 0, freeCredits: 0 } } })),
+  })
+  assert.equal(snapshot.status, 'error')
+  assert.equal(snapshot.reason, 'credit balance carries no usage window')
+  assert.deepEqual(snapshot.windows, [])
+})
+
+test('commandcode probe classifies http failures instead of throwing', async () => {
+  const cases: Array<[number, QuotaStatus]> = [
+    [401, 'unauthorized'],
+    [403, 'unauthorized'],
+    [404, 'absent'],
+    [500, 'error'],
+  ]
+  for (const [status, expected] of cases) {
+    const snapshot = await commandcodeQuotaProbe({ token: 'cc-key', fetch: fakeFetch(jsonResponse(status, {})) })
+    assert.equal(snapshot.status, expected, `http ${status}`)
+  }
+})
+
+test('xai probe sends the CLI product gate headers and maps the weekly period', async () => {
+  const captured: Captured = {}
+  const end = '2099-11-20T00:00:00.000Z'
+  const snapshot = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end, type: 'WEEKLY' },
+          creditUsagePercent: 61,
+          productUsage: [{ product: 'Api', usagePercent: 61 }],
+        },
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.url, XAI_URL)
+  assert.equal(captured.headers?.Authorization, 'Bearer xai-token')
+  // Plan risk R2: without these two the endpoint answers an auth error.
+  assert.equal(captured.headers?.['X-XAI-Token-Auth'], 'xai-grok-cli')
+  assert.ok((captured.headers?.['User-Agent'] ?? '').length > 0)
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['week'],
+  )
+  near(snapshot.windows[0]?.usedFraction, 0.61)
+  assert.equal(snapshot.windows[0]?.resetsAt, Date.parse(end))
+})
+
+test('xai probe reads an omitted percent on an open period as zero used', async () => {
+  const snapshot = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: { currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z', type: 'WEEKLY' } },
+      }),
+    ),
+  })
+  assert.equal(snapshot.status, 'ok')
+  assert.equal(snapshot.windows[0]?.usedFraction, 0)
+
+  // The same payload with an already-ended period has no usable percent.
+  const ended = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: { currentPeriod: { start: '2020-11-13T00:00:00.000Z', end: '2020-11-20T00:00:00.000Z', type: 'WEEKLY' } },
+      }),
+    ),
+  })
+  assert.equal(ended.status, 'error')
+  assert.equal(ended.reason, 'no usable weekly credits percent')
+})
+
+test('xai probe refuses a non-weekly billing period instead of mislabelling it', async () => {
+  // Unified billing reports a monthly included quota; the UI has session/week
+  // windows only, so a month must not be rendered as a week.
+  const snapshot = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-01T00:00:00.000Z', end: '2099-12-01T00:00:00.000Z', type: 'MONTHLY' },
+          creditUsagePercent: 20,
+        },
+      }),
+    ),
+  })
+  assert.equal(snapshot.status, 'error')
+  assert.equal(snapshot.reason, 'unsupported billing period (MONTHLY)')
+
+  const noPeriod = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(jsonResponse(200, { config: { monthlyLimit: { val: 100 }, used: { val: 20 } } })),
+  })
+  assert.equal(noPeriod.status, 'error')
+  assert.equal(noPeriod.reason, 'no weekly credits period')
+})
+
+test('xai probe requires an explicit weekly period type', async () => {
+  // The reference rejects a period whose type is absent; treating it as weekly
+  // would make an unlabeled payload look like a trusted week.
+  const noType = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z' },
+          creditUsagePercent: 30,
+        },
+      }),
+    ),
+  })
+  assert.equal(noType.status, 'error')
+  assert.equal(noType.reason, 'missing billing period type')
+})
+
+test('xai probe never renders a unified-billing payload as a weekly window', async () => {
+  // A unified account keeps a weekly pool and a monthly included quota; with
+  // the credits payload alone there is no way to tell which gates requests, so
+  // a payload that omits the percent must not become a healthy 0 % week.
+  const inferred = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z', type: 'WEEKLY' },
+          isUnifiedBillingUser: true,
+        },
+      }),
+    ),
+  })
+  assert.equal(inferred.status, 'error')
+  assert.equal(inferred.reason, 'unified billing hides the weekly window')
+  assert.deepEqual(inferred.windows, [])
+
+  // Even an explicit percent does not survive: the same payload shape is the
+  // one the reference refuses to use for dispatch.
+  const explicit = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z', type: 'WEEKLY' },
+          creditUsagePercent: 61,
+          isUnifiedBillingUser: true,
+        },
+      }),
+    ),
+  })
+  assert.equal(explicit.status, 'error')
+  assert.equal(explicit.reason, 'unified billing hides the weekly window')
+
+  // A non-unified account keeps the inferred-zero contract.
+  const plain = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z', type: 'WEEKLY' },
+        },
+      }),
+    ),
+  })
+  assert.equal(plain.status, 'ok')
+  assert.equal(plain.windows[0]?.usedFraction, 0)
+})
+
+test('cline probe sends the desktop client headers and maps the two usable limits', async () => {
+  const captured: Captured = {}
+  const snapshot = await clineQuotaProbe({
+    token: 'sk-pass',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: {
+          limits: [
+            { type: 'monthly', percentUsed: 12.5, resetsAt: '2026-11-01T00:00:00Z' },
+            { type: 'five_hour', percentUsed: 40, resetsAt: '2026-10-05T15:00:00Z' },
+            { type: 'weekly', percentUsed: 130, resetsAt: '2026-10-10T00:00:00Z' },
+          ],
+        },
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.url, CLINE_URL)
+  assert.equal(captured.headers?.Authorization, 'Bearer sk-pass')
+  // The API gates product-only surfaces on the desktop client type, and the
+  // pinned version is what the code's `shortcut:` marker exists for: assert
+  // the exact values so a drift cannot pass as "non-empty".
+  assert.equal(captured.headers?.['X-CLIENT-TYPE'], 'cline-desktop')
+  assert.equal(captured.headers?.['X-CLIENT-VERSION'], '3.5.54')
+  assert.equal(captured.headers?.['User-Agent'], 'Cline/3.5.54')
+  assert.equal(snapshot.status, 'ok')
+  // The monthly limit has no window in this UI; both usable limits survive,
+  // and an over-limit weekly percent clamps to 100%.
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['session', 'week'],
+  )
+  near(snapshot.windows[0]?.usedFraction, 0.4)
+  assert.equal(snapshot.windows[0]?.resetsAt, Date.parse('2026-10-05T15:00:00Z'))
+  assert.equal(snapshot.windows[1]?.usedFraction, 1)
+  assert.equal(snapshot.windows[1]?.resetsAt, Date.parse('2026-10-10T00:00:00Z'))
+})
+
+test('cline probe collapses duplicate window rows onto the tighter one', async () => {
+  // Cline can list two rows for the same window; consumers find() the first
+  // match, so a loose row arriving first must not hide the tighter one.
+  const snapshot = await clineQuotaProbe({
+    token: 'sk-pass',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: {
+          limits: [
+            { type: 'five_hour', percentUsed: 40, resetsAt: '2026-10-05T15:00:00Z' },
+            { type: 'five_hour', percentUsed: 80, resetsAt: '2026-10-05T18:00:00Z' },
+          ],
+        },
+      }),
+    ),
+  })
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['session'],
+  )
+  near(snapshot.windows[0]?.usedFraction, 0.8)
+})
+
+test('cline probe reads a key refusal and a monthly-only account as error, 404 as absent', async () => {
+  const refused = await clineQuotaProbe({
+    token: 'sk-denied',
+    fetch: fakeFetch(jsonResponse(200, { success: false, error: 'invalid API key' })),
+  })
+  assert.equal(refused.status, 'error')
+  assert.equal(refused.reason, 'usage request rejected')
+
+  // Cline answers 404 when the account has no ClinePass at all.
+  const noPlan = await clineQuotaProbe({
+    token: 'sk-free',
+    fetch: fakeFetch(jsonResponse(404, { success: false, error: 'no active plan' })),
+  })
+  assert.equal(noPlan.status, 'absent')
+
+  const monthlyOnly = await clineQuotaProbe({
+    token: 'sk-pass',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: { limits: [{ type: 'monthly', percentUsed: 10, resetsAt: '2026-11-01T00:00:00Z' }] },
+      }),
+    ),
+  })
+  assert.equal(monthlyOnly.status, 'error')
+  assert.equal(monthlyOnly.reason, 'unrecognized usage payload')
+})
+
+test('batch A and B route ids resolve, the non-portable ones stay absent', async () => {
+  assert.equal(quotaProbe('commandcode'), commandcodeQuotaProbe)
+  assert.equal(quotaProbe('xai'), xaiQuotaProbe)
+  assert.equal(quotaProbe('cline-pass'), clineQuotaProbe)
+  // Transport routes: their grant is read only inside the host service and
+  // both need vendor credential work (Cursor rotates its refresh grant on 401,
+  // Factory sends droid's org header), so the quota path cannot reach them.
+  // `openrouter` has no reference implementation, `ollama-cloud` no endpoint.
+  for (const route of ['cursor', 'factory-droid', 'openrouter', 'ollama-cloud']) {
+    assert.equal(quotaProbe(route), undefined, route)
+    const snapshot = await resolveQuota(route, { token: 'tok' })
+    assert.equal(snapshot.status, 'absent', route)
+    assert.deepEqual(snapshot.windows, [], route)
+  }
 })
 
 test('a counter fallback fires only when the used field is absent', async () => {

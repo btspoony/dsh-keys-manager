@@ -1,7 +1,7 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { ActionOutcome, ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
+import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import {
@@ -13,7 +13,6 @@ import {
   modelPickerRows,
   quotaNeedsRefresh,
   quotaPercent,
-  quotaTone,
   quotaWindows,
   tightestQuotaWindow,
 } from './format'
@@ -693,6 +692,7 @@ function KeyRow({ provider, keyRecord, now, onReauthenticate }: KeyRowProps): Re
         h('button', { type: 'button', className: 'km-menu-item km-menu-danger', role: 'menuitem', onClick: () => { setMenu(false); setConfirm(true) }, disabled: busy }, h(Icon, { name: 'trash', size: 15 }), t('delete')),
       ) : null,
     ),
+    quotaInline(key, t, now),
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
     testLine(test, t),
     confirm ? h(Modal, {
@@ -845,6 +845,7 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
         h('button', { type: 'button', className: 'km-menu-item km-menu-danger', role: 'menuitem', onClick: () => { setMenu(false); setConfirm(true) }, disabled: busy }, h(Icon, { name: 'trash', size: 15 }), t('delete')),
       ) : null,
     ),
+    quotaInline(keyRecord, t, now),
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
     testLine(test, t),
     confirm ? h(Modal, {
@@ -1104,55 +1105,37 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
 }
 
 /**
- * One account's plan-usage row: alias, one thin bar per available window and
- * the reset countdown of the tightest window. A row with no bars states why
- * (checking, not reported, sign in again) instead of rendering an empty bar.
+ * One account's plan usage as a single muted line under its key row: every
+ * window that exists plus the reset countdown of the tightest one. Only a
+ * reported state renders — a pending (`undefined`), `absent` or `error`
+ * snapshot stays silent so a route without usage occupies no space at all.
+ * `natively-managed` is the host telling us a DSH projection serves the route
+ * but its usage cannot be read: that is neither "no usage API" nor "your
+ * credential is invalid", so it gets its own line. `unauthorized` is actionable
+ * only on an OAuth row (it has a sign-in to offer); an API key has none, so
+ * that row stays silent too. `stale` keeps the numbers with a marker.
  */
-function quotaRow(row: KeyView, t: T, now: number): React.ReactElement {
+function quotaInline(row: KeyView, t: T, now: number): React.ReactElement | null {
   const windows = quotaWindows(row.quota)
-  const alias = h('span', { className: 'km-quota-alias', title: row.alias }, row.alias)
   if (windows.length === 0) {
-    // `natively-managed` is the host telling us a DSH projection serves the
-    // route but its usage cannot be read: that is neither "no usage API" nor
-    // "your credential is invalid", so it gets its own line.
-    // `unauthorized` is an account problem only on OAuth rows; an API-key row
-    // has no sign-in to offer, so both parse gaps read as "not reported".
-    const note = row.quota === undefined
-      ? t('quotaChecking')
-      : row.quota.status === 'natively-managed'
-        ? t('quotaNativelyManaged')
-        : row.quota.status === 'unauthorized' && row.kind === 'oauth'
-          ? t('quotaSignInAgain')
-          : t('quotaNotReported')
-    return h('li', { key: row.id, className: 'km-quota-row' }, alias, h('span', { className: 'km-quota-note' }, note))
+    if (row.quota?.status === 'natively-managed') {
+      return h('div', { className: 'km-quota-inline' }, t('quotaNativelyManaged'))
+    }
+    return row.quota?.status === 'unauthorized' && row.kind === 'oauth'
+      ? h('div', { className: 'km-quota-inline' }, t('quotaSignInAgain'))
+      : null
   }
   const tightest = windows.reduce((best, window) => (window.usedFraction > best.usedFraction ? window : best))
-  return h('li', { key: row.id, className: 'km-quota-row' },
-    alias,
-    h('span', { className: cx('km-quota-metrics', row.quota?.stale === true && 'km-quota-stale') },
-      windows.map(window => {
-        const percent = quotaPercent(window.usedFraction)
-        const label = QUOTA_WINDOW_LABEL[window.id]
-        return h('span', { key: window.id, className: 'km-quota-metric' },
-          h('span', { className: 'km-quota-window', 'aria-hidden': true }, label),
-          h('span', {
-            className: 'km-quota-track',
-            role: 'progressbar',
-            'aria-valuemin': 0,
-            'aria-valuemax': 100,
-            'aria-valuenow': percent,
-            'aria-label': t('quotaBarLabel', { window: label, percent }),
-          }, h('span', {
-            className: cx('km-quota-fill', `km-quota-fill-${quotaTone(window.usedFraction)}`),
-            style: { width: `${percent}%` },
-          })),
-          h('span', { className: 'km-quota-pct' }, `${percent}%`),
-        )
-      }),
-      h('span', { className: 'km-quota-reset' }, durationText(tightest.resetsAt - now, t)),
-      row.quota?.stale === true ? h('span', { className: 'km-quota-flag' }, t('quotaStale')) : null,
-    ),
-  )
+  // Week before session: the plan's long window leads the readout. A window
+  // whose reset time already passed shows why its numbers look stale instead
+  // of a "0 秒" countdown while the next read is still pending.
+  const remainingMs = tightest.resetsAt - now
+  const parts = [
+    ...windows.map(window => `${QUOTA_WINDOW_LABEL[window.id]} ${quotaPercent(window.usedFraction)}%`).reverse(),
+    remainingMs > 0 ? durationText(remainingMs, t) : t('quotaResetDue'),
+  ]
+  if (row.quota?.stale === true) parts.push(t('quotaStale'))
+  return h('div', { className: 'km-quota-inline', title: parts.join(' · ') }, parts.join(' · '))
 }
 
 /** Snapshot fingerprint: one stable string per account row. */
@@ -1161,23 +1144,17 @@ function quotaSignature(provider: ProviderView): string {
 }
 
 /**
- * The expanded card's usage strip. Pull-only (D2): it asks for a refresh when
- * a row has no snapshot or its snapshot is past the TTL, and shows the cached
- * rows immediately so the card never waits on a vendor.
+ * Headless per-provider refresh trigger for an expanded card. Pull-only (D2):
+ * it asks for a read when a row has no snapshot or its snapshot is past the
+ * TTL. Usage itself renders on the account rows, so this component emits no
+ * surface of its own.
  */
-function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }): React.ReactElement {
+function QuotaRefresh({ provider, now }: { provider: ProviderView; now: number }): null {
   const runtime = useRuntime()
-  const t = useT()
-  const [refreshing, setRefreshing] = React.useState(false)
   // A rejected refresh leaves the rows unchanged, so the signature cannot
   // move on its own; remembering the attempted signature keeps a failed read
   // from retrying on every minute tick. A successful answer clears it.
   const attempted = React.useRef<string | null>(null)
-  // The request itself owns the busy flag. A minute tick re-runs this effect
-  // and React cleans up the previous run, so clearing the flag from that run's
-  // closure could drop the only `setRefreshing(false)` and leave the label on
-  // screen for good (QC FIX-1).
-  const pending = React.useRef<Promise<ActionOutcome> | null>(null)
   // A successful answer that left the rows unchanged earns exactly one later
   // retry: `retryBudget` marks the state that has one available, and `retried`
   // records it once that request is ISSUED (never pre-consumed in the previous
@@ -1207,14 +1184,7 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
       retried.current = signature
       retryBudget.current = null
     }
-    setRefreshing(true)
-    const request = runtime.store.refreshQuota(provider.provider)
-    pending.current = request
-    void request.then(outcome => {
-      // A newer read owns the flag now; this answer is stale news.
-      if (pending.current !== request) return
-      pending.current = null
-      setRefreshing(false)
+    void runtime.store.refreshQuota(provider.provider).then(outcome => {
       if (!outcome.ok) return
       // A successful answer that moved the rows is fresh data; one that did
       // not is still stale by this client's contract, so it is not terminal —
@@ -1228,13 +1198,7 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
     return undefined
   }, [provider.provider, signature, minute, needsRefresh])
 
-  return h('div', { className: 'km-quota-strip' },
-    h('div', { className: 'km-quota-head' },
-      h('span', { className: 'km-quota-title' }, t('quotaTitle')),
-      refreshing ? h('span', { className: 'km-quota-busy', role: 'status' }, t('quotaRefreshing')) : null,
-    ),
-    h('ul', { className: 'km-quota-list' }, provider.keys.map(key => quotaRow(key, t, now))),
-  )
+  return null
 }
 
 interface ProviderCardProps {
@@ -1383,7 +1347,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
       h('span', { className: 'km-provider-side' },
         // D5: the tightest plan window across this provider's accounts, as a
         // supplementary one-liner next to the key count. Narrow screens drop
-        // it (the expanded strip is the primary carrier) instead of wrapping.
+        // it (the per-row usage line is the primary carrier) instead of wrapping.
         tightest === undefined
           ? null
           : h('span', {
@@ -1495,7 +1459,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
           ),
         ),
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
-        provider.keys.length > 0 ? h(QuotaStrip, { provider, now }) : null,
+        provider.keys.length > 0 ? h(QuotaRefresh, { provider, now }) : null,
         provider.keys.length === 0
           // Round-4 finding 4 (I-000085): the empty body must name an action
           // this route actually offers. Add key is disabled without key

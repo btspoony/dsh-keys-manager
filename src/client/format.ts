@@ -1,5 +1,5 @@
 /** Exact millisecond/minute conversions used by the policy form, the
- * transport model picker's wire shaping, and the quota strip's readouts. */
+ * transport model picker's wire shaping, and the quota readouts. */
 import type { QuotaView, QuotaWindowId, QuotaWindowView, TransportModelsView } from './types'
 
 export function cooldownMinutes(ms: number): number {
@@ -44,7 +44,7 @@ export function modelPickerRows(view: TransportModelsView): Array<{ id: string; 
 }
 
 /**
- * How long a snapshot serves before the strip asks for a new one (D4). This is
+ * How long a snapshot serves before the card asks for a new one (D4). This is
  * the server's MAXIMUM freshness (`ttlMs * (1 + jitterRatio)` = 300 s × 1.25);
  * asking earlier could be answered by a guaranteed cache hit.
  */
@@ -58,12 +58,6 @@ const QUOTA_WINDOW_ORDER: readonly QuotaWindowId[] = ['session', 'week']
 /** Whole percentage the card prints; clamped so a hostile fraction cannot print 140%. */
 export function quotaPercent(fraction: number): number {
   return Math.min(100, Math.max(0, Math.round(fraction * 100)))
-}
-
-/** Bar tone of one window: exhausted, nearly exhausted, or normal. */
-export function quotaTone(usedFraction: number): 'normal' | 'warn' | 'error' {
-  if (usedFraction >= 1) return 'error'
-  return usedFraction >= 0.9 ? 'warn' : 'normal'
 }
 
 /** The windows a row can render, in session-then-week order. */
