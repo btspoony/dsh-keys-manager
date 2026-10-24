@@ -13,21 +13,21 @@ nodeLinker: hoisted
 allowBuilds:
   esbuild: true
 # Required, not machine-local: pnpm's release-age policy rejects the exact
-# @oh-my-pi 18.12.3 pins while they are still fresh, and these are the pins the
+# @oh-my-pi 18.12.6 pins while they are still fresh, and these are the pins the
 # omp transport is built against. Remove only by bumping to ages that pass.
 minimumReleaseAgeExclude:
-  - '@oh-my-pi/omptype@18.12.3'
-  - '@oh-my-pi/pi-ai@18.12.3'
-  - '@oh-my-pi/pi-catalog@18.12.3'
-  - '@oh-my-pi/pi-natives-darwin-arm64@18.12.3'
-  - '@oh-my-pi/pi-natives-darwin-x64@18.12.3'
-  - '@oh-my-pi/pi-natives-linux-arm64@18.12.3'
-  - '@oh-my-pi/pi-natives-linux-x64@18.12.3'
-  - '@oh-my-pi/pi-natives-win32-arm64@18.12.3'
-  - '@oh-my-pi/pi-natives-win32-x64@18.12.3'
-  - '@oh-my-pi/pi-natives@18.12.3'
-  - '@oh-my-pi/pi-utils@18.12.3'
-  - '@oh-my-pi/pi-wire@18.12.3'
+  - '@oh-my-pi/omptype@18.12.6'
+  - '@oh-my-pi/pi-ai@18.12.6'
+  - '@oh-my-pi/pi-catalog@18.12.6'
+  - '@oh-my-pi/pi-natives-darwin-arm64@18.12.6'
+  - '@oh-my-pi/pi-natives-darwin-x64@18.12.6'
+  - '@oh-my-pi/pi-natives-linux-arm64@18.12.6'
+  - '@oh-my-pi/pi-natives-linux-x64@18.12.6'
+  - '@oh-my-pi/pi-natives-win32-arm64@18.12.6'
+  - '@oh-my-pi/pi-natives-win32-x64@18.12.6'
+  - '@oh-my-pi/pi-natives@18.12.6'
+  - '@oh-my-pi/pi-utils@18.12.6'
+  - '@oh-my-pi/pi-wire@18.12.6'
   # Same reason for the 0.2.1-rc.3 DSH cohort: it is a devDependency (it types
   # and builds both packages), so a frozen install resolves it and the
   # release-age policy refuses it while fresh. Exact versions only; drop these
@@ -39,4 +39,4 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-util-crypto@0.2.1-rc.3'
   - '@deepseek-ai/dsh-util-values@0.2.1-rc.3'
 patchedDependencies:
-  '@oh-my-pi/pi-ai@18.12.3': patches/@oh-my-pi__pi-ai@18.12.3.patch
+  '@oh-my-pi/pi-ai@18.12.6': patches/@oh-my-pi__pi-ai@18.12.6.patch

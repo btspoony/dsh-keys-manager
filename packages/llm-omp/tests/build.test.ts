@@ -79,7 +79,7 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // existing shims; a size near this ceiling means a provider registry or the
   // model catalog was pulled in, not that the route grew.
   'gitlab-duo-agent': 1_500_000,
-  // gitlab-duo: 2 654 940 bytes measured (231 modules) -> 3 980 000 (under the
+  // gitlab-duo: 2 654 940 bytes measured (232 modules) -> 3 980 000 (under the
   // plan's 4 MB bound, D12). The graph bundles three production wire transports
   // plus GitLab's gateway shim; the entry reuses the factory-droid substitutions
   // (lean registry, lean stream facade, lean env-key map) so the builtin provider

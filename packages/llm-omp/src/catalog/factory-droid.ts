@@ -1,8 +1,8 @@
 /**
  * Generated Factory Droid model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.12.3` `src/compat/rules.json`
- * `providers.factory-droid.seed.models` (62 rows, sha256:2688dfbeda4b9c9973a9790784ba0c107b3417eafdaf4a66b45ef000a3fbfcd1).
+ * Source: `@oh-my-pi/pi-catalog@18.12.6` `src/compat/rules.json`
+ * `providers.factory-droid.seed.models` (62 rows, sha256:1b63c611e04b497751acbbe7ec7c12e7f8aff9dd6a2ffcd936f9f719ac2077ba).
  * Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
  *
  * The rows live in the KDL compat registry because the pinned `models.json`
@@ -22,10 +22,10 @@ import type { FactoryDroidModelRow } from '../omp.js'
 /** Provenance of {@link FACTORY_DROID_MODELS}. */
 export const FACTORY_DROID_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.12.3',
+  version: '18.12.6',
   file: 'src/compat/rules.json',
   key: 'factory-droid',
-  sourceHash: 'sha256:2688dfbeda4b9c9973a9790784ba0c107b3417eafdaf4a66b45ef000a3fbfcd1',
+  sourceHash: 'sha256:1b63c611e04b497751acbbe7ec7c12e7f8aff9dd6a2ffcd936f9f719ac2077ba',
   rowCount: 62,
 } as const
 

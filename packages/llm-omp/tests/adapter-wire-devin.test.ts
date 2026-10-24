@@ -194,7 +194,9 @@ describe('bundled devin transport over Connect frames', () => {
     expect(new Headers(handshake.init?.headers).get('user-agent')).toBe(attributionHeaders()['user-agent'])
     const authRequest = fromBinary(GetUserJwtRequestSchema, new Uint8Array(handshake.init?.body as Buffer))
     expect(authRequest.metadata).toMatchObject({
-      apiKey: 'devin-session-token$session-token',
+      // 18.12.6: only 3-segment JWT keys get the `devin-session-token$`
+      // prefix; a bare non-JWT key goes out as stored.
+      apiKey: 'session-token',
       ideName: 'devin-cli',
       ideType: 'chisel',
       ideVersion: '3000.11.3',
@@ -337,11 +339,9 @@ describe('bundled devin transport over Connect frames', () => {
     const chunks = await collect(adapter.stream(request()))
 
     expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'error', failure: { code: 'AUTH', status: 401 } } })
-    // A 401 handshake is retried once with the raw key (omp's documented
-    // second attempt), and no chat request follows a failed handshake.
-    expect(calls).toHaveLength(2)
-    expect(calls.every(call => call.url.endsWith('/exa.auth_pb.AuthService/GetUserJwt'))).toBe(true)
-    const retry = fromBinary(GetUserJwtRequestSchema, new Uint8Array(calls[1]!.init?.body as Buffer))
-    expect(retry.metadata?.apiKey).toBe('session-token')
+    // 18.12.6 dropped the 401 raw-key retry: a single handshake attempt,
+    // and no chat request follows a failed handshake.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.url.endsWith('/exa.auth_pb.AuthService/GetUserJwt')).toBe(true)
   })
 })
