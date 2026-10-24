@@ -11,7 +11,7 @@ workspace package's typecheck, build, tests, drift-manifest check, and a
 regenerate-and-diff check on the generated Cursor catalog (row contents, not
 just its provenance header).
 
-The job installs a pinned `@deepseek-ai/dsh` (`0.2.1-rc.2`) before the suite
+The job installs a pinned `@deepseek-ai/dsh` (`0.2.1-rc.3`) before the suite
 and ends with an explicit install/load proof step (`vitest run
 tests/install.test.ts`): both tarballs are packed, the root plugin is installed
 into a fresh profile, and the composed loader tree must carry both components.

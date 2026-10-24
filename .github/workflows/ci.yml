@@ -39,7 +39,7 @@ jobs:
       # on PATH. Pin the CLI explicitly so the proof is versioned with the change
       # that adds it.
       - name: Install a pinned dsh CLI
-        run: npm install --global @deepseek-ai/dsh@0.2.1-rc.2
+        run: npm install --global @deepseek-ai/dsh@0.2.1-rc.3
 
       - name: Typecheck
         run: pnpm run typecheck
