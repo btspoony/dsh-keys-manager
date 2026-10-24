@@ -3963,7 +3963,7 @@ describe('quota surface', () => {
     const quota: QuotaView = {
       status: 'ok',
       fetchedAt: Date.now(),
-      windows: [quotaWindow('session', 0.32, 2), quotaWindow('week', 0.92, 48)],
+      windows: [quotaWindow('session', 0.32, 2), quotaWindow('week', 0.92, 50)],
     }
     const { view } = await mountExpanded(quotaState(quota))
     try {
@@ -3974,7 +3974,7 @@ describe('quota surface', () => {
       // countdown of the tightest one.
       const lines = findByClass(view.nodes, 'km-quota-inline')
       expect(lines).toHaveLength(1)
-      expect(lines[0]!.text).toBe('W 92% · 5h 32% · 2 天')
+      expect(lines[0]!.text).toBe('W 92% · 5h 32% · 3 天')
       // The compact pill carries the tightest window only, in one element.
       const compact = findByClass(view.nodes, 'km-quota-compact')
       expect(compact).toHaveLength(1)
@@ -3990,7 +3990,10 @@ describe('quota surface', () => {
     const quota: QuotaView = {
       status: 'ok',
       fetchedAt: Date.now(),
-      windows: [quotaWindow('week', 0.61, 48)],
+      // 50 h is deliberately off a whole-day boundary: the countdown rounds a
+      // partial day up, so an exact multiple could read one day short when the
+      // fixture and the render sample the clock a millisecond apart.
+      windows: [quotaWindow('week', 0.61, 50)],
     }
     const { view } = await mountExpanded(quotaState(quota, key => {
       key.kind = 'oauth'
@@ -4000,7 +4003,7 @@ describe('quota surface', () => {
       const row = findByClass(view.nodes, 'km-account-row')[0]!
       const line = findByClass(descendants(view.nodes, row), 'km-quota-inline')
       expect(line).toHaveLength(1)
-      expect(line[0]!.text).toBe('W 61% · 2 天')
+      expect(line[0]!.text).toBe('W 61% · 3 天')
     } finally {
       view.unmount()
       setRuntimeContext(null)

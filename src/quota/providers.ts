@@ -445,6 +445,9 @@ export const xaiQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
     const config = asRecord(body.config) ?? body
     const period = asRecord(config.currentPeriod)
     if (period === undefined) return 'no weekly credits period'
+    // A missing or empty `type` is deliberately treated as weekly: this
+    // endpoint only ever reports the weekly credits window, and xAI omits the
+    // label on some responses. Do not "fix" this into a rejection.
     const type = typeof period.type === 'string' ? period.type.toUpperCase() : ''
     if (type.length > 0 && !type.includes('WEEK')) return `unsupported billing period (${type})`
     const resetsAt = resetOf(period, ['end'])
