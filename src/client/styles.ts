@@ -145,6 +145,27 @@ select.km-input{appearance:auto}
 .km-notice-action{flex:0 0 auto}
 .km-empty-keys{padding:12px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-secondary);font-size:12px}
 .km-empty{display:flex;align-items:center;gap:8px;padding:14px;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.km-quota-compact{align-self:center;flex-shrink:0;padding:1px 6px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.km-quota-compact.km-quota-warn{color:var(--dsw-alias-state-warn-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 34%,var(--dsw-alias-border-l1))}
+.km-quota-compact.km-quota-error{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 34%,var(--dsw-alias-border-l1))}
+.km-quota-strip{display:flex;flex-direction:column;gap:2px;margin:8px 0 9px;padding:6px 9px 5px;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}
+.km-quota-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--dsw-alias-label-secondary)}
+.km-quota-busy{color:var(--dsw-alias-brand-primary);letter-spacing:0;text-transform:none}
+.km-quota-list{display:flex;flex-direction:column;margin:0;padding:0;list-style:none}
+.km-quota-row{display:flex;align-items:center;gap:8px;min-height:22px;max-height:26px;padding:0;font-size:11px;line-height:1.3}
+.km-quota-alias{flex:0 1 30%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}
+.km-quota-metrics{display:flex;flex:1;align-items:center;justify-content:flex-end;gap:7px;min-width:0}
+.km-quota-stale .km-quota-track,.km-quota-stale .km-quota-pct,.km-quota-stale .km-quota-reset{opacity:.55}
+.km-quota-metric{display:inline-flex;align-items:center;gap:4px;flex-shrink:0}
+.km-quota-window{min-width:15px;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
+.km-quota-track{position:relative;display:inline-block;width:42px;height:5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1);overflow:hidden}
+.km-quota-fill{display:block;height:100%;border-radius:999px;background:var(--dsw-alias-brand-primary)}
+.km-quota-fill-warn{background:var(--dsw-alias-state-warn-primary)}
+.km-quota-fill-error{background:var(--dsw-alias-state-error-primary)}
+.km-quota-pct{min-width:28px;text-align:right;font-size:11px;font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-primary)}
+.km-quota-reset{font-size:10.5px;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+.km-quota-flag{padding:0 4px;border-radius:4px;font-size:10px;color:var(--dsw-alias-state-warn-primary);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 12%,transparent)}
+.km-quota-note{margin-left:auto;font-size:10.5px;color:var(--dsw-alias-label-secondary)}
 .km-provider-foot{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:10px;padding-top:9px;border-top:1px dashed var(--dsw-alias-border-l1);font-size:11px;min-height:15px}
 .km-settings{padding:14px}
 .km-settings-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
@@ -201,6 +222,10 @@ select.km-input{appearance:auto}
   .km-settings-grid{grid-template-columns:1fr}
   .km-form-grid{grid-template-columns:1fr}
   .km-provider-side .km-status{display:none}
+  /* Narrow cards drop the supplementary one-liner and the countdown rather
+     than wrapping; the expanded strip stays the primary carrier. */
+  .km-provider-side .km-quota-compact{display:none}
+  .km-quota-reset{display:none}
   .km-embedded-head{flex-direction:column;gap:10px}
   .km-embedded-actions{padding-top:0}
 }

@@ -4,7 +4,19 @@ import React from 'react'
 import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
-import { cooldownMinutes, cooldownMs, graceMinutes, graceMs, modelPickerRows } from './format'
+import {
+  QUOTA_WINDOW_LABEL,
+  cooldownMinutes,
+  cooldownMs,
+  graceMinutes,
+  graceMs,
+  modelPickerRows,
+  quotaNeedsRefresh,
+  quotaPercent,
+  quotaTone,
+  quotaWindows,
+  tightestQuotaWindow,
+} from './format'
 
 const h = React.createElement
 
@@ -1091,6 +1103,90 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
   )
 }
 
+/**
+ * One account's plan-usage row: alias, one thin bar per available window and
+ * the reset countdown of the tightest window. A row with no bars states why
+ * (checking, not reported, sign in again) instead of rendering an empty bar.
+ */
+function quotaRow(row: KeyView, t: T, now: number): React.ReactElement {
+  const windows = quotaWindows(row.quota)
+  const alias = h('span', { className: 'km-quota-alias', title: row.alias }, row.alias)
+  if (windows.length === 0) {
+    // `unauthorized` is an account problem only on OAuth rows; an API-key row
+    // has no sign-in to offer, so both parse gaps read as "not reported".
+    const note = row.quota === undefined
+      ? t('quotaChecking')
+      : row.quota.status === 'unauthorized' && row.kind === 'oauth'
+        ? t('quotaSignInAgain')
+        : t('quotaNotReported')
+    return h('li', { key: row.id, className: 'km-quota-row' }, alias, h('span', { className: 'km-quota-note' }, note))
+  }
+  const tightest = windows.reduce((best, window) => (window.usedFraction > best.usedFraction ? window : best))
+  return h('li', { key: row.id, className: 'km-quota-row' },
+    alias,
+    h('span', { className: cx('km-quota-metrics', row.quota?.stale === true && 'km-quota-stale') },
+      windows.map(window => {
+        const percent = quotaPercent(window.usedFraction)
+        const label = QUOTA_WINDOW_LABEL[window.id]
+        return h('span', { key: window.id, className: 'km-quota-metric' },
+          h('span', { className: 'km-quota-window', 'aria-hidden': true }, label),
+          h('span', {
+            className: 'km-quota-track',
+            role: 'progressbar',
+            'aria-valuemin': 0,
+            'aria-valuemax': 100,
+            'aria-valuenow': percent,
+            'aria-label': t('quotaBarLabel', { window: label, percent }),
+          }, h('span', {
+            className: cx('km-quota-fill', `km-quota-fill-${quotaTone(window.usedFraction)}`),
+            style: { width: `${percent}%` },
+          })),
+          h('span', { className: 'km-quota-pct' }, `${percent}%`),
+        )
+      }),
+      h('span', { className: 'km-quota-reset' }, durationText(tightest.resetsAt - now, t)),
+      row.quota?.stale === true ? h('span', { className: 'km-quota-flag' }, t('quotaStale')) : null,
+    ),
+  )
+}
+
+/**
+ * The expanded card's usage strip. Pull-only (D2): it asks for a refresh when
+ * a row has no snapshot or its snapshot is past the TTL, and shows the cached
+ * rows immediately so the card never waits on a vendor.
+ */
+function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }): React.ReactElement {
+  const runtime = useRuntime()
+  const t = useT()
+  const [refreshing, setRefreshing] = React.useState(false)
+  const quotas = provider.keys.map(key => key.quota)
+  const needsRefresh = quotaNeedsRefresh(quotas, now)
+  // Re-evaluated once a minute so a TTL expiry refreshes an already-open card
+  // without a timer of its own (the page tick supplies `now`).
+  const minute = Math.floor(now / 60_000)
+  const signature = provider.keys.map(key => `${key.id}:${key.quota?.status ?? '-'}:${key.quota?.fetchedAt ?? 0}`).join('|')
+
+  React.useEffect(() => {
+    if (!needsRefresh) return undefined
+    let live = true
+    setRefreshing(true)
+    void runtime.store.refreshQuota(provider.provider).then(() => {
+      if (live) setRefreshing(false)
+    })
+    return () => {
+      live = false
+    }
+  }, [provider.provider, signature, minute, needsRefresh])
+
+  return h('div', { className: 'km-quota-strip' },
+    h('div', { className: 'km-quota-head' },
+      h('span', { className: 'km-quota-title' }, t('quotaTitle')),
+      refreshing ? h('span', { className: 'km-quota-busy', role: 'status' }, t('quotaRefreshing')) : null,
+    ),
+    h('ul', { className: 'km-quota-list' }, provider.keys.map(key => quotaRow(key, t, now))),
+  )
+}
+
 interface ProviderCardProps {
   provider: ProviderView
   expanded: boolean
@@ -1200,6 +1296,9 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
   // this gate derives from the same `oauthCapable()` rule as the empty-state
   // gate, so a legacy snapshot without `accountSupported` does not show an
   // enabled sign-in entry beside a disabled Adopt and an "unsupported" panel.
+  // The collapsed line reads only what the cache already holds; rendering a
+  // card never probes (D2).
+  const tightest = managed ? tightestQuotaWindow(provider.keys.map(key => key.quota)) : undefined
   const accountAdoptable = oauthCapable(provider)
   const adoptable = provider.supported || accountAdoptable
   // An unmanaged *extra* route signs in directly: its first successful sign-in
@@ -1232,6 +1331,18 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
         ),
       ),
       h('span', { className: 'km-provider-side' },
+        // D5: the tightest plan window across this provider's accounts, as a
+        // supplementary one-liner next to the key count. Narrow screens drop
+        // it (the expanded strip is the primary carrier) instead of wrapping.
+        tightest === undefined
+          ? null
+          : h('span', {
+              className: cx(
+                'km-quota-compact',
+                tightest.usedFraction >= 1 ? 'km-quota-error' : tightest.usedFraction >= 0.9 ? 'km-quota-warn' : null,
+              ),
+              title: t('quotaCompactHint'),
+            }, `${QUOTA_WINDOW_LABEL[tightest.id]} ${quotaPercent(tightest.usedFraction)}%`),
         // I-000120 / D8: requests this route served without an attributed
         // account. Rendered only above zero, and the visible label carries the
         // count so it is the accessible name; the hint stays a description.
@@ -1334,6 +1445,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
           ),
         ),
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
+        provider.keys.length > 0 ? h(QuotaStrip, { provider, now }) : null,
         provider.keys.length === 0
           // Round-4 finding 4 (I-000085): the empty body must name an action
           // this route actually offers. Add key is disabled without key

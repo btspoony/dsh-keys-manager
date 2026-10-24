@@ -6,7 +6,7 @@ import { createStore } from '../src/client/store'
 import { cooldownMinutes, cooldownMs, graceMinutes, graceMs } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
 import { KeysManagerBody, KeysManagerCard, oauthCapable, originOf } from '../src/client/ui'
-import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
+import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, QuotaView, QuotaWindowId, QuotaWindowView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
 
 function makeState(): StateView {
   return {
@@ -245,6 +245,16 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     cancel: '取消',
     deleteConfirm: '确认删除',
     deleting: '删除中…',
+    // Plan usage (issue #22): every state the strip can render resolves its
+    // real copy, so a regression cannot hide behind a key-name echo.
+    quotaTitle: '计划用量',
+    quotaRefreshing: '刷新中…',
+    quotaChecking: '正在检查…',
+    quotaNotReported: '未报告',
+    quotaSignInAgain: '请重新登录',
+    quotaStale: '数据较旧',
+    quotaCompactHint: '该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。',
+    quotaBarLabel: '{window} 窗口已用 {percent}%',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
     const template = labels[key] ?? key
@@ -3825,5 +3835,201 @@ describe('unattributed request chip', () => {
       view.unmount()
       setRuntimeContext(null)
     }
+  })
+})
+
+/**
+ * Plan usage on a provider card (issue #22, T4). Every rendering here uses a
+ * snapshot the host already projected: `getState` never probes, and the strip
+ * only asks for a refresh when a row is missing or past its TTL.
+ */
+function quotaWindow(id: QuotaWindowId, usedFraction: number, hoursToReset: number): QuotaWindowView {
+  return { id, usedFraction, resetsAt: Date.now() + hoursToReset * 3_600_000 }
+}
+
+function quotaState(keyQuota: QuotaView | undefined, patchKey?: (key: KeyView) => void, provider = 0): StateView {
+  const state = makeState()
+  const row = state.providers[provider]!.keys[0]!
+  row.quota = keyQuota
+  patchKey?.(row)
+  return state
+}
+
+function progressBars(nodes: FlatNode[]): FlatNode[] {
+  return hostNodes(nodes).filter(node => node.props?.role === 'progressbar')
+}
+
+describe('quota surface', () => {
+  beforeAll(() => {
+    ;(globalThis as unknown as { document?: unknown }).document = {
+      getElementById: () => null,
+      createElement: () => ({ remove() {} }),
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      activeElement: null,
+      body: {},
+      head: { appendChild: () => {} },
+    }
+    ;(globalThis as unknown as { HTMLElement?: unknown }).HTMLElement = class FakeHTMLElement {}
+  })
+
+  async function mountExpanded(state: StateView): Promise<{ view: ReturnType<typeof mountView>; harness: Harness }> {
+    const harness = makeContext({ ok: true, value: state })
+    const store = createStore(harness.ctx)
+    setRuntimeContext({ ctx: harness.ctx, store })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    const head = findByClass(view.nodes, 'km-provider-head')[0]!
+    ;(head.props!.onClick as () => void)()
+    view.render()
+    await view.flush()
+    return { view, harness }
+  }
+
+  test('an ok snapshot renders one bar per window plus the tightest compact line', async () => {
+    const quota: QuotaView = {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      windows: [quotaWindow('session', 0.32, 2), quotaWindow('week', 0.92, 48)],
+    }
+    const { view } = await mountExpanded(quotaState(quota))
+    try {
+      const strip = findByClass(view.nodes, 'km-quota-strip')
+      expect(strip).toHaveLength(1)
+      const bars = progressBars(view.nodes)
+      expect(bars).toHaveLength(2)
+      expect(bars.map(bar => bar.props!['aria-valuenow'])).toEqual([32, 92])
+      expect(bars[0]!.props!['aria-label']).toBe('5h 窗口已用 32%')
+      // The compact line carries the tightest window only, in one element.
+      const compact = findByClass(view.nodes, 'km-quota-compact')
+      expect(compact).toHaveLength(1)
+      expect(compact[0]!.text).toBe('W 92%')
+      // The row also prints the percentage and the reset countdown.
+      const row = findByClass(view.nodes, 'km-quota-row')[0]!
+      expect(descendants(view.nodes, row).map(node => node.text).join('')).toContain('32%')
+      const reset = findByClass(view.nodes, 'km-quota-reset')[0]!
+      expect(reset.text.length).toBeGreaterThan(0)
+      // Only the near-exhausted window is toned warn: the session bar stays brand.
+      expect(findByClass(view.nodes, 'km-quota-fill-warn')).toHaveLength(1)
+      expect(findByClass(view.nodes, 'km-quota-compact')[0]!.props!.className).toContain('km-quota-warn')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a stale snapshot keeps the bars, dims them and marks the row', async () => {
+    const quota: QuotaView = {
+      status: 'ok',
+      fetchedAt: Date.now() - 60_000,
+      stale: true,
+      windows: [quotaWindow('week', 0.4, 30)],
+    }
+    const { view } = await mountExpanded(quotaState(quota))
+    try {
+      expect(findByClass(view.nodes, 'km-quota-stale')).toHaveLength(1)
+      expect(progressBars(view.nodes)).toHaveLength(1)
+      expect(hostNodes(view.nodes).map(node => node.text).join('')).toContain('数据较旧')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('absent and error snapshots render a localized not-reported line instead of bars', async () => {
+    for (const status of ['absent', 'error'] as const) {
+      const { view } = await mountExpanded(quotaState({ status, fetchedAt: Date.now(), windows: [] }))
+      try {
+        expect(progressBars(view.nodes)).toHaveLength(0)
+        expect(findByClass(view.nodes, 'km-quota-note')[0]!.text).toBe('未报告')
+      } finally {
+        view.unmount()
+        setRuntimeContext(null)
+      }
+    }
+  })
+
+  test('unauthorized reads "sign in again" on an OAuth row and "not reported" on an API-key row', async () => {
+    const unauthorized: QuotaView = { status: 'unauthorized', fetchedAt: Date.now(), windows: [] }
+    const oauth = await mountExpanded(quotaState(unauthorized, key => {
+      key.id = 'k_oauth_quota'
+      key.kind = 'oauth'
+      key.oauth = { provider: 'zai-coding-cn', accountId: 'acc_1', expiresAt: Date.now() + 3_600_000 }
+    }))
+    try {
+      expect(findByClass(oauth.view.nodes, 'km-quota-note')[0]!.text).toBe('请重新登录')
+    } finally {
+      oauth.view.unmount()
+      setRuntimeContext(null)
+    }
+
+    const apiKey = await mountExpanded(quotaState(unauthorized))
+    try {
+      expect(findByClass(apiKey.view.nodes, 'km-quota-note')[0]!.text).toBe('未报告')
+    } finally {
+      apiKey.view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a row without a snapshot shows the checking line and triggers one refresh', async () => {
+    const { view, harness } = await mountExpanded(quotaState(undefined))
+    try {
+      expect(findByClass(view.nodes, 'km-quota-note')[0]!.text).toBe('正在检查…')
+      const refreshes = harness.calls.filter(call => call.endpoint === 'keysManager/quotaRefresh')
+      expect(refreshes).toHaveLength(1)
+      expect(refreshes[0]!.payload).toEqual({ args: { provider: 'zai-coding-cn' } })
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('an exhausted window tones the bar as error and never prints more than 100%', async () => {
+    const quota: QuotaView = {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      windows: [quotaWindow('session', 1.4, 1)],
+    }
+    const { view } = await mountExpanded(quotaState(quota))
+    try {
+      const bars = progressBars(view.nodes)
+      expect(bars).toHaveLength(1)
+      expect(bars[0]!.props!['aria-valuenow']).toBe(100)
+      expect(findByClass(view.nodes, 'km-quota-fill-error')).toHaveLength(1)
+      expect(hostNodes(view.nodes).map(node => node.text).join('')).not.toContain('140%')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('refreshQuota coalesces concurrent calls for one provider', async () => {
+    const harness = makeContext()
+    const store = createStore(harness.ctx)
+    const [first, second] = await Promise.all([
+      store.refreshQuota('zai-coding-cn'),
+      store.refreshQuota('zai-coding-cn'),
+    ])
+    expect(first.ok).toBe(true)
+    expect(second).toBe(first)
+    expect(harness.calls.filter(call => call.endpoint === 'keysManager/quotaRefresh')).toHaveLength(1)
+    expect(store.getSnapshot().state?.managedCount).toBe(1)
+    // A second provider is a separate read, not a shared one.
+    await store.refreshQuota('deepinfra')
+    expect(harness.calls.filter(call => call.endpoint === 'keysManager/quotaRefresh')).toHaveLength(2)
+  })
+
+  test('the quota key set holds EN+ZH parity in both locale sources', () => {
+    expectLocaleParity([
+      'quotaTitle',
+      'quotaRefreshing',
+      'quotaChecking',
+      'quotaNotReported',
+      'quotaSignInAgain',
+      'quotaStale',
+      'quotaCompactHint',
+      'quotaBarLabel',
+    ])
   })
 })

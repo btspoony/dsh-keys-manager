@@ -1,6 +1,6 @@
 /** Browser-half domain and service contracts for the Keys Manager. */
 import type * as React from 'react'
-import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyTestResult, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, StateView, TransportAccountStatus, TransportAccountView, TransportModelsView } from '../domain'
+import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyTestResult, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, QuotaView, QuotaWindowView, StateView, TransportAccountStatus, TransportAccountView, TransportModelsView } from '../domain'
 
 export type {
   AccountAttemptNotice,
@@ -13,11 +13,16 @@ export type {
   OAuthAccountView,
   ProviderStatus,
   ProviderView,
+  QuotaView,
+  QuotaWindowView,
   StateView,
   TransportAccountStatus,
   TransportAccountView,
   TransportModelsView,
 }
+
+/** The plan windows a card renders; the host's view type carries the same union. */
+export type QuotaWindowId = 'session' | 'week'
 
 /** Locale dictionaries registered under the plugin namespace. */
 export interface LocaleDicts {
@@ -117,6 +122,12 @@ export interface ClientStore {
   transportModels(route: string): Promise<TransportModelsResult>
   /** Replace one transport route's allow-list; an empty list means all models. */
   saveTransportModels(route: string, models: string[]): Promise<TransportModelsResult>
+  /**
+   * Pull one provider's plan usage and install the refreshed state. Calls for
+   * the same provider are coalesced, never queued behind mutations, and never
+   * set the global busy flag: quota is supplementary to the card.
+   */
+  refreshQuota(provider: string): Promise<ActionOutcome>
   tick(): void
   dismissError(): void
 }

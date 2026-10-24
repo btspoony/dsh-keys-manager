@@ -66,6 +66,9 @@ export function createStore(ctx: ClientContext): ClientStore {
   // dropped because it was built inside a borrow window (PR review round 10).
   let mutationGeneration = 0
   let stateDropped = false
+  // One in-flight quota read per provider, so a double render or a retry click
+  // cannot double a vendor probe.
+  const quotaInFlight = new Map<string, Promise<ActionOutcome>>()
   const listeners = new Set<() => void>()
   const emit = (): void => {
     for (const listener of [...listeners]) {
@@ -303,6 +306,29 @@ export function createStore(ctx: ClientContext): ClientStore {
       const result = await rpcRead('transportModels', { provider: route })
       if (!result.ok) return { ok: false, error: result.error.message }
       return { ok: true, value: shapeTransportModels(result.value) }
+    },
+    refreshQuota(provider: string): Promise<ActionOutcome> {
+      // Coalesce per provider: a StrictMode double render (and a manual retry
+      // during an in-flight read) shares one RPC. Read-style, like `testKey`:
+      // no queue, no global busy flag, and a failure never raises the card's
+      // error banner — the host's per-row status carries the verdict.
+      const pending = quotaInFlight.get(provider)
+      if (pending !== undefined) return pending
+      const request = (async (): Promise<ActionOutcome> => {
+        try {
+          const result = await rpc('quotaRefresh', { provider })
+          if (!result.ok) throw new Error(result.error.message)
+          const state = result.value as StateView
+          update({ status: 'ready', state, now: Date.now(), error: null })
+          return { ok: true, value: state }
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
+        } finally {
+          quotaInFlight.delete(provider)
+        }
+      })()
+      quotaInFlight.set(provider, request)
+      return request
     },
     saveTransportModels(route: string, models: string[]): Promise<TransportModelsResult> {
       return send('saveTransportModels', { provider: route, models }, modelsOutcome)
