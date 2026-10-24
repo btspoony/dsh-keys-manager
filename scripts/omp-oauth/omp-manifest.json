@@ -1,7 +1,7 @@
 {
-  "ompVersion": "18.12.3",
-  "piCatalogVersion": "18.12.3",
-  "piUtilsVersion": "18.12.3",
+  "ompVersion": "18.12.6",
+  "piCatalogVersion": "18.12.6",
+  "piUtilsVersion": "18.12.6",
   "esbuildVersion": "0.28.2",
   "entry": "lib/omp-oauth/oauth.mjs",
   "moduleCount": 35,
@@ -104,7 +104,7 @@
     "@oh-my-pi/pi-ai/src/error/oauth.ts": "sha256:3ab46291214c638e714a927293e0e60709e21cfb3de831611344931c24f4c7fb",
     "@oh-my-pi/pi-ai/src/error/classes.ts": "sha256:aa964060e9a661b18bdcb56ce2523f7a44bba62c75a243e89a84160a6f31bdba",
     "@oh-my-pi/pi-ai/src/utils/retry-after.ts": "sha256:b4a137c8c0b5cb693c86d2b4e4ed3cf07ee452ed1154cad98a0381daf2279546",
-    "@oh-my-pi/pi-catalog/src/compat/rules.json": "sha256:2688dfbeda4b9c9973a9790784ba0c107b3417eafdaf4a66b45ef000a3fbfcd1",
+    "@oh-my-pi/pi-catalog/src/compat/rules.json": "sha256:1b63c611e04b497751acbbe7ec7c12e7f8aff9dd6a2ffcd936f9f719ac2077ba",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/zai-coding-plan.kdl": "sha256:9806a6ec1f839f6254658e7517a86bab50b3a29d6252add29f3d60298efaf1ee",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/kilo.kdl": "sha256:9dc2093dd5df7d31e7e907e81657196821c246a795e7a29151ab89469ab13ebd"
   },

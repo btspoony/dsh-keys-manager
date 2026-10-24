@@ -171,7 +171,7 @@ describe('gitlab duo proxy drift gate', () => {
   it('builds under the 4 MB bound from the entry-scoped substitutions', () => {
     // 2 654 940 bytes measured; the ceiling is 3 980 000 (plan D12: ≤4 MB).
     expect(duo!.bytes).toBeLessThanOrEqual(4_000_000)
-    expect(duo!.moduleCount).toBe(231)
+    expect(duo!.moduleCount).toBe(232)
     // The alias fired: the lean registry substitute is an input and the real
     // dispatch table is not, so the builtin provider registry never enters.
     expect(inputs).toContain('scripts/omp-shim/register-builtins-lean.ts')

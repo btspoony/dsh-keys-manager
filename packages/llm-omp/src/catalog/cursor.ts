@@ -1,8 +1,8 @@
 /**
  * Generated Cursor model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.12.3` `src/models.json` key `cursor`
- * (123 rows, sha256:39fb09654ee3812043bc062e426d8e7aa13cd273435fa7b8a203a76246c8735c). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
+ * Source: `@oh-my-pi/pi-catalog@18.12.6` `src/models.json` key `cursor`
+ * (123 rows, sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
  *
  * The drift gate in `tests/build.test.ts` pins the same package version and
  * source hash, so an omp bump fails there before this table can describe the
@@ -20,10 +20,10 @@ import type { CursorModelRow } from '../omp.js'
 /** Provenance of {@link CURSOR_MODELS}. */
 export const CURSOR_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.12.3',
+  version: '18.12.6',
   file: 'src/models.json',
   key: 'cursor',
-  sourceHash: 'sha256:39fb09654ee3812043bc062e426d8e7aa13cd273435fa7b8a203a76246c8735c',
+  sourceHash: 'sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152',
   rowCount: 123,
 } as const
 
