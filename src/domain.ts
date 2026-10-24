@@ -131,6 +131,27 @@ export interface StateDocument {
   sessionBindings: Record<string, { keyId: string; boundAt: number }>
 }
 
+/** One plan window projected into an account row. */
+export interface QuotaWindowView {
+  id: 'session' | 'week'
+  /** Share of the window already used, `0`..`1`. */
+  usedFraction: number
+  /** Reset time as epoch milliseconds. */
+  resetsAt: number
+}
+
+/**
+ * Latest quota snapshot of one account row. Runtime-only: never persisted, so
+ * it is deliberately absent from `KeyRecord` and `sanitizeState` (plan D1).
+ */
+export interface QuotaView {
+  status: 'ok' | 'absent' | 'unauthorized' | 'error'
+  fetchedAt: number
+  /** True when the windows are last-good data served behind a failed probe. */
+  stale?: boolean
+  windows: QuotaWindowView[]
+}
+
 /** Public key row returned to the UI (no credential reference or value). */
 export interface KeyView {
   id: string
@@ -156,6 +177,8 @@ export interface KeyView {
    * the provider-view `projectedAccountId` duplicate was removed.
    */
   projected?: boolean
+  /** Latest cached plan usage; absent until a quota refresh ran for this row. */
+  quota?: QuotaView
 }
 
 /** Public provider row returned to the UI. */

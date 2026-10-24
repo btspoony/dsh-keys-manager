@@ -133,7 +133,7 @@ export const claudeQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => 
       // Anthropic reports USED percent, so the inversion lives in the normalizer.
       const usedPercent = toNumber(row.utilization)
       const usedFraction = usedPercent === undefined ? undefined : fractionFromUsed(usedPercent)
-      const resetsAt = resetFrom(row.resets_at ?? row.resetsAt)
+      const resetsAt = resetFrom(row.resets_at ?? row.reset_at ?? row.resetsAt ?? row.resetAt)
       if (usedFraction === undefined || resetsAt === undefined) return
       windows.push({ id, usedFraction, resetsAt })
     }

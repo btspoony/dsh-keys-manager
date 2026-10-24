@@ -111,6 +111,14 @@ export class QuotaCache {
     return served
   }
 
+  /**
+   * The snapshot currently held for one account, without loading. The normal
+   * state path uses this so a card render can never reach a vendor (D2).
+   */
+  peek(provider: string, keyId: string): QuotaSnapshotView | undefined {
+    return this.entries.get(`${provider}\u0000${keyId}`)?.snapshot
+  }
+
   private retryDelay(status: QuotaSnapshot['status']): number {
     if (status === 'ok') {
       const jitter = this.jitterRatio * (2 * this.random() - 1)
