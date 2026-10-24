@@ -59,12 +59,8 @@
   "loginPasteHint": "从浏览器地址栏复制完整 URL，或只粘贴授权码。",
   "loginReveal": "显示粘贴的内容",
   "signingIn": "正在登录…",
-  "quotaTitle": "计划用量",
-  "quotaRefreshing": "刷新中…",
   "quotaChecking": "正在检查…",
-  "quotaNotReported": "未报告",
   "quotaSignInAgain": "请重新登录",
   "quotaStale": "数据较旧",
-  "quotaCompactHint": "该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。",
-  "quotaBarLabel": "{window} 窗口已用 {percent}%"
+  "quotaCompactHint": "该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。"
 }
