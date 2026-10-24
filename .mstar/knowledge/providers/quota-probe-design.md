@@ -50,7 +50,7 @@ Three reset-time encodings coexist and every parser must accept all of them: ISO
 - **HTTP 200 can carry a refusal.** MiniMax `base_resp.status_code != 0` and Z.ai `success: false` map to `error`, not to a snapshot.
 - **401/403 → `unauthorized`; 404 → `absent`; everything else → `error`.** A probe must never throw out of its boundary.
 - **Duplicate window ids lose data silently** because consumers usually `find()` the first match — collapse with the tighter fraction at parse time.
-- **A window the UI cannot represent is dropped, never relabelled.** The wire model has only `session` and `week`, so Cline's `monthly` limit and xAI's unified-billing monthly quota read as absent windows (and a monthly-only payload is `error`) rather than being shown as a week.
+- **A window the UI cannot represent is dropped, never relabelled.** The wire model has only `session` and `week`, so Cline's `monthly` limit is dropped and a monthly-only payload is `error`; xAI's unified-billing payload is `error` too (`isUnifiedBillingUser: true`, even when its period type says WEEKLY — the credits payload alone cannot say whether that weekly pool applies). Monthly and unified periods are never rendered as a week.
 
 ## Cache policy (the part that keeps vendors happy)
 
