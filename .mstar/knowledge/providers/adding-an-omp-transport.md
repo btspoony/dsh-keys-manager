@@ -57,6 +57,11 @@ not pay that price for a protocol the host can already speak.
 - **No loopback listener unless the batch needs one.** A paste-the-failed-callback-URL prompt is
   enough for a headless `oauth-code` flow; a Node listener is shared work worth deferring to the
   batch that truly needs it (the Google family).
+- **A new route must be registered in both places or it half-exists.** Add the route's entry to
+  `TRANSPORT_PROVIDERS` and its credential key to `TRANSPORT_CREDENTIAL_KEYS` (same declaration
+  order as the registrations) together: missing the credential key leaks the route into DSH's
+  provider lists while unsigned-in, missing the provider entry vanishes it from the Keys Manager
+  card, because the root package builds that card from the static `TRANSPORT_PROVIDERS` export.
 
 ## Test layers that caught real defects
 
@@ -77,6 +82,7 @@ not pay that price for a protocol the host can already speak.
 - [ ] Fill-absent attribution wrapper, with the RA/`Request` trap handled.
 - [ ] Fixture-only suites at all five layers; no live endpoint in any test.
 - [ ] `docs/known-limits.md` names the unofficial client, the no-refresh/expiry contract, the attribution deviation and the manual smoke check.
+- [ ] Register the route in both `TRANSPORT_PROVIDERS` and `TRANSPORT_CREDENTIAL_KEYS` (declaration order matching the registrations).
 - [ ] `.changes/unreleased/` fragment with **single-line** bullets (wrapped bullets are silently dropped by `prepare-release.mjs`).
 
 ## Lessons from the Google family (issue #15 batch 5, iteration `iter-2026-Q4-omp-batch3`)
