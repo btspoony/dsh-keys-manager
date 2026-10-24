@@ -66,5 +66,6 @@
   "quotaSignInAgain": "Sign in again",
   "quotaStale": "Stale",
   "quotaCompactHint": "The tightest plan window across this provider's accounts; expand the card for every account.",
-  "quotaBarLabel": "{window} window {percent}% used"
+  "quotaBarLabel": "{window} window {percent}% used",
+  "quotaNativelyManaged": "Managed by DSH"
 }

@@ -11,8 +11,12 @@
  * @module dsh-keys-manager/quota/model
  */
 
-/** Outcome class of one probe. Only `ok` carries usable windows. */
-export type QuotaStatus = 'ok' | 'absent' | 'unauthorized' | 'error'
+/**
+ * Outcome class of one quota read. Only `ok` carries usable windows; probes
+ * produce the first four, while `natively-managed` is host-only: the route is
+ * served by a DSH-managed projection whose credential this process cannot read.
+ */
+export type QuotaStatus = 'ok' | 'absent' | 'unauthorized' | 'error' | 'natively-managed'
 
 /** The plan windows the UI can render; a provider may expose either or both. */
 export type QuotaWindowId = 'session' | 'week'

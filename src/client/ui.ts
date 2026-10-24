@@ -1112,13 +1112,18 @@ function quotaRow(row: KeyView, t: T, now: number): React.ReactElement {
   const windows = quotaWindows(row.quota)
   const alias = h('span', { className: 'km-quota-alias', title: row.alias }, row.alias)
   if (windows.length === 0) {
+    // `natively-managed` is the host telling us a DSH projection serves the
+    // route but its usage cannot be read: that is neither "no usage API" nor
+    // "your credential is invalid", so it gets its own line.
     // `unauthorized` is an account problem only on OAuth rows; an API-key row
     // has no sign-in to offer, so both parse gaps read as "not reported".
     const note = row.quota === undefined
       ? t('quotaChecking')
-      : row.quota.status === 'unauthorized' && row.kind === 'oauth'
-        ? t('quotaSignInAgain')
-        : t('quotaNotReported')
+      : row.quota.status === 'natively-managed'
+        ? t('quotaNativelyManaged')
+        : row.quota.status === 'unauthorized' && row.kind === 'oauth'
+          ? t('quotaSignInAgain')
+          : t('quotaNotReported')
     return h('li', { key: row.id, className: 'km-quota-row' }, alias, h('span', { className: 'km-quota-note' }, note))
   }
   const tightest = windows.reduce((best, window) => (window.usedFraction > best.usedFraction ? window : best))

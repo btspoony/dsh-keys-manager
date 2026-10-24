@@ -251,6 +251,7 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     quotaRefreshing: '刷新中…',
     quotaChecking: '正在检查…',
     quotaNotReported: '未报告',
+    quotaNativelyManaged: '由 DSH 原生管理',
     quotaSignInAgain: '请重新登录',
     quotaStale: '数据较旧',
     quotaCompactHint: '该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。',
@@ -4019,6 +4020,47 @@ describe('quota surface', () => {
     }
   })
 
+  test('a natively-managed snapshot renders its own honest state, never a generic one', async () => {
+    const quota: QuotaView = { status: 'natively-managed', fetchedAt: Date.now(), windows: [] }
+    const { view } = await mountExpanded(quotaState(quota, key => {
+      key.id = 'k_oauth_native'
+      key.kind = 'oauth'
+      key.oauth = { provider: 'kimi-coding', accountId: 'acc_native', expiresAt: Date.now() + 3_600_000 }
+    }))
+    try {
+      // No bars, no countdown: the text carries the state on its own.
+      expect(progressBars(view.nodes)).toHaveLength(0)
+      const note = findByClass(view.nodes, 'km-quota-note')[0]!
+      expect(note.text).toBe('由 DSH 原生管理')
+      expect(note.text).not.toBe('未报告')
+      expect(note.text).not.toBe('请重新登录')
+      // The collapsed pill contributes nothing for a state without windows.
+      expect(findByClass(view.nodes, 'km-quota-compact')).toHaveLength(0)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('natively-managed, absent and unauthorized read as three distinct states', async () => {
+    const texts: string[] = []
+    for (const status of ['natively-managed', 'absent', 'unauthorized'] as const) {
+      const { view } = await mountExpanded(quotaState({ status, fetchedAt: Date.now(), windows: [] }, key => {
+        key.id = `k_oauth_${status}`
+        key.kind = 'oauth'
+        key.oauth = { provider: 'kimi-coding', expiresAt: Date.now() + 3_600_000 }
+      }))
+      try {
+        texts.push(findByClass(view.nodes, 'km-quota-note')[0]!.text)
+      } finally {
+        view.unmount()
+        setRuntimeContext(null)
+      }
+    }
+    expect(texts).toEqual(['由 DSH 原生管理', '未报告', '请重新登录'])
+    expect(new Set(texts).size).toBe(3)
+  })
+
   test('unauthorized reads "sign in again" on an OAuth row and "not reported" on an API-key row', async () => {
     const unauthorized: QuotaView = { status: 'unauthorized', fetchedAt: Date.now(), windows: [] }
     const oauth = await mountExpanded(quotaState(unauthorized, key => {
@@ -4255,6 +4297,7 @@ describe('quota surface', () => {
       'quotaRefreshing',
       'quotaChecking',
       'quotaNotReported',
+      'quotaNativelyManaged',
       'quotaSignInAgain',
       'quotaStale',
       'quotaCompactHint',
