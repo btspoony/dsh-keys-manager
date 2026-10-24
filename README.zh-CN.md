@@ -3,7 +3,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-keys-manager)](https://www.npmjs.com/package/dsh-keys-manager)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%7C%20%3E%3D24-339933)](https://www.npmjs.com/package/dsh-keys-manager)
-[![DSH](https://img.shields.io/badge/DSH-%5E0.2.1--rc.2-0969DA)](https://www.npmjs.com/package/@deepseek-ai/dsh-llm)
+[![DSH](https://img.shields.io/badge/DSH-%5E0.2.1--rc.3-0969DA)](https://www.npmjs.com/package/@deepseek-ai/dsh-llm)
 
 [English](README.md) | **简体中文**
 
