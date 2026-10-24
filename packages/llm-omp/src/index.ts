@@ -25,6 +25,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { LlmError } from '@deepseek-ai/dsh-llm'
+import type { AdapterRegistrationHandle, DirectoryRegistrationHandle, LlmConfigurableProvider } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 
 import {
@@ -73,7 +74,12 @@ import { DEVIN_CREDENTIAL_KEY, createDevinAccess } from './devin/credentials.js'
 import { loginGoogle } from './google/auth.js'
 import type { GoogleFetch, GoogleLoginResult } from './google/auth.js'
 import { GoogleAuthError } from './google/callback-listener.js'
-import { createGoogleAccess, googleCredentialKey } from './google/credentials.js'
+import {
+  GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY,
+  GOOGLE_GEMINI_CLI_CREDENTIAL_KEY,
+  createGoogleAccess,
+  googleCredentialKey,
+} from './google/credentials.js'
 import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from './google/route.js'
 import type { GoogleRouteFacts } from './google/route.js'
 
@@ -1026,6 +1032,41 @@ export function createFactoryDroidAdapter(
   })
 }
 
+/**
+ * Every route's Models-page entry, in registration order.
+ *
+ * @remarks
+ * Frozen on purpose: consumers (the root keys-manager) union this list with
+ * `ctx.llm.listConfigurableProviders()`. The live directory shrinks to the
+ * routes holding a credential record; this list keeps every route's card and
+ * sign-in entry reachable on the Keys Manager page.
+ */
+export const TRANSPORT_PROVIDERS: readonly LlmConfigurableProvider[] = Object.freeze([
+  CURSOR_PROVIDER,
+  DEVIN_PROVIDER,
+  GOOGLE_GEMINI_CLI_PROVIDER,
+  GOOGLE_ANTIGRAVITY_PROVIDER,
+  FACTORY_DROID_PROVIDER,
+  GITLAB_DUO_PROVIDER,
+  GITLAB_DUO_AGENT_PROVIDER,
+] as const)
+
+/** The credential record each {@link TRANSPORT_PROVIDERS} entry is keyed by (same order). */
+const TRANSPORT_CREDENTIAL_KEYS = [
+  CURSOR_CREDENTIAL_KEY,
+  DEVIN_CREDENTIAL_KEY,
+  GOOGLE_GEMINI_CLI_CREDENTIAL_KEY,
+  GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY,
+  FACTORY_DROID_CREDENTIAL_KEY,
+  GITLAB_DUO_CREDENTIAL_KEY,
+  GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+] as const
+
+/** The record-listing half of `ctx.credentials` the reconcile pass reads. */
+interface CredentialRecordListLike {
+  listRecords(): Promise<readonly { key: string }[]>
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
   const host = ctx as Context & {
     credentials: CredentialRecordsLike
@@ -1041,34 +1082,72 @@ export function apply(ctx: Context, config: Config = {}): void {
   // Factory route and both GitLab routes — the proxy before its agent (the order
   // the flow table and the registration suites pin). Every artifact stays lazy, so
   // a missing one cannot fail `apply`.
-  ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models('cursor')))
-  ctx.llm.registerAdapter([DEVIN_ROUTE], createDevinAdapter(host.credentials, models('devin')))
-  ctx.llm.registerAdapter(
-    [GOOGLE_GEMINI_CLI_ROUTE],
-    createGoogleGeminiCliAdapter(host.credentials, models('google-gemini-cli')),
+  //
+  // Registration stays all-or-nothing (both seams reject an empty FIRST
+  // registration), then `reconcile` shrinks both sets to the routes holding a
+  // credential record, so an unsigned-in route appears in neither DSH list.
+  const adapterHandles: AdapterRegistrationHandle[] = []
+  adapterHandles.push(ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models('cursor'))))
+  adapterHandles.push(ctx.llm.registerAdapter([DEVIN_ROUTE], createDevinAdapter(host.credentials, models('devin'))))
+  adapterHandles.push(
+    ctx.llm.registerAdapter(
+      [GOOGLE_GEMINI_CLI_ROUTE],
+      createGoogleGeminiCliAdapter(host.credentials, models('google-gemini-cli')),
+    ),
   )
-  ctx.llm.registerAdapter(
-    [GOOGLE_ANTIGRAVITY_ROUTE],
-    createGoogleAntigravityAdapter(host.credentials, models('google-antigravity')),
+  adapterHandles.push(
+    ctx.llm.registerAdapter(
+      [GOOGLE_ANTIGRAVITY_ROUTE],
+      createGoogleAntigravityAdapter(host.credentials, models('google-antigravity')),
+    ),
   )
-  ctx.llm.registerAdapter(
-    [FACTORY_DROID_TRANSPORT_ROUTE.id],
-    createFactoryDroidAdapter(host.credentials, models('factory-droid')),
+  adapterHandles.push(
+    ctx.llm.registerAdapter(
+      [FACTORY_DROID_TRANSPORT_ROUTE.id],
+      createFactoryDroidAdapter(host.credentials, models('factory-droid')),
+    ),
   )
-  ctx.llm.registerAdapter([GITLAB_DUO_ROUTE], createGitLabDuoAdapter(host.credentials, models('gitlab-duo')))
-  ctx.llm.registerAdapter(
-    [GITLAB_DUO_AGENT_ROUTE],
-    createGitLabDuoAgentAdapter(host.credentials, models('gitlab-duo-agent')),
+  adapterHandles.push(
+    ctx.llm.registerAdapter([GITLAB_DUO_ROUTE], createGitLabDuoAdapter(host.credentials, models('gitlab-duo'))),
   )
-  ctx.llm.registerConfigurableProviders([
-    CURSOR_PROVIDER,
-    DEVIN_PROVIDER,
-    GOOGLE_GEMINI_CLI_PROVIDER,
-    GOOGLE_ANTIGRAVITY_PROVIDER,
-    FACTORY_DROID_PROVIDER,
-    GITLAB_DUO_PROVIDER,
-    GITLAB_DUO_AGENT_PROVIDER,
-  ])
+  adapterHandles.push(
+    ctx.llm.registerAdapter(
+      [GITLAB_DUO_AGENT_ROUTE],
+      createGitLabDuoAgentAdapter(host.credentials, models('gitlab-duo-agent')),
+    ),
+  )
+  const directoryHandle: DirectoryRegistrationHandle = ctx.llm.registerConfigurableProviders(TRANSPORT_PROVIDERS)
+
+  // Serialize reconciles through one chain: a second credential event while a
+  // read is in flight must not interleave two `replace` sequences.
+  let chain: Promise<void> = Promise.resolve()
+  const reconcile = (): void => {
+    chain = chain
+      .then(async () => {
+        const records = await (host.credentials as Partial<CredentialRecordListLike>).listRecords!()
+        const present = new Set(records.map(record => record.key))
+        const entries = TRANSPORT_PROVIDERS.filter((_, index) => present.has(TRANSPORT_CREDENTIAL_KEYS[index]!))
+        for (const [index, handle] of adapterHandles.entries()) {
+          handle.replace(present.has(TRANSPORT_CREDENTIAL_KEYS[index]!) ? [TRANSPORT_PROVIDERS[index]!.provider] : [])
+        }
+        directoryHandle.replace(entries)
+      })
+      .catch(cause => {
+        // The listener must never reject: keep the previous set and log.
+        ctx.logger?.warn?.('llm-omp-transports: provider reconcile failed — %s', cause instanceof Error ? cause.message : String(cause))
+      })
+  }
+
+  const listRecords = (host.credentials as Partial<CredentialRecordListLike>).listRecords
+  if (typeof listRecords === 'function') {
+    reconcile()
+    // Registered on the plugin fiber, so disposal removes it with the plugin.
+    const on = (ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => unknown) => () => void }).on
+    if (typeof on === 'function') on.call(ctx, 'credentials/record-updated', () => reconcile())
+  } else {
+    ctx.logger?.warn?.('llm-omp-transports: the credential seam exposes no listRecords; all seven routes stay registered')
+  }
+
   host.authorization.registerFlow(cursorAuthorizationFlow())
   host.authorization.registerFlow(devinAuthorizationFlow())
   host.authorization.registerFlow(googleGeminiCliAuthorizationFlow())

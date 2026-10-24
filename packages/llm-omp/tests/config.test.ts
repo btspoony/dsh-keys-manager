@@ -37,6 +37,7 @@ import {
   gitlabDuoCatalogModels,
   googleAntigravityCatalogModels,
   googleGeminiCliCatalogModels,
+  TRANSPORT_PROVIDERS,
 } from '../src/index.js'
 import type { TransportModelProfile } from '../src/index.js'
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
@@ -206,9 +207,19 @@ const FAR_FUTURE = 2_000_000_000_000
 /** What the fake host recorded during one `apply`. */
 interface RegisteredHost {
   readonly ctx: Context
-  readonly adapters: { providers: readonly string[]; adapter: unknown }[]
+  readonly adapters: { providers: readonly string[]; adapter: unknown; replaces: (readonly string[])[] }[]
   readonly providers: readonly { provider: string; settingsPath: readonly string[] }[]
   readonly flows: readonly { key: string; label: string }[]
+  /** The credential keys `listRecords()` currently answers with. */
+  readonly records: string[]
+  /** Fire a `credentials/record-updated` at the listener `apply` registered. */
+  readonly emitRecordUpdated: (key: string) => void
+}
+
+/** Let pending reconcile chains settle (each does one async read + sync replaces). */
+async function flushReconcile(): Promise<void> {
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
 }
 
 /** A fake `ctx` implementing exactly the seams `apply` reaches. */
@@ -218,26 +229,66 @@ function fakeHost(record: { access: string; expires: number; projectId: string }
   projectId: 'project-1',
 }): RegisteredHost {
   const adapters: RegisteredHost['adapters'][number][] = []
-  const providers: RegisteredHost['providers'][number][] = []
+  const providers: { provider: string; settingsPath: readonly string[] }[] = []
   const flows: RegisteredHost['flows'][number][] = []
+  // All seven records by default, so the registration-order pins below see the
+  // full post-reconcile set; the signed-in tests overwrite `records`.
+  const records = [
+    'llm-omp-transports/cursor',
+    'llm-omp-transports/devin',
+    'llm-omp-transports/google-gemini-cli',
+    'llm-omp-transports/google-antigravity',
+    'llm-omp-transports/factory-droid',
+    'llm-omp-transports/gitlab-duo',
+    'llm-omp-transports/gitlab-duo-agent',
+  ]
+  const listeners: ((key: unknown) => unknown)[] = []
   const credentials = {
     readRecord: async () => ({ kind: 'grant' as const, payload: record }),
     modifyRecord: async () => ({ kind: 'grant' as const, payload: record }),
+    listRecords: async () => records.map(key => ({ key, kind: 'grant' as const })),
   }
   return {
     adapters,
     providers,
     flows,
+    records,
+    emitRecordUpdated: key => {
+      for (const listener of listeners) listener(key)
+    },
     ctx: {
       llm: {
-        registerAdapter: (providers: readonly string[], adapter: unknown) => adapters.push({ providers, adapter }),
-        registerConfigurableProviders: (list: readonly (typeof providers)[number][]) => providers.push(...list),
+        registerAdapter: (routeList: readonly string[], adapter: unknown) => {
+          const entry = { providers: routeList, adapter, replaces: [] as (readonly string[])[] }
+          adapters.push(entry)
+          return {
+            replace: (next: readonly string[]) => {
+              entry.providers = next
+              entry.replaces.push(next)
+            },
+          }
+        },
+        registerConfigurableProviders: (list: readonly (typeof providers)[number][]) => {
+          providers.length = 0
+          providers.push(...list)
+          return {
+            replace: (entries: readonly (typeof providers)[number][]) => {
+              providers.length = 0
+              providers.push(...entries)
+            },
+          }
+        },
       },
       credentials,
       authorization: {
         registerFlow: (flow: RegisteredHost['flows'][number]) => flows.push(flow),
         begin: async () => ({ status: 'authorized' as const }),
       },
+      on: (name: string, listener: (...args: unknown[]) => unknown) => {
+        if (name === 'credentials/record-updated') listeners.push(listener as (key: unknown) => unknown)
+        return () => {}
+      },
+      logger: { warn() {} },
     } as unknown as Context,
   }
 }
@@ -454,5 +505,84 @@ describe('apply registration', () => {
       ).rejects.toMatchObject({ code: TRANSPORT_UNAVAILABLE })
       expect(chunks).toEqual([])
     }
+  })
+})
+
+describe('signed-in reconcile', () => {
+  it('exports the seven static entries frozen, in declaration order', () => {
+    expect(Object.isFrozen(TRANSPORT_PROVIDERS)).toBe(true)
+    expect(TRANSPORT_PROVIDERS.map(entry => entry.provider)).toEqual([
+      'cursor',
+      'devin',
+      GOOGLE_GEMINI_CLI_ROUTE,
+      GOOGLE_ANTIGRAVITY_ROUTE,
+      'factory-droid',
+      'gitlab-duo',
+      'gitlab-duo-agent',
+    ])
+  })
+
+  it('with no grant: the directory set is empty and every adapter set is empty', async () => {
+    const host = fakeHost()
+    host.records.length = 0
+    apply(host.ctx)
+    await flushReconcile()
+
+    expect(host.providers).toEqual([])
+    for (const adapter of host.adapters) expect(adapter.providers).toEqual([])
+  })
+
+  it('with three grants: exactly those entries remain in declaration order and only their adapters hold a route', async () => {
+    const host = fakeHost()
+    host.records.length = 0
+    host.records.push(
+      'llm-omp-transports/gitlab-duo',
+      'llm-omp-transports/cursor',
+      'llm-omp-transports/google-gemini-cli',
+    )
+    apply(host.ctx)
+    await flushReconcile()
+
+    expect(host.providers.map(entry => entry.provider)).toEqual(['cursor', GOOGLE_GEMINI_CLI_ROUTE, 'gitlab-duo'])
+    expect(host.adapters.map(adapter => adapter.providers)).toEqual([
+      ['cursor'],
+      [],
+      [GOOGLE_GEMINI_CLI_ROUTE],
+      [],
+      [],
+      ['gitlab-duo'],
+      [],
+    ])
+  })
+
+  it('a grant written after apply: the route enters both sets without a second apply', async () => {
+    const host = fakeHost()
+    host.records.length = 0
+    apply(host.ctx)
+    await flushReconcile()
+    expect(host.providers).toEqual([])
+
+    host.records.push('llm-omp-transports/cursor')
+    host.emitRecordUpdated('llm-omp-transports/cursor')
+    await flushReconcile()
+
+    expect(host.providers.map(entry => entry.provider)).toEqual(['cursor'])
+    expect(host.adapters[0]!.providers).toEqual(['cursor'])
+    expect(host.adapters.slice(1).every(adapter => adapter.providers.length === 0)).toBe(true)
+  })
+
+  it('a grant removed after apply: the route leaves both sets', async () => {
+    const host = fakeHost()
+    apply(host.ctx)
+    await flushReconcile()
+    expect(host.providers).toHaveLength(7)
+
+    host.records.splice(host.records.indexOf('llm-omp-transports/devin'), 1)
+    host.emitRecordUpdated('llm-omp-transports/devin')
+    await flushReconcile()
+
+    expect(host.providers.map(entry => entry.provider)).not.toContain('devin')
+    expect(host.adapters[1]!.providers).toEqual([])
+    expect(host.providers).toHaveLength(6)
   })
 })
