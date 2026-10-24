@@ -17,10 +17,16 @@ import { describe, expect, it } from 'vitest'
 import {
   CURSOR_ROUTE,
   DEVIN_ROUTE,
+  FACTORY_DROID_TRANSPORT_ROUTE,
+  GITLAB_DUO_AGENT_TRANSPORT_ROUTE,
+  GITLAB_DUO_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
+  OmpFactoryDroidAdapter,
+  OmpGitLabDuoAdapter,
+  OmpGitLabDuoAgentAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
 } from '../src/adapter.js'
@@ -655,7 +661,7 @@ describe('llm-omp-transports registration', () => {
     }
   }
 
-  it('registers all four adapters, their Models-page entries and all four flows', () => {
+  it('registers all seven adapters, their Models-page entries and all seven flows', () => {
     const host = fakeHost()
     apply(host.ctx)
 
@@ -666,22 +672,36 @@ describe('llm-omp-transports registration', () => {
       `adapter:${DEVIN_ROUTE}`,
       `adapter:${GOOGLE_GEMINI_CLI_ROUTE}`,
       `adapter:${GOOGLE_ANTIGRAVITY_ROUTE}`,
+      `adapter:${FACTORY_DROID_TRANSPORT_ROUTE.id}`,
+      `adapter:${GITLAB_DUO_TRANSPORT_ROUTE.id}`,
+      `adapter:${GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id}`,
       'providers',
       'flow:llm-omp-transports/cursor',
       'flow:llm-omp-transports/devin',
       'flow:llm-omp-transports/google-gemini-cli',
       'flow:llm-omp-transports/google-antigravity',
+      'flow:llm-omp-transports/factory-droid',
+      'flow:llm-omp-transports/gitlab-duo',
+      'flow:llm-omp-transports/gitlab-duo-agent',
     ])
     expect(host.adapters.map(entry => entry.providers)).toEqual([
       [CURSOR_ROUTE],
       [DEVIN_ROUTE],
       [GOOGLE_GEMINI_CLI_ROUTE],
       [GOOGLE_ANTIGRAVITY_ROUTE],
+      [FACTORY_DROID_TRANSPORT_ROUTE.id],
+      [GITLAB_DUO_TRANSPORT_ROUTE.id],
+      [GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id],
     ])
     expect(host.adapters[0]!.adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(host.adapters[1]!.adapter).toBeInstanceOf(OmpDevinAdapter)
     expect(host.adapters[2]!.adapter).toBeInstanceOf(OmpGoogleGeminiCliAdapter)
     expect(host.adapters[3]!.adapter).toBeInstanceOf(OmpGoogleAntigravityAdapter)
+    expect(host.adapters[4]!.adapter).toBeInstanceOf(OmpFactoryDroidAdapter)
+    // The GitLab routes register after the Factory one; the agent ships first and
+    // the proxy route follows in its own task.
+    expect(host.adapters[5]!.adapter).toBeInstanceOf(OmpGitLabDuoAdapter)
+    expect(host.adapters[6]!.adapter).toBeInstanceOf(OmpGitLabDuoAgentAdapter)
     expect(host.directories).toEqual([
       [
         {
@@ -712,6 +732,27 @@ describe('llm-omp-transports registration', () => {
           settingsPath: ['providers', 'google-antigravity'],
           declared: false,
         },
+        {
+          provider: 'factory-droid',
+          displayName: 'Factory Droid',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'factory-droid'],
+          declared: false,
+        },
+        {
+          provider: 'gitlab-duo',
+          displayName: 'GitLab Duo',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'gitlab-duo'],
+          declared: false,
+        },
+        {
+          provider: 'gitlab-duo-agent',
+          displayName: 'GitLab Duo Agent',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'gitlab-duo-agent'],
+          declared: false,
+        },
       ],
     ])
     expect(host.flows().map(flow => ({ key: flow.key, label: flow.label, methods: flow.methods }))).toEqual([
@@ -734,6 +775,21 @@ describe('llm-omp-transports registration', () => {
         key: 'llm-omp-transports/google-antigravity',
         label: 'Google Antigravity',
         methods: [{ id: 'oauth', label: 'Sign in with Google Antigravity' }],
+      },
+      {
+        key: 'llm-omp-transports/factory-droid',
+        label: 'Factory Droid',
+        methods: [{ id: 'oauth', label: 'Sign in with Factory Droid' }],
+      },
+      {
+        key: 'llm-omp-transports/gitlab-duo',
+        label: 'GitLab Duo',
+        methods: [{ id: 'oauth', label: 'Sign in with GitLab Duo' }],
+      },
+      {
+        key: 'llm-omp-transports/gitlab-duo-agent',
+        label: 'GitLab Duo Agent',
+        methods: [{ id: 'oauth', label: 'Sign in with GitLab Duo Agent' }],
       },
     ])
     // Registration is start-up safe: no credential is read and no bundle is imported.

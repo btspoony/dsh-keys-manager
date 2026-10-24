@@ -88,6 +88,9 @@ import { attributionPreservingFetch } from './transport/fetch.js'
 import type {
   CursorModelRow,
   DevinModelRow,
+  FactoryDroidModelRow,
+  GitLabDuoAgentModelRow,
+  GitLabDuoModelRow,
   GoogleModelRow,
   OmpAssistantMessage,
   OmpAssistantMessageEvent,
@@ -97,6 +100,12 @@ import type {
   OmpCursorOptions,
   OmpDevinModel,
   OmpDevinOptions,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions,
+  OmpGitLabDuoAgentModel,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions,
+  OmpGitLabDuoWorkflowOptions,
   OmpGoogleModel,
   OmpGoogleOptions,
   OmpGoogleThinking,
@@ -138,9 +147,22 @@ type FinishChunk = Extract<StreamChunk, { type: 'finish' }>
  */
 export interface RouteProfile {
   /** Provider route id: history identity and the label inside error messages. */
-  readonly provider: 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
+  readonly provider:
+    | 'cursor'
+    | 'devin'
+    | 'factory-droid'
+    | 'gitlab-duo'
+    | 'gitlab-duo-agent'
+    | 'google-gemini-cli'
+    | 'google-antigravity'
   /** omp's `Api` for the route. */
-  readonly api: 'cursor-agent' | 'devin-agent' | 'google-gemini-cli'
+  readonly api:
+    | 'cursor-agent'
+    | 'devin-agent'
+    | 'factory-droid-agent'
+    | 'gitlab-duo-agent'
+    | 'gitlab-duo'
+    | 'google-gemini-cli'
   /** Provider-neutral code an unclassified transport failure maps to. */
   readonly fallbackErrorCode: string
   /**
@@ -209,6 +231,45 @@ export const CURSOR_PROFILE = {
 export const DEVIN_PROFILE = {
   provider: 'devin',
   api: 'devin-agent',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies RouteProfile
+
+/**
+ * The Factory Droid route's projection facts.
+ *
+ * No marker: the transport emits plain tool calls and finishes the turn
+ * `toolUse`, so DSH's own tool loop is the native mode (no exec channel, no
+ * `externalToolExecutor` — `FactoryDroidOptions` has no such field).
+ */
+export const FACTORY_DROID_PROFILE = {
+  provider: 'factory-droid',
+  api: 'factory-droid-agent',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies RouteProfile
+
+/**
+ * The GitLab Duo proxy route's projection facts.
+ *
+ * No marker: the proxy delegates to the three generic transports, whose tool
+ * calls are plain and finish `toolUse` — DSH's own loop executes them.
+ */
+export const GITLAB_DUO_PROFILE = {
+  provider: 'gitlab-duo',
+  api: 'gitlab-duo',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies RouteProfile
+
+/**
+ * The GitLab Duo agent route's projection facts.
+ *
+ * No marker: the server-side workflow loop yields at every tool call with the
+ * same plain event shape, so the call is DSH's to execute. No external executor
+ * and no wire model id either — the transport drives the workflow, and the row's
+ * id is its `selectedModelIdentifier`.
+ */
+export const GITLAB_DUO_AGENT_PROFILE = {
+  provider: 'gitlab-duo-agent',
+  api: 'gitlab-duo-agent',
   fallbackErrorCode: 'PROVIDER_ERROR',
 } as const satisfies RouteProfile
 
@@ -363,6 +424,200 @@ export function projectDevinRequest(
       // and the header-less handshake must still carry DSH's attribution: this
       // wrapper fills only headers a request left absent.
       fetch: attributionPreservingFetch,
+    },
+  }
+}
+
+/** The Factory Droid request projection's three positional transport arguments. */
+export interface ProjectedFactoryDroidRequest {
+  readonly model: OmpFactoryDroidModel
+  readonly context: OmpContext
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpFactoryDroidOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/**
+ * Project one DSH request onto the omp Factory Droid transport's arguments.
+ *
+ * The transport multiplexes four wire protocols by model **id**, so nothing here
+ * chooses a backend: the row's id is the wire decision, made inside the artifact
+ * from the bundled KDL registry. The route's tool model is the native DSH loop
+ * (plain calls, `toolUse` finish, no exec channel), so `externalToolExecutor` is
+ * never sent, and there is no `wireModelId`: the pinned registry exposes no
+ * effort ladder for this provider, so a selected effort is refused instead of
+ * being guessed.
+ *
+ * The request knobs the wires carry are forwarded: `maxTokens`, `temperature`
+ * and stop sequences reach every family (`StreamOptions`).
+ *
+ * @param row - catalog row for the requested model.
+ * @param options - the assembled DSH request.
+ * @param accessToken - bearer token already resolved for this call; omit it to
+ *   project before the credential is read.
+ * @returns the transport arguments, ready to hand to `streamFactoryDroid`.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for any selected
+ *   effort: the pinned registry declares no effort ladder for these rows.
+ */
+export function projectFactoryDroidRequest(
+  row: FactoryDroidModelRow,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedFactoryDroidRequest {
+  if (options.reasoningEffort !== undefined) {
+    throw new LlmError(
+      `llm-omp-transports: factory-droid model "${row.id}" does not advertise reasoning efforts`,
+      UNSUPPORTED_REASONING_EFFORT,
+    )
+  }
+  const context = projectContext(FACTORY_DROID_PROFILE, options)
+  return {
+    model: { ...row },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      // The transport maps this onto the v4-shaped `x-session-id`.
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.stop !== undefined ? { stopSequences: [...options.stop] } : {}),
+      // The wire keeps its own `factory-cli` identity headers, so attribution is
+      // filled only where a request left the header absent.
+      fetch: attributionPreservingFetch,
+    },
+  }
+}
+
+/** The GitLab Duo proxy request projection's three positional transport arguments. */
+export interface ProjectedGitLabDuoRequest {
+  readonly model: OmpGitLabDuoModel
+  readonly context: OmpContext
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpGitLabDuoOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/**
+ * Project one DSH request onto the omp GitLab Duo proxy transport's arguments.
+ *
+ * The transport owns the route's mechanics: it POSTs for the direct-access token,
+ * substitutes `upstreamModelId` for the row id, picks the wire from `apiRoute`,
+ * rewrites the base URL to GitLab's gateway and folds the effort into the
+ * Anthropic thinking budget. So the projection sends the row (with its full
+ * `compat`, which travels to `buildModel` as `compatConfig`), the shared context
+ * and the standard stream knobs.
+ *
+ * A selected effort is forwarded as `reasoning`: this is the one route whose
+ * pinned rows declare a reasoning ladder (the Anthropic rows), and the transport
+ * refuses an effort the row does not support at the wire level.
+ *
+ * @param row - catalog row for the requested model.
+ * @param options - the assembled DSH request.
+ * @param accessToken - GitLab token already resolved for this call; omit it to
+ *   project before the credential is read.
+ * @returns the transport arguments, ready to hand to `streamGitLabDuo`.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
+ */
+export function projectGitLabDuoRequest(
+  row: GitLabDuoModelRow,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedGitLabDuoRequest {
+  const context = projectContext(GITLAB_DUO_PROFILE, options)
+  return {
+    model: { ...row, compat: { ...row.compat } },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.reasoningEffort !== undefined ? { reasoning: options.reasoningEffort } : {}),
+      // The gateway's headers merge under the caller's, so attribution rides the
+      // fill-absent wrapper instead of a caller header.
+      fetch: attributionPreservingFetch,
+    },
+  }
+}
+
+/** The GitLab Duo agent request projection's three positional transport arguments. */
+export interface ProjectedGitLabDuoAgentRequest {
+  readonly model: OmpGitLabDuoAgentModel
+  readonly context: OmpContext
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpGitLabDuoWorkflowOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/**
+ * Project one DSH request onto the omp GitLab Duo Workflow transport's arguments.
+ *
+ * The transport builds everything the wire needs from the conversation: the
+ * inline ambient flow config (system prompt plus a `{{goal}}` slot), the goal
+ * transcript, and the `mcpTools`/`preapproved_tools` declaration pair. So this
+ * projection's job is the shared context — text, reasoning, tool calls, tool
+ * results, the active tool declarations — plus the session and the per-request
+ * state map:
+ *
+ * - **Fresh per-request `providerSessionState`** (plan A6). Reusing a map would
+ *   ask the transport to resume a workflow from a previous turn; a fresh one
+ *   makes it re-seed a workflow whose goal transcript replays the history, which
+ *   is the transport's own correct path when the request id and the parked
+ *   pending actions no longer match. Correct, at the cost of server-side replay.
+ * - `workflowDefinition` stays at the transport's default (`ambient`); the
+ *   projection only sets it when a caller names one.
+ * - No `headers` and no `fetch` wrapper: the transport owns its REST and
+ *   WebSocket requests, and DSH adds no attribution to them.
+ *
+ * @param row - catalog row for the requested model.
+ * @param options - the assembled DSH request.
+ * @param accessToken - GitLab token already resolved for this call; omit it to
+ *   project before the credential is read.
+ * @returns the transport arguments, ready to hand to `streamGitLabDuoWorkflow`.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for any selected
+ *   effort: the pinned row advertises none.
+ */
+export function projectGitLabDuoAgentRequest(
+  row: GitLabDuoAgentModelRow,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedGitLabDuoAgentRequest {
+  if (options.reasoningEffort !== undefined) {
+    throw new LlmError(
+      `llm-omp-transports: gitlab-duo-agent model "${row.id}" does not advertise reasoning efforts`,
+      UNSUPPORTED_REASONING_EFFORT,
+    )
+  }
+  const context = projectContext(GITLAB_DUO_AGENT_PROFILE, options)
+  return {
+    model: { ...row },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      // A fresh map per request: the turn re-seeds a workflow instead of
+      // resuming another turn's socket state (plan A6).
+      providerSessionState: new Map<string, unknown>(),
     },
   }
 }

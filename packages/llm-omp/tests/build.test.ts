@@ -66,6 +66,26 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // 1.5x that measurement means a catalog or another provider graph was pulled
   // back into the bundle, not that the route grew.
   google: 1_960_000,
+  // factory-droid: 2 008 424 bytes measured (200 modules) -> 3 120 000. Its graph
+  // is the largest by construction: the wire multiplexer keeps three providers
+  // (anthropic + both OpenAI encoders), the KDL registry (`rules.json`, 468 KB) and
+  // the schema/type validators. Three entry-scoped build substitutions are what
+  // make it 2 MB instead of 17 MB; a size near this ceiling means one of them
+  // stopped firing (the metafile assertions in `tests/build-factory-droid.test.ts`
+  // name which), not that the route grew.
+  'factory-droid': 3_120_000,
+  // gitlab-duo-agent: 1 001 890 bytes measured (118 modules) -> 1 500 000. The
+  // graph is the Duo Workflow transport plus its catalog helpers, built from the
+  // existing shims; a size near this ceiling means a provider registry or the
+  // model catalog was pulled in, not that the route grew.
+  'gitlab-duo-agent': 1_500_000,
+  // gitlab-duo: 2 654 940 bytes measured (231 modules) -> 3 980 000 (under the
+  // plan's 4 MB bound, D12). The graph bundles three production wire transports
+  // plus GitLab's gateway shim; the entry reuses the factory-droid substitutions
+  // (lean registry, lean stream facade, lean env-key map) so the builtin provider
+  // registry and the 12.4 MB model catalog stay out. A size near this ceiling means
+  // a substitution stopped firing, not that the route grew.
+  'gitlab-duo': 3_980_000,
 }
 
 /** One entry's measured build facts (manifest schema v2). */
@@ -100,6 +120,9 @@ const EXPORTS: Readonly<Record<string, string>> = {
   cursor: 'streamCursor',
   devin: 'streamDevin',
   google: 'streamGoogleGeminiCli',
+  'factory-droid': 'streamFactoryDroid',
+  'gitlab-duo-agent': 'streamGitLabDuoWorkflow',
+  'gitlab-duo': 'streamGitLabDuo',
 }
 
 const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
@@ -220,6 +243,9 @@ describe('omp packed surface', () => {
       'lib/omp/cursor.mjs',
       'lib/omp/devin.mjs',
       'lib/omp/google.mjs',
+      'lib/omp/factory-droid.mjs',
+      'lib/omp/gitlab-duo.mjs',
+      'lib/omp/gitlab-duo-agent.mjs',
       'bundle/cordis.patch.yml',
     ]) {
       expect(listing, path).toMatch(new RegExp(`notice\\s+\\S+\\s+${path.replace(/[.]/g, '\\.')}(\\s|$)`))
@@ -228,6 +254,9 @@ describe('omp packed surface', () => {
     expect(listing).not.toContain('lib/omp/cursor.metafile.json')
     expect(listing).not.toContain('lib/omp/devin.metafile.json')
     expect(listing).not.toContain('lib/omp/google.metafile.json')
+    expect(listing).not.toContain('lib/omp/factory-droid.metafile.json')
+    expect(listing).not.toContain('lib/omp/gitlab-duo-agent.metafile.json')
+    expect(listing).not.toContain('lib/omp/gitlab-duo.metafile.json')
   })
 })
 
@@ -341,7 +370,7 @@ describe('omp drift gate', () => {
       // them together; the real reach must never silently become empty.
       expect(reached['pi-utils'].length, name).toBeGreaterThan(0)
       expect(entry.shimImports['pi-utils'].length, name).toBeGreaterThan(0)
-      // No module in either graph imports a `bun:*` builtin: the shim exists to
+      // No module in any graph imports a `bun:*` builtin: the shim exists to
       // fail loudly if one ever does, so its reach must stay empty.
       expect(entry.shimImports['bun-modules'], name).toEqual([])
     }

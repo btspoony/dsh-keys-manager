@@ -1,7 +1,8 @@
 # Known limits
 
 Current limits and risks of the `dsh-llm-omp-transports` component, as shipped
-for the `cursor`, `devin`, `google-gemini-cli` and `google-antigravity` routes. Details and rationale are in the
+for the `cursor`, `devin`, `google-gemini-cli`, `google-antigravity`, `factory-droid`,
+`gitlab-duo` and `gitlab-duo-agent` routes. Details and rationale are in the
 [package README](../README.md); the bilingual plugin surface lives in the
 repository root docs.
 
@@ -96,10 +97,66 @@ repository root docs.
   envelope, headers, SSE text/thinking/tool-call/usage, in-band errors,
   Antigravity daily→sandbox failover, manifest lookup), but no test calls
   Google. A first live sign-in and turn is a manual smoke check.
-- **`factory-droid` is deferred.** Its omp graph measures 327 modules /
-  16 991 893 B at the current pin (it imports every builtin provider), so the
-  route waits for its own plan, tracked as issue `I-000253`; nothing here reads
-  or registers it.
+
+## Factory Droid
+
+- The route **ships**: the graph that once measured 327 modules / 16 991 893 B
+  (issue `I-000253`) is built through the accepted entry-scoped substitutions, at
+  200 modules / 2 008 434 B.
+- The transport is an **unofficial Factory client**: it presents `factory-cli/0.237.0` plus
+  the vendor identity headers the backend gates on.
+- **Three entry-scoped build substitutions** keep the artifact at ~2 MB: the model catalog is
+  empty for this entry (data only; `models.ts` keeps its real code), `providers/register-builtins`
+  is replaced by a verbatim copy of its watchdog wrapper plus the three real streams, and
+  `env-api-key`'s `PROVIDER_REGISTRY` half is dropped. **The last one is a known loss:** the
+  computed Foundry/ADC/Bedrock env-key resolvers do not exist here. It is unreachable for this
+  route (every request carries the stored WorkOS token) and catalog-declared plain variables
+  still resolve.
+- The install id is generated per process instead of persisted at `~/.omp/install-id`; it only
+  feeds telemetry attribution.
+- **EU accounts:** the adapter forwards the stored account scope as `oauthIdentity`. Without a
+  stored `region` the transport falls back to the token's `external_org_id` claim and the
+  global host, so a EU account whose record lost its region talks to the global endpoint.
+- No reasoning-effort selector: the pin declares no effort ladder for this provider, so a
+  selected effort is refused rather than guessed.
+- Images are refused even though 54 of the 62 rows advertise image input.
+- The catalog is the KDL registry seed and can be wider than an account's entitlements; a
+  401/403 on the first live turn is a product decision, never a retry under another identity.
+
+## GitLab Duo (proxy)
+
+- **The bundled OAuth client is GitLab's own** and GitLab rejects it when the registered
+  redirect drifts; `GITLAB_CLIENT_ID` + `GITLAB_REDIRECT_URI` register a custom app, and a
+  `GITLAB_TOKEN` personal access token is accepted as the bearer.
+- The loopback callback is `localhost:8080/callback` with **no port fallback**: a busy 8080
+  surfaces the rule's instructions and leaves the paste prompt as the only path.
+- Duo must be enabled for the account: a 403 on the direct-access bootstrap ends the turn as
+  an auth failure ("Duo not enabled"), never a silent empty answer.
+- The direct-access token is cached 25 minutes **inside the artifact**, keyed on the GitLab
+  access token; a refresh rotates it and therefore misses the cache by construction.
+- The catalog is the pin's 16-row alias table; each row carries the upstream id and the wire
+  it routes to.
+- **Unproven in-suite:** the Anthropic inner wire retries a refused turn, so the wire suite
+  bounds the turn and asserts the request instead of decoding that SSE; the OpenAI wires and
+  the sibling routes cover the decode path.
+
+## GitLab Duo agent
+
+- **Paste-only sign-in:** the browser hands the code to VS Code, so the human pastes the full
+  `vscode://gitlab.gitlab-workflow/authentication?code=…&state=…` URL. There is no listener,
+  the state is mandatory, and a refresh echoes the `vscode` redirect.
+- **A fresh workflow per request** (plan A6): each turn re-seeds the workflow and replays the
+  goal transcript instead of resuming a socket; correct but heavier, and sticky resume is a
+  follow-up.
+- The catalog offers one static row; live model discovery is not implemented, and the server
+  may pin another model. `GITLAB_TOKEN` works as the bearer here too.
+- **The checkpoint loop is not proven in-suite:** the suite covers the REST bootstrap, the
+  bearer, that no socket opens before a workflow exists, and the adapter's tool handoff. The
+  fake-socket round trip (start frame, checkpoint deltas, `runMCPTool` reseed, stall restart)
+  is a recorded follow-up, and the first live turn is a manual smoke item (the Node 24 global
+  `WebSocket` accepts the `{headers}` extension; `webSocketFactory` is the seam).
+- Tool execution stays on DSH's side: the server loop yields at every call, so one
+  `runMCPTool` action is in flight at a time.
 
 ## Model coverage
 
@@ -175,7 +232,8 @@ repository root docs.
   or a shim gap, fails before runtime.
 - The generated catalogs are not hand-editable; run
   `pnpm -C packages/llm-omp run generate:catalog` after a pin bump.
-- Three artifacts are built from one pin: `lib/omp/cursor.mjs`,
-  `lib/omp/devin.mjs` and `lib/omp/google.mjs` (shared by the two Google
-  routes), each with its own calibrated size ceiling and source hashes in
-  `scripts/omp-manifest.json`.
+- Six artifacts are built from one pin — `cursor`, `devin`, `google` (both Cloud Code
+  Assist routes), `factory-droid`, `gitlab-duo` and `gitlab-duo-agent` — each with its own
+  calibrated size ceiling and source hashes in `scripts/omp-manifest.json`. The GitLab and
+  Factory entries use entry-scoped build substitutions and per-entry `pi-utils` extensions;
+  the shared shims never change, which is why the first four artifacts keep their bytes.

@@ -28,6 +28,9 @@ import type {
 
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
+import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
+import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
@@ -35,11 +38,17 @@ import { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
 import {
   CURSOR_PROFILE,
   DEVIN_PROFILE,
+  FACTORY_DROID_PROFILE,
+  GITLAB_DUO_AGENT_PROFILE,
+  GITLAB_DUO_PROFILE,
   GOOGLE_ANTIGRAVITY_PROFILE,
   GOOGLE_GEMINI_CLI_PROFILE,
   abortedFinish,
   projectDevinRequest,
   projectEvents,
+  projectFactoryDroidRequest,
+  projectGitLabDuoAgentRequest,
+  projectGitLabDuoRequest,
   projectGoogleRequest,
   projectRequest,
 } from './projection.js'
@@ -48,11 +57,20 @@ import type { OmpAssistantMessageEvent, OmpContext } from './omp.js'
 import type {
   CursorModelRow,
   DevinModelRow,
+  FactoryDroidModelRow,
+  GitLabDuoAgentModelRow,
+  GitLabDuoModelRow,
   GoogleModelRow,
   OmpCursorModel,
   OmpCursorOptions,
   OmpDevinModel,
   OmpDevinOptions,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions,
+  OmpGitLabDuoAgentModel,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions,
+  OmpGitLabDuoWorkflowOptions,
   OmpGoogleModel,
   OmpGoogleOptions,
 } from './omp.js'
@@ -65,6 +83,12 @@ export const DEVIN_ROUTE = 'devin'
 export const GOOGLE_GEMINI_CLI_ROUTE = 'google-gemini-cli'
 /** The Antigravity provider route this adapter owns. */
 export const GOOGLE_ANTIGRAVITY_ROUTE = 'google-antigravity'
+/** The Factory Droid provider route this adapter owns. */
+export const FACTORY_DROID_ROUTE = 'factory-droid'
+/** The GitLab Duo proxy provider route this adapter owns. */
+export const GITLAB_DUO_ROUTE = 'gitlab-duo'
+/** The GitLab Duo agent (Duo Workflow) provider route this adapter owns. */
+export const GITLAB_DUO_AGENT_ROUTE = 'gitlab-duo-agent'
 
 /** Machine code for a model id the generated catalog does not contain. */
 export const UNKNOWN_MODEL = 'UNKNOWN_MODEL'
@@ -123,7 +147,14 @@ export interface ProjectedTransportRequest<Model, Options> {
 /** What differs between the routes: identity, catalog, projection and credential record. */
 export interface TransportRoute<Row extends TransportRow, Model, Options extends TransportOptions> {
   /** Provider id; also the registered route set the projection's profile accepts. */
-  readonly id: 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
+  readonly id:
+    | 'cursor'
+    | 'devin'
+    | 'factory-droid'
+    | 'gitlab-duo'
+    | 'gitlab-duo-agent'
+    | 'google-gemini-cli'
+    | 'google-antigravity'
   /** Models-page / provider-info display name. */
   readonly displayName: string
   /** The `ctx.credentials` record this route reads. */
@@ -194,6 +225,82 @@ export const GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE: TransportRoute<GoogleModelRow, 
   efforts: row => row.thinking?.efforts,
 }
 
+/**
+ * The Factory Droid route's credential record.
+ *
+ * The WorkOS device-code resolver that reads and writes it lands with the auth
+ * task; the key is declared here because the adapter is what names it in
+ * `assertUsableApiKey` refusals, and both sides must agree on the string.
+ */
+export const FACTORY_DROID_CREDENTIAL_KEY = `llm-omp-transports/${FACTORY_DROID_ROUTE}` as const
+
+/**
+ * The Factory Droid route's facts.
+ *
+ * The rows come from the KDL registry seed (the pin's `models.json` has no
+ * factory-droid rows), and the transport picks one of four wire protocols from
+ * the model id inside the artifact, so the route record carries no wire field.
+ */
+export const FACTORY_DROID_TRANSPORT_ROUTE: TransportRoute<
+  FactoryDroidModelRow,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions
+> = {
+  id: FACTORY_DROID_ROUTE,
+  displayName: 'Factory Droid',
+  credentialKey: FACTORY_DROID_CREDENTIAL_KEY,
+  profile: FACTORY_DROID_PROFILE,
+  models: FACTORY_DROID_MODELS,
+  project: (row, options) => projectFactoryDroidRequest(row, options),
+}
+
+/** The GitLab Duo proxy route's credential record. */
+export const GITLAB_DUO_CREDENTIAL_KEY = `llm-omp-transports/${GITLAB_DUO_ROUTE}` as const
+
+/**
+ * The GitLab Duo proxy route's facts.
+ *
+ * The rows come from the pinned catalog's proxy table; each carries the upstream
+ * id and the wire the gateway routes it to, so the route record needs no wire
+ * field — the transport resolves both from the row.
+ */
+export const GITLAB_DUO_TRANSPORT_ROUTE: TransportRoute<
+  GitLabDuoModelRow,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions
+> = {
+  id: GITLAB_DUO_ROUTE,
+  displayName: 'GitLab Duo',
+  credentialKey: GITLAB_DUO_CREDENTIAL_KEY,
+  profile: GITLAB_DUO_PROFILE,
+  models: GITLAB_DUO_MODELS,
+  project: (row, options) => projectGitLabDuoRequest(row, options),
+}
+
+/** The GitLab Duo agent route's credential record. */
+export const GITLAB_DUO_AGENT_CREDENTIAL_KEY = `llm-omp-transports/${GITLAB_DUO_AGENT_ROUTE}` as const
+
+/**
+ * The GitLab Duo agent route's facts.
+ *
+ * One static row: the provider's live model discovery is a non-goal for this
+ * slice, so the picker offers what the pinned catalog declares. The transport
+ * runs GitLab's server-side workflow loop over a WebSocket; tool execution stays
+ * on DSH's side, so the route record carries no executor or wire-model field.
+ */
+export const GITLAB_DUO_AGENT_TRANSPORT_ROUTE: TransportRoute<
+  GitLabDuoAgentModelRow,
+  OmpGitLabDuoAgentModel,
+  OmpGitLabDuoWorkflowOptions
+> = {
+  id: GITLAB_DUO_AGENT_ROUTE,
+  displayName: 'GitLab Duo Agent',
+  credentialKey: GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+  profile: GITLAB_DUO_AGENT_PROFILE,
+  models: GITLAB_DUO_AGENT_MODELS,
+  project: (row, options) => projectGitLabDuoAgentRequest(row, options),
+}
+
 /** What an adapter needs from its host plugin. */
 export interface OmpAdapterOptions<Model, Options extends TransportOptions> {
   /**
@@ -219,6 +326,18 @@ export interface OmpAdapterOptions<Model, Options extends TransportOptions> {
    * a non-empty list narrows the advertised models and the accepted ids.
    */
   models?: () => readonly string[] | undefined
+  /**
+   * Extra transport options resolved per request, after the credential.
+   *
+   * @remarks
+   * The Factory Droid route stores its account scope (`orgId`/`region`/
+   * `inferenceRegion`) with the grant, and the transport needs it as
+   * `options.oauthIdentity` to pick the EU host. The base class merges whatever
+   * this returns into the transport options, so a route that has no such data
+   * (cursor, devin, google, gitlab) simply omits it — the ignored-field contract
+   * the design chose over a route-specific adapter subclass.
+   */
+  identity?: () => Promise<Readonly<Record<string, unknown>> | undefined>
 }
 
 /** The adapter configuration for one concrete route. */
@@ -342,7 +461,15 @@ abstract class OmpTransportAdapter<
       yield abortedFinish()
       return
     }
-    const transportOptions = { ...request.options, apiKey: accessKey } as Options
+    // Route-specific extras (Factory Droid's account scope) merge beside the
+    // credential: they are read from the same record the token came from, so the
+    // transport never sees a half-known identity.
+    const extras = await this.config.identity?.()
+    const transportOptions = {
+      ...request.options,
+      apiKey: accessKey,
+      ...(extras === undefined ? {} : extras),
+    } as Options
     yield* projectEvents(this.config.transport(request.model, request.context, transportOptions), options.signal, this.config.route.profile)
   }
 
@@ -413,5 +540,50 @@ export class OmpGoogleGeminiCliAdapter extends OmpTransportAdapter<GoogleModelRo
 export class OmpGoogleAntigravityAdapter extends OmpTransportAdapter<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> {
   constructor(options: OmpGoogleAdapterConfig) {
     super({ route: GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The DSH llm adapter configuration for the Factory Droid route. */
+export type OmpFactoryDroidAdapterConfig = OmpAdapterOptions<OmpFactoryDroidModel, OmpFactoryDroidOptions>
+
+/** The Factory Droid adapter: the bundled `streamFactoryDroid` over the registry seed catalog. */
+export class OmpFactoryDroidAdapter extends OmpTransportAdapter<
+  FactoryDroidModelRow,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions
+> {
+  constructor(options: OmpFactoryDroidAdapterConfig) {
+    super({ route: FACTORY_DROID_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The DSH llm adapter configuration for the GitLab Duo agent route. */
+export type OmpGitLabDuoAgentAdapterConfig = OmpAdapterOptions<
+  OmpGitLabDuoAgentModel,
+  OmpGitLabDuoWorkflowOptions
+>
+
+/** The GitLab Duo agent adapter: the bundled workflow transport over its one-row catalog. */
+export class OmpGitLabDuoAgentAdapter extends OmpTransportAdapter<
+  GitLabDuoAgentModelRow,
+  OmpGitLabDuoAgentModel,
+  OmpGitLabDuoWorkflowOptions
+> {
+  constructor(options: OmpGitLabDuoAgentAdapterConfig) {
+    super({ route: GITLAB_DUO_AGENT_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The DSH llm adapter configuration for the GitLab Duo proxy route. */
+export type OmpGitLabDuoAdapterConfig = OmpAdapterOptions<OmpGitLabDuoModel, OmpGitLabDuoOptions>
+
+/** The GitLab Duo adapter: the bundled proxy transport over its 16-row catalog. */
+export class OmpGitLabDuoAdapter extends OmpTransportAdapter<
+  GitLabDuoModelRow,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions
+> {
+  constructor(options: OmpGitLabDuoAdapterConfig) {
+    super({ route: GITLAB_DUO_TRANSPORT_ROUTE, ...options })
   }
 }
