@@ -314,17 +314,36 @@ export function createStore(ctx: ClientContext): ClientStore {
       // error banner — the host's per-row status carries the verdict.
       const pending = quotaInFlight.get(provider)
       if (pending !== undefined) return pending
+      // Capture the borrow generation exactly like `load` does: the answer must
+      // be judged against the window it was STARTED in.
+      const generation = testGeneration
+      let dropped = false
       const request = (async (): Promise<ActionOutcome> => {
         try {
           const result = await rpc('quotaRefresh', { provider })
           if (!result.ok) throw new Error(result.error.message)
           const state = result.value as StateView
-          update({ status: 'ready', state, now: Date.now(), error: null })
+          // Same install guard as every other state answer: a view that lands
+          // inside a row test's borrow window carries the tested row as
+          // projected with its activation disabled. Drop it and let the idle
+          // tail re-read once that window closes.
+          if (activeTests > 0 || testGeneration !== generation) {
+            stateDropped = true
+            dropped = true
+          } else {
+            // A background read must not clear a banner the user has not
+            // acknowledged; the idle path loads with `keepError` for the same
+            // reason.
+            update({ status: 'ready', state, now: Date.now(), error: snapshot.error })
+          }
           return { ok: true, value: state }
         } catch (error) {
           return { ok: false, error: messageOf(error) }
         } finally {
           quotaInFlight.delete(provider)
+          // A borrow that already closed before this answer arrived has no
+          // later tail run to recover the dropped view, so recover it here.
+          if (dropped) refreshDroppedState()
         }
       })()
       quotaInFlight.set(provider, request)

@@ -1095,6 +1095,66 @@ describe('oauth account store', () => {
 })
 
 
+describe('quota read install guards', () => {
+  test('a quota answer inside a row-test borrow window is dropped and re-read', async () => {
+    const borrowed = makeState()
+    borrowed.providers[0]!.keys[0]!.projected = true
+    const harness = makeContext(endpoint => endpoint === 'keysManager/quotaRefresh'
+      ? { ok: true, value: borrowed }
+      : { ok: true, value: makeState() })
+    // Park the row test's own answer so its borrow window stays open while the
+    // quota read lands inside it.
+    let releaseTest: () => void = () => {}
+    const testGate = new Promise<void>(resolve => {
+      releaseTest = resolve
+    })
+    const baseCall = harness.ctx.connection.rpc.call
+    ;(harness.ctx.connection.rpc as { call: typeof baseCall }).call = async (channel, endpoint, payload) => {
+      if (endpoint !== 'keysManager/testKey') return baseCall(channel, endpoint, payload)
+      harness.calls.push({ channel, endpoint, payload })
+      await testGate
+      return { ok: true, value: { ok: true, latencyMs: 1 } }
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    const testRequest = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    const outcome = await store.refreshQuota('zai-coding-cn')
+    expect(outcome.ok).toBe(true)
+    // The view carried the tested row as projected; installing it would be the
+    // stale projection `stateOutcome` already refuses.
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+
+    releaseTest()
+    await testRequest
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    // The dropped view's recovery read is the idle tail's getState.
+    expect(harness.calls.at(-1)?.endpoint).toBe('keysManager/getState')
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+  })
+
+  test('a background quota read keeps an unacknowledged error banner', async () => {
+    const harness = makeContext(endpoint => endpoint === 'keysManager/addKey'
+      ? { ok: false, error: { message: 'write failed' } }
+      : { ok: true, value: makeState() })
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    const failed = await store.call('addKey', { provider: 'zai-coding-cn', alias: 'x', value: 'y' })
+    expect(failed.ok).toBe(false)
+    expect(store.getSnapshot().error).toBe('write failed')
+
+    const outcome = await store.refreshQuota('zai-coding-cn')
+    expect(outcome.ok).toBe(true)
+    // Same rule as the idle path's `keepError`: a background read never
+    // dismisses a banner the user has not acknowledged.
+    expect(store.getSnapshot().error).toBe('write failed')
+    expect(store.getSnapshot().busy).toBeNull()
+    expect(store.getSnapshot().state?.managedCount).toBe(1)
+  })
+})
+
 describe('transport account store', () => {
   function makeTransportAttempt(): AccountAttemptView {
     return { id: 'la_2_cd', provider: 'cursor', status: 'pending', notices: [], createdAt: 3, updatedAt: 4 }
