@@ -51,6 +51,7 @@ const CLINE_USAGE_URL = 'https://api.cline.bot/api/v1/users/me/plan/usage-limits
  * claims. They are vendor constants, not credentials.
  */
 const CLINE_CLIENT_VERSION = '3.5.54'
+// shortcut: version pinned from magpie 3.5.54; bump it if the endpoint starts version-gating
 const CLINE_CLIENT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   Accept: 'application/json',
   'HTTP-Referer': 'https://cline.bot',
