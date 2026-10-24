@@ -40,31 +40,19 @@ manager.
 
 ## Quick start
 
-### Install — DeepSeek Harness Desktop / Web
+### Install
 
-In the DeepSeek Harness Desktop or Web app, open **Plugins**, click
-**Add plugin**, enter `dsh-keys-manager` in the package field, and click
-**Install**. When the install finishes, choose **Enable now** so the plugin is
-switched on.
-
-Through the wizard, the app installs the same published npm package as the
-CLI path below, already carrying its built bundle. Refresh the DeepSeek
-Harness page afterwards so the browser half is fetched.
-
-### Install — published package
+In the Desktop or Web app, open **Plugins → Add plugin**, enter `dsh-keys-manager`,
+click **Install**, then **Enable now**. This installs the same published package
+as the CLI path, already carrying its built bundle.
 
 ```sh
 dsh plugin --profile web add dsh-keys-manager
 ```
 
-Installing `dsh-keys-manager` installs two bundle components. The published
-package depends on `dsh-llm-omp-transports`, so one install resolves both npm
-packages, and the plugin page lists both `dsh-keys-manager` and
-`llm-omp-transports`. Enable both: the manager owns credentials and routing,
-the transport component owns the wire protocols of its seven routes (Cursor,
-Devin, the two Google routes, Factory Droid, and the two GitLab Duo routes).
-
-Refresh the Web page after installing so the browser half is fetched.
+One install yields both bundles, `dsh-keys-manager` and `llm-omp-transports`;
+enable both — the manager owns credentials and routing, the transport the seven
+routes' wire protocols. Refresh the Web page afterwards for the browser half.
 
 <details>
 <summary>Install from a local checkout</summary>
@@ -76,28 +64,19 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-The two CLI paths differ in where the build output comes from: `dsh plugin
---profile web add dsh-keys-manager` installs the published npm tarball, which
-ships the built `lib/` and the client bundle. The local
-`dsh plugin --profile web link .` path runs `prepare` during `pnpm i`, which
-builds `lib/` and the client bundle, so the clone flow above includes that
-build step; `prepack` builds the same output when the package is packed or
-published.
+`add` installs the published tarball with its built `lib/` and client bundle;
+`link .` builds them via `prepare` during `pnpm i`, as does `prepack` when packing.
 
 </details>
 
 ## Use it
 
-Open **Plugins → Keys Manager → View** (rendered as
-`Plugins → 密钥管理 → 查看` in the Chinese locale). The manager renders on the
-plugin's detail page, between its description and its included rows, matching
-the shipped plugin configuration cards.
-
 ### Take over a provider and add keys
 
-1. Search for a provider. Existing DSH providers appear first; the plugin also
-   ships the curated extra catalog described under
-   [Provider coverage](#provider-coverage).
+1. Search for a provider. Open **Plugins → Keys Manager → View** (`Plugins →
+   密钥管理 → 查看` in the Chinese locale); the manager renders on the plugin's
+   detail page. Existing DSH providers appear first; the plugin also ships the
+   curated extra catalog described under [Provider coverage](#provider-coverage).
 2. Adopt a provider. For an existing provider the manager imports the
    currently resolved credential, writes a broker reference into the provider
    profile, and leaves the original key in the credential store so release can
@@ -123,73 +102,43 @@ pool.
 | `kilo`, `zai` (Kilo, Z.AI Coding Plan) | **Add account** through the plugin's bundled clients: device code for Kilo, a pasted redirect for Z.AI | a static credential — **Sign in again** is the only renewal |
 | Seven transport routes: Cursor, Devin, the two Google routes, Factory Droid, the two GitLab Duo routes | **Transport accounts** — one grant per route | see [Transport routes](#transport-routes) |
 
-The increment-1 model is honest about scope: **API keys form the selection
-ring** — sticky sessions, round-robin, retry failover, and cooldowns operate
-across the provider's API keys — while **one projected OAuth grant serves its
-provider**: the account whose grant is projected answers requests directly, and
-one active grant per provider is kept. Per-account ranking (rotating or
-load-balancing between accounts) is future work, and an account row's counters
-reflect that account's own successes and failures, not a per-account traffic
-split.
-
-When the projected grant fails (expired or refresh rejected), the account cools
-down. On a key-capable route the pool falls back to the provider's key pool; an
-OAuth-only route has no API-key pool and stops serving requests until an
-account is signed in again. Recovery is a manual re-login from the account
-menu.
+**API keys form the selection ring** — sticky sessions, round-robin, retry
+failover and cooldowns operate across the provider's keys — while **one
+projected OAuth grant serves its provider**, and an account row's counters
+reflect only that account's own successes and failures. Per-account ranking is
+future work. When the projected grant fails, the account cools down and the
+pool falls back to its keys, or stops serving on an OAuth-only route until a
+manual re-login.
 
 <details>
 <summary>Sign-in flows (Kilo, Z.AI, muse-code)</summary>
 
-- **Kilo** (`kilo`, installed as a plugin extra route): a device-code page
-  plus a poll. The first successful sign-in creates the route and its first
-  pool row; later sign-ins append rows.
-- **Z.AI (GLM Coding Plan)** (`zai`, a shipped pi-ai route): adopt it first.
-  The flow opens a browser page and asks you to paste the final redirect URL
-  (a `zcode://` URL) or just the authorization code back into the dialog.
+- **Kilo** (`kilo`, a plugin extra route): a device-code page plus a poll; the
+  first success creates the route and its first pool row, later ones append rows.
+- **Z.AI (GLM Coding Plan)** (`zai`, a shipped pi-ai route): adopt it first, then
+  paste the final redirect URL (a `zcode://` URL) or just the authorization code.
 
-Both mint a **static** credential — a token or an `id.secret` key — stored as
-an ordinary pool row tagged `signin:kilo` / `signin:zai-coding-plan`. They are
-not refreshable grants, so the row menu's **Sign in again** is the only way to
-renew one; it replaces that row's literal in place and keeps its id and
-position. Nothing is written to `llm-pi-ai/<provider>` for these routes.
-
-**A login flow is not a transport.** These two routes serve through the normal
-pi-ai key pool and take part in sticky selection, round-robin, retry failover
-and cooldowns. The transport routes are the other thing entirely: one grant per
-route, no pool.
-
-**`muse-code` needs no transport.** It is already served by the vendored pi-ai
-`meta` route (`openai-responses` against `https://api.meta.ai/v1`, catalog key
-`meta`), so it is managed through the ordinary pi-ai provider path. The check
-that the catalog entry and the provider agree on that route and credential
-shape was static; no live request was made. The first live call is a manual
-smoke check, as described in [Known limits](docs/known-limits.md).
-
-</details>
-
-<details>
-<summary>Where account secrets live</summary>
-
-Adding an account stores only the provider-issued grant in the Harness
-credential store, behind the account's `grantRef`; the manager state keeps the
-reference plus non-sensitive metadata (email, account id, expiry) — the same
-secret-free layout as API keys.
+Both mint a **static** credential tagged `signin:kilo` / `signin:zai-coding-plan`
+— **Sign in again** is the only renewal, nothing is written to
+`llm-pi-ai/<provider>`, and as logins rather than transports they join the key
+pool's selection, retry and cooldowns. **`muse-code` needs no transport**: the
+vendored pi-ai `meta` route (`openai-responses` on `https://api.meta.ai/v1`)
+serves it, the agreement check was static, and the first live call is a manual
+smoke check per [Known limits](docs/known-limits.md).
 
 </details>
 
 ### Transport routes
 
 Providers the vendored pi-ai cannot speak are served by the companion
-`dsh-llm-omp-transports` component. Every route follows the same model:
+`dsh-llm-omp-transports` component:
 
-- One grant per route, at `llm-omp-transports/<route>`; no key pool and no
-  per-account rotation.
-- Sign-in happens in the **Transport accounts** section of the Keys Manager
-  page.
-- Models ship as generated catalogs built at build time from the pinned
-  `@oh-my-pi/pi-catalog@18.12.3` table, and the clients are unofficial. Read
-  the [transports package docs](packages/llm-omp/README.md) and its
+- One grant per route, at `llm-omp-transports/<route>` — no key pool and no
+  per-account rotation. Sign-in happens in the **Transport accounts** section of
+  the Keys Manager page.
+- Models are generated from the pinned `@oh-my-pi/pi-catalog@18.12.3` table when
+  the transport is built, and the clients are unofficial: read the
+  [transports package docs](packages/llm-omp/README.md) and its
   [known limits](packages/llm-omp/docs/known-limits.md) before relying on them.
 
 | Route | Sign-in | Refresh | Model rows |
@@ -206,32 +155,23 @@ Providers the vendored pi-ai cannot speak are served by the companion
 <summary>Per-route notes</summary>
 
 - **Cursor** — streams text and reasoning and hands tool calls to DSH's tool
-  loop; image blocks are refused with a typed error instead of being dropped.
-  The client is unofficial and presents Cursor's vendor-internal OAuth
-  identity.
-- **Devin** — no refresh: the record is a static bearer whose expiry is derived
-  from the token (JWT `exp` minus five minutes, else one year). A grant with no
-  readable expiry is served as `active` with the countdown column left blank;
-  once a readable expiry passes, sign in again by hand. The client presents the
-  released Devin CLI identity, and the real endpoints and protocol behaviour
-  are unverified.
-- **Google routes** — both share one generated `lib/omp/google.mjs` artifact
-  and dispatch on the model inside it, yet each keeps its own grant, account
-  row and catalog; the plugin's own listener takes a free port when the default
-  is taken. The grant is `{access, refresh, expires, projectId, email?}` and
-  sign-in also resolves the Google Cloud project the route bills and sends;
-  a `legacy-tier` or paid account whose project cannot be discovered fails the
-  sign-in with `AUTH_FAILED` until `GOOGLE_CLOUD_PROJECT` (or
-  `GOOGLE_CLOUD_PROJECT_ID`) is set in the DSH process environment, and the
-  first live turn on either route is a manual smoke check.
-- **Factory Droid** — four wires behind one proxy, selected by model id inside
-  the artifact: the plugin never chooses a backend, and rows carry no base URL.
-  The account's residency (`orgId`/`region`) survives every refresh.
-- **GitLab Duo pair** — `gitlab-duo` POSTs for a direct-access token, and the
-  artifact's token cache is keyed on the GitLab token, so a rotated token
-  misses it by construction; `gitlab-duo-agent` re-seeds a fresh workflow per
-  request and replays the transcript instead of resuming another turn's
-  socket.
+  loop; images are refused with a typed error. The client presents Cursor's
+  vendor-internal OAuth identity.
+- **Devin** — no refresh: a static bearer whose expiry is derived from the token
+  (JWT `exp` minus five minutes, else one year), and without a readable expiry
+  the row shows `active` with a blank countdown column.
+- **Google routes** — both share one generated `lib/omp/google.mjs` artifact yet
+  keep separate grants, account rows and catalogs. The grant is
+  `{access, refresh, expires, projectId, email?}`; sign-in resolves the Cloud
+  project the route bills, and a paid tier whose project cannot be discovered
+  fails `AUTH_FAILED` until `GOOGLE_CLOUD_PROJECT` (or `GOOGLE_CLOUD_PROJECT_ID`)
+  is set.
+- **Factory Droid** — four wires behind one proxy, chosen by model id inside the
+  artifact; rows carry no base URL and the account's residency
+  (`orgId`/`region`) survives refresh.
+- **GitLab Duo pair** — `gitlab-duo`'s direct-access token cache is keyed on the
+  GitLab token, so a rotated token misses it; `gitlab-duo-agent` re-seeds a
+  workflow per request and replays the transcript rather than resuming a socket.
 
 </details>
 
@@ -256,8 +196,10 @@ $DSH_HOME/keys-manager/state.json
 
 with owner-only permissions. It contains aliases, credential references,
 health counters, session bindings, and provider adoption facts. API key
-literals live only in the Harness credential store. The file is written
-atomically through a temporary file and a rename.
+literals live only in the Harness credential store; an account row follows the
+same rule behind its `grantRef`, with only non-sensitive metadata (email,
+account id, expiry) in the state. The file is written atomically through a
+temporary file and a rename.
 
 Each managed provider profile points its `apiKeyEnv` at a broker reference
 such as `KEYSMGR_ZAI_CODING_CN_3FA2C1`. The Host credential layer answers that
@@ -295,13 +237,11 @@ The following DSH built-ins are explicitly outside single-key pool management:
 | `cloudflare-workers-ai` | API key plus a Cloudflare account ID |
 | `openai-codex` | ChatGPT OAuth sign-in only; no API-key credential — usable as an [OAuth account](#accounts-and-sign-in) instead of a key |
 
-All other DSH catalog routes expose an API-key credential. Providers that
-also support OAuth (Anthropic, GitHub Copilot, Kimi Coding, OpenAI Codex,
-OpenRouter, Radius, xAI) remain manageable through their API-key path, and
-their OAuth sign-in is available as [OAuth accounts](#accounts-and-sign-in).
+Every other DSH catalog route exposes an API-key credential, and the
+OAuth-capable ones are also usable as [accounts](#accounts-and-sign-in).
 
-This catalog of 35 extra providers comes from
-[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT).
+The 35 extra providers come from
+[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT):
 
 <details>
 <summary>All 35 extra providers</summary>
@@ -359,11 +299,8 @@ CoreWeave Serverless Inference also needs `COREWEAVE_PROJECT=<team>/<project>` i
 | [Known limits](docs/known-limits.md) | current design boundaries, including the seven transport routes |
 | [Transports package](packages/llm-omp/README.md) | Transport routes: support status, risks, build/test, release |
 
-Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
-files in `docs/` — [开发](docs/development.zh-CN.md) ·
+Chinese: [README.zh-CN.md](README.zh-CN.md) · [开发](docs/development.zh-CN.md) ·
 [发布](docs/release.zh-CN.md) · [已知限制](docs/known-limits.zh-CN.md).
-Current design boundaries at a glance:
-[Known limits](docs/known-limits.md).
 
 ## License
 

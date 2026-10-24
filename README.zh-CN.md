@@ -31,21 +31,15 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 
 ## 快速开始
 
-### 安装 —— DeepSeek Harness 桌面版 / Web 版
+### 安装
 
-桌面版或 Web 版打开 **插件** 页面，点击 **添加插件**，在包名输入框中填入 `dsh-keys-manager` 并点击 **安装**；安装完成后选择 **立即启用** 启用插件。
-
-通过向导安装时，应用会下载与下面 CLI 路径相同的已发布 npm 包，包内已包含构建好的产物。安装完成后刷新页面，让插件的浏览器侧代码被加载。
-
-### 安装 —— 已发布包
+桌面版或 Web 版打开 **插件 → 添加插件**，填入 `dsh-keys-manager` 并点击 **安装**，然后选择 **立即启用**。这与下面的 CLI 路径装的是同一个已发布包，包内已含构建好的产物。
 
 ```sh
 dsh plugin --profile web add dsh-keys-manager
 ```
 
-安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责其七条路由（Cursor、Devin、两条 Google 路由、Factory Droid 与两条 GitLab Duo 路由）的线协议。
-
-安装完成后刷新 Web 页面，让浏览器侧代码被取到。
+一次安装得到两个 bundle：`dsh-keys-manager` 与 `llm-omp-transports`；两者都要启用——管理器负责凭据与路由，传输组件负责七条路由的线协议。安装后刷新 Web 页面，让浏览器侧代码被取到。
 
 <details>
 <summary>从本地检出安装</summary>
@@ -57,17 +51,15 @@ pnpm i
 dsh plugin --profile web link .
 ```
 
-两条 CLI 安装路径的区别在于构建产物的来源：`dsh plugin --profile web add dsh-keys-manager` 安装的已发布 npm tarball 中已包含构建好的 `lib/` 与客户端 bundle。本地 `dsh plugin --profile web link .` 路径会在 `pnpm i` 期间运行 `prepare`，构建 `lib/` 与客户端 bundle，因此上面的克隆流程包含这一步构建；`prepack` 则在打包或发布时生成同样的产物。
+`add` 安装的已发布 tarball 自带构建好的 `lib/` 与客户端 bundle；`link .` 则在 `pnpm i` 期间运行 `prepare` 构建它们，`prepack` 在打包时做同样的事。
 
 </details>
 
 ## 使用
 
-打开 **Plugins → 密钥管理 → 查看**（英文 locale 下显示为 `Plugins → Keys Manager → View`）。管理器渲染在插件详情页上，位于描述与包含行之间，与随附的插件配置卡片一致。
-
 ### 接管提供商并添加 key
 
-1. 搜索提供商。既有 DSH 提供商排在前面；插件同时附带精选的额外提供商目录，见[提供商覆盖](#提供商覆盖)。
+1. 搜索提供商。打开 **Plugins → 密钥管理 → 查看**（英文 locale 下显示为 `Plugins → Keys Manager → View`），管理器渲染在插件详情页上。既有 DSH 提供商排在前面；插件同时附带精选的额外提供商目录，见[提供商覆盖](#提供商覆盖)。
 2. 接管提供商。对既有提供商，管理器导入当前解析出的凭据、把 broker 引用写进提供商档案，并把原 key 留在凭据存储里，以便停止接管时还原。
 3. 用别名添加更多 key。每把 key 都以自己的引用存进 Harness 凭据存储；管理器状态文档从不包含 key 字面量。
 4. 在三点菜单中管理 key：重命名、暂停/恢复、删除。key 行显示状态、最近使用，以及冷却中的恢复时间。
@@ -83,38 +75,24 @@ dsh plugin --profile web link .
 | `kilo`、`zai`（Kilo、Z.AI Coding Plan） | **添加账户** —— 走插件自带的登录客户端：Kilo 用设备码，Z.AI 粘贴跳转地址 | 静态凭据，**重新登录**是唯一的续期方式 |
 | 七条传输路由：Cursor、Devin、两条 Google 路由、Factory Droid、两条 GitLab Duo 路由 | **传输账户** —— 每条路由一条授权 | 见[传输路由](#传输路由) |
 
-增量 1 的真实模型是：**API key 构成选择环**——会话粘滞、轮询选择、重试切换与冷却都作用在该提供商的 API key 之间；**每个提供商由一条被投影的 OAuth 授权服务**——被投影的账户直接响应请求，同时只保留一个活跃授权。按账户排名（在多个账户间轮换或分流）是后续工作；账户行上的计数只反映该账户自身的成功与失败，不代表按账户的流量拆分。
-
-被投影的授权失败（过期或刷新被拒）时，该账户进入冷却：支持 key 池的路由会回落到该提供商的 key 池；仅有 OAuth 的路由没有 API-key 池，将停止服务，直到重新登录账户。恢复方式是从账户菜单手动重新登录。
+**API key 构成选择环**——会话粘滞、轮询选择、重试切换与冷却都作用在该提供商的 key 之间；**每个提供商由一条被投影的 OAuth 授权服务**，账户行上的计数只反映该账户自身的成功与失败。按账户排名是后续工作。被投影的授权失败时，该账户进入冷却，池回落到它的 key；仅有 OAuth 的路由则停止服务，直到手动重新登录。
 
 <details>
 <summary>登录流程（Kilo、Z.AI、muse-code）</summary>
 
-- **Kilo**（`kilo`，以插件内置扩展路由的形式安装）：设备码页面加轮询。首次登录成功会创建该路由及其第一把 key 行；之后再登录则追加行。
-- **Z.AI (GLM Coding Plan)**（`zai`，DSH 随附的 pi-ai 路由）：需要先接管。流程会打开浏览器页面，并要求你把最终跳转 URL（`zcode://` 链接）或授权码粘贴回对话框。
+- **Kilo**（`kilo`，插件内置扩展路由）：设备码页面加轮询；首次成功会创建该路由及其第一把 key 行，之后再登录则追加行。
+- **Z.AI (GLM Coding Plan)**（`zai`，DSH 随附的 pi-ai 路由）：需要先接管，然后粘贴最终跳转 URL（`zcode://` 链接）或授权码。
 
-两者签发的都是**静态凭据**——一个 token 或一个 `id.secret` key——以普通的 key 行存入同一个池，标记为 `signin:kilo` / `signin:zai-coding-plan`。它们不是可刷新的授权，因此行菜单里的**重新登录**是唯一的续期方式：它会就地替换该行的字面量，保留行 ID 与位置。这两条路由不会向 `llm-pi-ai/<provider>` 写入任何内容。
-
-**登录流程不等于传输。** 这两条路由走常规 pi-ai key 池，参与会话粘滞、轮询、重试切换与冷却。传输路由是另一套机制：每条路由一条授权，没有池。
-
-**`muse-code` 不需要传输。** 它已由随附 pi-ai 的 `meta` 路由提供（`openai-responses` 走 `https://api.meta.ai/v1`，目录键为 `meta`），因此按普通 pi-ai 提供商的路径管理即可。证明目录条目与提供商在该路由形态和凭据形态上一致的检查是静态的，没有发起真实请求；首次真实调用属于手动冒烟检查，详见[已知限制](docs/known-limits.zh-CN.md)。
-
-</details>
-
-<details>
-<summary>账户密钥存放在哪里</summary>
-
-添加账户只把提供商签发的授权存进 Harness 凭据存储（挂在账户的 `grantRef` 之下）；管理器状态里只存引用与非敏感元数据（邮箱、账户 ID、过期时间）——与 API key 相同的无明文布局。
+两者签发的都是**静态凭据**，标记为 `signin:kilo` / `signin:zai-coding-plan`——**重新登录**是唯一的续期方式，不会向 `llm-pi-ai/<provider>` 写入任何内容；它们是登录而非传输，因此参与 key 池的选择、重试与冷却。**`muse-code` 不需要传输**：随附 pi-ai 的 `meta` 路由（`openai-responses` 走 `https://api.meta.ai/v1`）已提供它，该一致性检查是静态的，首次真实调用属于手动冒烟检查，详见[已知限制](docs/known-limits.zh-CN.md)。
 
 </details>
 
 ### 传输路由
 
-随附 pi-ai 无法支持的提供商由配套的 `dsh-llm-omp-transports` 组件提供。所有路由遵循同一模型：
+随附 pi-ai 无法支持的提供商由配套的 `dsh-llm-omp-transports` 组件提供：
 
-- 每条路由只有一条授权，位于 `llm-omp-transports/<route>`；没有 key 池，也没有按账户轮换。
-- 登录在 Keys Manager 页面的 **传输账户**（`Transport accounts`）区块完成。
-- 模型是构建时从固定的 `@oh-my-pi/pi-catalog@18.12.3` 表生成的目录，客户端均为非官方实现。依赖前请阅读[传输包文档](packages/llm-omp/README.md)与其[已知限制](packages/llm-omp/docs/known-limits.md)。
+- 每条路由只有一条授权，位于 `llm-omp-transports/<route>`——没有 key 池，也没有按账户轮换。登录在 Keys Manager 页面的 **传输账户**（`Transport accounts`）区块完成。
+- 模型在构建传输包时由固定的 `@oh-my-pi/pi-catalog@18.12.3` 表生成，客户端均为非官方实现。依赖前请阅读[传输包文档](packages/llm-omp/README.md)与其[已知限制](packages/llm-omp/docs/known-limits.md)。
 
 | 路由 | 登录 | 刷新 | 模型行数 |
 |---|---|---|---|
@@ -129,11 +107,11 @@ dsh plugin --profile web link .
 <details>
 <summary>各路由说明</summary>
 
-- **Cursor** —— 支持文本与推理流，并把工具调用交给 DSH 的工具循环；遇到图片块以类型化错误拒绝，而不是静默丢弃。该客户端是非官方实现，会呈现 Cursor 厂商内部的 OAuth 身份。
-- **Devin** —— 没有刷新：记录是静态 bearer，其有效期由令牌推导（JWT `exp` 减五分钟，否则一年）。没有可读有效期的授权按 `active` 服务，倒计时列留空；可读的有效期一旦过期，需要手动重新登录。该客户端呈现已发布的 Devin CLI 身份，真实端点与协议行为均未验证。
-- **两条 Google 路由** —— 共用一份生成的 `lib/omp/google.mjs` 产物，由产物内的提供商按模型分派，但各自保留独立的授权、账户行与模型目录；插件自带的监听器在默认端口被占用时会改用空闲端口。授权内容为 `{access, refresh, expires, projectId, email?}`，登录过程还会解析该路由计费与请求所用的 Google Cloud 项目；`legacy-tier` 或付费账户若无法发现项目，登录会以 `AUTH_FAILED` 失败，直到在 DSH 进程环境中设置 `GOOGLE_CLOUD_PROJECT`（或 `GOOGLE_CLOUD_PROJECT_ID`）；两条路由的首次真实请求都是手动冒烟检查。
-- **Factory Droid** —— 一个代理背后是四套协议，由产物内的模型 id 选择：插件从不选择后端，行上也不带 base URL。账户的区域属性（`orgId`/`region`）在每次刷新后保留。
-- **GitLab Duo 一对** —— `gitlab-duo` 先 POST 换取 direct-access token，产物内的 token 缓存以 GitLab token 为键，因此轮换后的 token 按构造会未命中；`gitlab-duo-agent` 每个请求重新播种一条工作流并重放会话记录，而不是复用上一轮的 socket。
+- **Cursor** —— 支持文本与推理流，把工具调用交给 DSH 的工具循环；遇到图片块以类型化错误拒绝。该客户端呈现 Cursor 厂商内部的 OAuth 身份。
+- **Devin** —— 没有刷新：记录是静态 bearer，有效期由令牌推导（JWT `exp` 减五分钟，否则一年）；没有可读有效期时行显示 `active`，倒计时列留空。
+- **两条 Google 路由** —— 共用一份生成的 `lib/omp/google.mjs` 产物，却各自保留独立的授权、账户行与模型目录。授权内容为 `{access, refresh, expires, projectId, email?}`；登录会解析该路由计费所用的 Google Cloud 项目，付费账户若无法发现项目则以 `AUTH_FAILED` 失败，直到设置 `GOOGLE_CLOUD_PROJECT`（或 `GOOGLE_CLOUD_PROJECT_ID`）。
+- **Factory Droid** —— 一个代理背后是四套协议，由产物内的模型 id 选择；行上不带 base URL，账户的区域属性（`orgId`/`region`）在刷新后保留。
+- **GitLab Duo 一对** —— `gitlab-duo` 的 direct-access token 缓存以 GitLab token 为键，轮换后的 token 因此会未命中；`gitlab-duo-agent` 每个请求重新播种一条工作流并重放会话记录，而不是复用 socket。
 
 </details>
 
@@ -156,7 +134,7 @@ dsh plugin --profile web link .
 $DSH_HOME/keys-manager/state.json
 ```
 
-权限为仅属主可读写。内容包含别名、凭据引用、健康计数、会话绑定和提供商接管事实。API key 字面量只存在于 Harness 凭据存储。文件通过临时文件加重命名原子写入。
+权限为仅属主可读写。内容包含别名、凭据引用、健康计数、会话绑定和提供商接管事实。API key 字面量只存在于 Harness 凭据存储；账户行同理，授权挂在它的 `grantRef` 之下，状态里只有非敏感元数据（邮箱、账户 ID、过期时间）。文件通过临时文件加重命名原子写入。
 
 每个受管提供商档案的 `apiKeyEnv` 指向 broker 引用，例如 `KEYSMGR_ZAI_CODING_CN_3FA2C1`。Host 凭据层按请求用该会话选中的 key 应答这个引用。Models 页面视该档案为已配置；直接写 broker 引用会被拒绝并指向管理器。
 
@@ -184,10 +162,10 @@ $DSH_HOME/keys-manager/state.json
 | `cloudflare-workers-ai` | API key 之外还需 Cloudflare 账号 ID |
 | `openai-codex` | 仅支持 ChatGPT OAuth 登录，无 API key 凭据——可作为 [OAuth 账户](#账户与登录)使用而非 key |
 
-其余 DSH 目录路由都提供 API key 凭据。同时支持 OAuth 的提供商（Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI）仍可经其 API key 路径管理，其 OAuth 登录则以 [OAuth 账户](#账户与登录)形式提供。
+其余 DSH 目录路由都提供 API key 凭据，同时支持 OAuth 的也可作为[账户](#账户与登录)使用。
 
 这 35 个额外提供商收录自
-[oh-my-pi](https://github.com/can1357/oh-my-pi) 的提供商目录（MIT）。
+[oh-my-pi](https://github.com/can1357/oh-my-pi) 的提供商目录（MIT）：
 
 <details>
 <summary>全部 35 个额外提供商</summary>
@@ -245,7 +223,8 @@ CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含七条传输路由 |
 | [传输包（英文）](packages/llm-omp/README.md) | 传输路由：支持状态、风险、构建/测试与发布 |
 
-英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。
+英文版本：[README.md](README.md) · [Development](docs/development.md) ·
+[Release](docs/release.md) · [Known limits](docs/known-limits.md)。
 
 ## 许可证
 
