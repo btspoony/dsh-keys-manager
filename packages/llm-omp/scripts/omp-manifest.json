@@ -8,7 +8,7 @@
       "entry": "lib/omp/cursor.mjs",
       "metafile": "lib/omp/cursor.metafile.json",
       "moduleCount": 133,
-      "bytes": 1396656,
+      "bytes": 1396934,
       "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
         "pi-utils": [
@@ -291,7 +291,7 @@
     ]
   },
   "sourceHashes": {
-    "@oh-my-pi/pi-ai/src/providers/cursor.ts": "sha256:8e845d28a468da3a1429071846b6ec75987e7de71bbfc4908d945a258eff9687",
+    "@oh-my-pi/pi-ai/src/providers/cursor.ts": "sha256:3ba2e285aa001e8ec3929ebe4bc821df63d5c47322d1aa47f6b4d19c14ffd3ec",
     "@oh-my-pi/pi-catalog/src/discovery/cursor-proto.ts": "sha256:fc98341073be49c4f1b81af94204444a0421ed98a6805de51cfc342cbd772e99",
     "@oh-my-pi/pi-catalog/src/models.json": "sha256:39fb09654ee3812043bc062e426d8e7aa13cd273435fa7b8a203a76246c8735c",
     "@oh-my-pi/pi-catalog/src/wire/cursor.ts": "sha256:1fead4198e3622d8d0b40ea83cb718f2927cf51a05b598ffd048212aa1a7e886",

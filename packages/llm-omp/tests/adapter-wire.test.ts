@@ -589,15 +589,32 @@ describe('bundled streamCursor over a Connect frame stream', () => {
 
     const call = events.find(event => event.type === 'toolcall_end')?.toolCall
     // `src/app.ts:10-20` is a selector, not a filename: the external read tool
-    // needs the clean path plus the range as its own parameters.
-    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 20 })
+    // needs the clean path plus the range as its own parameters. `-` is an
+    // inclusive line window, so its length (11), not its end, is the limit.
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 11 })
   })
 
   it('strips a `:raw` verbatim selector as well as the range when handing off', async () => {
     const { events } = await run('cursor-wire-native-read-range-raw.jsonl', { externalToolExecutor: true })
 
     const call = events.find(event => event.type === 'toolcall_end')?.toolCall
-    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 20 })
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 11 })
+  })
+
+  it('keeps the count form of a read selector as the limit, not an end line', async () => {
+    const { events } = await run('cursor-wire-native-read-range-count.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // `:10+5` and `:10-15` share the numbers 10/5/15 but mean different things:
+    // this one already carries the count, so it must NOT be recomputed.
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 5 })
+  })
+
+  it('leaves a backwards read window in the path instead of emitting a bad limit', async () => {
+    const { events } = await run('cursor-wire-native-read-range-reversed.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts:20-10' })
   })
 
   it('hands a native write frame to DSH as file_path plus content', async () => {

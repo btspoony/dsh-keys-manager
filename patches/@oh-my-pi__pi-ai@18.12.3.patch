@@ -1,5 +1,5 @@
 diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
-index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..bb455532608bd132b766d8de258786416512504f 100644
+index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..31ee07c733ad5b2e8d0d584f6af50c1276936a09 100644
 --- a/src/providers/cursor.ts
 +++ b/src/providers/cursor.ts
 @@ -2162,6 +2162,7 @@ async function handleShellStreamArgs(
@@ -313,7 +313,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..bb455532608bd132b766d8de25878641
  			);
  			sendExecClientMessage(runTransport, execMsg, "miniSweAgentBashResult", sanitizeShellExecResult(execResult));
  			return;
-@@ -4971,6 +5092,71 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
+@@ -4971,6 +5092,81 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
  
  const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
  
@@ -374,11 +374,21 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..bb455532608bd132b766d8de25878641
 +	const path = chunks.join(":");
 +	if (match === null) return { path, offset: args.offset, limit: args.limit };
 +	const start = Number.parseInt(match[1] ?? "", 10);
-+	const end = match[2] === undefined ? undefined : match[3] ? Number.parseInt(match[3], 10) : undefined;
++	const separator = match[2];
++	const end = separator === undefined ? undefined : match[3] ? Number.parseInt(match[3], 10) : undefined;
++	// `N-M`/`N..M` name an inclusive line window, so the external tool's limit is
++	// its length; `N+M` already carries a count, which is never comparable to the
++	// start. Only a backwards *window* is left in the path, rather than turned
++	// into a negative or zero limit.
++	if (separator !== "+" && end !== undefined && end < start) {
++		return { path: args.path, offset: args.offset, limit: args.limit };
++	}
++	const limitFromSelector =
++		end === undefined ? undefined : separator === "+" ? end : end - start + 1;
 +	return {
 +		path,
 +		offset: args.offset ?? (Number.isFinite(start) ? start : undefined),
-+		limit: args.limit ?? end,
++		limit: args.limit ?? limitFromSelector,
 +	};
 +}
 +
