@@ -2,6 +2,21 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.6] - 2026-10-24
+
+### Added
+
+- Add the bundled `lib/omp/google.mjs` artifact: omp's Gemini Cloud Code Assist provider, shared by the `google-gemini-cli` and `google-antigravity` routes and dispatching on `model.provider`, with a manifest entry, pinned source hashes and a calibrated size ceiling.
+- Add the generated Google model tables (`google-gemini-cli`, `google-antigravity`) and their `googleGeminiCliCatalogModels()` / `googleAntigravityCatalogModels()` projections for host-side model pickers.
+- Add the `google-gemini-cli` and `google-antigravity` sign-in flows: a loopback listener on `127.0.0.1` (port fallback to an ephemeral port, five-minute bounded wait, abort-safe), a paste fallback, Cloud Code Assist project discovery and a single-window token refresh that preserves the project and an un-rotated refresh token.
+- Register both Google routes: configurable `providers.google-gemini-cli` / `providers.google-antigravity` allow-lists, catalog-model exports for host pickers, and lazy loading of the shared `lib/omp/google.mjs` artifact (a missing build reaches the request as `TRANSPORT_UNAVAILABLE`, never a failed start).
+- Project the transport package's model catalogs into the Keys Manager model picker for the `google-gemini-cli`, `google-antigravity` and `factory-droid` routes, each from its own catalog export.
+- A transport build that registers one of these routes without shipping its catalog reports the missing catalog in the picker's response instead of showing an unexplained empty model list.
+
+### Fixed
+
+- Fix the Cursor route's file and shell tools: DSH tools whose names collide with Cursor's native exec channel (`read`, `bash`, `write`, `delete`, `ls`, `grep`, `todo`) are advertised as `dsh_<name>` so the transport keeps them in its MCP tool list; the event stream restores the DSH name on the tool call, while history replay keeps the advertised `dsh_<name>` alias so the follow-up request matches. The seven `dsh_<native>` names are reserved: declaring a DSH tool under one fails the request with `TOOL_ALIAS_COLLISION` instead of being silently resolved.
+
 ## [0.2.5] - 2026-10-23
 
 ### Added
