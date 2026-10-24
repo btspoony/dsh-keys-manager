@@ -353,9 +353,15 @@ Released under the [MIT License](../../LICENSE).
 
 ## Deferred
 
-`factory-droid` is **not** part of this component yet. Its omp graph pulls
-`providers/register-builtins`, which statically imports every builtin provider,
-measuring 327 modules / 16 991 893 B at the current pin — far past the plan's
-stop rule — so the route waits for its own plan (tracked as issue `I-000253`,
-with a build-substitution remedy as one candidate). Nothing in this package
-reads or registers a `factory-droid` route.
+`factory-droid` **ships** in this component: the 17 MB graph that kept it out of the earlier
+plan (issue `I-000253`) is built through the accepted, drift-gated build substitutions, so the
+issue is resolved by that work rather than bypassed. What remains deferred is narrower:
+
+- **Sticky GitLab Duo workflow resume.** Each turn re-seeds a workflow and replays the goal
+  transcript instead of resuming the previous socket; correct but heavier, and the in-memory
+  session map that would resume it is a follow-up.
+- **The live transcript proof for `gitlab-duo-agent`.** The fake-socket checkpoint round trip
+  (start frame, checkpoint deltas, `runMCPTool` reseed, stall restart) needs a scripted REST
+  bootstrap plus a checkpoint corpus, and the first live turn is a manual smoke item.
+- **The Duo Anthropic inner wire's SSE decode** — the wire retries a refused turn, so its
+  suite bounds the turn and asserts the request instead of the stream.

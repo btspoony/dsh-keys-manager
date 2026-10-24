@@ -97,13 +97,12 @@ repository root docs.
   envelope, headers, SSE text/thinking/tool-call/usage, in-band errors,
   Antigravity daily→sandbox failover, manifest lookup), but no test calls
   Google. A first live sign-in and turn is a manual smoke check.
-- **`factory-droid` is deferred.** Its omp graph measures 327 modules /
-  16 991 893 B at the current pin (it imports every builtin provider), so the
-  route waits for its own plan, tracked as issue `I-000253`; nothing here reads
-  or registers it.
 
 ## Factory Droid
 
+- The route **ships**: the graph that once measured 327 modules / 16 991 893 B
+  (issue `I-000253`) is built through the accepted entry-scoped substitutions, at
+  200 modules / 2 008 434 B.
 - The transport is an **unofficial Factory client**: it presents `factory-cli/0.237.0` plus
   the vendor identity headers the backend gates on.
 - **Three entry-scoped build substitutions** keep the artifact at ~2 MB: the model catalog is

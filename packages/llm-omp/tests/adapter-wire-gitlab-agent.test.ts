@@ -6,8 +6,9 @@
  * The transport bootstraps a workflow over GitLab's REST API (namespace → project
  * → `direct_access` → workflow create) and only then opens the WebSocket, so this
  * suite proves the credential and seam contract at that boundary: the bearer on
- * every REST call, the pinned endpoint vocabulary, that no socket opens before a
- * workflow exists, and that a refused bootstrap surfaces as a terminal error.
+ * the first bootstrap call, that the first call is a GitLab REST endpoint, that no
+ * socket opens before a workflow exists, and that a refused bootstrap surfaces as
+ * a terminal error. The later calls of the sequence are not scripted here.
  *
  * What this suite deliberately does **not** claim is the server's checkpoint
  * protocol itself (the goal-reseed round trip). The full loop needs a scripted
@@ -58,7 +59,7 @@ async function collect(stream: AsyncIterable<unknown>): Promise<StreamChunk[]> {
 }
 
 describe('gitlab duo agent wire: REST bootstrap before any socket', () => {
-  it('sends the GitLab bearer to the pinned REST vocabulary and opens no socket first', async () => {
+  it('sends the GitLab bearer to a GitLab REST endpoint and opens no socket first', async () => {
     const calls: FetchCall[] = []
     const adapter = new OmpGitLabDuoAgentAdapter({
       access: async () => 'gitlab-agent-token',
@@ -96,9 +97,10 @@ describe('gitlab duo agent wire: REST bootstrap before any socket', () => {
     // after a workflow exists, which is why no factory is invoked here.
   })
 
-  it('takes the webSocketFactory from the projection, and the row pins the static model', () => {
-    // The adapter never invents a socket: the seam is a transport option, so a
-    // host (or a test) supplies it and the shipped default is Node's global.
+  it('advertises the one static row the agent catalog declares', () => {
+    // The socket seam is a transport option the adapter never invents (the shipped
+    // default is Node's global `WebSocket`), so there is nothing to inject at this
+    // boundary; the fake-socket round trip is the recorded follow-up.
     expect(ROW).toMatchObject({ id: 'claude_sonnet_4_6_vertex', contextWindow: 1_000_000, input: ['text'] })
     expect(GITLAB_DUO_AGENT_MODELS).toHaveLength(1)
   })
