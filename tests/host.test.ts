@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, vi } from 'vitest'
 import type { HostContext, RequestErrorPayload } from '../src/host-types'
-import type { ExtraProvider, KeyRecord, KeyTestResult, ProviderRecord, ProviderView, StateView } from '../src/domain'
+import type { ExtraProvider, KeyRecord, KeyTestResult, KeyView, ProviderRecord, ProviderView, StateView } from '../src/domain'
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey, TEST_SUCCESS_FINISH_KINDS } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import type { OmpOAuthAdapter } from '../src/oauth/adapter'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
+import { resolveQuota } from '../src/quota/providers'
 import { KeysManagerStore, sanitizeState } from '../src/store'
 import { cursorCatalogModels } from 'dsh-llm-omp-transports'
 import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
@@ -11716,6 +11717,8 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
       'removeAccount',
       // Task 2: the per-row connection test rides the same Remote surface.
       'testKey',
+      // Quota visibility (issue #22): pull-only plan usage for one provider.
+      'quotaRefresh',
       'beginTransportLogin',
       'activateTransportAccount',
       'removeTransportAccount',
@@ -11733,6 +11736,7 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
     assert.deepEqual(params('activateAccount'), ['provider', 'accountId'])
     assert.deepEqual(params('removeAccount'), ['provider', 'accountId'])
     assert.deepEqual(params('testKey'), ['provider', 'keyId'])
+    assert.deepEqual(params('quotaRefresh'), ['provider'])
     // Transport routes are addressed by route only; the attempt is polled
     // through the same accountAttempt record the pi-ai dialog uses.
     assert.deepEqual(params('beginTransportLogin'), ['provider'])
@@ -18158,6 +18162,184 @@ test('refuses a transport model id outside the catalog before writing settings',
     assert.equal(h.settings.mutateCalls.length, 0)
     // A route without a transports flow has no model surface at all.
     await assert.rejects(() => h.service.transportModels('nope'), /offers no transport account/)
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * Quota visibility (issue #22, T3). Reads are pull-only and in-memory: a
+ * refresh probes the provider's rows through the service's injected fetch
+ * seam, and the normal `getState` path only ever reads what the cache holds.
+ */
+function quotaFetchStub(
+  body: unknown,
+  options: { status?: number; delayMs?: number; captured?: { calls: number; headers?: Record<string, string> } } = {},
+): typeof fetch {
+  const captured = options.captured ?? { calls: 0 }
+  return (async (_url: unknown, init?: RequestInit) => {
+    captured.calls += 1
+    captured.headers = init?.headers as Record<string, string> | undefined
+    if (options.delayMs !== undefined) await new Promise(resolve => setTimeout(resolve, options.delayMs))
+    return new Response(JSON.stringify(body), {
+      status: options.status ?? 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+}
+
+function keyRows(state: StateView, provider: string): KeyView[] {
+  return state.providers.find(candidate => candidate.provider === provider)?.keys ?? []
+}
+
+test('quotaRefresh projects a plan snapshot onto an API-key row', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    await h.service.addKey('anthropic', 'Primary', 'sk-ant-api')
+    const captured: { calls: number; headers?: Record<string, string> } = { calls: 0 }
+    h.service.quotaFetch = quotaFetchStub(
+      {
+        five_hour: { utilization: 40, resets_at: '2026-01-01T00:00:00.000Z' },
+        seven_day: { utilization: 10, resets_at: '2026-01-05T00:00:00.000Z' },
+      },
+      { captured },
+    )
+
+    const state = await h.service.quotaRefresh('anthropic')
+    const row = keyRows(state, 'anthropic').find(candidate => candidate.alias === 'Primary')!
+    assert.equal(row.quota?.status, 'ok')
+    assert.deepEqual(row.quota?.windows.map(window => window.id), ['session', 'week'])
+    assert.ok(Math.abs((row.quota?.windows[0]?.usedFraction ?? 0) - 0.4) < 1e-9)
+    assert.equal(row.quota?.windows[0]?.resetsAt, Date.parse('2026-01-01T00:00:00.000Z'))
+    // The Claude subscription header, proved through the injected fetch.
+    assert.equal(captured.headers?.Authorization, 'Bearer sk-ant-api')
+
+    // Pull-only: the normal state path serves the cached snapshot untouched.
+    const probed = captured.calls
+    const cached = h.service.getState()
+    assert.equal(keyRows(cached, 'anthropic').find(candidate => candidate.alias === 'Primary')?.quota?.status, 'ok')
+    assert.equal(captured.calls, probed, 'getState must never probe')
+  } finally {
+    await h.close()
+  }
+})
+
+test('quotaRefresh reads an OAuth row credential through its grantRef', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-quota' })
+  try {
+    const captured: { calls: number; headers?: Record<string, string> } = { calls: 0 }
+    h.service.quotaFetch = quotaFetchStub(
+      { five_hour: { utilization: 90, resets_at: '2026-01-01T00:00:00.000Z' } },
+      { captured },
+    )
+
+    const state = await h.service.quotaRefresh('anthropic')
+    const row = keyRows(state, 'anthropic').find(candidate => candidate.kind === 'oauth')!
+    assert.equal(row.quota?.status, 'ok')
+    assert.equal(row.quota?.windows[0]?.usedFraction, 0.9)
+    assert.equal(captured.headers?.Authorization, 'Bearer at-seed-value')
+  } finally {
+    await h.close()
+  }
+})
+
+test('an OAuth row without a readable grant reports unauthorized instead of throwing', async () => {
+  const { h, grantRef } = await harnessWithSeededAccount()
+  try {
+    h.credentials.records.delete(grantRef)
+    const captured: { calls: number; headers?: Record<string, string> } = { calls: 0 }
+    h.service.quotaFetch = quotaFetchStub({ five_hour: { utilization: 1 } }, { captured })
+
+    const state = await h.service.quotaRefresh('anthropic')
+    const row = keyRows(state, 'anthropic').find(candidate => candidate.kind === 'oauth')!
+    assert.equal(row.quota?.status, 'unauthorized')
+    // Only the value-less grant row skipped the vendor: an unreadable grant is
+    // an account state, never an HTTP round trip.
+    assert.equal(captured.calls, keyRows(state, 'anthropic').filter(candidate => candidate.kind === 'api-key').length)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a failing quota probe leaves selection, cooldown and bindings untouched', async () => {
+  const { h } = await harnessWithSeededAccount({ accountId: 'acc-fail' })
+  try {
+    const before = structuredClone(h.store.provider('anthropic'))
+    const bindings = structuredClone(h.store.state.sessionBindings)
+    h.service.quotaFetch = quotaFetchStub({ message: 'vendor is down' }, { status: 500 })
+
+    const state = await h.service.quotaRefresh('anthropic')
+    assert.deepEqual(h.store.provider('anthropic'), before)
+    assert.deepEqual(h.store.state.sessionBindings, bindings)
+    const row = keyRows(state, 'anthropic').find(candidate => candidate.kind === 'oauth')!
+    assert.equal(row.quota?.status, 'error')
+    assert.equal(row.cooldownUntil, before!.keys[0]!.cooldownUntil)
+    assert.equal(row.failureLevel, before!.keys[0]!.failureLevel)
+  } finally {
+    await h.close()
+  }
+})
+
+test('concurrent quota refreshes coalesce into one probe per row', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    await h.service.addKey('anthropic', 'Primary', 'sk-ant-api')
+    const captured: { calls: number; headers?: Record<string, string> } = { calls: 0 }
+    h.service.quotaFetch = quotaFetchStub(
+      { five_hour: { utilization: 20, resets_at: '2026-01-01T00:00:00.000Z' } },
+      { captured, delayMs: 20 },
+    )
+
+    const [first, second] = await Promise.all([
+      h.service.quotaRefresh('anthropic'),
+      h.service.quotaRefresh('anthropic'),
+    ])
+    // One probe per row across BOTH concurrent refreshes (single-flight).
+    assert.equal(captured.calls, keyRows(first, 'anthropic').length)
+    assert.ok(keyRows(first, 'anthropic').every(row => row.quota?.status === 'ok'))
+    assert.ok(keyRows(second, 'anthropic').every(row => row.quota?.status === 'ok'))
+  } finally {
+    await h.close()
+  }
+})
+
+test('a quota refresh never marks durable state dirty', async () => {
+  const { h } = await harnessWithSeededAccount()
+  try {
+    h.service.quotaFetch = quotaFetchStub({ five_hour: { utilization: 5, resets_at: '2026-01-01T00:00:00.000Z' } })
+    const touch = vi.spyOn(h.store, 'touch')
+    await h.service.quotaRefresh('anthropic')
+    assert.equal(touch.mock.calls.length, 0)
+    touch.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('quotaRefresh guards its input and never resolves a prototype key', async () => {
+  const h = await harnessWithManagedAnthropic()
+  try {
+    await assert.rejects(() => h.service.quotaRefresh(''), TypeError)
+    // gated on the guard, not on the probe table
+    const prototypeKey = await h.service.quotaRefresh('constructor')
+    assert.equal(prototypeKey.providers.some(provider => provider.provider === 'constructor'), false)
+    // A prototype key must not reach a probe either.
+    const snapshot = await resolveQuota('constructor', { token: 'tok' })
+    assert.equal(snapshot.status, 'absent')
+  } finally {
+    await h.close()
+  }
+})
+
+test('the projected quota carries no host-side reason', async () => {
+  const { h } = await harnessWithSeededAccount()
+  try {
+    h.service.quotaFetch = quotaFetchStub({ message: 'vendor is down' }, { status: 500 })
+    const state = await h.service.quotaRefresh('anthropic')
+    const row = keyRows(state, 'anthropic').find(candidate => candidate.kind === 'oauth')!
+    assert.equal(row.quota?.status, 'error')
+    assert.equal(Object.hasOwn(row.quota!, 'reason'), false)
+    assert.deepEqual(row.quota?.windows, [])
   } finally {
     await h.close()
   }

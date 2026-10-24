@@ -66,6 +66,9 @@ export function createStore(ctx: ClientContext): ClientStore {
   // dropped because it was built inside a borrow window (PR review round 10).
   let mutationGeneration = 0
   let stateDropped = false
+  // One in-flight quota read per provider, so a double render or a retry click
+  // cannot double a vendor probe.
+  const quotaInFlight = new Map<string, Promise<ActionOutcome>>()
   const listeners = new Set<() => void>()
   const emit = (): void => {
     for (const listener of [...listeners]) {
@@ -303,6 +306,48 @@ export function createStore(ctx: ClientContext): ClientStore {
       const result = await rpcRead('transportModels', { provider: route })
       if (!result.ok) return { ok: false, error: result.error.message }
       return { ok: true, value: shapeTransportModels(result.value) }
+    },
+    refreshQuota(provider: string): Promise<ActionOutcome> {
+      // Coalesce per provider: a StrictMode double render (and a manual retry
+      // during an in-flight read) shares one RPC. Read-style, like `testKey`:
+      // no queue, no global busy flag, and a failure never raises the card's
+      // error banner — the host's per-row status carries the verdict.
+      const pending = quotaInFlight.get(provider)
+      if (pending !== undefined) return pending
+      // Capture the borrow generation exactly like `load` does: the answer must
+      // be judged against the window it was STARTED in.
+      const generation = testGeneration
+      let dropped = false
+      const request = (async (): Promise<ActionOutcome> => {
+        try {
+          const result = await rpc('quotaRefresh', { provider })
+          if (!result.ok) throw new Error(result.error.message)
+          const state = result.value as StateView
+          // Same install guard as every other state answer: a view that lands
+          // inside a row test's borrow window carries the tested row as
+          // projected with its activation disabled. Drop it and let the idle
+          // tail re-read once that window closes.
+          if (activeTests > 0 || testGeneration !== generation) {
+            stateDropped = true
+            dropped = true
+          } else {
+            // A background read must not clear a banner the user has not
+            // acknowledged; the idle path loads with `keepError` for the same
+            // reason.
+            update({ status: 'ready', state, now: Date.now(), error: snapshot.error })
+          }
+          return { ok: true, value: state }
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
+        } finally {
+          quotaInFlight.delete(provider)
+          // A borrow that already closed before this answer arrived has no
+          // later tail run to recover the dropped view, so recover it here.
+          if (dropped) refreshDroppedState()
+        }
+      })()
+      quotaInFlight.set(provider, request)
+      return request
     },
     saveTransportModels(route: string, models: string[]): Promise<TransportModelsResult> {
       return send('saveTransportModels', { provider: route, models }, modelsOutcome)

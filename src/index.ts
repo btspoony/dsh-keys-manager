@@ -50,6 +50,7 @@ import type {
   OAuthAccount,
   ProviderRecord,
   ProviderView,
+  QuotaView,
   StateView,
   TransportAccountStatus,
   TransportAccountView,
@@ -84,6 +85,10 @@ import { signInCapable, signInProvider } from './oauth/providers.js'
 import { SignInCancelledError, runSignIn } from './oauth/signin.js'
 import type { MintedCredential } from './oauth/signin.js'
 import { EXTRA_PROVIDER_MAP, EXTRA_PROVIDERS } from './providers.js'
+import { QuotaCache } from './quota/cache.js'
+import type { QuotaSnapshotView } from './quota/cache.js'
+import type { QuotaFetch } from './quota/fetch.js'
+import { resolveQuota } from './quota/providers.js'
 import { KeysManagerStore, ensureStateFile, statePath } from './store.js'
 
 export const name = 'keys-manager'
@@ -427,6 +432,10 @@ const INVOCATIONS: InvocationDescriptor[] = [
   // cursor or binding writes) so a user can tell a bad credential from a bad
   // route without waiting for a chat failure.
   endpoint('testKey', ['provider', 'keyId']),
+  // Pull-only plan usage (issue #22, D2): the card asks, the host probes the
+  // managed rows of that one provider and answers with the refreshed state.
+  // Never runs on the getState path, never writes cooldown or failure state.
+  endpoint('quotaRefresh', ['provider']),
   // Transport accounts (llm-omp-transports/<route>): managed beside the pi-ai
   // pool, never through it. The sign-in reuses the same attempt machinery and
   // is polled through `accountAttempt` above.
@@ -642,7 +651,7 @@ function missingHeaders(declared: Record<string, string> | undefined, stored: Re
 }
 
 /** Public, secret-free key row. */
-function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null): KeyView {
+function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null, quota?: QuotaView): KeyView {
   return {
     id: key.id,
     alias: key.alias,
@@ -673,6 +682,8 @@ function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | nu
             : {}),
         }
       : {}),
+    // Additive and pull-only: absent until a quota refresh ran for this row.
+    ...(quota === undefined ? {} : { quota }),
   }
 }
 
@@ -1473,6 +1484,17 @@ export class KeysManagerService {
    * channel.
    */
   private readonly unattributedRequests = new Map<string, number>()
+  /**
+   * Plan-usage snapshots per provider (issue #22, D1). In-memory only and
+   * never persisted: a restart loses them and the next card open re-probes.
+   * One cache per provider so single-flight and backoff are scoped to it.
+   */
+  private readonly quotaCaches = new Map<string, QuotaCache>()
+  /**
+   * Test/embedding seam for the quota probes, mirroring `signInAdapter`.
+   * Production leaves it undefined and the probes use the platform `fetch`.
+   */
+  quotaFetch: QuotaFetch | undefined
   /** Channels whose lost-subscription warning already fired (warn once). */
   private readonly subscriptionLostWarnings = new Set<string>()
   /** Disposer for the `authorization/settled` subscription. */
@@ -6633,7 +6655,7 @@ export class KeysManagerService {
       const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
       const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
       const projectedAccountId = managed === undefined ? null : this.oauthOwnerFor(managed.provider)
-      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId)) : []
+      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId, this.quotaViewFor(managed.provider, key.id))) : []
       const warning = binding === 'mismatch'
         ? 'The provider profile no longer points at Keys Manager. Re-adopt it after releasing it, or repair the provider in Models.'
         : undefined
@@ -6681,7 +6703,7 @@ export class KeysManagerService {
       const managed = this.store.provider(extra.id)
       const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
       const projectedAccountId = managed === undefined ? null : this.oauthOwnerFor(managed.provider)
-      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId)) : []
+      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId, this.quotaViewFor(managed.provider, key.id))) : []
       views.push({
         provider: extra.id,
         displayName: extra.name,
@@ -6721,7 +6743,7 @@ export class KeysManagerService {
     for (const managed of Object.values(this.store.providers)) {
       if (seen.has(managed.provider)) continue
       const projectedAccountId = this.oauthOwnerFor(managed.provider)
-      const keys = managed.keys.map(key => publicKey(key, now, projectedAccountId))
+      const keys = managed.keys.map(key => publicKey(key, now, projectedAccountId, this.quotaViewFor(managed.provider, key.id)))
       const binding = this.bindingState(managed, descriptor)
       views.push({
         provider: managed.provider,
@@ -6799,6 +6821,100 @@ export class KeysManagerService {
   getState(): StateView {
     this.refreshTransportAccountsIfIdle()
     return this.buildState()
+  }
+
+  /**
+   * Remote: probe one provider's plan usage and answer the refreshed state.
+   *
+   * Pull-only (D2) and observation-only: a slow or failing vendor call can
+   * change nothing but a row's `quota` field. Selection, cooldown, cursor,
+   * sticky bindings and the durable document are untouched, and nothing is
+   * written to disk.
+   */
+  async quotaRefresh(provider: string): Promise<StateView> {
+    if (typeof provider !== 'string' || provider.length === 0) throw new TypeError('provider is required')
+    // Own-property lookup: `store.provider` indexes a plain object, so a
+    // prototype key would answer a function instead of a record.
+    const record = Object.hasOwn(this.store.providers, provider) ? this.store.provider(provider) : undefined
+    if (record === undefined) return this.buildState()
+    const cache = this.quotaCache(provider)
+    // The cache classifies probe failures; allSettled is the second line of
+    // defence so one rejected row can never reject the RPC.
+    await Promise.allSettled(record.keys.map(key => this.refreshQuotaRow(provider, cache, key)))
+    return this.buildState()
+  }
+
+  /** One provider's quota cache, created on first use. */
+  private quotaCache(provider: string): QuotaCache {
+    const existing = this.quotaCaches.get(provider)
+    if (existing !== undefined) return existing
+    const cache = new QuotaCache()
+    this.quotaCaches.set(provider, cache)
+    return cache
+  }
+
+  /**
+   * Refresh one row, resolving its credential first. TTL, backoff and
+   * single-flight live in the cache, so two concurrent refreshes of the same
+   * row share one probe.
+   */
+  private async refreshQuotaRow(provider: string, cache: QuotaCache, key: KeyRecord): Promise<void> {
+    const credential = await this.quotaCredential(key)
+    await cache.get(provider, key.id, async () => {
+      if (credential === undefined) {
+        // An unreadable grant is an account problem, not "this plan has no
+        // usage API": an OAuth row says `unauthorized` so the card can offer
+        // a re-sign-in, an API-key row without a value says `absent`.
+        return {
+          status: key.kind === 'oauth' ? ('unauthorized' as const) : ('absent' as const),
+          fetchedAt: 0,
+          windows: [],
+          reason: 'no readable credential',
+        }
+      }
+      return resolveQuota(provider, {
+        token: credential.token,
+        ...(credential.accountId === undefined ? {} : { accountId: credential.accountId }),
+        ...(this.quotaFetch === undefined ? {} : { fetch: this.quotaFetch }),
+      })
+    })
+  }
+
+  /** The credential one row's plan usage is read with, or undefined. */
+  private async quotaCredential(key: KeyRecord): Promise<{ token: string; accountId?: string } | undefined> {
+    if (key.kind === 'oauth') {
+      const grantRef = key.oauth?.grantRef
+      const records = this.credentialRecords()
+      if (grantRef === undefined || grantRef.length === 0 || records === undefined) return undefined
+      try {
+        const record = await records.readRecord(grantRef)
+        if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return undefined
+        const accountId = key.oauth?.accountId
+        return { token: record.payload.access, ...(accountId === undefined ? {} : { accountId }) }
+      } catch {
+        return undefined
+      }
+    }
+    const probe = await this.probeKey(key.ref)
+    return probe.hit === undefined ? undefined : { token: probe.hit.value }
+  }
+
+  /** Project the cached quota of one row; a pure memory read, never a probe. */
+  private quotaViewFor(provider: string, keyId: string): QuotaView | undefined {
+    const snapshot = this.quotaCaches.get(provider)?.peek(provider, keyId)
+    if (snapshot === undefined) return undefined
+    // Explicit projection: `reason` is a host-side diagnostic and must not
+    // cross the RPC, and `windows` is copied so a caller cannot mutate cache.
+    return {
+      status: snapshot.status,
+      fetchedAt: snapshot.fetchedAt,
+      ...(snapshot.stale === true ? { stale: true } : {}),
+      windows: snapshot.windows.map(window => ({
+        id: window.id,
+        usedFraction: window.usedFraction,
+        resetsAt: window.resetsAt,
+      })),
+    }
   }
 
   /** Find one directory entry by route id. */
