@@ -4,8 +4,8 @@
  * Probes are deliberately lenient: private endpoints drift, fields come back
  * missing or under aliases, and a card must degrade to `absent`/`error`
  * instead of throwing. This release ships Claude, Codex, Z.AI, Kimi, MiniMax,
- * OpenCode Go, Command Code and xAI (SuperGrok); any other route id has no
- * probe and resolves to `absent`, never to a guessed endpoint. Nothing here
+ * OpenCode Go, Command Code, xAI (SuperGrok) and Cline; any other route id has
+ * no probe and resolves to `absent`, never to a guessed endpoint. Nothing here
  * writes cooldown or failure state.
  *
  * @module dsh-keys-manager/quota/providers
@@ -424,12 +424,14 @@ export const commandcodeQuotaProbe: QuotaProbe = async ({ token, signal, fetch }
 /**
  * SuperGrok (xAI OAuth) weekly credits through the Grok CLI billing proxy.
  * The payload is `{ config: { currentPeriod: { start, end, type } ,
- * creditUsagePercent } }`; a fresh period omits the percent, which means 0 %
- * used while that period is still open.
+ * creditUsagePercent, isUnifiedBillingUser } }`; a fresh weekly period omits
+ * the percent, which means 0 % used while that period is still open.
  *
- * Only a WEEKLY period maps: this UI has `session` and `week` windows, and a
- * unified-billing monthly included quota is neither — it stays `error` rather
- * than being mislabeled as a week.
+ * Only an explicit WEEK period maps: this UI has `session` and `week` windows,
+ * and a monthly included quota is neither. A unified-billing account needs a
+ * second (default) billing payload to say which counter gates requests — this
+ * probe reads the credits payload alone, so unified is `error` rather than a
+ * week that may not apply.
  */
 export const xaiQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
   const read = await readQuotaJson(
@@ -446,11 +448,14 @@ export const xaiQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
     const config = asRecord(body.config) ?? body
     const period = asRecord(config.currentPeriod)
     if (period === undefined) return 'no weekly credits period'
-    // A missing or empty `type` is deliberately treated as weekly: this
-    // endpoint only ever reports the weekly credits window, and xAI omits the
-    // label on some responses. Do not "fix" this into a rejection.
     const type = typeof period.type === 'string' ? period.type.toUpperCase() : ''
-    if (type.length > 0 && !type.includes('WEEK')) return `unsupported billing period (${type})`
+    if (type.length === 0) return 'missing billing period type'
+    if (!type.includes('WEEK')) return `unsupported billing period (${type})`
+    // A unified account keeps a weekly credits pool *and* a monthly included
+    // quota; an inferred weekly percent there is not usage this UI can trust
+    // (reference: xai-oauth.ts drops it unless the monthly payload proves there
+    // is no monthly quota). Never invent 0 % for it.
+    if (config.isUnifiedBillingUser === true) return 'unified billing hides the weekly window'
     const resetsAt = resetOf(period, ['end'])
     if (resetsAt === undefined) return 'no weekly credits reset time'
     const percent = toNumber(config.creditUsagePercent)

@@ -40,7 +40,7 @@ Three reset-time encodings coexist and every parser must accept all of them: ISO
 | MiniMax | `.../coding_plan/remains` | Bearer (`sk-cp-…`) | interval counters → session, weekly counters → week |
 | OpenCode Go | `opencode.ai/zen/go/v1/usage` | Bearer | `rolling` → session, `weekly` → week, `monthly` ignored |
 | Command Code | `api.commandcode.ai/alpha/billing/credits` | Bearer + `Accept: application/json` | `windowLimits.fiveHour` → session, `.weekly` → week, each `{ used, cap, resetAt }`; a balance-only payload has no window → `error` |
-| xAI SuperGrok | `cli-chat-proxy.grok.com/v1/billing?format=credits` | Bearer + `X-XAI-Token-Auth: xai-grok-cli` + UA | `currentPeriod` (`type` containing WEEK) → week, `creditUsagePercent` USED; a monthly/unified payload is `error`, not a week |
+| xAI SuperGrok | `cli-chat-proxy.grok.com/v1/billing?format=credits` | Bearer + `X-XAI-Token-Auth: xai-grok-cli` + UA | `currentPeriod.type` must contain WEEK → week, `creditUsagePercent` USED; `isUnifiedBillingUser: true` is `error` (the credits payload alone cannot say whether the weekly pool applies, so an inferred 0 % would be fake health), and a monthly period is `error` too |
 | Cline (ClinePass) | `api.cline.bot/api/v1/users/me/plan/usage-limits` | key + Cline desktop headers (`X-CLIENT-TYPE: cline-desktop`, `X-CLIENT-VERSION`) | `limits[].type` `five_hour` → session, `weekly` → week, `monthly` dropped; `percentUsed` USED; 404 = no ClinePass → `absent` |
 
 ## Rules that prevented wrong data

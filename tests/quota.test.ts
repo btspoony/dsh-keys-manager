@@ -662,6 +662,75 @@ test('xai probe refuses a non-weekly billing period instead of mislabelling it',
   assert.equal(noPeriod.reason, 'no weekly credits period')
 })
 
+test('xai probe requires an explicit weekly period type', async () => {
+  // The reference rejects a period whose type is absent; treating it as weekly
+  // would make an unlabeled payload look like a trusted week.
+  const noType = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z' },
+          creditUsagePercent: 30,
+        },
+      }),
+    ),
+  })
+  assert.equal(noType.status, 'error')
+  assert.equal(noType.reason, 'missing billing period type')
+})
+
+test('xai probe never renders a unified-billing payload as a weekly window', async () => {
+  // A unified account keeps a weekly pool and a monthly included quota; with
+  // the credits payload alone there is no way to tell which gates requests, so
+  // a payload that omits the percent must not become a healthy 0 % week.
+  const inferred = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z', type: 'WEEKLY' },
+          isUnifiedBillingUser: true,
+        },
+      }),
+    ),
+  })
+  assert.equal(inferred.status, 'error')
+  assert.equal(inferred.reason, 'unified billing hides the weekly window')
+  assert.deepEqual(inferred.windows, [])
+
+  // Even an explicit percent does not survive: the same payload shape is the
+  // one the reference refuses to use for dispatch.
+  const explicit = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z', type: 'WEEKLY' },
+          creditUsagePercent: 61,
+          isUnifiedBillingUser: true,
+        },
+      }),
+    ),
+  })
+  assert.equal(explicit.status, 'error')
+  assert.equal(explicit.reason, 'unified billing hides the weekly window')
+
+  // A non-unified account keeps the inferred-zero contract.
+  const plain = await xaiQuotaProbe({
+    token: 'xai-token',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        config: {
+          currentPeriod: { start: '2099-11-13T00:00:00.000Z', end: '2099-11-20T00:00:00.000Z', type: 'WEEKLY' },
+        },
+      }),
+    ),
+  })
+  assert.equal(plain.status, 'ok')
+  assert.equal(plain.windows[0]?.usedFraction, 0)
+})
+
 test('cline probe sends the desktop client headers and maps the two usable limits', async () => {
   const captured: Captured = {}
   const snapshot = await clineQuotaProbe({
@@ -683,9 +752,12 @@ test('cline probe sends the desktop client headers and maps the two usable limit
 
   assert.equal(captured.url, CLINE_URL)
   assert.equal(captured.headers?.Authorization, 'Bearer sk-pass')
-  // The API gates product-only surfaces on the desktop client type.
+  // The API gates product-only surfaces on the desktop client type, and the
+  // pinned version is what the code's `shortcut:` marker exists for: assert
+  // the exact values so a drift cannot pass as "non-empty".
   assert.equal(captured.headers?.['X-CLIENT-TYPE'], 'cline-desktop')
-  assert.ok((captured.headers?.['X-CLIENT-VERSION'] ?? '').length > 0)
+  assert.equal(captured.headers?.['X-CLIENT-VERSION'], '3.5.54')
+  assert.equal(captured.headers?.['User-Agent'], 'Cline/3.5.54')
   assert.equal(snapshot.status, 'ok')
   // The monthly limit has no window in this UI; both usable limits survive,
   // and an over-limit weekly percent clamps to 100%.
