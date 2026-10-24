@@ -110,6 +110,8 @@ export const UNKNOWN_FINISH = 'UNKNOWN_FINISH'
 export const STREAM_CLOSED = 'STREAM_CLOSED'
 /** Machine code for a reasoning effort the selected model does not advertise. */
 export const UNSUPPORTED_REASONING_EFFORT = 'UNSUPPORTED_REASONING_EFFORT'
+/** Machine code for a DSH tool already named like one of this route's aliases. */
+export const TOOL_ALIAS_COLLISION = 'TOOL_ALIAS_COLLISION'
 /** Machine code for a turn the caller's own signal cancelled. */
 const ABORTED_CODE = 'ABORTED'
 
@@ -147,7 +149,37 @@ export interface RouteProfile {
    * proves the bundled artifact still sets it.
    */
   readonly transportResolvedMarker?: string
+  /**
+   * DSH tool names to advertise under an alias on this route.
+   *
+   * Present only where the transport filters a name out of the MCP declaration
+   * list, leaving the route no way to hand the tool to DSH.
+   */
+  readonly toolAliases?: ReadonlySet<string>
 }
+
+/** Prefix an aliased DSH tool takes on the wire. */
+const TOOL_ALIAS_PREFIX = 'dsh_'
+
+/**
+ * The DSH tools the Cursor transport keeps off the MCP advertisement.
+ *
+ * `CURSOR_NATIVE_TOOL_NAMES` in `@oh-my-pi/pi-ai@18.12.3`
+ * (`src/providers/cursor.ts`) drops these declarations because Cursor drives
+ * them over its own exec channel. This adapter installs no exec handlers, so
+ * that channel answers "Tool not available" and a model told to read a file has
+ * no usable tool. Advertising them under {@link TOOL_ALIAS_PREFIX} keeps them
+ * in the MCP list, where an external-executor call becomes a DSH tool call.
+ */
+const CURSOR_TOOL_ALIASES: ReadonlySet<string> = new Set([
+  'bash',
+  'read',
+  'write',
+  'delete',
+  'ls',
+  'grep',
+  'todo',
+])
 
 /** The shipped Cursor route's projection facts. */
 export const CURSOR_PROFILE = {
@@ -155,6 +187,7 @@ export const CURSOR_PROFILE = {
   api: 'cursor-agent',
   fallbackErrorCode: 'CURSOR_ERROR',
   transportResolvedMarker: 'provider.block.cursorExecResolved',
+  toolAliases: CURSOR_TOOL_ALIASES,
 } as const satisfies RouteProfile
 
 /**
@@ -544,7 +577,7 @@ function googleWireModelId(row: GoogleModelRow, effort: string | undefined): str
  * @returns the context for the transport's second positional argument.
  */
 function projectContext(profile: RouteProfile, options: GenerateOptions): OmpContext {
-  const tools = projectTools(options)
+  const tools = projectTools(options, profile)
   const systemPrompt: string[] = []
   if (options.system !== undefined && options.system.length > 0) systemPrompt.push(options.system)
   const messages: OmpHistoryMessage[] = []
@@ -592,16 +625,43 @@ function projectContext(profile: RouteProfile, options: GenerateOptions): OmpCon
  * declaration set per request with no way to replay an update. `deferLoading`
  * is dropped because Cursor has no deferred-loading concept; a deferred tool
  * must be callable from this route's first request or it never becomes usable.
+ * A name in the profile's alias set is advertised as `dsh_<name>`; description
+ * and parameters travel unchanged. A DSH tool that already carries an alias
+ * name is refused: the alias maps back to the native name on the event stream,
+ * so the two declarations cannot coexist.
  * @param options - the assembled request.
+ * @param profile - the route being projected.
  * @returns the declarations in request order, or `undefined` when none are active.
+ * @throws LlmError with {@link TOOL_ALIAS_COLLISION} when a declared name is
+ *   already reserved for an alias.
  */
-function projectTools(options: GenerateOptions): readonly OmpTool[] | undefined {
+function projectTools(options: GenerateOptions, profile: RouteProfile): readonly OmpTool[] | undefined {
   if (options.tools === undefined || options.tools.length === 0) return undefined
   const byName = new Map<string, OmpTool>()
   for (const tool of options.tools) {
-    byName.set(tool.name, { name: tool.name, description: tool.description, parameters: tool.parameters })
+    const reservedFor = dshToolName(tool.name, profile)
+    if (reservedFor !== tool.name) {
+      throw new LlmError(
+        `llm-omp-transports: the ${profile.provider} route reserves the tool name "${tool.name}" for the "${reservedFor}" tool; the DSH tool must be renamed`,
+        TOOL_ALIAS_COLLISION,
+      )
+    }
+    const name = wireToolName(tool.name, profile)
+    byName.set(name, { name, description: tool.description, parameters: tool.parameters })
   }
   return [...byName.values()]
+}
+
+/** The wire name of one DSH tool: aliased when it collides with a native frame. */
+function wireToolName(name: string, profile: RouteProfile): string {
+  return profile.toolAliases?.has(name) === true ? `${TOOL_ALIAS_PREFIX}${name}` : name
+}
+
+/** The DSH name behind one wire tool name: an unaliased or foreign name is kept. */
+function dshToolName(name: string, profile: RouteProfile): string {
+  if (!name.startsWith(TOOL_ALIAS_PREFIX)) return name
+  const original = name.slice(TOOL_ALIAS_PREFIX.length)
+  return profile.toolAliases?.has(original) === true ? original : name
 }
 
 /**
@@ -691,7 +751,9 @@ function plainContent(
  * a K3 target the mismatched identity makes it refuse the history outright.
  *
  * Tool calls keep their provider-issued id so the transport can pair the
- * replayed call with the `toolResult` step that answers it.
+ * replayed call with the `toolResult` step that answers it. A name the route
+ * aliases is replayed under its alias, so the declaration the request
+ * advertises and the call the server saw agree.
  */
 function historyAssistant(
   message: DshAssistantMessage,
@@ -706,8 +768,9 @@ function historyAssistant(
       if (block.type === 'text') return [{ type: 'text', text: block.text }]
       if (block.type === 'reasoning') return routeSourced ? [{ type: 'thinking', thinking: block.text }] : []
       if (block.type === 'tool-call') {
-        toolNames.set(block.id, block.name)
-        return [{ type: 'toolCall', id: block.id, name: block.name, arguments: toolArguments(block) }]
+        const name = wireToolName(block.name, profile)
+        toolNames.set(block.id, name)
+        return [{ type: 'toolCall', id: block.id, name, arguments: toolArguments(block) }]
       }
       throw unsupportedContent(block.type, 'assistant', profile)
     }),
@@ -784,7 +847,8 @@ function unsupportedContent(kind: string, role: string, profile: RouteProfile): 
  * kind throws {@link UNKNOWN_EVENT} rather than being skipped. A tool-call
  * lifecycle becomes DSH's `block-start` / `tool-call-delta` / `block-end`
  * sequence, and the turn finishes `tool-calls` whether the transport labelled
- * it `toolUse` or left the default `stop`.
+ * it `toolUse` or left the default `stop`. An aliased tool name is restored to
+ * the DSH one here, so DSH's tool loop sees the tool it declared.
  * @param events - the transport's event stream for one turn.
  * @param signal - caller cancellation; an abort that races a provider error
  *   classifies that error as an aborted finish, as the seam expects.
@@ -835,7 +899,7 @@ export async function* projectEvents(
           type: 'tool-call-delta',
           index: event.contentIndex,
           id: ToolCallId(call.id),
-          name: call.name,
+          name: dshToolName(call.name, profile),
           argumentsDelta: event.delta ?? '',
         }
         break
@@ -849,7 +913,7 @@ export async function* projectEvents(
           block: {
             type: 'tool-call',
             id: ToolCallId(call.id),
-            name: call.name,
+            name: dshToolName(call.name, profile),
             arguments: JSON.stringify(call.arguments ?? {}),
           },
         }

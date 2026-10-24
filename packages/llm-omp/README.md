@@ -173,10 +173,18 @@ records — not a second code path.
   stops at the handoff; the result is only replayed on the follow-up request.
   Tool declarations travel as MCP definitions, and `toolHistory` is accepted
   but cannot be replayed (the active tool set is the projection).
-- **Only MCP calls are handed off.** Cursor-native exec frames (`read`, `shell`,
-  `write`, `delete`, `grep`, `ls`, `diagnostics`, streamed edits) are answered
-  by the transport with `Tool not available` and are **not** executed by DSH
-  (live reachability unverified).
+- **Colliding DSH tools are aliased, not dropped.** The transport keeps
+  Cursor's own `read`/`bash`/`write`/`delete`/`ls`/`grep`/`todo` names off the
+  MCP advertisement, so a DSH tool with one of those names is advertised as
+  `dsh_<name>`; the event stream restores the DSH name on the tool call, while
+  history replay keeps the advertised alias so the follow-up request stays
+  consistent. The seven `dsh_<native>` names are reserved: a DSH tool that
+  already carries one is refused with `TOOL_ALIAS_COLLISION`, which fails the
+  whole request and requires renaming the tool. Any other tool name travels
+  unchanged. Cursor-native exec frames (`read`, `shell`, `write`, `delete`,
+  `grep`, `ls`, `diagnostics`, streamed edits) are still answered by the
+  transport with `Tool not available` and are **not** executed by DSH (live
+  reachability unverified).
 - **Advisory request knobs are ignored.** Cursor's agent protocol has no field
   for an output cap, sampling temperature, stop sequences or an auxiliary-call
   purpose; DSH's `maxTokens`, `temperature`, `stop` and `purpose` never reach
