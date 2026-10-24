@@ -17,13 +17,6 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 20
-    env:
-      # Temporary: the 0.2.1-rc.3 cohort was published inside pnpm's default
-      # 24h release-age window, so every pnpm command in this job is refused
-      # until it ages out (2026-10-24T07:35Z). Relax the gate for this job only
-      # — no repository policy file changes. Delete this block once the cohort
-      # is older than the window.
-      pnpm_config_minimum_release_age: '0'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
