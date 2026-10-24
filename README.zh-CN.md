@@ -19,7 +19,7 @@ DSH Keys Manager 是一个 DeepSeek Harness 插件，把一个提供商 API key 
 - 既有 Models 提供商卡片内出现"由 Keys Manager 托管"徽标。
 - 额外内置提供商以普通 `llm-pi-ai` 路由安装。
 - 七家 pi-ai 覆盖的提供商支持 OAuth 账户登录，凭据与 API key 并存管理。
-- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——共四条路由：Cursor（`cursor`）、Devin（`devin`）、Google Gemini CLI（`google-gemini-cli`）与 Google Antigravity（`google-antigravity`）。
+- 随插件附带一个传输组件，服务随附 pi-ai 无法支持的提供商——共七条路由：Cursor（`cursor`）、Devin（`devin`）、Google Gemini CLI（`google-gemini-cli`）、Google Antigravity（`google-antigravity`）、Factory Droid（`factory-droid`）、GitLab Duo（`gitlab-duo`）与 GitLab Duo Agent（`gitlab-duo-agent`）。
 
 ### 额外提供商
 
@@ -87,7 +87,7 @@ CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<
 dsh plugin --profile web add dsh-keys-manager
 ```
 
-安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责其四条路由（Cursor、Devin 与两条 Google 路由）的线协议。
+安装 `dsh-keys-manager` 会安装两个 bundle 组件。已发布包依赖 `dsh-llm-omp-transports`，因此一次安装会解析两个 npm 包，插件页面会同时列出 `dsh-keys-manager` 与 `llm-omp-transports`。两者都要启用：管理器负责凭据与路由，传输组件负责其七条路由（Cursor、Devin、两条 Google 路由、Factory Droid 与两条 GitLab Duo 路由）的线协议。
 
 ### 安装 —— 本地检出
 

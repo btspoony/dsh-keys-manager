@@ -6,10 +6,12 @@ All notable changes to dsh-keys-manager are documented here. Assembled from `.ch
 
 ### Changed
 
-- The published transport package's API docs now describe all four routes (`cursor`, `devin`, `google-gemini-cli`, `google-antigravity`) and their sign-in shapes instead of claiming a Cursor-only plugin, so a reader of `dsh-llm-omp-transports` sees the surface it actually registers.
+- The published transport package's API docs and the root README (EN/ZH) now name every route the transport registers — all seven (`cursor`, `devin`, the two Google routes, `factory-droid` and the two GitLab Duo routes) — instead of claiming a Cursor-only plugin or four routes, so a reader sees the surface the package actually serves.
 - An unmanaged extra provider's account button now shows a "signing in" label instead of "Adopting…" while it starts a sign-in, matching a path that never adopts.
 - The static-bearer transport docs (README and known limits, EN/ZH) now say a grant with no expiry shows no expiry time and no countdown, matching the blank expiry cell instead of claiming there is no expiry line.
 - A concurrent credential refresh no longer reports a missing credential for a healthy GitLab or Factory Droid account: the losing request now reads the refresh the winner already committed instead of failing.
+- The model picker now projects the `gitlab-duo` (16 rows) and `gitlab-duo-agent` (1 row) catalogs: this plugin's route-to-accessor table was missing the two GitLab entries, so both routes reported a missing catalog and offered no models even though the transport package ships them.
+- Bump the `@deepseek-ai/dsh-*` peer cohort to `^0.2.1-rc.3` (corridor `dsh-v0.2.1-rc.2` → `dsh-v0.2.1-rc.3`: More menus for browsing/creating plugins; New Session draft fix after switching sessions; DeepSeek API-key adapter model-list updates aligned with account sign-in). Session format v4 unchanged. README DSH badges follow.
 
 ### Added
 

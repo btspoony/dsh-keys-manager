@@ -3,8 +3,9 @@
  * cannot be expressed through DSH's provider *configuration* surfaces.
  *
  * The plugin registers its own routes on the `llm` seam, so nothing here depends
- * on an upstream DSH change. It serves four routes — `cursor`, `devin`,
- * `google-gemini-cli` and `google-antigravity` — and per run it:
+ * on an upstream DSH change. It serves seven routes — `cursor`, `devin`,
+ * `google-gemini-cli`, `google-antigravity`, `factory-droid`, `gitlab-duo` and
+ * `gitlab-duo-agent` — and per run it:
  *
  * - registers the bundled omp adapters (`lib/omp/cursor.mjs`, `devin.mjs` and
  *   the shared `google.mjs`, imported lazily so an install without an artifact

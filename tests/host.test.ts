@@ -18033,6 +18033,8 @@ const SIBLING_CATALOG_ROUTES = [
   { route: 'google-gemini-cli', exportName: 'googleGeminiCliCatalogModels' },
   { route: 'google-antigravity', exportName: 'googleAntigravityCatalogModels' },
   { route: 'factory-droid', exportName: 'factoryDroidCatalogModels' },
+  { route: 'gitlab-duo', exportName: 'gitlabDuoCatalogModels' },
+  { route: 'gitlab-duo-agent', exportName: 'gitlabDuoAgentCatalogModels' },
 ] as const
 
 test.each(SIBLING_CATALOG_ROUTES)(

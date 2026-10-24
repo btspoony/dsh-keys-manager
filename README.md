@@ -24,9 +24,10 @@ manager.
 - OAuth account sign-in for seven pi-ai-backed providers, stored beside
   the API keys.
 - A companion transport component for providers the vendored pi-ai cannot
-  speak — four routes: Cursor (`cursor`), Devin (`devin`), Google Gemini CLI
-  (`google-gemini-cli`) and Google Antigravity (`google-antigravity`) —
-  installed with the plugin.
+  speak — seven routes: Cursor (`cursor`), Devin (`devin`), Google Gemini CLI
+  (`google-gemini-cli`), Google Antigravity (`google-antigravity`), Factory
+  Droid (`factory-droid`), GitLab Duo (`gitlab-duo`) and GitLab Duo Agent
+  (`gitlab-duo-agent`) — installed with the plugin.
 
 ### Extra providers
 
@@ -103,8 +104,8 @@ Installing `dsh-keys-manager` installs two bundle components. The published
 package depends on `dsh-llm-omp-transports`, so one install resolves both npm
 packages, and the plugin page lists both `dsh-keys-manager` and
 `llm-omp-transports`. Enable both: the manager owns credentials and routing,
-the transport component owns the wire protocols of its four routes (Cursor,
-Devin, and the two Google routes).
+the transport component owns the wire protocols of its seven routes (Cursor,
+Devin, the two Google routes, Factory Droid, and the two GitLab Duo routes).
 
 ### Install — local checkout
 
