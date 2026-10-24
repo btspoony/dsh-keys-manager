@@ -2,6 +2,28 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.8] - 2026-10-24
+
+### Changed
+
+- Name all seven transport routes in the known limits, and stop describing `factory-droid` as deferred.
+- Restructure both READMEs into grouped capability areas with comparison tables for accounts, transport routes and failure policy; the extra-provider catalog stays as a folded list.
+- Regroup provider coverage into four groups — DSH built-in, plugin extra built-in, OAuth accounts and transport routes — with the supported and not-pooled lists folded into two details blocks; `kilo` and `zai` are OAuth accounts signed in by the plugin's bundled clients, not a separate category.
+- Bump the `@oh-my-pi/*` build-time pin from 18.12.3 to 18.12.6 (whole cohort: pi-ai, pi-catalog, pi-utils, pi-natives, pi-wire, omptype) and regenerate the pi-ai patch; the cursor exec-frame handoff patch body is unchanged.
+
+### Fixed
+
+- Restore the `legacy-tier` case in the Google transport note — the README now names both `legacy-tier` and paid accounts that must set `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT_ID`.
+- Cursor route: native `shell` (batch and streamed), `mini_swe_agent_bash`,
+- The handoff translation into DSH's tool schemas is lossy: every `GrepArgs`
+- The pinned `@oh-my-pi/pi-ai@18.12.3` is now patched via
+- A transport route with no stored credential no longer appears in DSH's model picker or the Settings → Models provider list; the route's provider card and sign-in entry stay on the Keys Manager page.
+
+### Added
+
+- Show each managed account's plan usage on its provider card: a compact one-line hint when collapsed, and an expanded strip with one thin bar per window (session and weekly), the used percentage and the reset countdown.
+- Quota reads are pull-only, cached in memory with TTL jitter and failure backoff, and never touch key selection or cooldown; a provider whose plan cannot be read shows "not reported" (or "sign in again" on a stale OAuth account) instead of a zero bar.
+
 ## [0.2.7] - 2026-10-24
 
 ### Changed
