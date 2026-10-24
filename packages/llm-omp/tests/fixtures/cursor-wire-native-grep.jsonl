@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"grep","name":"grep","toolName":"grep","toolCallId":"call-native-gr","args":{"pattern":"TODO","path":"src","glob":"*.ts"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

@@ -22,13 +22,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
+  DeleteArgsSchema,
   ExecServerMessageSchema,
+  GrepArgsSchema,
   InteractionUpdateSchema,
   McpArgsSchema,
   ReadArgsSchema,
   RequestContextArgsSchema,
+  ShellArgsSchema,
   TextDeltaUpdateSchema,
   TurnEndedUpdateSchema,
+  WriteArgsSchema,
 } from '@oh-my-pi/pi-catalog/discovery/cursor-proto'
 import type { AgentClientMessage, AgentServerMessage, McpResult } from '@oh-my-pi/pi-catalog/discovery/cursor-proto'
 import { create, encodeJsonValue, fromBinary, toBinary } from '@oh-my-pi/pi-catalog/discovery/protobuf'
@@ -58,6 +62,16 @@ const CONNECT_END_STREAM_FLAG = 0x02
 const HANDOFF_TEXT =
   'Tool call received and handed off to the external client for execution. Do not retry or call it again; end the turn. The result will be provided in the next request.'
 
+/** A host-supplied `execHandlers.read` result: the handler returns a tool result. */
+const localReadResult = {
+  role: 'toolResult',
+  toolCallId: 'call-native-1',
+  toolName: 'read',
+  content: [{ type: 'text', text: 'file body' }],
+  isError: false,
+  timestamp: 0,
+}
+
 const SONNET_ROW = CURSOR_MODELS.find(row => row.id === 'claude-4.5-sonnet')
 if (SONNET_ROW === undefined) throw new Error('the generated catalog lost claude-4.5-sonnet')
 const MODEL: OmpCursorModel = { api: 'cursor-agent', provider: 'cursor', ...SONNET_ROW }
@@ -80,7 +94,7 @@ type WireLine =
   | {
       kind: 'exec'
       /** Which exec frame to send; `mcp` is Cursor's call for an advertised tool. */
-      frame?: 'mcp' | 'read'
+      frame?: 'mcp' | 'read' | 'shell' | 'grep' | 'write' | 'delete'
       name: string
       toolName: string
       toolCallId: string
@@ -143,16 +157,38 @@ function frameFor(line: WireLine): Buffer {
       )
     }
     case 'exec': {
-      // A native read frame: the server asks the client to read a file, which
-      // this transport answers itself instead of handing it to DSH.
-      if (line.frame === 'read') {
+      // Native exec frames: the server asks the client to run a tool locally.
+      if (line.frame !== undefined && line.frame !== 'mcp') {
+        // One builder per native frame; values carry only the fields each
+        // frame's schema needs (`toolCallId` is common to all of them).
+        const toolCallId = line.toolCallId
+        const nativeMessage = (() => {
+          switch (line.frame) {
+            case 'read':
+              return { case: 'readArgs' as const, value: create(ReadArgsSchema, { toolCallId, path: String(line.args.path ?? '') }) }
+            case 'shell':
+              return {
+                case: 'shellArgs' as const,
+                value: create(ShellArgsSchema, { toolCallId, command: String(line.args.command ?? ''), workingDirectory: String(line.args.workingDirectory ?? '') }),
+              }
+            case 'grep':
+              return {
+                case: 'grepArgs' as const,
+                value: create(GrepArgsSchema, { toolCallId, pattern: String(line.args.pattern ?? ''), path: line.args.path === undefined ? undefined : String(line.args.path), glob: line.args.glob === undefined ? undefined : String(line.args.glob) }),
+              }
+            case 'write':
+              return {
+                case: 'writeArgs' as const,
+                value: create(WriteArgsSchema, { toolCallId, path: String(line.args.path ?? ''), fileText: String(line.args.fileText ?? '') }),
+              }
+            case 'delete':
+              return { case: 'deleteArgs' as const, value: create(DeleteArgsSchema, { toolCallId, path: String(line.args.path ?? '') }) }
+          }
+        })()
         const exec = create(ExecServerMessageSchema, {
           id: 1,
           execId: 'exec-frame-1',
-          message: {
-            case: 'readArgs',
-            value: create(ReadArgsSchema, { path: String(line.args.path ?? ''), toolCallId: line.toolCallId }),
-          },
+          message: nativeMessage,
         })
         return serverFrame(
           create(AgentServerMessageSchema, { message: { case: 'execServerMessage', value: exec } }),
@@ -444,28 +480,116 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(blockEnd?.block).toMatchObject({ type: 'tool-call', name: 'read' })
   })
 
-  it('answers a native read frame itself and leaves no unresolved call for DSH', async () => {
+  it('hands a native read frame to DSH as an unresolved tool call and answers with the handoff result', async () => {
     const { events, wire } = await run(
       'cursor-wire-native-read.jsonl',
       { externalToolExecutor: true },
       { tools: [{ name: 'lookup_doc', description: 'Look up a document', parameters: { type: 'object' } }] },
     )
 
+    // The synthesized call carries no `cursorExecResolved` mark, so it is DSH's
+    // to run; its arguments are in DSH's read-tool dialect.
     const call = events.find(event => event.type === 'toolcall_end')?.toolCall
-    expect(call).toMatchObject({ type: 'toolCall', name: 'read', arguments: { path: 'README.md' } })
-    // The pinned transport tags a call it already settled; the projection keys
-    // the handoff on that mark, so an omp bump that drops it fails here.
-    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+    expect(call).toMatchObject({ type: 'toolCall', name: 'read', arguments: { file_path: 'README.md' } })
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).not.toContain(
       'provider.block.cursorExecResolved',
     )
 
-    // The exec reply is the transport's own (rejected) read result, not the MCP
-    // handoff the external executor would answer with.
+    // The exec reply is the handoff placeholder — schema-valid for ReadResult —
+    // not an adapter-side execution result.
     const reply = decodeClientFrame(wire.written[1])
     const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
     expect(client?.message.case).toBe('readResult')
+    const result = client?.message.case === 'readResult' ? (client.message.value as { result: { case?: string; value?: { reason?: string } } }) : undefined
+    expect(result?.result.case).toBe('rejected')
+    expect(result?.result.value?.reason).toBe(HANDOFF_TEXT)
 
-    // Through the projection, DSH gets no tool call to run.
+    // Through the projection, DSH gets the unresolved tool call to run.
+    const chunks: StreamChunk[] = []
+    for await (const chunk of projectEvents(
+      (async function* () {
+        yield* events
+      })(),
+    )) {
+      chunks.push(chunk)
+    }
+    expect(chunks.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')).toBe(true)
+  })
+
+  it('hands a native shell frame to DSH with the working directory folded into the command', async () => {
+    const { events, wire } = await run('cursor-wire-native-shell.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({
+      type: 'toolCall',
+      name: 'bash',
+      arguments: { command: 'cd /tmp/demo && ls -la' },
+    })
+
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('shellResult')
+    const result =
+      client?.message.case === 'shellResult'
+        ? (client.message.value as { result: { case?: string; value?: { reason?: string } } })
+        : undefined
+    expect(result?.result.case).toBe('rejected')
+    expect(result?.result.value?.reason).toBe(HANDOFF_TEXT)
+  })
+
+  it('hands a native grep frame to DSH with glob translated to include and the extra flags dropped', async () => {
+    const { events, wire } = await run('cursor-wire-native-grep.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({
+      type: 'toolCall',
+      name: 'grep',
+      arguments: { pattern: 'TODO', path: 'src', include: '*.ts' },
+    })
+    // case/skip/offset have no DSH slot: they must not leak into the arguments.
+    expect(Object.keys(call!.arguments)).toEqual(['pattern', 'path', 'include'])
+
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('grepResult')
+    const result =
+      client?.message.case === 'grepResult'
+        ? (client.message.value as { result: { case?: string; value?: { error?: string } } })
+        : undefined
+    expect(result?.result.case).toBe('error')
+    expect(result?.result.value?.error).toBe(HANDOFF_TEXT)
+  })
+
+  it('hands a native write frame to DSH as file_path plus content', async () => {
+    const { events, wire } = await run('cursor-wire-native-write.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({
+      type: 'toolCall',
+      name: 'write',
+      arguments: { file_path: 'out.txt', content: 'hello' },
+    })
+
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('writeResult')
+    const result =
+      client?.message.case === 'writeResult'
+        ? (client.message.value as { result: { case?: string; value?: { reason?: string } } })
+        : undefined
+    expect(result?.result.case).toBe('rejected')
+    expect(result?.result.value?.reason).toBe(HANDOFF_TEXT)
+  })
+
+  it('still rejects a native delete frame with no unresolved call for DSH', async () => {
+    const { events, wire } = await run('cursor-wire-native-delete.jsonl', { externalToolExecutor: true })
+
+    // Delete has no DSH equivalent: the block is stamped resolved (answered
+    // locally as "Tool not available"), so DSH's projection sees no call.
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+      'provider.block.cursorExecResolved',
+    )
     const chunks: StreamChunk[] = []
     for await (const chunk of projectEvents(
       (async function* () {
@@ -475,6 +599,75 @@ describe('bundled streamCursor over a Connect frame stream', () => {
       chunks.push(chunk)
     }
     expect(chunks.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')).toBe(false)
-    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('deleteResult')
+    const result =
+      client?.message.case === 'deleteResult'
+        ? (client.message.value as { result: { case?: string; value?: { reason?: string } } })
+        : undefined
+    expect(result?.result.case).toBe('rejected')
+    expect(result?.result.value?.reason).toBe('Tool not available')
+  })
+
+  it('keeps an explicit execHandlers.read winner local: resolved call, real result, no handoff', async () => {
+    const { events, wire } = await run('cursor-wire-native-read.jsonl', {
+      externalToolExecutor: true,
+      // The adapter ships no exec handlers; a host that supplies one must keep
+      // today's local-execution behaviour. (Not part of OmpCursorOptions —
+      // the adapter never sets it — so the test passes it through verbatim.)
+      ...({ execHandlers: { read: async () => localReadResult } } as unknown as Record<string, never>),
+    } as Partial<OmpCursorOptions>)
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({ type: 'toolCall', name: 'read', arguments: { path: 'README.md' } })
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('readResult')
+    const result =
+      client?.message.case === 'readResult'
+        ? (client.message.value as { result: { case?: string; value?: { file?: { content?: { case?: string; value?: { text?: string } } } } } })
+        : undefined
+    expect(result?.result.case).toBe('success')
+    const success =
+      result?.result.case === 'success'
+        ? (result.result.value as { output?: { value?: unknown } })
+        : undefined
+    expect(String(success?.output?.value)).toContain('file body')
+
+    const chunks: StreamChunk[] = []
+    for await (const chunk of projectEvents(
+      (async function* () {
+        yield* events
+      })(),
+    )) {
+      chunks.push(chunk)
+    }
+    expect(chunks.some(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call')).toBe(false)
+  })
+
+  it('keeps today`s behaviour without externalToolExecutor: rejected read, no unresolved call', async () => {
+    const { events, wire } = await run('cursor-wire-native-read.jsonl')
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({ type: 'toolCall', name: 'read' })
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    const reply = decodeClientFrame(wire.written[1])
+    const client = reply.message.case === 'execClientMessage' ? reply.message.value : undefined
+    expect(client?.message.case).toBe('readResult')
+    const result =
+      client?.message.case === 'readResult'
+        ? (client.message.value as { result: { case?: string; value?: { reason?: string } } })
+        : undefined
+    expect(result?.result.case).toBe('rejected')
+    expect(result?.result.value?.reason).toBe('Tool not available')
   })
 })

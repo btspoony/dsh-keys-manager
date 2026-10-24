@@ -196,10 +196,18 @@ repository root docs.
   consistent. The seven `dsh_<native>` names are reserved: a DSH tool that
   already carries one is refused with `TOOL_ALIAS_COLLISION`, which fails the
   whole request and requires renaming the tool. Any other tool name travels
-  unchanged. Cursor-native exec frames (`read`, `shell`, `write`, `delete`,
-  `grep`, `ls`, `diagnostics`, streamed edits) still have no handler: the
-  transport answers them with "Tool not available" and they are **not**
-  executed by DSH (live reachability unverified).
+  unchanged. Cursor-native `read`, `shell`, `write` and `grep` exec frames are
+  handed to DSH's own tool loop the same way (unresolved call, result replayed
+  on the next request), translated into the DSH tool's parameters. Frames with
+  no DSH equivalent (`delete`, `ls`, `diagnostics`, streamed edits) still have
+  no handler: the transport answers them with "Tool not available" and they are
+  **not** executed by DSH (live reachability unverified).
+- The exec-frame handoff translation is **lossy**. `grep`'s `ignoreCase`,
+  `literal`, `context` and `offset` flags have no slot in DSH's `grep` tool and
+  are dropped; `shell`'s millisecond budget is dropped and its working
+  directory is folded into the command as a leading `cd <dir> && …`. The model
+  sees the DSH tool's own schema, so a call that needed a dropped flag may
+  behave differently than under Cursor's native tool.
 - Tool declarations travel as MCP definitions. `toolHistory` is accepted but
   cannot be replayed — the active declaration set is what the request
   projects.
