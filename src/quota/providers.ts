@@ -3,9 +3,10 @@
  *
  * Probes are deliberately lenient: private endpoints drift, fields come back
  * missing or under aliases, and a card must degrade to `absent`/`error`
- * instead of throwing. This release ships Claude, Codex, Z.AI, Kimi, MiniMax
- * and OpenCode Go; any other route id has no probe and resolves to `absent`,
- * never to a guessed endpoint. Nothing here writes cooldown or failure state.
+ * instead of throwing. This release ships Claude, Codex, Z.AI, Kimi, MiniMax,
+ * OpenCode Go, Command Code and xAI (SuperGrok); any other route id has no
+ * probe and resolves to `absent`, never to a guessed endpoint. Nothing here
+ * writes cooldown or failure state.
  *
  * @module dsh-keys-manager/quota/providers
  */
@@ -33,6 +34,15 @@ const ZAI_QUOTA_URL = 'https://api.z.ai/api/monitor/usage/quota/limit'
 const KIMI_USAGE_URL = 'https://api.kimi.com/coding/v1/usages'
 const MINIMAX_QUOTA_URL = 'https://api.minimax.io/v1/api/openplatform/coding_plan/remains'
 const OPENCODE_GO_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage'
+const COMMANDCODE_CREDITS_URL = 'https://api.commandcode.ai/alpha/billing/credits'
+const XAI_BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
+/**
+ * The Grok CLI billing proxy sits behind the CLI product gate: without this
+ * header the endpoint answers an auth error that would read as `unauthorized`
+ * (plan risk R2). The `User-Agent` is part of the same gate.
+ */
+const XAI_CLI_TOKEN_AUTH = 'xai-grok-cli'
+const XAI_CLI_USER_AGENT = 'grok-cli/0.1 (dsh-keys-manager)'
 
 /** A window longer than three days is the weekly pool; the short one is the session. */
 const WEEK_SECONDS_THRESHOLD = 3 * 24 * 60 * 60
@@ -357,10 +367,90 @@ export const opencodeGoQuotaProbe: QuotaProbe = async ({ token, signal, fetch })
 }
 
 /**
+ * Command Code plan windows. The CLI's account route reports a credit balance
+ * plus `windowLimits.{fiveHour,weekly}` of `{ used, cap, resetAt }`; a
+ * pay-as-you-go account carries only the balance, which has no window at all
+ * and therefore no usage the card can render — that case is `error`, never a
+ * fabricated 0%.
+ *
+ * shortcut: the org pool needs `/alpha/whoami` first to learn `orgId`; this
+ * probe reads the personal balance only and adds the org query when a managed
+ * org account must show its own pool.
+ */
+export const commandcodeQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
+  const read = await readQuotaJson(
+    COMMANDCODE_CREDITS_URL,
+    { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    { fetch, signal },
+  )
+  return snapshotFromRead(read, (rawBody) => {
+    // Account routes answer `{ data: … }`; accept an unwrapped body too.
+    const body = asRecord(rawBody.data) ?? rawBody
+    const windowLimits = asRecord(body.windowLimits)
+    if (windowLimits === undefined) return 'credit balance carries no usage window'
+    const windows: QuotaWindow[] = []
+    const add = (raw: unknown, id: QuotaWindowId): void => {
+      const row = asRecord(raw)
+      if (row === undefined) return
+      const usedFraction = fractionFromCounts(toNumber(row.used), toNumber(row.cap))
+      const resetsAt = resetOf(row, ['resetAt', 'reset_at', 'resetsAt'])
+      if (usedFraction === undefined || resetsAt === undefined) return
+      windows.push({ id, usedFraction, resetsAt })
+    }
+    add(windowLimits.fiveHour, 'session')
+    add(windowLimits.weekly, 'week')
+    return windows
+  })
+}
+
+/**
+ * SuperGrok (xAI OAuth) weekly credits through the Grok CLI billing proxy.
+ * The payload is `{ config: { currentPeriod: { start, end, type } ,
+ * creditUsagePercent } }`; a fresh period omits the percent, which means 0 %
+ * used while that period is still open.
+ *
+ * Only a WEEKLY period maps: this UI has `session` and `week` windows, and a
+ * unified-billing monthly included quota is neither — it stays `error` rather
+ * than being mislabeled as a week.
+ */
+export const xaiQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
+  const read = await readQuotaJson(
+    XAI_BILLING_URL,
+    {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+      'X-XAI-Token-Auth': XAI_CLI_TOKEN_AUTH,
+      'User-Agent': XAI_CLI_USER_AGENT,
+    },
+    { fetch, signal },
+  )
+  return snapshotFromRead(read, (body) => {
+    const config = asRecord(body.config) ?? body
+    const period = asRecord(config.currentPeriod)
+    if (period === undefined) return 'no weekly credits period'
+    const type = typeof period.type === 'string' ? period.type.toUpperCase() : ''
+    if (type.length > 0 && !type.includes('WEEK')) return `unsupported billing period (${type})`
+    const resetsAt = resetOf(period, ['end'])
+    if (resetsAt === undefined) return 'no weekly credits reset time'
+    const percent = toNumber(config.creditUsagePercent)
+    const usedFraction = percent === undefined
+      ? resetsAt > Date.now() ? 0 : undefined
+      : fractionFromUsed(percent)
+    if (usedFraction === undefined) return 'no usable weekly credits percent'
+    return [{ id: 'week' as const, usedFraction, resetsAt }]
+  })
+}
+
+/**
  * Route id → probe. The ids are the variants this repo and the Host directory
  * actually use (OAuth catalog ids `anthropic`/`openai-codex`/`kimi-coding`, the
  * seed routes in `src/providers.ts`, the sign-in routes in `src/oauth`).
  * Unknown ids have no entry by design and resolve to `absent`.
+ *
+ * `ollama-cloud` is deliberately absent: the pinned reference (oh-my-pi
+ * `packages/ai/src/usage/ollama.ts`) reports no standalone quota endpoint for
+ * Ollama, so a balance read there has no window to normalize and the route
+ * keeps rendering nothing.
  *
  * shortcut: the CN-region routes (`zai-coding-cn`, `minimax-code-cn`) reuse the
  * international endpoints, so a CN key reports `unauthorized`; add per-region
@@ -381,6 +471,8 @@ const QUOTA_PROBES: Readonly<Record<string, QuotaProbe>> = Object.freeze({
   'minimax-code': minimaxQuotaProbe,
   'minimax-code-cn': minimaxQuotaProbe,
   'opencode-go': opencodeGoQuotaProbe,
+  commandcode: commandcodeQuotaProbe,
+  xai: xaiQuotaProbe,
 })
 
 /** The probe for a route id, or `undefined` when the provider exposes no usage API. */

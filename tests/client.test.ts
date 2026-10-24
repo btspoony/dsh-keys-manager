@@ -251,6 +251,11 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     quotaSignInAgain: '请重新登录',
     quotaStale: '数据较旧',
     quotaCompactHint: '该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。',
+    // The countdown formats through these; a day-based offset here is chosen
+    // away from a whole-day boundary so the rounded label is deterministic.
+    timeSeconds: '{n} 秒',
+    timeMinutes: '{n} 分钟',
+    timeHours: '{n} 小时',
     timeDays: '{n} 天',
   }
   const t = (key: string, params: Record<string, string | number> = {}): string => {
@@ -3985,7 +3990,7 @@ describe('quota surface', () => {
     const quota: QuotaView = {
       status: 'ok',
       fetchedAt: Date.now(),
-      windows: [quotaWindow('week', 0.61, 24)],
+      windows: [quotaWindow('week', 0.61, 48)],
     }
     const { view } = await mountExpanded(quotaState(quota, key => {
       key.kind = 'oauth'
@@ -3995,7 +4000,7 @@ describe('quota surface', () => {
       const row = findByClass(view.nodes, 'km-account-row')[0]!
       const line = findByClass(descendants(view.nodes, row), 'km-quota-inline')
       expect(line).toHaveLength(1)
-      expect(line[0]!.text).toBe('W 61% · 1 天')
+      expect(line[0]!.text).toBe('W 61% · 2 天')
     } finally {
       view.unmount()
       setRuntimeContext(null)
