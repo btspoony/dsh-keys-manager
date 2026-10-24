@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@oh-my-pi/pi-ai@18.12.3': 69a7b86207df6bf665a03236fae4679dfdfc8a872c8faffeaa9278a4469f33bb
+  '@oh-my-pi/pi-ai@18.12.3': aadb8f66c673eba07e09d87d4d52538ac0bf1b97ca98f912af7817c1cd5d6032
 
 importers:
 
@@ -20,7 +20,7 @@ importers:
         version: 4.0.5
       '@oh-my-pi/pi-ai':
         specifier: 18.12.3
-        version: 18.12.3(patch_hash=69a7b86207df6bf665a03236fae4679dfdfc8a872c8faffeaa9278a4469f33bb)
+        version: 18.12.3(patch_hash=aadb8f66c673eba07e09d87d4d52538ac0bf1b97ca98f912af7817c1cd5d6032)
       '@oh-my-pi/pi-catalog':
         specifier: 18.12.3
         version: 18.12.3
@@ -62,7 +62,7 @@ importers:
         version: 3.18.5
       '@oh-my-pi/pi-ai':
         specifier: 18.12.3
-        version: 18.12.3(patch_hash=69a7b86207df6bf665a03236fae4679dfdfc8a872c8faffeaa9278a4469f33bb)
+        version: 18.12.3(patch_hash=aadb8f66c673eba07e09d87d4d52538ac0bf1b97ca98f912af7817c1cd5d6032)
       '@oh-my-pi/pi-catalog':
         specifier: 18.12.3
         version: 18.12.3
@@ -918,7 +918,7 @@ snapshots:
 
   '@oh-my-pi/omptype@18.12.3': {}
 
-  '@oh-my-pi/pi-ai@18.12.3(patch_hash=69a7b86207df6bf665a03236fae4679dfdfc8a872c8faffeaa9278a4469f33bb)':
+  '@oh-my-pi/pi-ai@18.12.3(patch_hash=aadb8f66c673eba07e09d87d4d52538ac0bf1b97ca98f912af7817c1cd5d6032)':
     dependencies:
       '@oh-my-pi/omptype': 18.12.3
       '@oh-my-pi/pi-catalog': 18.12.3

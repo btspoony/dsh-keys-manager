@@ -610,6 +610,33 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 5 })
   })
 
+  it('keeps an open-ended read window (`:10-`) as a bare offset with no limit', async () => {
+    // `:N-` means "from line N to the end of the file": a valid selector, so it
+    // must stay `offset` only — never a fabricated limit.
+    const { events } = await run('cursor-wire-native-read-range-open.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10 })
+  })
+
+  it('keeps an open-ended read window (`:10..`) as a bare offset with no limit', async () => {
+    const { events } = await run('cursor-wire-native-read-range-open-dots.jsonl', {
+      externalToolExecutor: true,
+    })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10 })
+  })
+
+  it('leaves a count selector with no count in the path, untouched', async () => {
+    const { events } = await run('cursor-wire-native-read-range-count-open.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // `:10+` is not a selector OMP would honour (a count is required), so the
+    // tail is not stripped and no offset/limit is invented.
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts:10+' })
+  })
+
   it('leaves a backwards read window in the path instead of emitting a bad limit', async () => {
     const { events } = await run('cursor-wire-native-read-range-reversed.jsonl', { externalToolExecutor: true })
 
