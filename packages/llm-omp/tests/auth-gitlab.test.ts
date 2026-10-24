@@ -500,6 +500,56 @@ describe('gitlab duo proxy sign-in', () => {
     expect(flow.methods).toEqual([{ id: 'oauth', label: 'Sign in with GitLab Duo' }])
   })
 
+  it('refreshes an expired duo grant with the duo client and redirect', async () => {
+    // The two routes register different OAuth clients; a refresh with the agent's
+    // vscode pair would be rejected by GitLab for a proxy grant.
+    let record: StoredCredentialRecord | undefined = {
+      kind: 'grant',
+      payload: { access: 'stale', refresh: 'duo-refresh', expires: NOW - 1 },
+    }
+    const credentials: CredentialRecordsLike = {
+      readRecord: async () => record,
+      modifyRecord: async (_key, mutate) => {
+        record = (await mutate(record)) ?? record
+        return record
+      },
+    }
+    const { fetch, calls } = stubFetch(() => json({ access_token: 'fresh', expires_in: 3600 }))
+
+    expect(await createGitLabDuoAccess(credentials, { now, fetch })()).toBe('fresh')
+
+    const body = new URLSearchParams(String(calls[0]!.init?.body))
+    expect(body.get('client_id')).toBe(GITLAB_DUO_AUTH.clientId)
+    expect(body.get('redirect_uri')).toBe('http://localhost:8080/callback')
+    // Not the agent's vscode redirect.
+    expect(body.get('redirect_uri')).not.toBe(GITLAB_DUO_AGENT_AUTH.redirectUri)
+  })
+
+  it('honours the GITLAB_CLIENT_ID / GITLAB_REDIRECT_URI overrides on refresh', async () => {
+    let record: StoredCredentialRecord | undefined = {
+      kind: 'grant',
+      payload: { access: 'stale', refresh: 'r', expires: NOW - 1 },
+    }
+    const credentials: CredentialRecordsLike = {
+      readRecord: async () => record,
+      modifyRecord: async (_key, mutate) => {
+        record = (await mutate(record)) ?? record
+        return record
+      },
+    }
+    const { fetch, calls } = stubFetch(() => json({ access_token: 'fresh' }))
+
+    await createGitLabDuoAccess(credentials, {
+      now,
+      fetch,
+      env: { GITLAB_CLIENT_ID: 'own-app', GITLAB_REDIRECT_URI: 'http://localhost:9000/cb' },
+    })()
+
+    const body = new URLSearchParams(String(calls[0]!.init?.body))
+    expect(body.get('client_id')).toBe('own-app')
+    expect(body.get('redirect_uri')).toBe('http://localhost:9000/cb')
+  })
+
   it('resolves the proxy credential through the same CAS shape', async () => {
     const writes = { count: 0 }
     let record: StoredCredentialRecord | undefined = { kind: 'grant', payload: { access: 'stored', refresh: 'r', expires: NOW + 3_600_000 } }

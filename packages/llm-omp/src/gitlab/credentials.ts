@@ -19,8 +19,8 @@ import { LlmError } from '@deepseek-ai/dsh-llm'
 
 import { GITLAB_DUO_AGENT_CREDENTIAL_KEY, GITLAB_DUO_CREDENTIAL_KEY } from '../adapter.js'
 import type { CredentialRecordsLike, StoredCredentialRecord } from '../cursor/credentials.js'
-import { GitLabAuthError, refreshGitLabToken } from './auth.js'
-import type { GitLabFetch } from './auth.js'
+import { GitLabAuthError, gitlabDuoClient, refreshGitLabToken } from './auth.js'
+import type { GitLabDuoAuthEnv, GitLabFetch } from './auth.js'
 
 /** The records this plugin owns; re-exported from the adapter where the routes name them. */
 export { GITLAB_DUO_AGENT_CREDENTIAL_KEY, GITLAB_DUO_CREDENTIAL_KEY }
@@ -43,6 +43,11 @@ export interface GitLabGrantPayload {
 export interface GitLabAccessOptions {
   readonly fetch?: GitLabFetch
   readonly now?: () => number
+  /**
+   * The environment the proxy route reads its OAuth client from
+   * (`GITLAB_CLIENT_ID`/`GITLAB_REDIRECT_URI`); the agent route ignores it.
+   */
+  readonly env?: GitLabDuoAuthEnv
 }
 
 /** The grant payload of one record, or undefined when it is not a usable grant. */
@@ -135,7 +140,10 @@ export function createGitLabDuoAccess(
   credentials: CredentialRecordsLike,
   options: GitLabAccessOptions = {},
 ): (signal?: AbortSignal) => Promise<string> {
-  return resolveWith(credentials, GITLAB_DUO_CREDENTIAL_KEY, 'GitLab Duo', options)
+  // The proxy route's grant belongs to its own client and redirect: refreshing it
+  // with the agent's pair would be rejected by GitLab.
+  const client = gitlabDuoClient(options.env)
+  return resolveWith(credentials, GITLAB_DUO_CREDENTIAL_KEY, 'GitLab Duo', options, client)
 }
 
 /** The shared resolver body: both GitLab routes differ only in their record key. */
@@ -144,6 +152,7 @@ function resolveWith(
   key: string,
   label: string,
   options: GitLabAccessOptions,
+  client?: { readonly clientId: string; readonly redirectUri: string },
 ): (signal?: AbortSignal) => Promise<string> {
   const now = options.now ?? Date.now
   return async signal => {
@@ -171,6 +180,7 @@ function resolveWith(
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
           ...(options.now === undefined ? {} : { now: options.now }),
           ...(signal === undefined ? {} : { signal }),
+          ...(client === undefined ? {} : { client }),
         })
         return {
           kind: 'grant',

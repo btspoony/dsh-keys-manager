@@ -1,6 +1,6 @@
 /**
  * The **lean** substitute for omp's `providers/register-builtins`, used by the
- * factory-droid entry only (plan D9, build substitution S2).
+ * Factory Droid and GitLab Duo proxy entries (plan D9, build substitution S2).
  *
  * `providers/factory-droid.ts` imports three wire streams from
  * `./register-builtins`, and that module star-imports all thirteen builtin

@@ -1,7 +1,7 @@
 /**
- * The lean substitute for `pi-ai/src/env-api-key`, used by the factory-droid
- * entry only (build substitution S2c, accepted by the PM as a substitution of an
- * unreachable path — **not** a shim).
+ * The lean substitute for `pi-ai/src/env-api-key`, used by the Factory Droid and
+ * GitLab Duo proxy entries (build substitution S2c, accepted by the PM as a
+ * substitution of an unreachable path — **not** a shim).
  *
  * `env-api-key.ts` builds its `serviceProviderMap` at module scope from
  * `PROVIDER_REGISTRY`, which imports `pi-ai/src/registry/index` → the OAuth hook

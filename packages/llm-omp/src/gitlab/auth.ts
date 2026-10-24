@@ -241,30 +241,45 @@ export async function exchangeGitLabCode(
 }
 
 /** Options for {@link refreshGitLabToken}. */
-export interface GitLabRefreshOptions extends GitLabExchangeOptions {}
+export interface GitLabRefreshOptions extends GitLabExchangeOptions {
+  /**
+   * The OAuth client the stored grant belongs to.
+   *
+   * The two routes register different clients and redirect URIs, and GitLab
+   * rejects a refresh whose pair does not match the grant's, so the resolver must
+   * pass the identity of the route it is refreshing. Defaults to the agent's.
+   */
+  readonly client?: { readonly clientId: string; readonly redirectUri: string }
+}
 
 /**
  * Refresh a stored grant.
  *
  * @remarks
  * The rule's `refresh.token.params` declares `redirect_uri "{redirect_uri}"`: a
- * refresh **must echo the vscode redirect**, or GitLab rejects it. That is the one
- * way this refresh differs from a plain `grant_type=refresh_token` exchange.
+ * refresh **must echo the redirect the grant was issued for**, or GitLab rejects
+ * it. The two GitLab routes register different clients and redirects (the agent's
+ * `vscode://…`, the proxy's `http://localhost:8080/callback`), so the caller names
+ * its route's identity; the agent's pair is the default.
  *
  * @param refresh - the stored refresh token.
- * @param options - fetch, clock and abort seams.
+ * @param options - fetch, clock and abort seams plus the route's OAuth client.
  * @returns the grant, keeping the stored refresh token when the answer omits one.
  */
 export async function refreshGitLabToken(
   refresh: string,
   options: GitLabRefreshOptions = {},
 ): Promise<GitLabGrant> {
+  const client = options.client ?? {
+    clientId: GITLAB_DUO_AGENT_AUTH.clientId,
+    redirectUri: GITLAB_DUO_AGENT_AUTH.redirectUri,
+  }
   const body = await postForm(
     {
-      client_id: GITLAB_DUO_AGENT_AUTH.clientId,
+      client_id: client.clientId,
       grant_type: 'refresh_token',
       refresh_token: refresh,
-      redirect_uri: GITLAB_DUO_AGENT_AUTH.redirectUri,
+      redirect_uri: client.redirectUri,
     },
     options,
   )

@@ -107,7 +107,7 @@ const PI_UTILS_SHIM = join(scriptsDir, 'omp-shim', 'pi-utils.ts')
 const SHIM_DIR = join(scriptsDir, 'omp-shim')
 const BUN_SHIM = join(scriptsDir, 'omp-shim', 'bun-modules.ts')
 const BUN_GLOBAL_SHIM = join(scriptsDir, 'omp-shim', 'bun-global.ts')
-/** S2's substitute for `providers/register-builtins` (factory-droid entry only). */
+/** S2's substitute for `providers/register-builtins` (the Factory and Duo entries). */
 const LEAN_REGISTER_BUILTINS = join(scriptsDir, 'omp-shim', 'register-builtins-lean.ts')
 /**
  * S2's second edge: the `pi-ai/src/stream` facade imports the same registry, so
@@ -247,10 +247,11 @@ function toPosix(path) {
 }
 
 /**
- * The factory-droid entry's two **build substitutions** (plan D9) — installed for
- * that entry only, so the three released artifacts keep their bytes.
+ * The **build substitutions** (plan D9) shared by the Factory Droid entry and the
+ * GitLab Duo proxy entry — installed per entry and scoped to that entry's own
+ * importers, so the already-released artifacts keep their bytes.
  *
- * Neither is a shim: no runtime API is faked and no behaviour is reimplemented.
+ * None is a shim: no runtime API is faked and no behaviour is reimplemented.
  *
  * - **S1, catalog data.** `pi-catalog/src/models.ts` default-imports the 12.4 MB
  *   `models.json`, which is the whole reason the graph measured 17 MB. Replacing

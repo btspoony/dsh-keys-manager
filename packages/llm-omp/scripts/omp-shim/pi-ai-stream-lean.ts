@@ -1,6 +1,7 @@
 /**
- * The lean substitute for omp's `pi-ai/src/stream` facade, used by the
- * factory-droid entry only (build substitution S2b).
+ * The lean substitute for omp's `pi-ai/src/stream` facade, used by the Factory
+ * Droid entry and — through the GitLab Duo copy that adds `ANTHROPIC_THINKING` —
+ * the Duo proxy entry (build substitution S2b).
  *
  * `providers/factory-droid.ts` and `providers/anthropic.ts` take one helper each
  * from the facade (`mapAnthropicToolChoice`, `OUTPUT_FALLBACK_BUFFER`), but the
