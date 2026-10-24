@@ -117,8 +117,9 @@ describe('gitlab duo agent wire: REST bootstrap before any socket', () => {
 })
 
 /** A `fetch` answering the whole Duo Workflow REST bootstrap. */
-function bootstrapFetch(): { fetch: typeof globalThis.fetch; calls: string[] } {
+function bootstrapFetch(): { fetch: typeof globalThis.fetch; calls: string[]; workflowIds: string[] } {
   const calls: string[] = []
+  const workflowIds: string[] = []
   const json = (value: unknown): Response =>
     new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
   const impl = (async (input: string | URL | Request) => {
@@ -129,11 +130,16 @@ function bootstrapFetch(): { fetch: typeof globalThis.fetch; calls: string[] } {
       return json([{ id: 42, path_with_namespace: 'grp/proj', name: 'proj' }])
     }
     if (url.includes('duo_workflows/direct_access')) return json({ token: 'dws-token', headers: {} })
-    if (url.endsWith('/api/v4/ai/duo_workflows/workflows')) return json({ id: 'wf-1', status: 'created' })
+    if (url.endsWith('/api/v4/ai/duo_workflows/workflows')) {
+      // Each create is a distinct workflow: a re-seeded turn must not reuse one.
+      const id = `wf-${workflowIds.length + 1}`
+      workflowIds.push(id)
+      return json({ id, status: 'created' })
+    }
     if (url.includes('/api/v4/ai/duo_workflows/workflows/')) return json({ id: 'wf-1', status: 'running' })
     return json({})
   }) as typeof globalThis.fetch
-  return { fetch: impl, calls }
+  return { fetch: impl, calls, workflowIds }
 }
 
 /** One checkpoint frame carrying the given `ui_chat_log` entries. */
@@ -144,10 +150,11 @@ function checkpointFrame(entries: unknown[]): unknown {
 /**
  * A fake socket factory that replays `frames` on the transport's seam.
  *
- * @param frames - server frames, delivered one per tick after the socket opens.
+ * @param frames - server frames for every socket, or one script per socket;
+ *   each script is delivered one frame per tick after that socket opens.
  * @returns the factory and the sockets it handed out.
  */
-function fakeSockets(frames: unknown[]): {
+function fakeSockets(frames: unknown[] | unknown[][]): {
   factory: (url: string, options: { headers: Record<string, string> }) => unknown
   sockets: { url: string; headers: Record<string, string>; sent: string[]; closed: boolean }[]
 } {
@@ -156,6 +163,7 @@ function fakeSockets(frames: unknown[]): {
     sockets,
     factory: (url, options) => {
       const record = { url, headers: options.headers, sent: [] as string[], closed: false }
+      const script = Array.isArray(frames[0]) ? ((frames as unknown[][])[sockets.length] ?? []) : (frames as unknown[])
       sockets.push(record)
       const socket = {
         readyState: 0,
@@ -173,8 +181,8 @@ function fakeSockets(frames: unknown[]): {
         socket.onopen?.({})
         let index = 0
         const pump = (): void => {
-          if (index >= frames.length) return
-          socket.onmessage?.({ data: JSON.stringify(frames[index++]) })
+          if (index >= script.length) return
+          socket.onmessage?.({ data: JSON.stringify(script[index++]) })
           setTimeout(pump, 2)
         }
         setTimeout(pump, 2)
@@ -259,15 +267,26 @@ describe('gitlab duo agent wire: a full tool round on the real bundle', () => {
     expect(sockets[0]!.url).toContain('/api/v4/ai/duo_workflows/ws?')
   })
 
-  it('re-seeds a fresh workflow for the follow-up turn and finishes with text', async () => {
+  it('re-seeds a new workflow for the tool result when one adapter serves both turns', async () => {
     const rest = bootstrapFetch()
     const { sockets, factory } = fakeSockets([
-      checkpointFrame([
-        { message_type: 'request', content: 'Look it up' },
-        { message_type: 'tool', content: 'ok' },
-        { message_type: 'agent', message_id: 'm2', content: 'Found it.' },
-      ]),
-      { newCheckpoint: { status: 'FINISHED' } },
+      // Turn one: the checkpoint's text, then the parked action.
+      [
+        checkpointFrame([
+          { message_type: 'request', content: 'Look it up' },
+          { message_type: 'agent', message_id: 'm1', content: 'Looking it up.' },
+        ]),
+        { requestID: 'req-1', runMCPTool: { toolName: 'lookup_doc', args: { query: 'x' } } },
+      ],
+      // Turn two: the server's answer, then completion.
+      [
+        checkpointFrame([
+          { message_type: 'request', content: 'Look it up' },
+          { message_type: 'tool', content: 'ok' },
+          { message_type: 'agent', message_id: 'm2', content: 'Found it.' },
+        ]),
+        { newCheckpoint: { status: 'FINISHED' } },
+      ],
     ])
     const adapter = new OmpGitLabDuoAgentAdapter({
       access: async () => 'gitlab-token',
@@ -275,18 +294,28 @@ describe('gitlab duo agent wire: a full tool round on the real bundle', () => {
       models: () => [MODEL],
     })
 
-    // The follow-up carries the tool result in history, as the agent loop does.
-    const chunks = await collect(
+    // Turn one: the action is DSH's to run.
+    const first = await collect(adapter.stream(request()))
+    expect(first.at(-1)).toEqual({ type: 'finish', reason: { kind: 'tool-calls' } })
+    const firstCall = (first.find(
+      chunk => chunk.type === 'block-end' && (chunk as { block: { type: string } }).block.type === 'tool-call',
+    ) as { block: { id: string; name: string; arguments: string } }).block
+    expect(firstCall).toMatchObject({ id: 'req-1', name: 'lookup_doc', arguments: '{"query":"x"}' })
+
+    // Turn two: the same adapter, the tool result in history.
+    const second = await collect(
       adapter.stream(
         request({
           messages: [
             createUserMessage({ content: [{ type: 'text', text: 'Look it up' }], source: { kind: 'user' } }),
             createAssistantMessage({
-              content: [{ type: 'tool-call', id: ToolCallId('req-1'), name: 'lookup_doc', arguments: '{"query":"x"}' }],
+              content: [
+                { type: 'tool-call', id: ToolCallId(firstCall.id), name: firstCall.name, arguments: firstCall.arguments },
+              ],
               source: { provider: 'gitlab-duo-agent', model: MODEL },
             }),
             createToolResultMessage({
-              callId: ToolCallId('req-1'),
+              callId: ToolCallId(firstCall.id),
               content: [{ type: 'text', text: 'document body' }],
               isError: false,
             }),
@@ -295,13 +324,17 @@ describe('gitlab duo agent wire: a full tool round on the real bundle', () => {
       ),
     )
 
-    expect(chunks).toContainEqual({ type: 'text-delta', index: 0, text: 'Found it.' })
-    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
-    // A second socket: the turn re-seeded a workflow instead of resuming the first.
-    expect(sockets).toHaveLength(1)
-    const start = JSON.parse(sockets[0]!.sent[0]!) as { startRequest: { goal: string } }
-    // The replayed transcript rides the goal: the request and its tool result.
-    expect(start.startRequest.goal).toContain('Look it up')
-    expect(start.startRequest.goal).toContain('document body')
+    expect(second).toContainEqual({ type: 'text-delta', index: 0, text: 'Found it.' })
+    expect(second.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+
+    // Two workflows, two sockets: the second turn re-seeded instead of resuming.
+    expect(rest.workflowIds).toEqual(['wf-1', 'wf-2'])
+    expect(sockets).toHaveLength(2)
+    expect(sockets[1]).not.toBe(sockets[0])
+    const starts = sockets.map(socket => JSON.parse(socket.sent[0]!) as { startRequest: { workflowID: string; goal: string } })
+    expect(starts[0]!.startRequest.workflowID).toBe('wf-1')
+    expect(starts[1]!.startRequest.workflowID).toBe('wf-2')
+    // The follow-up goal carries the replayed tool result.
+    expect(starts[1]!.startRequest.goal).toContain('document body')
   })
 })

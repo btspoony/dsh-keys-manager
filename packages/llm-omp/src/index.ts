@@ -1028,8 +1028,9 @@ export function apply(ctx: Context, config: Config = {}): void {
   const models = (route: TransportRouteId) => (): readonly string[] | undefined =>
     providers?.get()[route]?.models?.flatMap(row => (typeof row?.id === 'string' ? [row.id] : []))
   // Stable order: the two original routes first, then the Google pair, then the
-  // Factory and both GitLab routes (the agent before the proxy, which shipped a
-  // task later). Every artifact stays lazy, so a missing one cannot fail `apply`.
+  // Factory route and both GitLab routes — the proxy before its agent (the order
+  // the flow table and the registration suites pin). Every artifact stays lazy, so
+  // a missing one cannot fail `apply`.
   ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models('cursor')))
   ctx.llm.registerAdapter([DEVIN_ROUTE], createDevinAdapter(host.credentials, models('devin')))
   ctx.llm.registerAdapter(
