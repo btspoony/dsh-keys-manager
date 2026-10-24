@@ -366,7 +366,7 @@ it. Both packages are released together and carry the same version; see
 |---|---|
 | [Development](docs/development.md) | build and dev workflow, repository layout |
 | [Release](docs/release.md) | CI checks and the npm release flow |
-| [Known limits](docs/known-limits.md) | current design boundaries, including deferred providers |
+| [Known limits](docs/known-limits.md) | current design boundaries, including the seven transport routes |
 | [Transports package](packages/llm-omp/README.md) | Transport routes: support status, risks, build/test, release |
 
 Chinese versions: [README.zh-CN.md](README.zh-CN.md) and the `*.zh-CN.md`
