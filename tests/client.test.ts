@@ -247,7 +247,8 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     deleting: '删除中…',
     // Plan usage (issue #22): the row line resolves its own copy, and the reset
     // countdown resolves the duration keys it formats. A pending, absent or
-    // error state has no copy by design.
+    // error state has no copy by design; `natively-managed` does have one.
+    quotaNativelyManaged: '由 DSH 原生管理',
     quotaSignInAgain: '请重新登录',
     quotaStale: '数据较旧',
     quotaCompactHint: '该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。',
@@ -4042,6 +4043,51 @@ describe('quota surface', () => {
     }
   })
 
+  test('a natively-managed snapshot renders its own honest state, never a generic one', async () => {
+    const quota: QuotaView = { status: 'natively-managed', fetchedAt: Date.now(), windows: [] }
+    const { view } = await mountExpanded(quotaState(quota, key => {
+      key.id = 'k_oauth_native'
+      key.kind = 'oauth'
+      key.oauth = { provider: 'kimi-coding', accountId: 'acc_native', expiresAt: Date.now() + 3_600_000 }
+    }))
+    try {
+      // No windows, no countdown: the text carries the state on its own, and it
+      // must not fall back to a generic "not reported" or a sign-in prompt.
+      const line = findByClass(view.nodes, 'km-quota-inline')[0]!
+      expect(line.text).toBe('由 DSH 原生管理')
+      expect(line.text).not.toBe('未报告')
+      expect(line.text).not.toBe('请重新登录')
+      // The collapsed pill contributes nothing for a state without windows.
+      expect(findByClass(view.nodes, 'km-quota-compact')).toHaveLength(0)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('natively-managed, absent and unauthorized read as distinct states', async () => {
+    // Main's intent: `natively-managed` is its own verdict. This branch's
+    // intent: `absent` has no surface at all, so only two of the three states
+    // print text — and they still never collapse into one another.
+    const texts: string[] = []
+    for (const status of ['natively-managed', 'absent', 'unauthorized'] as const) {
+      const { view } = await mountExpanded(quotaState({ status, fetchedAt: Date.now(), windows: [] }, key => {
+        key.id = `k_oauth_${status}`
+        key.kind = 'oauth'
+        key.oauth = { provider: 'kimi-coding', expiresAt: Date.now() + 3_600_000 }
+      }))
+      try {
+        const line = findByClass(view.nodes, 'km-quota-inline')[0]
+        texts.push(line === undefined ? '<none>' : line.text)
+      } finally {
+        view.unmount()
+        setRuntimeContext(null)
+      }
+    }
+    expect(texts).toEqual(['由 DSH 原生管理', '<none>', '请重新登录'])
+    expect(new Set(texts).size).toBe(3)
+  })
+
   test('unauthorized renders the sign-in-again note on an OAuth row only', async () => {
     const unauthorized: QuotaView = { status: 'unauthorized', fetchedAt: Date.now(), windows: [] }
     const { view } = await mountExpanded(quotaState(unauthorized, key => {
@@ -4284,6 +4330,7 @@ describe('quota surface', () => {
 
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
     expectLocaleParity([
+      'quotaNativelyManaged',
       'quotaSignInAgain',
       'quotaStale',
       'quotaCompactHint',

@@ -1109,13 +1109,18 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
  * window that exists plus the reset countdown of the tightest one. Only a
  * reported state renders — a pending (`undefined`), `absent` or `error`
  * snapshot stays silent so a route without usage occupies no space at all.
- * `unauthorized` is actionable only on an OAuth row (it has a sign-in to
- * offer); an API key has none, so that row stays silent too. `stale` keeps the
- * numbers with a marker.
+ * `natively-managed` is the host telling us a DSH projection serves the route
+ * but its usage cannot be read: that is neither "no usage API" nor "your
+ * credential is invalid", so it gets its own line. `unauthorized` is actionable
+ * only on an OAuth row (it has a sign-in to offer); an API key has none, so
+ * that row stays silent too. `stale` keeps the numbers with a marker.
  */
 function quotaInline(row: KeyView, t: T, now: number): React.ReactElement | null {
   const windows = quotaWindows(row.quota)
   if (windows.length === 0) {
+    if (row.quota?.status === 'natively-managed') {
+      return h('div', { className: 'km-quota-inline' }, t('quotaNativelyManaged'))
+    }
     return row.quota?.status === 'unauthorized' && row.kind === 'oauth'
       ? h('div', { className: 'km-quota-inline' }, t('quotaSignInAgain'))
       : null
