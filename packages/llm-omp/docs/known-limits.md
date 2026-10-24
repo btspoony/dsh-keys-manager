@@ -221,11 +221,13 @@ repository root docs.
   mirroring the batch branch's refusal. A server that needs streamed stdout to
   keep the turn alive gets none, so such a turn ends on the reject.
 - The exec-frame handoff translation is **lossy**. `grep`'s `ignoreCase`,
-  `literal`, `context` and `offset` flags have no slot in DSH's `grep` tool and
-  are dropped; `shell`'s millisecond budget is dropped and its working
-  directory is folded into the command as a leading `cd <dir> && …`, with the
-  directory single-quoted (POSIX `'\''` for an embedded quote) so a space or a
-  metacharacter cannot change the command. The model sees the DSH tool's own
+  `literal`, `context`, `offset` and `skip` flags have no slot in DSH's `grep`
+  tool and are dropped — `skip` changes semantics most: a server request for
+  page 2 of a result set returns page 1 instead of advancing. `shell`'s
+  millisecond budget is dropped and its working directory is folded into the
+  command as a leading `cd <dir> && …`, with the directory single-quoted
+  (POSIX `'\''` for an embedded quote) so a space or a metacharacter cannot
+  change the command. The model sees the DSH tool's own
   schema, so a call that needed a dropped flag may behave differently than under
   Cursor's native tool.
 - Tool declarations travel as MCP definitions. `toolHistory` is accepted but
