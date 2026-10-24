@@ -1159,6 +1159,10 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
   const runtime = useRuntime()
   const t = useT()
   const [refreshing, setRefreshing] = React.useState(false)
+  // A rejected refresh leaves the rows unchanged, so the signature cannot
+  // move on its own; remembering the attempted signature keeps a failed read
+  // from retrying on every minute tick. Fresh data clears it.
+  const attempted = React.useRef<string | null>(null)
   const quotas = provider.keys.map(key => key.quota)
   const needsRefresh = quotaNeedsRefresh(quotas, now)
   // Re-evaluated once a minute so a TTL expiry refreshes an already-open card
@@ -1167,7 +1171,12 @@ function QuotaStrip({ provider, now }: { provider: ProviderView; now: number }):
   const signature = provider.keys.map(key => `${key.id}:${key.quota?.status ?? '-'}:${key.quota?.fetchedAt ?? 0}`).join('|')
 
   React.useEffect(() => {
-    if (!needsRefresh) return undefined
+    if (!needsRefresh) {
+      attempted.current = null
+      return undefined
+    }
+    if (attempted.current === signature) return undefined
+    attempted.current = signature
     let live = true
     setRefreshing(true)
     void runtime.store.refreshQuota(provider.provider).then(() => {

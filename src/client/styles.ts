@@ -145,7 +145,7 @@ select.km-input{appearance:auto}
 .km-notice-action{flex:0 0 auto}
 .km-empty-keys{padding:12px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-secondary);font-size:12px}
 .km-empty{display:flex;align-items:center;gap:8px;padding:14px;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;color:var(--dsw-alias-label-secondary);font-size:12.5px}
-.km-quota-compact{align-self:center;flex-shrink:0;padding:1px 6px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.km-quota-compact{align-self:center;flex-shrink:1;min-width:0;max-width:76px;overflow:hidden;text-overflow:ellipsis;padding:1px 6px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .km-quota-compact.km-quota-warn{color:var(--dsw-alias-state-warn-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 34%,var(--dsw-alias-border-l1))}
 .km-quota-compact.km-quota-error{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 34%,var(--dsw-alias-border-l1))}
 .km-quota-strip{display:flex;flex-direction:column;gap:2px;margin:8px 0 9px;padding:6px 9px 5px;border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1)}

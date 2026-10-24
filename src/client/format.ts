@@ -84,7 +84,14 @@ export function tightestQuotaWindow(quotas: ReadonlyArray<QuotaView | undefined>
   return tightest
 }
 
-/** True while any row has no snapshot yet or holds one past its TTL. */
+/**
+ * True while any row still has no snapshot, or holds a usable one past its
+ * TTL. Only `ok` snapshots age out: the host stamps `fetchedAt: 0` on
+ * `absent`/`unauthorized`/`error` answers and caches them under its own
+ * backoff, so treating those as stale would re-issue a refresh forever.
+ */
 export function quotaNeedsRefresh(quotas: ReadonlyArray<QuotaView | undefined>, now: number): boolean {
-  return quotas.some(quota => quota === undefined || now - quota.fetchedAt > QUOTA_TTL_MS)
+  return quotas.some(
+    quota => quota === undefined || (quota.status === 'ok' && now - quota.fetchedAt > QUOTA_TTL_MS),
+  )
 }

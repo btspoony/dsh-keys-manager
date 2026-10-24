@@ -3873,8 +3873,11 @@ describe('quota surface', () => {
     ;(globalThis as unknown as { HTMLElement?: unknown }).HTMLElement = class FakeHTMLElement {}
   })
 
-  async function mountExpanded(state: StateView): Promise<{ view: ReturnType<typeof mountView>; harness: Harness }> {
-    const harness = makeContext({ ok: true, value: state })
+  async function mountExpanded(
+    state: StateView,
+    answer?: RpcAnswer,
+  ): Promise<{ view: ReturnType<typeof mountView>; harness: Harness; store: ReturnType<typeof createStore> }> {
+    const harness = makeContext(answer ?? { ok: true, value: state })
     const store = createStore(harness.ctx)
     setRuntimeContext({ ctx: harness.ctx, store })
     const view = mountView(KeysManagerBody)
@@ -3883,8 +3886,13 @@ describe('quota surface', () => {
     ;(head.props!.onClick as () => void)()
     view.render()
     await view.flush()
-    return { view, harness }
+    return { view, harness, store }
   }
+
+  function quotaRefreshes(harness: Harness): number {
+    return harness.calls.filter(call => call.endpoint === 'keysManager/quotaRefresh').length
+  }
+
 
   test('an ok snapshot renders one bar per window plus the tightest compact line', async () => {
     const quota: QuotaView = {
@@ -4018,6 +4026,70 @@ describe('quota surface', () => {
     // A second provider is a separate read, not a shared one.
     await store.refreshQuota('deepinfra')
     expect(harness.calls.filter(call => call.endpoint === 'keysManager/quotaRefresh')).toHaveLength(2)
+  })
+
+  test('a non-reporting snapshot never refires quotaRefresh across minute ticks', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    try {
+      // The host stamps `fetchedAt: 0` on absent answers; treating that as
+      // stale would re-issue the RPC every minute for a plan that can never
+      // report (review finding F1).
+      const { view, harness, store } = await mountExpanded(
+        quotaState({ status: 'absent', fetchedAt: 0, windows: [] }),
+      )
+      try {
+        expect(quotaRefreshes(harness)).toBe(0)
+        for (let minute = 1; minute <= 3; minute += 1) {
+          clock.mockReturnValue(base + minute * 60_000)
+          store.tick()
+          view.render()
+          await view.flush()
+          await new Promise(resolve => setTimeout(resolve, 0))
+        }
+        expect(quotaRefreshes(harness)).toBe(0)
+        expect(findByClass(view.nodes, 'km-quota-note')[0]!.text).toBe('未报告')
+      } finally {
+        view.unmount()
+      }
+    } finally {
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a rejecting quota RPC keeps the card rendered and stops after one attempt', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    try {
+      const state = quotaState(undefined)
+      const { view, harness, store } = await mountExpanded(state, endpoint =>
+        endpoint === 'keysManager/quotaRefresh'
+          ? { ok: false, error: { message: 'quota endpoint unavailable' } }
+          : { ok: true, value: state },
+      )
+      try {
+        // One attempt on expand; the failed answer leaves the rows unchanged
+        // and must not start an unbounded retry (review finding F2).
+        expect(quotaRefreshes(harness)).toBe(1)
+        for (let minute = 1; minute <= 3; minute += 1) {
+          clock.mockReturnValue(base + minute * 60_000)
+          store.tick()
+          view.render()
+          await view.flush()
+          await new Promise(resolve => setTimeout(resolve, 0))
+        }
+        expect(quotaRefreshes(harness)).toBe(1)
+        // The card is still rendered and the row still explains its state.
+        expect(findByClass(view.nodes, 'km-quota-strip')).toHaveLength(1)
+        expect(findByClass(view.nodes, 'km-quota-note')[0]!.text).toBe('正在检查…')
+      } finally {
+        view.unmount()
+      }
+    } finally {
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
   })
 
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
