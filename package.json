@@ -1,6 +1,6 @@
 {
   "name": "dsh-keys-manager",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "type": "module",
   "description": "Multi-key management for DSH providers: sticky per-session round-robin, retry failover, cooldown recovery, and searchable extra providers.",
   "repository": {
