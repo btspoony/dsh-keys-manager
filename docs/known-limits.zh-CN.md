@@ -28,9 +28,9 @@ Keys Manager 插件当前的设计边界：
 - 这些登录只能从 Keys Manager 页面发起。DSH CLI 与 Models 页面都不会触发它们，也不会写入 `llm-pi-ai/<provider>` 授权记录。
 - 签发得到的凭据就是该提供商池中的又一行：没有按账户的轮换或排名，与上述七家 pi-ai OAuth 账户一致。
 
-## 传输路由（Cursor、Devin、Google）
+## 传输路由（Cursor、Devin、Google、Factory Droid、GitLab Duo）
 
-- 每条传输路由（`cursor`、`devin`、`google-gemini-cli`、`google-antigravity`）在 `llm-omp-transports/<route>` 只保留一条授权：其后没有 key 池，也没有可按账户配置的轮换。
+- 七条传输路由（`cursor`、`devin`、`google-gemini-cli`、`google-antigravity`、`factory-droid`、`gitlab-duo`、`gitlab-duo-agent`）每一条都在 `llm-omp-transports/<route>` 只保留一条授权：其后没有 key 池，也没有可按账户配置的轮换。
 - 只要授权的 `access` 令牌可用且该路由能使用它，状态就是 `active`：要么 `expires` 在未来，要么仅在 `devin` 上完全没有 `expires`（其解析器接受的静态 bearer 形态）。目前没有任何已发布流程会写入这种记录（Devin 会从令牌推导有效期），且它不显示有效期与倒计时。Cursor 解析器需要带有效期的授权，因此同样的记录出现在 `cursor` 上会显示 `needs-reauth`。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。
 - 授权过期在 Cursor 与 Devin 上的后果不同：Devin 没有刷新令牌，过期后停止服务，直到重新登录；Cursor 在凭据 seam 上自动刷新并继续服务，只有刷新被拒或没有存刷新令牌时才停止。
 - Cursor 与 Devin 两个客户端都是非官方实现，真实端点均未验证。它们的具体风险（厂商身份、ToS 风险、不转发图片、Devin 无刷新）见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
@@ -39,7 +39,10 @@ Keys Manager 插件当前的设计边界：
 - 登录过程还会解析该路由计费与请求所用的 Google Cloud 项目。若 Google 要求你提供 `GOOGLE_CLOUD_PROJECT`，登录会以 `AUTH_FAILED` 失败，没有无项目的回退路径。
 - `google-antigravity` 每个进程会读取一次 Google 的版本清单（5 秒预算，读取失败或超时则回落到固定版本），因此网络被阻断只会推迟、不会破坏它的首次请求。
 - 两条 Google 路由的客户端与已发布路由一样是非官方实现，会呈现厂商内部的 OAuth 身份。若令牌看起来有效但首次真实请求返回 `401`/`403`，那是需要报告给维护者的停机条件——客户端绝不会换用另一个身份重试。本仓库中所有传输相关结论都只经 fixture 验证；首次真实请求是手动冒烟检查。
-- `factory-droid` 被推迟到后续批次（跟踪号 `I-000253`），因此本版本不包含 `factory-droid` 路由。其计划的登录方式是设备码轮询——验证 URL 加用户码，不使用本地监听器——目前没有任何可配置的内容。
+- `factory-droid` 已发布。其登录方式是设备码轮询——给出验证 URL 与用户码，不使用本地监听器——客户端与上述路由一样是非官方实现。该产物通过已接受的入口级替换构建，体积节省记录在传输包中；其构建替换、目录与归属说明见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
+- `gitlab-duo` 复用 GitLab 自带的 OAuth 客户端，其回环回调固定为 `localhost:8080/callback`，没有端口回退：8080 被占用时，粘贴提示是唯一可用的路径。账户必须已启用 Duo——直连引导阶段的 `403` 会以认证失败结束本轮，而不会给出空回答——直连令牌在产物内部缓存 25 分钟。其余内容见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
+- `gitlab-duo-agent` 的登录仅支持粘贴：浏览器把授权码交给 VS Code，因此需要粘贴完整的 `vscode://gitlab.gitlab-workflow/authentication?code=…&state=…` URL——没有监听器，且 state 为必填。每个请求都会新建一个 workflow 而不是续用已有 socket，工具执行保留在 DSH 一侧（同时只有一个 `runMCPTool` 在运行），目录只提供一行静态条目。其余内容见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
+- 覆盖边界：`qwen`/alibaba（`alibaba-token-plan`）、`zai-coding-cn`（zhipu）、`xai` 与 `ollama-cloud` 通过普通 API-key 或既有提供商路由使用，不经过本 OAuth 账号池。
 
 ## `muse-code`
 

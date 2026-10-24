@@ -224,7 +224,7 @@ $DSH_HOME/keys-manager/state.json
 |---|---|
 | [开发](docs/development.zh-CN.md) | 构建与开发工作流、仓库布局 |
 | [发布](docs/release.zh-CN.md) | CI 检查与 npm 发布流程 |
-| [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含延后提供商 |
+| [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含七条传输路由 |
 | [传输包（英文）](packages/llm-omp/README.md) | 传输路由：支持状态、风险、构建/测试与发布 |
 
 英文版本：[README.md](README.md) 及 `docs/` 下的 `*.md` —— [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。当前设计边界速览：[已知限制](docs/known-limits.zh-CN.md)。

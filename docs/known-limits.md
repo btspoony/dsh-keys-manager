@@ -93,12 +93,12 @@ Current design boundaries of the Keys Manager plugin:
   per-account rotation or ranking, exactly as with the seven pi-ai OAuth
   accounts above.
 
-## Transport routes (Cursor, Devin, Google)
+## Transport routes (Cursor, Devin, Google, Factory Droid, GitLab Duo)
 
-- Each transport route (`cursor`, `devin`, `google-gemini-cli`,
-  `google-antigravity`) keeps exactly one grant at
-  `llm-omp-transports/<route>`: there is no key pool behind it and no
-  per-account rotation to configure.
+- Each of the seven transport routes (`cursor`, `devin`, `google-gemini-cli`,
+  `google-antigravity`, `factory-droid`, `gitlab-duo`, `gitlab-duo-agent`)
+  keeps exactly one grant at `llm-omp-transports/<route>`: there is no key
+  pool behind it and no per-account rotation to configure.
 - A stored grant is `active` when its `access` token is usable and its route
   can serve it: a dated `expires` in the future, or — on `devin` only — no
   `expires` at all, the static-bearer shape its resolver accepts. No shipped
@@ -142,10 +142,30 @@ Current design boundaries of the Keys Manager plugin:
   is never retried with another identity. Every transport claim in this
   repository is proven against fixtures only; the first live turn is a manual
   smoke check.
-- `factory-droid` is deferred to its own follow-up batch (tracked as
-  `I-000253`), so no `factory-droid` route ships in this release. Its planned
-  sign-in is a device-code poll — verification URL plus user code, no local
-  listener — and nothing of it is available to configure yet.
+- `factory-droid` ships. Its sign-in is a device-code poll — a verification URL
+  plus a user code, with no local listener — and the client is unofficial like
+  the routes above. The artifact is built through accepted entry-scoped
+  substitutions and the size saving is recorded in the transports package; its
+  build substitutions, catalog and attribution caveats are in
+  [the transports package known limits](../packages/llm-omp/docs/known-limits.md).
+- `gitlab-duo` reuses GitLab's own bundled OAuth client and its loopback
+  callback is `localhost:8080/callback` with no port fallback: a busy 8080 leaves
+  the paste prompt as the only path. Duo must be enabled on the account — a
+  `403` on the direct-access bootstrap ends the turn as an auth failure, never as
+  an empty answer — and the direct-access token is cached for 25 minutes inside
+  the artifact. The rest is in
+  [the transports package known limits](../packages/llm-omp/docs/known-limits.md).
+- `gitlab-duo-agent` sign-in is paste-only: the browser hands the code to VS
+  Code, so you paste the full
+  `vscode://gitlab.gitlab-workflow/authentication?code=…&state=…` URL — there is
+  no listener and the state is mandatory. Each request starts a fresh workflow
+  instead of resuming a socket, tool execution stays on DSH's side (one
+  `runMCPTool` in flight at a time), and the catalog offers one static row. The
+  rest is in
+  [the transports package known limits](../packages/llm-omp/docs/known-limits.md).
+- Coverage boundary: `qwen`/alibaba (`alibaba-token-plan`), `zai-coding-cn`
+  (zhipu), `xai` and `ollama-cloud` are served through ordinary API-key or
+  existing provider routes, not through this OAuth account pool.
 
 ## `muse-code`
 
