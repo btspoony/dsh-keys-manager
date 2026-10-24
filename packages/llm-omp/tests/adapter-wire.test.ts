@@ -181,7 +181,17 @@ function frameFor(line: WireLine): Buffer {
             case 'grep':
               return {
                 case: 'grepArgs' as const,
-                value: create(GrepArgsSchema, { toolCallId, pattern: String(line.args.pattern ?? ''), path: line.args.path === undefined ? undefined : String(line.args.path), glob: line.args.glob === undefined ? undefined : String(line.args.glob) }),
+                value: create(GrepArgsSchema, {
+                  toolCallId,
+                  pattern: String(line.args.pattern ?? ''),
+                  path: line.args.path === undefined ? undefined : String(line.args.path),
+                  glob: line.args.glob === undefined ? undefined : String(line.args.glob),
+                  // The flags DSH's grep has no slot for: present on the wire so
+                  // the handoff's "must not leak" assertion can actually fail.
+                  caseInsensitive: line.args.caseInsensitive === true ? true : undefined,
+                  offset: line.args.offset === undefined ? undefined : Number(line.args.offset),
+                  context: line.args.context === undefined ? undefined : Number(line.args.context),
+                }),
               }
             case 'write':
               return {
@@ -572,6 +582,22 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(result?.result.value?.error).toBe(HANDOFF_TEXT)
   })
 
+  it('strips an embedded read selector into offset/limit when handing off', async () => {
+    const { events } = await run('cursor-wire-native-read-range.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // `src/app.ts:10-20` is a selector, not a filename: the external read tool
+    // needs the clean path plus the range as its own parameters.
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 20 })
+  })
+
+  it('strips a `:raw` verbatim selector as well as the range when handing off', async () => {
+    const { events } = await run('cursor-wire-native-read-range-raw.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 20 })
+  })
+
   it('hands a native write frame to DSH as file_path plus content', async () => {
     const { events, wire } = await run('cursor-wire-native-write.jsonl', { externalToolExecutor: true })
 
@@ -673,6 +699,42 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(streamEvents.map(event => event.case)).toEqual(['start', 'stdout', 'exit'])
     expect(streamEvents[1]!.value).toMatchObject({ data: 'streamed output\n' })
     // Not the handoff placeholder: the local handler's own result went out.
+    expect(JSON.stringify(streamEvents)).not.toContain(HANDOFF_TEXT)
+  })
+
+  it('streams locally when only execHandlers.shell is installed and shellStream is absent', async () => {
+    const { events, wire } = await run('cursor-wire-native-shell-stream.jsonl', {
+      externalToolExecutor: true,
+      // Both handlers answer a stream frame, so the batch one must suppress the
+      // handoff even though `shellStream` is missing.
+      ...({
+        execHandlers: {
+          shell: async () => ({
+            role: 'toolResult',
+            toolCallId: 'call-native-shs',
+            toolName: 'bash',
+            content: [{ type: 'text', text: 'batch output' }],
+            isError: false,
+            timestamp: 0,
+          }),
+        },
+      } as unknown as Record<string, never>),
+    } as Partial<OmpCursorOptions>)
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({ type: 'toolCall', name: 'bash' })
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    const streamEvents = decoded(wire).flatMap(frame => {
+      const client = frame.message.case === 'execClientMessage' ? frame.message.value : undefined
+      if (client?.message.case !== 'shellStream') return []
+      const event = (client.message.value as { event: { case?: string; value?: unknown } }).event
+      return [{ case: event.case, value: event.value }]
+    })
+    // The batch path streams its buffered output after the command finishes.
+    expect(streamEvents.map(event => event.case)).toEqual(['start', 'stdout', 'exit'])
     expect(JSON.stringify(streamEvents)).not.toContain(HANDOFF_TEXT)
   })
 

@@ -1,5 +1,5 @@
 diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
-index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1fc8f07bf3 100644
+index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..bb455532608bd132b766d8de258786416512504f 100644
 --- a/src/providers/cursor.ts
 +++ b/src/providers/cursor.ts
 @@ -2162,6 +2162,7 @@ async function handleShellStreamArgs(
@@ -42,7 +42,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  	// Buffer for incomplete ANSI sequences across chunks
  	let stdoutBuffer = "";
  	let stderrBuffer = "";
-@@ -2488,6 +2510,10 @@ async function handleExecServerMessage(
+@@ -2488,6 +2510,11 @@ async function handleExecServerMessage(
  							offset: negativeOffset ? args.offset : undefined,
  							limit: negativeOffset ? args.limit : undefined,
  						};
@@ -50,10 +50,11 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
 +			// (`file_path`) and unresolved. Edit-owned reads stay local: StrReplace
 +			// consumes the returned bytes, so a placeholder would corrupt the edit.
 +			const readHandoff = !editOwned && isExternalExecHandoff(externalToolExecutor, execHandlers, "read");
++			const handoffRead = readHandoff ? handoffReadArgs(args) : undefined;
  			if (!editOwned) {
  				synthesizeCursorExecToolCall(
  					output,
-@@ -2495,9 +2521,12 @@ async function handleExecServerMessage(
+@@ -2495,9 +2522,12 @@ async function handleExecServerMessage(
  					state,
  					args.toolCallId,
  					"read",
@@ -61,7 +62,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
 -						? { path: composed, offset: args.offset, limit: args.limit }
 -						: { path: piReadDisplayPath(args.path, args.offset, args.limit) },
 +					readHandoff
-+						? { file_path: args.path, offset: args.offset, limit: args.limit }
++						? { file_path: handoffRead!.path, offset: handoffRead!.offset, limit: handoffRead!.limit }
 +						: negativeOffset
 +							? { path: composed, offset: args.offset, limit: args.limit }
 +							: { path: piReadDisplayPath(args.path, args.offset, args.limit) },
@@ -69,7 +70,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  				);
  			}
  			const { execResult: readResult, toolResult } = await resolveExecHandler(
-@@ -2510,9 +2539,9 @@ async function handleExecServerMessage(
+@@ -2510,9 +2540,9 @@ async function handleExecServerMessage(
  						result,
  						args.offset !== undefined || args.limit !== undefined || piReadPathHasRange(args.path),
  					),
@@ -81,7 +82,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  			);
  			let execResult = readResult;
  			// StrReplace writes the returned bytes back. A truncated raw read would
-@@ -2595,22 +2624,35 @@ async function handleExecServerMessage(
+@@ -2595,22 +2625,35 @@ async function handleExecServerMessage(
  			}
  			// Mirror the coding-agent bridge's arg mapping so live UI (from
  			// `tool_execution_start`) and rebuilt transcript (from this block)
@@ -126,7 +127,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  			);
  			sendExecClientMessage(runTransport, execMsg, "grepResult", execResult);
  			return;
-@@ -2621,11 +2663,25 @@ async function handleExecServerMessage(
+@@ -2621,11 +2664,25 @@ async function handleExecServerMessage(
  			const editOwned = isEditOwnedToolCallId(state, output, args.toolCallId);
  			// Match the bridge: prefer `fileText`, fall back to decoded `fileBytes`.
  			const content = args.fileText ?? new TextDecoder().decode(args.fileBytes ?? new Uint8Array());
@@ -156,7 +157,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  			}
  			const write = execHandlers?.write?.bind(execHandlers);
  			const writeHandler = write
-@@ -2648,9 +2704,9 @@ async function handleExecServerMessage(
+@@ -2648,9 +2705,9 @@ async function handleExecServerMessage(
  						},
  						toolResult,
  					),
@@ -168,7 +169,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  			);
  			if (editOwned) markEditToolCallPaired(state, args.toolCallId);
  			sendExecClientMessage(runTransport, execMsg, "writeResult", execResult);
-@@ -2677,20 +2733,44 @@ async function handleExecServerMessage(
+@@ -2677,20 +2734,44 @@ async function handleExecServerMessage(
  			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
  			const normalizedArgs: ShellArgs = { ...args, workingDirectory: args.workingDirectory || process.cwd() };
  			// Match the bridge (`CursorExecHandlers.shell`): map `workingDirectory`
@@ -221,7 +222,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  			);
  			const sanitizedExecResult = sanitizeShellExecResult(execResult);
  			sendExecClientMessage(runTransport, execMsg, "shellResult", sanitizedExecResult);
-@@ -2699,12 +2779,31 @@ async function handleExecServerMessage(
+@@ -2699,12 +2780,31 @@ async function handleExecServerMessage(
  		case "shellStreamArgs": {
  			const args = execMsg.message.value;
  			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
@@ -259,7 +260,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  			return;
  		}
  		case "backgroundShellSpawnArgs": {
-@@ -3173,23 +3272,44 @@ async function handleExecServerMessage(
+@@ -3173,23 +3273,44 @@ async function handleExecServerMessage(
  		}
  		case "miniSweAgentBashArgs": {
  			// Same `ShellArgs`/`ShellResult` pair as `shellArgs`, under its own frame
@@ -312,7 +313,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
  			);
  			sendExecClientMessage(runTransport, execMsg, "miniSweAgentBashResult", sanitizeShellExecResult(execResult));
  			return;
-@@ -4971,6 +5091,34 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
+@@ -4971,6 +5092,71 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
  
  const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
  
@@ -342,6 +343,43 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..6cf0ef6545408c7efdc2372800192e1f
 + */
 +function shellQuoteForCd(dir: string): string {
 +	return `'${dir.replace(/'/g, `'\\''`)}'`;
++}
++
++/** One chunk of an OMP read selector: `N`, `N-M`, `N..M`, `N+M`, any with an `L` prefix. */
++const READ_HANDOFF_SELECTOR_RE = /^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$/i;
++
++/**
++ * Split an OMP read selector out of a path before handing it to an external
++ * read tool.
++ *
++ * Cursor may send `foo.ts:10-20` or `foo.ts:raw:10-20`: those selectors
++ * describe the range a coding-agent read would have applied, but the external
++ * tool takes a literal filename plus `offset`/`limit`, so the raw string makes
++ * it look for a file whose name ends in `:10-20` and fails. Explicit
++ * `offset`/`limit` fields win over the selector; only the first chunk of a
++ * comma list is honoured, and a selector the grammar does not cover is left in
++ * the path rather than guessed at.
++ */
++function handoffReadArgs(args: { path: string; offset?: number; limit?: number }): {
++	path: string;
++	offset?: number;
++	limit?: number;
++} {
++	const chunks = args.path.split(":");
++	const last = chunks.at(-1);
++	const match = last === undefined ? null : READ_HANDOFF_SELECTOR_RE.exec(last.split(",")[0] ?? "");
++	if (match !== null) chunks.pop();
++	// `:raw` is a verbatim-read selector with no external counterpart.
++	if (chunks.at(-1)?.toLowerCase() === "raw") chunks.pop();
++	const path = chunks.join(":");
++	if (match === null) return { path, offset: args.offset, limit: args.limit };
++	const start = Number.parseInt(match[1] ?? "", 10);
++	const end = match[2] === undefined ? undefined : match[3] ? Number.parseInt(match[3], 10) : undefined;
++	return {
++		path,
++		offset: args.offset ?? (Number.isFinite(start) ? start : undefined),
++		limit: args.limit ?? end,
++	};
 +}
 +
  function buildMcpExternalHandoffResult() {
