@@ -59,7 +59,6 @@
   "loginPasteHint": "Paste the full URL from your browser address bar, or just the authorization code.",
   "loginReveal": "Show pasted code",
   "signingIn": "Signing in…",
-  "quotaChecking": "Checking…",
   "quotaSignInAgain": "Sign in again",
   "quotaStale": "Stale",
   "quotaCompactHint": "The tightest plan window across this provider's accounts; expand the card for every account."

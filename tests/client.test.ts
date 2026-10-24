@@ -246,9 +246,8 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     deleteConfirm: '确认删除',
     deleting: '删除中…',
     // Plan usage (issue #22): the row line resolves its own copy, and the reset
-    // countdown resolves the duration keys it formats. A silent
-    // absent/error state has no copy by design.
-    quotaChecking: '正在检查…',
+    // countdown resolves the duration keys it formats. A pending, absent or
+    // error state has no copy by design.
     quotaSignInAgain: '请重新登录',
     quotaStale: '数据较旧',
     quotaCompactHint: '该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。',
@@ -4052,10 +4051,13 @@ describe('quota surface', () => {
     }
   })
 
-  test('a row without a snapshot shows the checking line and triggers one refresh', async () => {
+  test('a pending snapshot renders no quota surface but still triggers one refresh', async () => {
     const { view, harness } = await mountExpanded(quotaState(undefined))
     try {
-      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('正在检查…')
+      // Nothing at all while the first answer is in flight (A1): a route that
+      // does not report usage must occupy zero space, not show "checking…".
+      expect(quotaNodes(view.nodes)).toHaveLength(0)
+      // The read still fires in the background.
       const refreshes = harness.calls.filter(call => call.endpoint === 'keysManager/quotaRefresh')
       expect(refreshes).toHaveLength(1)
       expect(refreshes[0]!.payload).toEqual({ args: { provider: 'zai-coding-cn' } })
@@ -4153,9 +4155,9 @@ describe('quota surface', () => {
           await new Promise(resolve => setTimeout(resolve, 0))
         }
         expect(quotaRefreshes(harness)).toBe(1)
-        // The card is still rendered and the row still explains its state.
+        // The card is still rendered, and the pending row shows no surface.
         expect(findByClass(view.nodes, 'km-provider-body')).toHaveLength(1)
-        expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('正在检查…')
+        expect(quotaNodes(view.nodes)).toHaveLength(0)
       } finally {
         view.unmount()
       }
@@ -4194,8 +4196,8 @@ describe('quota surface', () => {
       }
     })
     try {
-      // The read is in flight and the row says so…
-      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('正在检查…')
+      // The read is in flight and the row occupies no space while it waits…
+      expect(quotaNodes(view.nodes)).toHaveLength(0)
       expect(quotaRefreshes(harness)).toBe(1)
       // …a minute tick re-runs the effect while that read is still pending…
       clock.mockReturnValue(base + 60_000)
@@ -4264,7 +4266,6 @@ describe('quota surface', () => {
 
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
     expectLocaleParity([
-      'quotaChecking',
       'quotaSignInAgain',
       'quotaStale',
       'quotaCompactHint',

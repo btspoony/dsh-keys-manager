@@ -1107,14 +1107,15 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
 /**
  * One account's plan usage as a single muted line under its key row: every
  * window that exists plus the reset countdown of the tightest one. Only a
- * usable snapshot renders — `absent`/`error` stay silent, `unauthorized` is
- * the one actionable state, and `stale` keeps the numbers with a marker.
+ * reported state renders — a pending (`undefined`), `absent` or `error`
+ * snapshot stays silent so a route without usage occupies no space at all.
+ * `unauthorized` is the one actionable state, and `stale` keeps the numbers
+ * with a marker.
  */
 function quotaInline(row: KeyView, t: T, now: number): React.ReactElement | null {
   const windows = quotaWindows(row.quota)
   if (windows.length === 0) {
-    if (row.quota === undefined) return h('div', { className: 'km-quota-inline' }, t('quotaChecking'))
-    return row.quota.status === 'unauthorized'
+    return row.quota?.status === 'unauthorized'
       ? h('div', { className: 'km-quota-inline' }, t('quotaSignInAgain'))
       : null
   }
@@ -1337,7 +1338,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
       h('span', { className: 'km-provider-side' },
         // D5: the tightest plan window across this provider's accounts, as a
         // supplementary one-liner next to the key count. Narrow screens drop
-        // it (the expanded strip is the primary carrier) instead of wrapping.
+        // it (the per-row usage line is the primary carrier) instead of wrapping.
         tightest === undefined
           ? null
           : h('span', {

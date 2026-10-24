@@ -192,8 +192,7 @@ const zh = {
       transportModelsMissingCatalog: '已安装的传输构建没有为该路由提供模型目录；列表会一直为空，直到重新构建或升级 dsh-llm-omp-transports。',
       // Plan usage on a key row (issue #22). The window abbreviations (5h / W)
       // are technical and stay untranslated, so they are code, not dictionary
-      // entries; a silent `absent`/`error` needs no copy at all.
-      quotaChecking: '正在检查…',
+      // entries; a pending, `absent` or `error` snapshot needs no copy at all.
       quotaSignInAgain: '请重新登录',
       quotaStale: '数据较旧',
       quotaCompactHint: '该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。',
@@ -387,7 +386,6 @@ const en = {
       transportModelsHint: 'Leave every model unchecked to use the full catalog; saving narrows the list this route advertises.',
       transportModelsMissingCatalog: 'The installed transport build ships no model catalog for this route; the list stays empty until dsh-llm-omp-transports is rebuilt or upgraded.',
       // Plan usage on a key row (issue #22).
-      quotaChecking: 'Checking…',
       quotaSignInAgain: 'Sign in again',
       quotaStale: 'Stale',
       quotaCompactHint: "The tightest plan window across this provider's accounts; expand the card for every account.",
