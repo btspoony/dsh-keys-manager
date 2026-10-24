@@ -675,6 +675,16 @@ describe('bundled streamCursor over a Connect frame stream', () => {
     expect(call?.arguments).toEqual({ file_path: 'src/app.ts:10-20,abc' })
   })
 
+  it('keeps a fully valid comma list and uses the first chunk for the range', async () => {
+    const { events } = await run('cursor-wire-native-read-range-list.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    // Every chunk validates, so the tail is stripped; the first chunk supplies
+    // the range and the second is dropped — the mirror of the `:10-20,abc` case,
+    // which would also pass if the validator rejected every list.
+    expect(call?.arguments).toEqual({ file_path: 'src/app.ts', offset: 10, limit: 11 })
+  })
+
   it('keeps a zero-padded line number valid, as OMP parses it to its number', async () => {
     const { events } = await run('cursor-wire-native-read-range-leading-zero.jsonl', {
       externalToolExecutor: true,
