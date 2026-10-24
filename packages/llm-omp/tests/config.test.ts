@@ -214,7 +214,7 @@ function fakeHost(record: { access: string; expires: number; projectId: string }
 }
 
 describe('apply registration', () => {
-  it('registers five adapters, five providers and four flows in the shipped order', () => {
+  it('registers five adapters, five providers and five flows in the shipped order', () => {
     const host = fakeHost()
 
     // A missing artifact must not fail registration: `apply` only wires lazy
@@ -242,18 +242,19 @@ describe('apply registration', () => {
       'providers.google-antigravity',
       'providers.factory-droid',
     ])
-    // Four flows: the factory-droid device-code flow lands with the auth task.
     expect(host.flows.map(flow => flow.key)).toEqual([
       'llm-omp-transports/cursor',
       'llm-omp-transports/devin',
       'llm-omp-transports/google-gemini-cli',
       'llm-omp-transports/google-antigravity',
+      'llm-omp-transports/factory-droid',
     ])
     expect(host.flows.map(flow => flow.label)).toEqual([
       'Cursor',
       'Devin',
       'Google Gemini CLI',
       'Google Antigravity',
+      'Factory Droid',
     ])
   })
 

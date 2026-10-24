@@ -657,7 +657,7 @@ describe('llm-omp-transports registration', () => {
     }
   }
 
-  it('registers all five adapters, their Models-page entries and the four shipped flows', () => {
+  it('registers all five adapters, their Models-page entries and all five flows', () => {
     const host = fakeHost()
     apply(host.ctx)
 
@@ -674,6 +674,7 @@ describe('llm-omp-transports registration', () => {
       'flow:llm-omp-transports/devin',
       'flow:llm-omp-transports/google-gemini-cli',
       'flow:llm-omp-transports/google-antigravity',
+      'flow:llm-omp-transports/factory-droid',
     ])
     expect(host.adapters.map(entry => entry.providers)).toEqual([
       [CURSOR_ROUTE],
@@ -686,8 +687,6 @@ describe('llm-omp-transports registration', () => {
     expect(host.adapters[1]!.adapter).toBeInstanceOf(OmpDevinAdapter)
     expect(host.adapters[2]!.adapter).toBeInstanceOf(OmpGoogleGeminiCliAdapter)
     expect(host.adapters[3]!.adapter).toBeInstanceOf(OmpGoogleAntigravityAdapter)
-    // The route registers here; its device-code flow lands with the auth task,
-    // so it is the one adapter without a flow in this list.
     expect(host.adapters[4]!.adapter).toBeInstanceOf(OmpFactoryDroidAdapter)
     expect(host.directories).toEqual([
       [
@@ -748,6 +747,11 @@ describe('llm-omp-transports registration', () => {
         key: 'llm-omp-transports/google-antigravity',
         label: 'Google Antigravity',
         methods: [{ id: 'oauth', label: 'Sign in with Google Antigravity' }],
+      },
+      {
+        key: 'llm-omp-transports/factory-droid',
+        label: 'Factory Droid',
+        methods: [{ id: 'oauth', label: 'Sign in with Factory Droid' }],
       },
     ])
     // Registration is start-up safe: no credential is read and no bundle is imported.

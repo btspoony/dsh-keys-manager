@@ -39,6 +39,8 @@ import {
   OmpGoogleGeminiCliAdapter,
 } from './adapter.js'
 import type { OmpTransportOf } from './adapter.js'
+import { FactoryDroidAuthError, loginFactoryDroid } from './factory-droid/auth.js'
+import type { FactoryDroidFetch } from './factory-droid/auth.js'
 import { createFactoryDroidAccess } from './factory-droid/credentials.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
@@ -548,6 +550,76 @@ export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = 
   return googleAuthorizationFlow(GOOGLE_ANTIGRAVITY_FACTS, options)
 }
 
+/** Test seams for the Factory Droid flow; the plugin uses the real network and timers. */
+export interface FactoryDroidFlowOptions {
+  readonly fetch?: FactoryDroidFetch
+  readonly now?: () => number
+  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+}
+
+/**
+ * The `llm-omp-transports/factory-droid` sign-in flow.
+ *
+ * @remarks
+ * WorkOS device authorization: the flow reports the verification page and the
+ * user code through `session.notify`, then polls until the grant completes. No
+ * loopback listener and no paste — the browser half happens on Factory's page,
+ * and the attempt's own signal is the only cancellation channel (every fetch and
+ * every sleep is wired to it, so a withdrawn attempt surfaces as the seam's
+ * cancellation). The committed payload carries the identity the transport needs
+ * for its API host alongside the tokens.
+ */
+export function factoryDroidAuthorizationFlow(options: FactoryDroidFlowOptions = {}): CursorAuthorizationFlow {
+  return {
+    key: FACTORY_DROID_CREDENTIAL_KEY,
+    label: 'Factory Droid',
+    methods: [{ id: 'oauth', label: 'Sign in with Factory Droid' }],
+    async run(session) {
+      let grant
+      try {
+        grant = await loginFactoryDroid({
+          fetch: options.fetch,
+          now: options.now,
+          sleep: options.sleep,
+          signal: session.signal,
+          onDevice: device => {
+            const url = device.verificationUriComplete ?? device.verificationUri
+            session.notify({
+              message: 'Open this page, enter the code, and approve the Factory sign-in; this window waits.',
+              url,
+              code: device.userCode,
+            })
+          },
+        })
+      } catch (cause) {
+        // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
+        if (session.signal.aborted) throw cause
+        if (cause instanceof FactoryDroidAuthError) {
+          throw new LlmError(`llm-omp-transports: Factory Droid sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
+            cause,
+          })
+        }
+        throw cause
+      }
+      await session.commit({
+        kind: 'grant',
+        // The seam validates the payload as a JSON value, so an absent identity
+        // field must be absent, not `undefined`.
+        payload: {
+          access: grant.access,
+          refresh: grant.refresh,
+          expires: grant.expires,
+          ...(grant.email === undefined ? {} : { email: grant.email }),
+          ...(grant.accountId === undefined ? {} : { accountId: grant.accountId }),
+          ...(grant.orgId === undefined ? {} : { orgId: grant.orgId }),
+          ...(grant.region === undefined ? {} : { region: grant.region }),
+          ...(grant.inferenceRegion === undefined ? {} : { inferenceRegion: grant.inferenceRegion }),
+        },
+      })
+    },
+  }
+}
+
 /**
  * Load one bundled omp transport on first use.
  *
@@ -708,6 +780,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   host.authorization.registerFlow(devinAuthorizationFlow())
   host.authorization.registerFlow(googleGeminiCliAuthorizationFlow())
   host.authorization.registerFlow(googleAntigravityAuthorizationFlow())
+  host.authorization.registerFlow(factoryDroidAuthorizationFlow())
 }
 
 export {
@@ -720,7 +793,10 @@ export {
   GOOGLE_GEMINI_CLI_ROUTE,
 } from './adapter.js'
 export { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+export { loginFactoryDroid } from './factory-droid/auth.js'
+export type { FactoryDroidGrant, FactoryDroidIdentity } from './factory-droid/auth.js'
 export { createFactoryDroidAccess } from './factory-droid/credentials.js'
+export type { FactoryDroidGrantPayload } from './factory-droid/credentials.js'
 export { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 export { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
 export { GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY, GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'
