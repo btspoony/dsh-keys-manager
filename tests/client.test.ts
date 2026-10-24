@@ -4039,19 +4039,29 @@ describe('quota surface', () => {
     }
   })
 
-  test('unauthorized renders the sign-in-again note and no pill', async () => {
+  test('unauthorized renders the sign-in-again note on an OAuth row only', async () => {
     const unauthorized: QuotaView = { status: 'unauthorized', fetchedAt: Date.now(), windows: [] }
     const { view } = await mountExpanded(quotaState(unauthorized, key => {
       key.kind = 'oauth'
       key.oauth = { provider: 'zai-coding-cn', accountId: 'acc_1', expiresAt: Date.now() + 3_600_000 }
     }))
     try {
-      // The only state needing user action keeps its line (D3); nothing feeds
-      // the collapsed pill because no window exists.
+      // An account has a sign-in to offer, so this state is actionable (D3);
+      // nothing feeds the collapsed pill because no window exists.
       expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('请重新登录')
       expect(findByClass(view.nodes, 'km-quota-compact')).toHaveLength(0)
     } finally {
       view.unmount()
+      setRuntimeContext(null)
+    }
+
+    // An API key has no sign-in action, so its row stays silent instead of
+    // offering a fix the row cannot perform.
+    const apiKey = await mountExpanded(quotaState(unauthorized))
+    try {
+      expect(quotaNodes(apiKey.view.nodes)).toHaveLength(0)
+    } finally {
+      apiKey.view.unmount()
       setRuntimeContext(null)
     }
   })

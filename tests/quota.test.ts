@@ -13,6 +13,7 @@ import { QuotaCache } from '../src/quota/cache'
 import type { QuotaFetch } from '../src/quota/fetch'
 import {
   claudeQuotaProbe,
+  clineQuotaProbe,
   codexQuotaProbe,
   commandcodeQuotaProbe,
   kimiQuotaProbe,
@@ -28,6 +29,7 @@ const CLAUDE_URL = 'https://api.anthropic.com/api/oauth/usage'
 const CODEX_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const COMMANDCODE_URL = 'https://api.commandcode.ai/alpha/billing/credits'
 const XAI_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits'
+const CLINE_URL = 'https://api.cline.bot/api/v1/users/me/plan/usage-limits'
 
 interface Captured {
   url?: string
@@ -660,15 +662,85 @@ test('xai probe refuses a non-weekly billing period instead of mislabelling it',
   assert.equal(noPeriod.reason, 'no weekly credits period')
 })
 
-test('new routes resolve and unprobed routes stay absent', async () => {
+test('cline probe sends the desktop client headers and maps the two usable limits', async () => {
+  const captured: Captured = {}
+  const snapshot = await clineQuotaProbe({
+    token: 'sk-pass',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: {
+          limits: [
+            { type: 'monthly', percentUsed: 12.5, resetsAt: '2026-11-01T00:00:00Z' },
+            { type: 'five_hour', percentUsed: 40, resetsAt: '2026-10-05T15:00:00Z' },
+            { type: 'weekly', percentUsed: 130, resetsAt: '2026-10-10T00:00:00Z' },
+          ],
+        },
+      }),
+      captured,
+    ),
+  })
+
+  assert.equal(captured.url, CLINE_URL)
+  assert.equal(captured.headers?.Authorization, 'Bearer sk-pass')
+  // The API gates product-only surfaces on the desktop client type.
+  assert.equal(captured.headers?.['X-CLIENT-TYPE'], 'cline-desktop')
+  assert.ok((captured.headers?.['X-CLIENT-VERSION'] ?? '').length > 0)
+  assert.equal(snapshot.status, 'ok')
+  // The monthly limit has no window in this UI; both usable limits survive,
+  // and an over-limit weekly percent clamps to 100%.
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['session', 'week'],
+  )
+  near(snapshot.windows[0]?.usedFraction, 0.4)
+  assert.equal(snapshot.windows[0]?.resetsAt, Date.parse('2026-10-05T15:00:00Z'))
+  assert.equal(snapshot.windows[1]?.usedFraction, 1)
+  assert.equal(snapshot.windows[1]?.resetsAt, Date.parse('2026-10-10T00:00:00Z'))
+})
+
+test('cline probe reads a key refusal and a monthly-only account as error, 404 as absent', async () => {
+  const refused = await clineQuotaProbe({
+    token: 'sk-denied',
+    fetch: fakeFetch(jsonResponse(200, { success: false, error: 'invalid API key' })),
+  })
+  assert.equal(refused.status, 'error')
+  assert.equal(refused.reason, 'usage request rejected')
+
+  // Cline answers 404 when the account has no ClinePass at all.
+  const noPlan = await clineQuotaProbe({
+    token: 'sk-free',
+    fetch: fakeFetch(jsonResponse(404, { success: false, error: 'no active plan' })),
+  })
+  assert.equal(noPlan.status, 'absent')
+
+  const monthlyOnly = await clineQuotaProbe({
+    token: 'sk-pass',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: { limits: [{ type: 'monthly', percentUsed: 10, resetsAt: '2026-11-01T00:00:00Z' }] },
+      }),
+    ),
+  })
+  assert.equal(monthlyOnly.status, 'error')
+  assert.equal(monthlyOnly.reason, 'unrecognized usage payload')
+})
+
+test('batch A and B route ids resolve, the non-portable ones stay absent', async () => {
   assert.equal(quotaProbe('commandcode'), commandcodeQuotaProbe)
   assert.equal(quotaProbe('xai'), xaiQuotaProbe)
-  // Ollama exposes no standalone quota endpoint in the pinned reference, so it
-  // stays `absent` rather than shipping a probe with an invented payload.
-  assert.equal(quotaProbe('ollama-cloud'), undefined)
-  const absent = await resolveQuota('ollama-cloud', { token: 'tok' })
-  assert.equal(absent.status, 'absent')
-  assert.deepEqual(absent.windows, [])
+  assert.equal(quotaProbe('cline-pass'), clineQuotaProbe)
+  // Transport routes: their grant is read only inside the host service and
+  // both need vendor credential work (Cursor rotates its refresh grant on 401,
+  // Factory sends droid's org header), so the quota path cannot reach them.
+  // `openrouter` has no reference implementation, `ollama-cloud` no endpoint.
+  for (const route of ['cursor', 'factory-droid', 'openrouter', 'ollama-cloud']) {
+    assert.equal(quotaProbe(route), undefined, route)
+    const snapshot = await resolveQuota(route, { token: 'tok' })
+    assert.equal(snapshot.status, 'absent', route)
+    assert.deepEqual(snapshot.windows, [], route)
+  }
 })
 
 test('a counter fallback fires only when the used field is absent', async () => {

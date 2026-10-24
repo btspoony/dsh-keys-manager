@@ -43,6 +43,23 @@ const XAI_BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credi
  */
 const XAI_CLI_TOKEN_AUTH = 'xai-grok-cli'
 const XAI_CLI_USER_AGENT = 'grok-cli/0.1 (dsh-keys-manager)'
+const CLINE_USAGE_URL = 'https://api.cline.bot/api/v1/users/me/plan/usage-limits'
+/**
+ * Cline's desktop client headers, as magpie sends them
+ * (`internal/provider/cline.go`): the API gates product-only surfaces on
+ * `X-CLIENT-TYPE`, and `X-CLIENT-VERSION` is the desktop release magpie
+ * claims. They are vendor constants, not credentials.
+ */
+const CLINE_CLIENT_VERSION = '3.5.54'
+const CLINE_CLIENT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  Accept: 'application/json',
+  'HTTP-Referer': 'https://cline.bot',
+  'X-Title': 'Cline',
+  'X-IS-MULTIROOT': 'false',
+  'X-CLIENT-TYPE': 'cline-desktop',
+  'X-CLIENT-VERSION': CLINE_CLIENT_VERSION,
+  'User-Agent': `Cline/${CLINE_CLIENT_VERSION}`,
+})
 
 /** A window longer than three days is the weekly pool; the short one is the session. */
 const WEEK_SECONDS_THRESHOLD = 3 * 24 * 60 * 60
@@ -442,15 +459,64 @@ export const xaiQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
 }
 
 /**
+ * ClinePass limits, read with the stored Cline API key exactly as Cline's own
+ * client reads them (magpie `internal/provider/cline_usage.go`): the endpoint
+ * answers a key as it answers an account. `limits[]` carries `type`
+ * (`five_hour` / `weekly` / `monthly`), `percentUsed` (USED percent) and an
+ * ISO `resetsAt`.
+ *
+ * The monthly limit has no window in this UI (only `session` and `week`), so
+ * it is dropped; an account whose only limit is monthly reads `error`. A 404
+ * is Cline's "no ClinePass on this account" and stays `absent`.
+ *
+ * shortcut: the credit balance needs `/users/me` and then
+ * `/users/{id}/balance` (two more calls) and is not a window; add it only if a
+ * card must show the remaining dollars.
+ */
+export const clineQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
+  const read = await readQuotaJson(
+    CLINE_USAGE_URL,
+    { ...CLINE_CLIENT_HEADERS, Authorization: `Bearer ${token}` },
+    { fetch, signal },
+  )
+  return snapshotFromRead(read, (body) => {
+    // Cline wraps every answer in `{ success, error, data }`.
+    if (body.success === false) return 'usage request rejected'
+    const data = asRecord(body.data) ?? body
+    const limits = Array.isArray(data.limits) ? data.limits : []
+    const windows: QuotaWindow[] = []
+    for (const raw of limits) {
+      const row = asRecord(raw)
+      if (row === undefined) continue
+      const id: QuotaWindowId | undefined = row.type === 'five_hour'
+        ? 'session'
+        : row.type === 'weekly' ? 'week' : undefined
+      if (id === undefined) continue
+      const usedFraction = fractionFromUsed(toNumber(row.percentUsed) ?? Number.NaN)
+      const resetsAt = resetOf(row, ['resetsAt', 'resets_at'])
+      if (usedFraction === undefined || resetsAt === undefined) continue
+      windows.push({ id, usedFraction, resetsAt })
+    }
+    return windows
+  })
+}
+
+/**
  * Route id → probe. The ids are the variants this repo and the Host directory
  * actually use (OAuth catalog ids `anthropic`/`openai-codex`/`kimi-coding`, the
  * seed routes in `src/providers.ts`, the sign-in routes in `src/oauth`).
  * Unknown ids have no entry by design and resolve to `absent`.
  *
- * `ollama-cloud` is deliberately absent: the pinned reference (oh-my-pi
- * `packages/ai/src/usage/ollama.ts`) reports no standalone quota endpoint for
- * Ollama, so a balance read there has no window to normalize and the route
- * keeps rendering nothing.
+ * Deliberately absent, each verified against a reference implementation:
+ * - `ollama-cloud`: the pinned reference (oh-my-pi `packages/ai/src/usage/ollama.ts`)
+ *   reports no standalone quota endpoint for Ollama.
+ * - `cursor` / `factory-droid`: transport routes (`llm-omp-transports/<route>`).
+ *   Their grants are read only inside the host service, and both need vendor
+ *   credential work (Cursor rotates the refresh-token grant on 401 and writes
+ *   the successor back; Factory sends droid's org header), so a probe cannot
+ *   reach them from the quota path.
+ * - `openrouter`: no reference in tokscale, magpie or oh-my-pi reads a usage
+ *   endpoint, so `GET /api/v1/key`'s shape is unconfirmed and unshipped.
  *
  * shortcut: the CN-region routes (`zai-coding-cn`, `minimax-code-cn`) reuse the
  * international endpoints, so a CN key reports `unauthorized`; add per-region
@@ -473,6 +539,7 @@ const QUOTA_PROBES: Readonly<Record<string, QuotaProbe>> = Object.freeze({
   'opencode-go': opencodeGoQuotaProbe,
   commandcode: commandcodeQuotaProbe,
   xai: xaiQuotaProbe,
+  'cline-pass': clineQuotaProbe,
 })
 
 /** The probe for a route id, or `undefined` when the provider exposes no usage API. */
