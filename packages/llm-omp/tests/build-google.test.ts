@@ -105,8 +105,9 @@ describe('google drift gate', () => {
   it('serves both Cloud Code Assist routes from one artifact and one manifest entry', () => {
     expect(google.entry).toBe('lib/omp/google.mjs')
     // A per-route artifact would mean the shared-provider decision (design §1)
-    // was reversed without the manifest saying so.
-    expect(Object.keys(manifest.entries).sort()).toEqual(['cursor', 'devin', 'google'])
+    // was reversed without the manifest saying so. The other entries are the
+    // independent routes, one artifact each.
+    expect(Object.keys(manifest.entries).sort()).toEqual(['cursor', 'devin', 'factory-droid', 'google'])
   })
 
   it('hashes the Google transport sources the bundle was built from', () => {

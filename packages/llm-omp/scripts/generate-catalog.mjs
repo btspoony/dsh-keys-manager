@@ -190,6 +190,33 @@ function reduceGoogle(row) {
 }
 
 /**
+ * Reduce one Factory Droid row from the KDL registry's provider seed.
+ *
+ * The pinned `models.json` has no `factory-droid` key at all: this provider's
+ * models are declared by its compat rule (`providers.\`factory-droid\`.seed.models`,
+ * 62 rows at this pin). The row is carried as the rule declares it — the
+ * transport multiplexes by model id, dispatches on `api`/`provider`, and prices
+ * every row at zero Factory credits, so there is nothing to reduce away.
+ *
+ * @param row - one `seed.models` entry.
+ * @returns the generated row.
+ */
+function reduceFactoryDroid(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    api: row.api,
+    provider: row.provider,
+    baseUrl: row.baseUrl,
+    contextWindow: row.contextWindow,
+    maxTokens: row.maxTokens,
+    input: [...row.input],
+    cost: reduceCost(row.cost),
+    reasoning: row.reasoning === true,
+  }
+}
+
+/**
  * One generated table. The prose and the drift-gate file are per route; the
  * rendering, sort order and provenance shape are shared.
  */
@@ -273,6 +300,37 @@ const PROVIDERS = [
  * carries the per-model wire flags whole.
  *
  * @module dsh-llm-omp-transports/catalog/google-gemini-cli
+ */`,
+  },
+  {
+    key: 'factory-droid',
+    out: join(packageRoot, 'src', 'catalog', 'factory-droid.ts'),
+    constName: 'FACTORY_DROID_MODELS',
+    sourceConst: 'FACTORY_DROID_CATALOG_SOURCE',
+    rowType: 'FactoryDroidModelRow',
+    // The seed lives in the KDL registry rule, not in the model catalog.
+    sourceFile: 'src/compat/rules.json',
+    select: data => data.providers['factory-droid'].seed.models,
+    summary: 'Every Factory Droid model the pinned registry seed declares, sorted by id.',
+    reduce: reduceFactoryDroid,
+    doc: ({ version, rowCount, sourceHash }) => `/**
+ * Generated Factory Droid model table — do not edit by hand.
+ *
+ * Source: \`@oh-my-pi/pi-catalog@${version}\` \`src/compat/rules.json\`
+ * \`providers.factory-droid.seed.models\` (${rowCount} rows, ${sourceHash}).
+ * Regenerate with \`pnpm -C packages/llm-omp run generate:catalog\`.
+ *
+ * The rows live in the KDL compat registry because the pinned \`models.json\`
+ * carries no \`factory-droid\` key; the drift gate in
+ * \`tests/build-factory-droid.test.ts\` pins the same package version and source
+ * hash, so an omp bump fails there before this table can describe the wrong
+ * models.
+ *
+ * Every row is a zero-cost Factory credit, and the route multiplexes four wire
+ * protocols by model id, so the table carries the identity fields the wire
+ * header and the family dispatch read rather than a reduced subset.
+ *
+ * @module dsh-llm-omp-transports/catalog/factory-droid
  */`,
   },
   {

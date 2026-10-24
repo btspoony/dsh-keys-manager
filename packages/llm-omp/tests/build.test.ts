@@ -66,6 +66,14 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // 1.5x that measurement means a catalog or another provider graph was pulled
   // back into the bundle, not that the route grew.
   google: 1_960_000,
+  // factory-droid: 2 008 424 bytes measured (200 modules) -> 3 120 000. Its graph
+  // is the largest by construction: the wire multiplexer keeps three providers
+  // (anthropic + both OpenAI encoders), the KDL registry (`rules.json`, 468 KB) and
+  // the schema/type validators. Three entry-scoped build substitutions are what
+  // make it 2 MB instead of 17 MB; a size near this ceiling means one of them
+  // stopped firing (the metafile assertions in `tests/build-factory-droid.test.ts`
+  // name which), not that the route grew.
+  'factory-droid': 3_120_000,
 }
 
 /** One entry's measured build facts (manifest schema v2). */
@@ -100,6 +108,7 @@ const EXPORTS: Readonly<Record<string, string>> = {
   cursor: 'streamCursor',
   devin: 'streamDevin',
   google: 'streamGoogleGeminiCli',
+  'factory-droid': 'streamFactoryDroid',
 }
 
 const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
@@ -220,6 +229,7 @@ describe('omp packed surface', () => {
       'lib/omp/cursor.mjs',
       'lib/omp/devin.mjs',
       'lib/omp/google.mjs',
+      'lib/omp/factory-droid.mjs',
       'bundle/cordis.patch.yml',
     ]) {
       expect(listing, path).toMatch(new RegExp(`notice\\s+\\S+\\s+${path.replace(/[.]/g, '\\.')}(\\s|$)`))
@@ -228,6 +238,7 @@ describe('omp packed surface', () => {
     expect(listing).not.toContain('lib/omp/cursor.metafile.json')
     expect(listing).not.toContain('lib/omp/devin.metafile.json')
     expect(listing).not.toContain('lib/omp/google.metafile.json')
+    expect(listing).not.toContain('lib/omp/factory-droid.metafile.json')
   })
 })
 
@@ -341,7 +352,7 @@ describe('omp drift gate', () => {
       // them together; the real reach must never silently become empty.
       expect(reached['pi-utils'].length, name).toBeGreaterThan(0)
       expect(entry.shimImports['pi-utils'].length, name).toBeGreaterThan(0)
-      // No module in either graph imports a `bun:*` builtin: the shim exists to
+      // No module in any graph imports a `bun:*` builtin: the shim exists to
       // fail loudly if one ever does, so its reach must stay empty.
       expect(entry.shimImports['bun-modules'], name).toEqual([])
     }

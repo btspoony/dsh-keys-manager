@@ -153,6 +153,32 @@ export interface GoogleModelRow {
   readonly requestModelId?: string
 }
 
+/**
+ * One row of the generated Factory Droid model table.
+ *
+ * The table is generated from `compat/rules.json`
+ * (`providers.\`factory-droid\`.seed.models`) because the pinned `models.json`
+ * carries no rows for this provider: its seed lives in the KDL registry rule.
+ * Every row is a zero-cost Factory credit and the transport multiplexes the four
+ * wire protocols by model id, so the row keeps the identity fields the wire
+ * header and the family dispatch read — `id`, `api`, `provider`, `baseUrl` — plus
+ * the limits and the capability flags the seam advertises.
+ */
+export interface FactoryDroidModelRow {
+  readonly id: string
+  readonly name: string
+  readonly api: 'factory-droid-agent'
+  readonly provider: 'factory-droid'
+  readonly baseUrl: string
+  /** Combined request and response context window in tokens. */
+  readonly contextWindow: number
+  /** Per-response output cap the catalog advertises. */
+  readonly maxTokens: number
+  readonly input: ('text' | 'image')[]
+  readonly cost: ModelCost
+  readonly reasoning: boolean
+}
+
 /** The omp model object for a Google row: one catalog row plus the transport identity. */
 export interface OmpGoogleModel extends GoogleModelRow {
   readonly api: 'google-gemini-cli'

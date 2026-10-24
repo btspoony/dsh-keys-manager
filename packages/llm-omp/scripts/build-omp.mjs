@@ -32,7 +32,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { build } from 'esbuild'
@@ -54,10 +54,18 @@ const ENTRIES = [
     out: join(packageRoot, 'lib', 'omp', 'google.mjs'),
     piUtils: join(scriptsDir, 'omp-shim', 'pi-utils-google.ts'),
   },
-  // `factory-droid` is deliberately absent (plan risk A2): its graph pulls omp's
-  // whole builtin provider registry (register-builtins → anthropic → the 12.4 MB
-  // model catalog), which measured 16.99 MB / 327 modules against a 2.79 MB
-  // "stop" bound. A later iteration owns that route.
+  // The graph reaches omp's whole builtin provider registry (register-builtins →
+  // anthropic → the 12.4 MB model catalog): 16.99 MB / 327 modules unbundled,
+  // 2.79 MB is the "stop" bound. It ships only because two entry-scoped build
+  // substitutions (`ompFactoryDroidSubstitutions`) drop the catalog data and the
+  // eleven unused providers; see `tests/build-factory-droid.test.ts`.
+  {
+    name: 'factory-droid',
+    entry: join(scriptsDir, 'omp-entry-factory-droid.ts'),
+    out: join(packageRoot, 'lib', 'omp', 'factory-droid.mjs'),
+    piUtils: join(scriptsDir, 'omp-shim', 'pi-utils-factory-droid.ts'),
+    substitutions: true,
+  },
 ]
 const MANIFEST = join(scriptsDir, 'omp-manifest.json')
 
@@ -65,6 +73,17 @@ const PI_UTILS_SHIM = join(scriptsDir, 'omp-shim', 'pi-utils.ts')
 const SHIM_DIR = join(scriptsDir, 'omp-shim')
 const BUN_SHIM = join(scriptsDir, 'omp-shim', 'bun-modules.ts')
 const BUN_GLOBAL_SHIM = join(scriptsDir, 'omp-shim', 'bun-global.ts')
+/** S2's substitute for `providers/register-builtins` (factory-droid entry only). */
+const LEAN_REGISTER_BUILTINS = join(scriptsDir, 'omp-shim', 'register-builtins-lean.ts')
+/**
+ * S2's second edge: the `pi-ai/src/stream` facade imports the same registry, so
+ * the two providers that take one helper each from it are pointed at the lean
+ * two-symbol copy. Without this the registry (and the ten providers) stay in the
+ * graph and S2 measures nothing.
+ */
+const LEAN_PI_AI_STREAM = join(scriptsDir, 'omp-shim', 'pi-ai-stream-lean.ts')
+/** The two provider modules that read the facade in the factory-droid graph. */
+const LEAN_STREAM_IMPORTERS = ['/pi-ai/src/providers/factory-droid.ts', '/pi-ai/src/providers/anthropic.ts']
 
 /**
  * Shim module name → its path as esbuild keys the metafile (relative to the
@@ -186,6 +205,73 @@ const ompShims = piUtils => ({
   },
 })
 
+/**
+ * Forward-slash form of a build path, for importer comparisons that must hold on
+ * every platform (esbuild reports native separators in `args.importer`).
+ * @param path - a filesystem path.
+ */
+function toPosix(path) {
+  return path.split(sep).join('/')
+}
+
+/**
+ * The factory-droid entry's two **build substitutions** (plan D9) — installed for
+ * that entry only, so the three released artifacts keep their bytes.
+ *
+ * Neither is a shim: no runtime API is faked and no behaviour is reimplemented.
+ *
+ * - **S1, catalog data.** `pi-catalog/src/models.ts` default-imports the 12.4 MB
+ *   `models.json`, which is the whole reason the graph measured 17 MB. Replacing
+ *   *that data* with `{}` leaves every function in `models.ts` real:
+ *   `getBundledModel` → `undefined`, `getBundledModels` → `[]`,
+ *   `isGeneratedProvider` → `false` — the documented "not in the bundled
+ *   catalog" semantics. The route never reads it: all 58 Factory rows come from
+ *   `compat/rules.json` and are zero-cost credits, the Anthropic fallback-pricing
+ *   lookup is gated on `provider === "anthropic"` (Factory models carry
+ *   `provider: 'factory-droid'`), and canonical id aliasing over an empty catalog
+ *   is the identity.
+ * - **S2, registry pruning.** `providers/factory-droid.ts` imports three wire
+ *   streams from `./register-builtins`, whose thirteen star imports and
+ *   top-level `createProviderStream` calls keep ten unused providers (and their
+ *   transitive reach) in the graph. The redirect points that one import at
+ *   `scripts/omp-shim/register-builtins-lean.ts`, which copies the watchdog
+ *   wrapper verbatim and re-exports the same three streams from the same real
+ *   provider modules.
+ *
+ * Both are drift-gated: `sourceHashes` covers every pinned file either
+ * substitution depends on, the lean module's copied region is asserted to be a
+ * verbatim substring of the pin, and the metafile must show no `models.json` and
+ * no real `register-builtins.ts` input.
+ */
+const ompFactoryDroidSubstitutions = () => ({
+  name: 'omp-factory-droid-substitutions',
+  setup(build_) {
+    build_.onResolve({ filter: /\/models\.json$/ }, args => {
+      // Only the catalog's own default import; any other JSON stays as it is.
+      if (!toPosix(args.importer).endsWith('/pi-catalog/src/models.ts')) return undefined
+      return { path: 'empty-catalog', namespace: 'omp-empty-catalog' }
+    })
+    build_.onLoad({ filter: /^empty-catalog$/, namespace: 'omp-empty-catalog' }, () => ({
+      contents: 'export default {}\n',
+      loader: 'js',
+    }))
+    build_.onResolve({ filter: /^\.\/register-builtins$/ }, args => {
+      if (!toPosix(args.importer).endsWith('/pi-ai/src/providers/factory-droid.ts')) return undefined
+      return { path: LEAN_REGISTER_BUILTINS }
+    })
+    build_.onResolve({ filter: /^\.\.\/env-api-key$/ }, args => {
+      const importer = toPosix(args.importer)
+      if (!['factory-droid','anthropic','openai-completions','openai-responses'].some(n => importer.endsWith(`/pi-ai/src/providers/${n}.ts`))) return undefined
+      return { path: join(scriptsDir, 'omp-shim', 'env-api-key-lean.ts') }
+    })
+    build_.onResolve({ filter: /^\.\.\/stream$/ }, args => {
+      const importer = toPosix(args.importer)
+      if (!LEAN_STREAM_IMPORTERS.some(suffix => importer.endsWith(suffix))) return undefined
+      return { path: LEAN_PI_AI_STREAM }
+    })
+  },
+})
+
 /** Package-relative, forward-slash key for one build output path. */
 function outputKey(path) {
   return relative(packageRoot, path).split('\\').join('/')
@@ -214,7 +300,11 @@ async function bundleEntry(entry) {
     // Free `Bun` identifiers (the runtime global, not the `bun:*` modules) resolve
     // to the Node shim, so the artifact carries no unmet runtime global.
     inject: [BUN_GLOBAL_SHIM],
-    plugins: [ompJsonAsEsm(), ompShims(entry.piUtils ?? PI_UTILS_SHIM)],
+    plugins: [
+      ompJsonAsEsm(),
+      ompShims(entry.piUtils ?? PI_UTILS_SHIM),
+      ...(entry.substitutions === true ? [ompFactoryDroidSubstitutions()] : []),
+    ],
   })
 
   const metafilePath = join(dirname(entry.out), `${entry.name}.metafile.json`)
@@ -297,6 +387,34 @@ async function main() {
     '@oh-my-pi/pi-catalog/src/compat/rules/auth/google-antigravity.kdl': join(
       piCatalogRoot,
       'src/compat/rules/auth/google-antigravity.kdl',
+    ),
+    // The Factory Droid graph and the three modules its build substitutions copy
+    // from or bypass: the wire multiplexer, its Gemini encoder, the identity
+    // document it embeds, the registry seed its catalog comes from, and the two
+    // aggregators the substitutions replace (`register-builtins`, `stream`) plus
+    // the env-key map the third one (`env-api-key`) trims.
+    '@oh-my-pi/pi-ai/src/providers/factory-droid.ts': join(piAiRoot, 'src/providers/factory-droid.ts'),
+    '@oh-my-pi/pi-ai/src/providers/factory-droid/gemini.ts': join(piAiRoot, 'src/providers/factory-droid/gemini.ts'),
+    '@oh-my-pi/pi-ai/src/providers/factory-droid/droid-identity.md': join(
+      piAiRoot,
+      'src/providers/factory-droid/droid-identity.md',
+    ),
+    '@oh-my-pi/pi-ai/src/providers/register-builtins.ts': join(piAiRoot, 'src/providers/register-builtins.ts'),
+    '@oh-my-pi/pi-ai/src/stream.ts': join(piAiRoot, 'src/stream.ts'),
+    '@oh-my-pi/pi-ai/src/env-api-key.ts': join(piAiRoot, 'src/env-api-key.ts'),
+    // The three streams S2 re-exports directly and S2c's droppable fallback.
+    '@oh-my-pi/pi-ai/src/providers/anthropic.ts': join(piAiRoot, 'src/providers/anthropic.ts'),
+    '@oh-my-pi/pi-ai/src/providers/openai-completions.ts': join(piAiRoot, 'src/providers/openai-completions.ts'),
+    '@oh-my-pi/pi-ai/src/providers/openai-responses.ts': join(piAiRoot, 'src/providers/openai-responses.ts'),
+    '@oh-my-pi/pi-ai/src/auth-retry.ts': join(piAiRoot, 'src/auth-retry.ts'),
+    '@oh-my-pi/pi-ai/src/utils/deterministic-id.ts': join(piAiRoot, 'src/utils/deterministic-id.ts'),
+    // The route's wire constants and its registry seed (the catalog source).
+    '@oh-my-pi/pi-catalog/src/wire/factory-droid.ts': join(piCatalogRoot, 'src/wire/factory-droid.ts'),
+    '@oh-my-pi/pi-catalog/src/compat/factory-droid.ts': join(piCatalogRoot, 'src/compat/factory-droid.ts'),
+    '@oh-my-pi/pi-catalog/src/compat/rules.json': join(piCatalogRoot, 'src/compat/rules.json'),
+    '@oh-my-pi/pi-catalog/src/compat/rules/auth/factory-droid.kdl': join(
+      piCatalogRoot,
+      'src/compat/rules/auth/factory-droid.kdl',
     ),
   }
 
