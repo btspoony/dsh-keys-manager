@@ -18408,7 +18408,12 @@ interface ForeignQuotaFixture {
 async function foreignQuotaFixture(options: {
   poolGrant?: FakeCredentialRecord
   projection?: FakeCredentialRecord
-  projectionReadFails?: boolean
+  /** First N reads of the pool grant throw (a transient store failure). */
+  poolReadFailures?: number
+  /** First N reads of the projection record throw. */
+  projectionReadFailures?: number
+  /** Vendor answer for probes; 401 exercises a refused projection token. */
+  fetchStatus?: number
 } = {}): Promise<ForeignQuotaFixture> {
   const h = await harness()
   await h.service.adoptProvider('anthropic')
@@ -18421,13 +18426,6 @@ async function foreignQuotaFixture(options: {
   // and nothing in it matches the pool row (different refresh, no
   // accountId/email), so hydration classifies the provider as foreign.
   if (options.projection !== undefined) h.credentials.records.set(GRANT_KEY, options.projection)
-  if (options.projectionReadFails === true) {
-    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
-    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
-      if (key === GRANT_KEY) throw new Error('credential store unavailable')
-      return realRead(key)
-    }
-  }
   h.store.touch()
 
   // A restarted service hydrates ownership from the records written above.
@@ -18435,6 +18433,25 @@ async function foreignQuotaFixture(options: {
   service.settings = h.settings
   service.attachCredentials(h.credentials.raw)
   await (service as unknown as { projectionHydration: Promise<void> }).projectionHydration
+
+  // Hydration above must see the real records, so transient read failures are
+  // injected afterwards: only the quota path observes them.
+  if ((options.poolReadFailures ?? 0) > 0 || (options.projectionReadFailures ?? 0) > 0) {
+    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+    let poolLeft = options.poolReadFailures ?? 0
+    let projectionLeft = options.projectionReadFailures ?? 0
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === deadRef && poolLeft > 0) {
+        poolLeft -= 1
+        throw new Error('credential store unavailable')
+      }
+      if (key === GRANT_KEY && projectionLeft > 0) {
+        projectionLeft -= 1
+        throw new Error('credential store unavailable')
+      }
+      return realRead(key)
+    }
+  }
 
   const fetched: Array<{ url: string; authorization?: string }> = []
   service.quotaFetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -18445,7 +18462,7 @@ async function foreignQuotaFixture(options: {
     })
     return new Response(
       JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00.000Z' } }),
-      { status: 200, headers: { 'content-type': 'application/json' } },
+      { status: options.fetchStatus ?? 200, headers: { 'content-type': 'application/json' } },
     )
   }) as typeof fetch
   return { h, service, deadRef, fetched }
@@ -18514,11 +18531,104 @@ test('quota matrix: an unreadable projection reports natively-managed, not sign-
 })
 
 test('quota matrix: a failed projection read is unreadable, never sign-in-again', async () => {
-  const { h, service, fetched } = await foreignQuotaFixture({ projectionReadFails: true })
+  // The record must exist for the route to be classified foreign (hydration
+  // reads it before the transient failure is injected); the quota read is what
+  // throws.
+  const { h, service, fetched } = await foreignQuotaFixture({
+    projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
+    projectionReadFailures: 1,
+  })
   try {
     const row = quotaRowOf(await service.quotaRefresh('anthropic'))
     assert.equal(row.quota?.status, 'natively-managed')
     assert.equal(fetched.length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: a refused projection token reports natively-managed', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    // The pool row's own grant stays unreadable, so the projection serves it —
+    // and the vendor refuses that token.
+    projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
+    fetchStatus: 401,
+  })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // Re-signing-in the pool row cannot fix a projection token, so this must
+    // not become "sign in again" (PR review finding 1).
+    assert.equal(row.quota?.status, 'natively-managed')
+    assert.deepEqual(row.quota?.windows, [])
+    assert.equal(fetched.length, 1)
+    assert.equal(fetched[0]!.authorization, 'Bearer at-native-foreign')
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: a transient pool read failure on a non-foreign route stays unauthorized', async () => {
+  // The projection record exists but its `accountId` matches the pool row, so
+  // hydration treats that row as the owner (not foreign). The fallback must not
+  // run: the projection's credential would be misattributed to this row.
+  const { h, service, fetched } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    projection: {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign', accountId: 'acc-pool' },
+    },
+    poolReadFailures: 1,
+  })
+  try {
+    assert.equal(isForeign(service), false)
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(row.quota?.status, 'unauthorized')
+    assert.equal(fetched.length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: on a foreign route a transient pool read failure uses the projection', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
+    poolReadFailures: 1,
+  })
+  try {
+    assert.equal(isForeign(service), true)
+    const first = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(first.quota?.status, 'ok')
+    assert.equal(fetched.length, 1)
+    // The read failed once, so the serving projection is the right credential.
+    assert.equal(fetched[0]!.authorization, 'Bearer at-native-foreign')
+
+    // The store recovers: the pool copy wins again on the next refresh.
+    ;(service as unknown as { quotaCaches: Map<string, unknown> }).quotaCaches.delete('anthropic')
+    const second = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(second.quota?.status, 'ok')
+    assert.equal(fetched.length, 2)
+    assert.equal(fetched[1]!.authorization, 'Bearer at-pool')
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: a foreign route recovers from transient read failures to ok', async () => {
+  const { h, service } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
+    poolReadFailures: 1,
+    projectionReadFailures: 1,
+  })
+  try {
+    const degraded = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(degraded.quota?.status, 'natively-managed')
+    // Past the cache's failure backoff (cleared here instead of sleeping).
+    ;(service as unknown as { quotaCaches: Map<string, unknown> }).quotaCaches.delete('anthropic')
+    const recovered = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(recovered.quota?.status, 'ok')
+    assert.deepEqual(recovered.quota?.windows.map(window => window.id), ['session'])
   } finally {
     await h.close()
   }

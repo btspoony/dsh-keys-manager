@@ -657,10 +657,17 @@ function missingHeaders(declared: Record<string, string> | undefined, stored: Re
  * a DSH projection this process cannot read; `missing` means neither source
  * exists, so an OAuth row really does need a sign-in.
  */
+/** The credential source a probe would use, or why no probe can run. */
 type QuotaCredential =
-  | { kind: 'credential'; token: string; accountId?: string }
+  | { kind: 'credential'; source: 'pool' | 'projection'; token: string; accountId?: string }
   | { kind: 'natively-managed' }
   | { kind: 'missing' }
+
+/** One pool grant read: usable, or the read itself failed. */
+type QuotaPoolGrant =
+  | { kind: 'credential'; source: 'pool'; token: string; accountId?: string }
+  | { kind: 'unreadable' }
+  | undefined
 
 /** Public, secret-free key row. */
 function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null, quota?: QuotaView): KeyView {
@@ -6848,11 +6855,23 @@ export class KeysManagerService {
           reason: 'no readable credential',
         }
       }
-      return resolveQuota(provider, {
+      const snapshot = await resolveQuota(provider, {
         token: credential.token,
         ...(credential.accountId === undefined ? {} : { accountId: credential.accountId }),
         ...(this.quotaFetch === undefined ? {} : { fetch: this.quotaFetch }),
       })
+      // A projection-sourced 401/403 cannot be fixed by re-signing-in the pool
+      // row: the vendor refused the credential that serves the route, which is
+      // the "natively managed, usage unavailable" fact.
+      if (credential.source === 'projection' && snapshot.status === 'unauthorized') {
+        return {
+          status: 'natively-managed' as const,
+          fetchedAt: snapshot.fetchedAt,
+          windows: [],
+          reason: 'the serving projection credential was refused',
+        }
+      }
+      return snapshot
     })
   }
 
@@ -6867,18 +6886,28 @@ export class KeysManagerService {
   private async quotaCredential(provider: string, key: KeyRecord): Promise<QuotaCredential> {
     if (key.kind === 'oauth') {
       const own = await this.readGrantCredential(key.oauth?.grantRef, key.oauth?.accountId)
-      if (own !== undefined) return own
+      if (own !== undefined && own.kind === 'credential') return own
+      // Only a route this manager already classifies as foreign may borrow the
+      // projection's credential. Without the gate a transient credential-store
+      // error would pair this row's identity with another account's usage.
+      if (!this.foreignProjections.has(provider)) return { kind: 'missing' }
       return this.projectionQuotaCredential(provider)
     }
     const probe = await this.probeKey(key.ref)
-    return probe.hit === undefined ? { kind: 'missing' } : { kind: 'credential', token: probe.hit.value }
+    return probe.hit === undefined
+      ? { kind: 'missing' }
+      : { kind: 'credential', source: 'pool', token: probe.hit.value }
   }
 
-  /** A readable pool grant for one row, or `undefined` when it cannot be used. */
+  /**
+   * A readable pool grant for one row, `undefined` when no usable record exists,
+   * or `unreadable` when the read itself failed. The distinction matters: only
+   * a foreign route may fall back to the projection after a failed read.
+   */
   private async readGrantCredential(
     grantRef: string | undefined,
     accountId: string | undefined,
-  ): Promise<QuotaCredential | undefined> {
+  ): Promise<QuotaPoolGrant> {
     const records = this.credentialRecords()
     if (grantRef === undefined || grantRef.length === 0 || records === undefined) return undefined
     try {
@@ -6886,11 +6915,12 @@ export class KeysManagerService {
       if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return undefined
       return {
         kind: 'credential',
+        source: 'pool',
         token: record.payload.access,
         ...(accountId === undefined ? {} : { accountId }),
       }
     } catch {
-      return undefined
+      return { kind: 'unreadable' }
     }
   }
 
@@ -6912,6 +6942,7 @@ export class KeysManagerService {
       const accountId = record.payload.accountId
       return {
         kind: 'credential',
+        source: 'projection',
         token: record.payload.access,
         ...(typeof accountId === 'string' && accountId.length > 0 ? { accountId } : {}),
       }
