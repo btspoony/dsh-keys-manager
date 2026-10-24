@@ -2,6 +2,22 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.7] - 2026-10-24
+
+### Changed
+
+- The published transport package's API docs now describe all four routes (`cursor`, `devin`, `google-gemini-cli`, `google-antigravity`) and their sign-in shapes instead of claiming a Cursor-only plugin, so a reader of `dsh-llm-omp-transports` sees the surface it actually registers.
+- An unmanaged extra provider's account button now shows a "signing in" label instead of "Adopting…" while it starts a sign-in, matching a path that never adopts.
+- The static-bearer transport docs (README and known limits, EN/ZH) now say a grant with no expiry shows no expiry time and no countdown, matching the blank expiry cell instead of claiming there is no expiry line.
+- A concurrent credential refresh no longer reports a missing credential for a healthy GitLab or Factory Droid account: the losing request now reads the refresh the winner already committed instead of failing.
+
+### Added
+
+- Add the bundled `factory-droid` transport (`lib/omp/factory-droid.mjs`, 200 modules / ~2.0 MB) with a 62-row catalog generated from the pinned KDL registry seed, a WorkOS device-code sign-in, a refreshing credential record and a configurable `providers.factory-droid` allow-list. Three entry-scoped build substitutions (empty catalog data, a verbatim lean provider registry, a lean env-key map) keep the artifact small; the stripped env-key map is documented in `packages/llm-omp/docs/known-limits.md`.
+- Add the bundled `gitlab-duo` proxy transport (`lib/omp/gitlab-duo.mjs`, 231 modules / 2.65 MB) over GitLab's AI gateway, with a 16-row alias catalog (upstream id + wire + compat per row), OAuth sign-in with PKCE on a loopback `localhost:8080/callback` (no port fallback, paste as the fallback path), and a refreshing credential record. `GITLAB_CLIENT_ID`/`GITLAB_REDIRECT_URI` register a custom app and `GITLAB_TOKEN` works as the bearer.
+- Add the bundled `gitlab-duo-agent` Duo Workflow transport (`lib/omp/gitlab-duo-agent.mjs`, 118 modules / ~1.0 MB) with a one-row static catalog, paste-only `vscode://` sign-in, and a fresh per-request workflow seed so each turn replays the goal transcript through DSH's native tool loop.
+- Register all three routes with their five sibling-shaped surfaces: a Models-page entry (`declared: false`, `providers.<route>`), a catalog projection for host pickers (`factoryDroidCatalogModels()`, `gitlabDuoCatalogModels()`, `gitlabDuoAgentCatalogModels()`), a lazy artifact load (`TRANSPORT_UNAVAILABLE` at request time), and one credential record per route at `llm-omp-transports/<route>`. Factory Droid also forwards the stored account scope to the transport as `oauthIdentity`.
+
 ## [0.2.6] - 2026-10-24
 
 ### Added
