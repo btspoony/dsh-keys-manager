@@ -740,6 +740,8 @@ export function gitlabDuoAuthorizationFlow(options: GitLabFlowOptions = {}): Cur
           fetch: options.fetch,
           now: options.now,
           state: options.state,
+          // A scripted PKCE verifier (tests) or the one the attempt generated.
+          ...(options.verifier === undefined ? {} : { verifier: options.verifier }),
           signal: session.signal,
           onAuthUrl: url =>
             session.notify({ message: 'Open this page and approve the GitLab Duo sign-in.', url }),

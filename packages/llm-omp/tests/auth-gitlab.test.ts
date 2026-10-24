@@ -280,6 +280,28 @@ describe('gitlab credential resolver', () => {
     expect(calls).toEqual([])
   })
 
+  it('serves the winner\'s grant when the store reports a no-op update as undefined', async () => {
+    // A store may answer an "unchanged" mutate with `undefined`. The account is
+    // healthy — another writer refreshed it — so the resolver must re-read rather
+    // than report the sign-in as missing.
+    let record: StoredCredentialRecord | undefined = fresh({ expires: NOW - 1 })
+    const credentials: CredentialRecordsLike = {
+      readRecord: async () => record,
+      modifyRecord: async (_key, mutate) => {
+        // The competing writer commits between this turn's read and its lock, and
+        // this turn's callback then declines to write.
+        record = { kind: 'grant', payload: { access: 'winner-access', refresh: 'winner-refresh', expires: NOW + 3_600_000 } }
+        return (await mutate(record)) as StoredCredentialRecord | undefined
+      },
+    }
+    const { fetch, calls } = stubFetch(() => json({ access_token: 'never-used' }))
+
+    expect(await createGitLabDuoAgentAccess(credentials, { now, fetch })()).toBe('winner-access')
+    expect(await createGitLabDuoAccess(credentials, { now, fetch })()).toBe('winner-access')
+    // Neither call refreshed: the winner's grant was already fresh.
+    expect(calls).toEqual([])
+  })
+
   it('reports a grant without a refresh token, a rejected refresh and a missing record', async () => {
     const noRefresh = store({ kind: 'grant', payload: { access: 'a', expires: NOW - 1 } })
     await expect(createGitLabDuoAgentAccess(noRefresh.credentials, { now })()).rejects.toMatchObject({

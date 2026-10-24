@@ -149,7 +149,13 @@ export function createFactoryDroidAccess(
     // The record is committed before the cancellation is reported: a rotated
     // refresh token must not be discarded with the turn that rotated it.
     throwIfAborted(signal)
-    const resolved = readFactoryDroidGrant(stored)
+    let resolved = readFactoryDroidGrant(stored)
+    if (resolved === undefined) {
+      // A `undefined` update means the callback left the record alone — another
+      // writer refreshed it, or replaced it. That is a healthy account, so read
+      // what it committed instead of reporting the sign-in as missing.
+      resolved = readFactoryDroidGrant(await credentials.readRecord(FACTORY_DROID_CREDENTIAL_KEY))
+    }
     if (resolved === undefined) {
       throw new LlmError(
         `llm-omp-transports: the Factory Droid sign-in stored at ${FACTORY_DROID_CREDENTIAL_KEY} disappeared while it was refreshed; sign in again`,

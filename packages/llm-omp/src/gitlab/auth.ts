@@ -354,8 +354,9 @@ export interface GitLabDuoLoginOptions extends GitLabExchangeOptions {
   readonly port?: number
   /** How long to wait for the browser before failing; defaults to five minutes. */
   readonly waitMs?: number
-  /** Test seams: fixed PKCE state, clock and sleep. */
+  /** Test seams: fixed PKCE state/verifier, clock and sleep. */
   readonly state?: string
+  readonly verifier?: string
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
   readonly env?: GitLabDuoAuthEnv
 }
@@ -392,6 +393,7 @@ export function generateGitLabDuoAuthParams(
 export async function loginGitLabDuo(options: GitLabDuoLoginOptions): Promise<GitLabGrant> {
   const { params, verifier, clientId, redirectUri } = generateGitLabDuoAuthParams(options.env, {
     ...(options.state === undefined ? {} : { state: options.state }),
+    ...(options.verifier === undefined ? {} : { verifier: options.verifier }),
   })
   options.onAuthUrl?.(params.authorizeUrl)
 
