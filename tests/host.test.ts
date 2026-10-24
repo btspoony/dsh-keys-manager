@@ -18391,74 +18391,146 @@ test('a directory with cursor yields exactly one cursor transport view', async (
 })
 
 /**
- * Issue #22 (foreign projection): pin what `quotaRefresh` returns today for a
- * route whose live OAuth projection is managed natively by DSH while the pool
- * row's own grant reference is unreadable. This is a characterization test for
- * the fix that follows — it must pass on the current host code.
+ * The foreign-projection shape used by the quota matrix tests: a managed
+ * anthropic provider whose only row is an OAuth account. The row's own grant
+ * reference is configurable (unreadable by default) and so is the provider's
+ * live projection record, so every row of the behaviour matrix is expressible.
  */
-test('quota pins the foreign-projection OAuth branch', async () => {
+interface ForeignQuotaFixture {
+  h: Harness
+  service: KeysManagerService
+  /** The pool row's grant reference; unreadable unless `poolGrant` was given. */
+  deadRef: string
+  /** Every vendor read the quota probe attempted, in order. */
+  fetched: Array<{ url: string; authorization?: string }>
+}
+
+async function foreignQuotaFixture(options: {
+  poolGrant?: FakeCredentialRecord
+  projection?: FakeCredentialRecord
+  projectionReadFails?: boolean
+} = {}): Promise<ForeignQuotaFixture> {
   const h = await harness()
-  try {
-    await h.service.adoptProvider('anthropic')
-    const managed = h.store.provider('anthropic')!
-    // A dead pool grant reference: no credential record exists under it, so
-    // `quotaCredential` cannot resolve anything for this row.
-    const deadRef = 'keys-manager/anthropic-dead00000000'
-    // Replace whatever adoption imported with the single OAuth row under test.
-    managed.keys = [
-      accountRow({
-        provider: 'anthropic',
-        accountId: 'acc-pool',
-        grantRef: deadRef,
-      }),
-    ]
-    // The route IS served: a valid projection grant exists under the pi-ai
-    // record key, and nothing in it matches the pool row (different refresh,
-    // no accountId/email), so hydration classifies the provider as foreign.
-    h.credentials.records.set(GRANT_KEY, {
-      kind: 'grant',
-      payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' },
+  await h.service.adoptProvider('anthropic')
+  const deadRef = 'keys-manager/anthropic-dead00000000'
+  const managed = h.store.provider('anthropic')!
+  // Replace whatever adoption imported with the single OAuth row under test.
+  managed.keys = [accountRow({ provider: 'anthropic', accountId: 'acc-pool', grantRef: deadRef })]
+  if (options.poolGrant !== undefined) h.credentials.records.set(deadRef, options.poolGrant)
+  // The route IS served: a projection grant exists under the pi-ai record key
+  // and nothing in it matches the pool row (different refresh, no
+  // accountId/email), so hydration classifies the provider as foreign.
+  if (options.projection !== undefined) h.credentials.records.set(GRANT_KEY, options.projection)
+  if (options.projectionReadFails === true) {
+    const realRead = h.credentials.raw.readRecord.bind(h.credentials.raw)
+    h.credentials.raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === GRANT_KEY) throw new Error('credential store unavailable')
+      return realRead(key)
+    }
+  }
+  h.store.touch()
+
+  // A restarted service hydrates ownership from the records written above.
+  const service = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+  service.settings = h.settings
+  service.attachCredentials(h.credentials.raw)
+  await (service as unknown as { projectionHydration: Promise<void> }).projectionHydration
+
+  const fetched: Array<{ url: string; authorization?: string }> = []
+  service.quotaFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>
+    fetched.push({
+      url: String(input),
+      ...(headers.Authorization === undefined ? {} : { authorization: headers.Authorization }),
     })
-    h.store.touch()
-
-    // A restarted service hydrates ownership from the records written above.
-    const service = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
-    service.settings = h.settings
-    service.attachCredentials(h.credentials.raw)
-    await (service as unknown as { projectionHydration: Promise<void> }).projectionHydration
-
-    // Fixture proof: the projection exists and no pool row owns it.
-    assert.equal(
-      (service as unknown as { foreignProjections: Set<string> }).foreignProjections.has('anthropic'),
-      true,
-      'the fixture must classify anthropic as a foreign projection',
+    return new Response(
+      JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00.000Z' } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
     )
+  }) as typeof fetch
+  return { h, service, deadRef, fetched }
+}
+
+function quotaRowOf(state: StateView): KeyView {
+  return state.providers
+    .find(provider => provider.provider === 'anthropic')!
+    .keys.find(key => key.kind === 'oauth')!
+}
+
+function isForeign(service: KeysManagerService): boolean {
+  return (service as unknown as { foreignProjections: Set<string> }).foreignProjections.has('anthropic')
+}
+
+test('quota matrix: a readable pool grant keeps using the pool token', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
+  })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(row.quota?.status, 'ok')
+    assert.deepEqual(row.quota?.windows.map(window => window.id), ['session'])
+    assert.equal(fetched.length, 1)
+    assert.equal(fetched[0]!.authorization, 'Bearer at-pool')
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: an unreadable pool grant falls back to the serving projection', async () => {
+  const { h, service, fetched, deadRef } = await foreignQuotaFixture({
+    projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
+  })
+  try {
+    // Fixture proof: the projection exists and no pool row owns it.
+    assert.equal(isForeign(service), true, 'the fixture must classify anthropic as a foreign projection')
     assert.equal(h.credentials.records.has(deadRef), false)
-    assert.equal(h.credentials.records.get(GRANT_KEY)!.kind, 'grant')
 
-    const fetched: Array<{ url: string; authorization?: string }> = []
-    service.quotaFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-      const headers = (init?.headers ?? {}) as Record<string, string>
-      fetched.push({
-        url: String(input),
-        ...(headers.Authorization === undefined ? {} : { authorization: headers.Authorization }),
-      })
-      return new Response(
-        JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00.000Z' } }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )
-    }) as typeof fetch
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // The probe reads the credential that actually serves the route.
+    assert.equal(row.quota?.status, 'ok')
+    assert.deepEqual(row.quota?.windows.map(window => window.id), ['session'])
+    assert.equal(fetched.length, 1)
+    assert.equal(fetched[0]!.url, 'https://api.anthropic.com/api/oauth/usage')
+    assert.equal(fetched[0]!.authorization, 'Bearer at-native-foreign')
+  } finally {
+    await h.close()
+  }
+})
 
-    const state = await service.quotaRefresh('anthropic')
-    const row = state.providers
-      .find(provider => provider.provider === 'anthropic')!
-      .keys.find(key => key.kind === 'oauth')!
+test('quota matrix: an unreadable projection reports natively-managed, not sign-in-again', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    projection: { kind: 'grant', payload: { type: 'unknown-shape' } },
+  })
+  try {
+    assert.equal(isForeign(service), true)
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(row.quota?.status, 'natively-managed')
+    assert.deepEqual(row.quota?.windows, [])
+    assert.equal(fetched.length, 0)
+  } finally {
+    await h.close()
+  }
+})
 
-    // Pinned current behaviour: the row's own grant is unreadable, so the
-    // host answers `unauthorized` without ever calling the vendor.
+test('quota matrix: a failed projection read is unreadable, never sign-in-again', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({ projectionReadFails: true })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(row.quota?.status, 'natively-managed')
+    assert.equal(fetched.length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: no projection at all keeps the unauthorized state', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture()
+  try {
+    assert.equal(isForeign(service), false, 'no projection record means no foreign classification')
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
     assert.equal(row.quota?.status, 'unauthorized')
     assert.deepEqual(row.quota?.windows, [])
-    // Branch discriminator: (a) no request was attempted, not (b) a refusal.
     assert.equal(fetched.length, 0)
   } finally {
     await h.close()

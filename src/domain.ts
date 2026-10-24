@@ -145,7 +145,7 @@ export interface QuotaWindowView {
  * it is deliberately absent from `KeyRecord` and `sanitizeState` (plan D1).
  */
 export interface QuotaView {
-  status: 'ok' | 'absent' | 'unauthorized' | 'error'
+  status: 'ok' | 'absent' | 'unauthorized' | 'error' | 'natively-managed'
   fetchedAt: number
   /** True when the windows are last-good data served behind a failed probe. */
   stale?: boolean

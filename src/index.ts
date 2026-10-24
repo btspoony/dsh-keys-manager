@@ -650,6 +650,18 @@ function missingHeaders(declared: Record<string, string> | undefined, stored: Re
   return missing
 }
 
+/**
+ * What one quota read resolved as its credential source.
+ *
+ * `credential` is usable as-is; `natively-managed` means the route is served by
+ * a DSH projection this process cannot read; `missing` means neither source
+ * exists, so an OAuth row really does need a sign-in.
+ */
+type QuotaCredential =
+  | { kind: 'credential'; token: string; accountId?: string }
+  | { kind: 'natively-managed' }
+  | { kind: 'missing' }
+
 /** Public, secret-free key row. */
 function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null, quota?: QuotaView): KeyView {
   return {
@@ -6812,12 +6824,23 @@ export class KeysManagerService {
    * row share one probe.
    */
   private async refreshQuotaRow(provider: string, cache: QuotaCache, key: KeyRecord): Promise<void> {
-    const credential = await this.quotaCredential(key)
+    const credential = await this.quotaCredential(provider, key)
     await cache.get(provider, key.id, async () => {
-      if (credential === undefined) {
-        // An unreadable grant is an account problem, not "this plan has no
-        // usage API": an OAuth row says `unauthorized` so the card can offer
-        // a re-sign-in, an API-key row without a value says `absent`.
+      if (credential.kind === 'natively-managed') {
+        // The route is served by a DSH-managed projection we cannot read. That
+        // is not "your pool credential is invalid": the honest state keeps the
+        // card from telling a user to sign in again right after they did.
+        return {
+          status: 'natively-managed' as const,
+          fetchedAt: 0,
+          windows: [],
+          reason: 'the route is served by a natively managed projection',
+        }
+      }
+      if (credential.kind === 'missing') {
+        // No projection serves this route and the row's own grant is
+        // unreadable: an OAuth row says `unauthorized` so the card can offer a
+        // re-sign-in, an API-key row without a value says `absent`.
         return {
           status: key.kind === 'oauth' ? ('unauthorized' as const) : ('absent' as const),
           fetchedAt: 0,
@@ -6833,23 +6856,68 @@ export class KeysManagerService {
     })
   }
 
-  /** The credential one row's plan usage is read with, or undefined. */
-  private async quotaCredential(key: KeyRecord): Promise<{ token: string; accountId?: string } | undefined> {
+  /**
+   * The credential one row's plan usage is read with.
+   *
+   * For an OAuth row the pool copy wins; when it is unreadable the projection
+   * record (`llm-pi-ai/<provider>`) is consulted, because that grant — not the
+   * pool row — is what actually serves the route. Reading is the only thing
+   * this does: no write, no rebind, no `modifyRecord`.
+   */
+  private async quotaCredential(provider: string, key: KeyRecord): Promise<QuotaCredential> {
     if (key.kind === 'oauth') {
-      const grantRef = key.oauth?.grantRef
-      const records = this.credentialRecords()
-      if (grantRef === undefined || grantRef.length === 0 || records === undefined) return undefined
-      try {
-        const record = await records.readRecord(grantRef)
-        if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return undefined
-        const accountId = key.oauth?.accountId
-        return { token: record.payload.access, ...(accountId === undefined ? {} : { accountId }) }
-      } catch {
-        return undefined
-      }
+      const own = await this.readGrantCredential(key.oauth?.grantRef, key.oauth?.accountId)
+      if (own !== undefined) return own
+      return this.projectionQuotaCredential(provider)
     }
     const probe = await this.probeKey(key.ref)
-    return probe.hit === undefined ? undefined : { token: probe.hit.value }
+    return probe.hit === undefined ? { kind: 'missing' } : { kind: 'credential', token: probe.hit.value }
+  }
+
+  /** A readable pool grant for one row, or `undefined` when it cannot be used. */
+  private async readGrantCredential(
+    grantRef: string | undefined,
+    accountId: string | undefined,
+  ): Promise<QuotaCredential | undefined> {
+    const records = this.credentialRecords()
+    if (grantRef === undefined || grantRef.length === 0 || records === undefined) return undefined
+    try {
+      const record = await records.readRecord(grantRef)
+      if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return undefined
+      return {
+        kind: 'credential',
+        token: record.payload.access,
+        ...(accountId === undefined ? {} : { accountId }),
+      }
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * The provider's live projection as a quota credential.
+   *
+   * A record that exists but cannot be read (wrong kind, unrecognized payload)
+   * or a read that throws is classified `natively-managed`, never `missing`: we
+   * cannot prove no account serves the route, and claiming otherwise is exactly
+   * the false "sign in again" this plan removes.
+   */
+  private async projectionQuotaCredential(provider: string): Promise<QuotaCredential> {
+    const records = this.credentialRecords()
+    if (records === undefined) return { kind: 'missing' }
+    try {
+      const record = await records.readRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
+      if (record === undefined) return { kind: 'missing' }
+      if (record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return { kind: 'natively-managed' }
+      const accountId = record.payload.accountId
+      return {
+        kind: 'credential',
+        token: record.payload.access,
+        ...(typeof accountId === 'string' && accountId.length > 0 ? { accountId } : {}),
+      }
+    } catch {
+      return { kind: 'natively-managed' }
+    }
   }
 
   /** Project the cached quota of one row; a pure memory read, never a probe. */
