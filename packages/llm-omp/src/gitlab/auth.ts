@@ -19,6 +19,8 @@
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 
+import { startCallbackListener } from '../google/callback-listener.js'
+
 /** The endpoints, client and redirect the pinned rule declares. */
 export const GITLAB_DUO_AGENT_AUTH = {
   authorizeUrl: 'https://gitlab.com/oauth/authorize',
@@ -29,6 +31,21 @@ export const GITLAB_DUO_AGENT_AUTH = {
   /** The rule's exact registered redirect: it must be echoed on exchange *and* refresh. */
   redirectUri: 'vscode://gitlab.gitlab-workflow/authentication',
 } as const
+
+/** The Duo proxy's loopback callback: registered exactly, with no port fallback (D13). */
+export const GITLAB_DUO_AUTH = {
+  authorizeUrl: 'https://gitlab.com/oauth/authorize',
+  tokenUrl: 'https://gitlab.com/oauth/token',
+  /** The rule's bundled client; `GITLAB_CLIENT_ID` overrides it for a custom app. */
+  clientId: 'da4edff2e6ebd2bc3208611e2768bc1c1dd7be791dc5ff26ca34ca9ee44f7d4b',
+  scopes: 'api',
+  /** Registered exactly: the rule declares no port fallback (D13). */
+  redirectUri: 'http://localhost:8080/callback',
+  callback: { hostname: 'localhost', port: 8080, path: '/callback' },
+} as const
+
+/** How long the duo flow waits for the browser before failing the attempt. */
+const DUO_CALLBACK_WAIT_MS = 300_000
 
 /** The rule's `skew-ms=300000` on `expires_in`. */
 const TOKEN_SKEW_MS = 5 * 60 * 1000
@@ -291,4 +308,156 @@ export async function loginGitLab(options: GitLabLoginOptions): Promise<GitLabGr
     throw new GitLabAuthError('the pasted callback state does not match this sign-in attempt')
   }
   return await exchangeGitLabCode(callback.code, params.verifier, options)
+}
+
+/** Options the environment can override, as the rule's `env=` attributes declare. */
+export interface GitLabDuoAuthEnv {
+  readonly GITLAB_CLIENT_ID?: string | undefined
+  readonly GITLAB_REDIRECT_URI?: string | undefined
+}
+
+/** The client and redirect this attempt uses: the rule's, unless the env overrides them. */
+export function gitlabDuoClient(env: GitLabDuoAuthEnv = process.env): {
+  clientId: string
+  redirectUri: string
+} {
+  return {
+    clientId: env.GITLAB_CLIENT_ID?.trim() || GITLAB_DUO_AUTH.clientId,
+    redirectUri: env.GITLAB_REDIRECT_URI?.trim() || GITLAB_DUO_AUTH.redirectUri,
+  }
+}
+
+/** Options for {@link loginGitLabDuo}. */
+export interface GitLabDuoLoginOptions extends GitLabExchangeOptions {
+  /** Report the authorize page; the flow wraps `session.notify`. */
+  readonly onAuthUrl?: (url: string) => void
+  /** Ask for the pasted callback; the flow wraps `session.prompt`. */
+  readonly prompt: () => Promise<string>
+  /** Report why the browser half is unavailable (a busy 8080); the flow notifies. */
+  readonly onListenerError?: (message: string) => void
+  /** Loopback port; defaults to the rule's 8080 and never falls back (D13). */
+  readonly port?: number
+  /** How long to wait for the browser before failing; defaults to five minutes. */
+  readonly waitMs?: number
+  /** Test seams: fixed PKCE state, clock and sleep. */
+  readonly state?: string
+  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+  readonly env?: GitLabDuoAuthEnv
+}
+
+/** Build one attempt's authorize URL with PKCE and the configured client/redirect. */
+export function generateGitLabDuoAuthParams(
+  env: GitLabDuoAuthEnv = process.env,
+  overrides: { state?: string; verifier?: string } = {},
+): { params: GitLabAuthParams; verifier: string; clientId: string; redirectUri: string } {
+  const { clientId, redirectUri } = gitlabDuoClient(env)
+  const params = generateGitLabAuthParams(overrides)
+  const url = new URL(params.authorizeUrl)
+  url.searchParams.set('client_id', clientId)
+  url.searchParams.set('redirect_uri', redirectUri)
+  return { params: { ...params, authorizeUrl: url.toString() }, verifier: params.verifier, clientId, redirectUri }
+}
+
+/**
+ * Run one Duo sign-in: loopback listener **or** a pasted callback, whichever the
+ * human produces first.
+ *
+ * @remarks
+ * The rule's callback is `localhost:8080/callback` with **no port fallback**: the
+ * OAuth client is registered against that exact URI, so falling back to an
+ * ephemeral port would send the browser nowhere. A taken 8080 therefore surfaces
+ * the rule's instructions (register your own app or use a PAT) and leaves the
+ * paste prompt as the only path — never a silent port change.
+ *
+ * @param options - fetch, clock, listener/prompt and abort seams.
+ * @returns the grant to commit.
+ * @throws GitLabAuthError for a state mismatch, an empty paste, a transport
+ *   failure or a body missing a required field.
+ */
+export async function loginGitLabDuo(options: GitLabDuoLoginOptions): Promise<GitLabGrant> {
+  const { params, verifier, clientId, redirectUri } = generateGitLabDuoAuthParams(options.env, {
+    ...(options.state === undefined ? {} : { state: options.state }),
+  })
+  options.onAuthUrl?.(params.authorizeUrl)
+
+  let listener: Awaited<ReturnType<typeof startCallbackListener>> | undefined
+  try {
+    listener = await startCallbackListener({
+      facts: { callback: GITLAB_DUO_AUTH.callback },
+      expectedState: params.state,
+      port: options.port ?? GITLAB_DUO_AUTH.callback.port,
+      // D13: no ephemeral fallback — the redirect URI is registered exactly.
+      portFallback: false,
+      redirectUri,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    })
+  } catch (cause) {
+    options.onListenerError?.(cause instanceof Error ? cause.message : String(cause))
+  }
+
+  const pasted = options.prompt().then(text => {
+    const callback = parseGitLabCallback(text)
+    if (callback.state === undefined) {
+      throw new GitLabAuthError(
+        'the pasted callback carries no state; paste the full callback URL (it contains state=…)',
+      )
+    }
+    if (callback.state !== params.state) {
+      throw new GitLabAuthError('the pasted callback state does not match this sign-in attempt')
+    }
+    return callback
+  })
+  // The loser of the race must not surface later as an unhandled rejection.
+  pasted.catch(() => {})
+
+  let code: string
+  try {
+    if (listener === undefined) {
+      code = (await pasted).code
+    } else {
+      const raced = await withDeadline(listener.callback, pasted, options.waitMs ?? DUO_CALLBACK_WAIT_MS, options.signal)
+      code = raced.code
+    }
+  } finally {
+    await listener?.close()
+  }
+
+  const body = await postForm(
+    {
+      client_id: clientId,
+      code,
+      grant_type: 'authorization_code',
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+    },
+    options,
+  )
+  return mapToken(body, options.now ?? Date.now)
+}
+
+/** Race the listener against the paste and a wait budget, cancelling the timer. */
+async function withDeadline<T>(
+  fromListener: Promise<T>,
+  fromPaste: Promise<T>,
+  waitMs: number,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new GitLabAuthError(
+          signal?.aborted === true
+            ? 'the sign-in attempt was cancelled'
+            : `no GitLab callback arrived within ${Math.round(waitMs / 1000)}s; start the sign-in again`,
+        ),
+      )
+    }, waitMs)
+  })
+  timeout.catch(() => {})
+  try {
+    return await Promise.race([fromListener, fromPaste, timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }

@@ -19,11 +19,13 @@ import {
   DEVIN_ROUTE,
   FACTORY_DROID_TRANSPORT_ROUTE,
   GITLAB_DUO_AGENT_TRANSPORT_ROUTE,
+  GITLAB_DUO_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
   OmpFactoryDroidAdapter,
+  OmpGitLabDuoAdapter,
   OmpGitLabDuoAgentAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
@@ -659,7 +661,7 @@ describe('llm-omp-transports registration', () => {
     }
   }
 
-  it('registers all six adapters, their Models-page entries and all six flows', () => {
+  it('registers all seven adapters, their Models-page entries and all seven flows', () => {
     const host = fakeHost()
     apply(host.ctx)
 
@@ -671,6 +673,7 @@ describe('llm-omp-transports registration', () => {
       `adapter:${GOOGLE_GEMINI_CLI_ROUTE}`,
       `adapter:${GOOGLE_ANTIGRAVITY_ROUTE}`,
       `adapter:${FACTORY_DROID_TRANSPORT_ROUTE.id}`,
+      `adapter:${GITLAB_DUO_TRANSPORT_ROUTE.id}`,
       `adapter:${GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id}`,
       'providers',
       'flow:llm-omp-transports/cursor',
@@ -678,6 +681,7 @@ describe('llm-omp-transports registration', () => {
       'flow:llm-omp-transports/google-gemini-cli',
       'flow:llm-omp-transports/google-antigravity',
       'flow:llm-omp-transports/factory-droid',
+      'flow:llm-omp-transports/gitlab-duo',
       'flow:llm-omp-transports/gitlab-duo-agent',
     ])
     expect(host.adapters.map(entry => entry.providers)).toEqual([
@@ -686,6 +690,7 @@ describe('llm-omp-transports registration', () => {
       [GOOGLE_GEMINI_CLI_ROUTE],
       [GOOGLE_ANTIGRAVITY_ROUTE],
       [FACTORY_DROID_TRANSPORT_ROUTE.id],
+      [GITLAB_DUO_TRANSPORT_ROUTE.id],
       [GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id],
     ])
     expect(host.adapters[0]!.adapter).toBeInstanceOf(OmpCursorAdapter)
@@ -695,7 +700,8 @@ describe('llm-omp-transports registration', () => {
     expect(host.adapters[4]!.adapter).toBeInstanceOf(OmpFactoryDroidAdapter)
     // The GitLab routes register after the Factory one; the agent ships first and
     // the proxy route follows in its own task.
-    expect(host.adapters[5]!.adapter).toBeInstanceOf(OmpGitLabDuoAgentAdapter)
+    expect(host.adapters[5]!.adapter).toBeInstanceOf(OmpGitLabDuoAdapter)
+    expect(host.adapters[6]!.adapter).toBeInstanceOf(OmpGitLabDuoAgentAdapter)
     expect(host.directories).toEqual([
       [
         {
@@ -734,6 +740,13 @@ describe('llm-omp-transports registration', () => {
           declared: false,
         },
         {
+          provider: 'gitlab-duo',
+          displayName: 'GitLab Duo',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'gitlab-duo'],
+          declared: false,
+        },
+        {
           provider: 'gitlab-duo-agent',
           displayName: 'GitLab Duo Agent',
           settingsNs: 'llm-omp-transports',
@@ -767,6 +780,11 @@ describe('llm-omp-transports registration', () => {
         key: 'llm-omp-transports/factory-droid',
         label: 'Factory Droid',
         methods: [{ id: 'oauth', label: 'Sign in with Factory Droid' }],
+      },
+      {
+        key: 'llm-omp-transports/gitlab-duo',
+        label: 'GitLab Duo',
+        methods: [{ id: 'oauth', label: 'Sign in with GitLab Duo' }],
       },
       {
         key: 'llm-omp-transports/gitlab-duo-agent',

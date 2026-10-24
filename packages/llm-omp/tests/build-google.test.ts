@@ -111,6 +111,7 @@ describe('google drift gate', () => {
       'cursor',
       'devin',
       'factory-droid',
+      'gitlab-duo',
       'gitlab-duo-agent',
       'google',
     ])

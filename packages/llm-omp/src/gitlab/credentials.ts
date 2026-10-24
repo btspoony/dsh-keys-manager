@@ -17,13 +17,13 @@
  */
 import { LlmError } from '@deepseek-ai/dsh-llm'
 
-import { GITLAB_DUO_AGENT_CREDENTIAL_KEY } from '../adapter.js'
+import { GITLAB_DUO_AGENT_CREDENTIAL_KEY, GITLAB_DUO_CREDENTIAL_KEY } from '../adapter.js'
 import type { CredentialRecordsLike, StoredCredentialRecord } from '../cursor/credentials.js'
 import { GitLabAuthError, refreshGitLabToken } from './auth.js'
 import type { GitLabFetch } from './auth.js'
 
-/** The record this plugin owns; re-exported from the adapter where the route names it. */
-export { GITLAB_DUO_AGENT_CREDENTIAL_KEY }
+/** The records this plugin owns; re-exported from the adapter where the routes name them. */
+export { GITLAB_DUO_AGENT_CREDENTIAL_KEY, GITLAB_DUO_CREDENTIAL_KEY }
 
 /** How early a grant is renewed: enough for one in-flight turn, like the other routes. */
 const REFRESH_WINDOW_MS = 60_000
@@ -87,28 +87,83 @@ export function createGitLabDuoAgentAccess(
   credentials: CredentialRecordsLike,
   options: GitLabAccessOptions = {},
 ): (signal?: AbortSignal) => Promise<string> {
-  const now = options.now ?? Date.now
+  return resolveWith(credentials, GITLAB_DUO_AGENT_CREDENTIAL_KEY, 'GitLab Duo Agent', options)
+}
 
+
+/** Reject an aborted signal, so a cancelled turn cannot look like a slow refresh. */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new LlmError(
+      'llm-omp-transports: the turn was cancelled while the GitLab sign-in was refreshed',
+      'ABORTED',
+    )
+  }
+}
+
+/** Map the auth module's failures onto the seam's stable codes. */
+async function withCredentialErrors<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write()
+  } catch (cause) {
+    if (cause instanceof LlmError) throw cause
+    if (cause instanceof GitLabAuthError) {
+      throw new LlmError(`llm-omp-transports: the GitLab sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
+        cause,
+      })
+    }
+    throw cause
+  }
+}
+
+/**
+ * Build the Duo **proxy** route's per-request access resolver.
+ *
+ * @remarks
+ * Same CAS shape as {@link createGitLabDuoAgentAccess}, with the route's own
+ * record. The rule's `after-refresh hook="gitlab-duo-clear-cache"` has a natural
+ * plugin equivalent here: the proxy transport caches its 25-minute direct-access
+ * token **inside the artifact, keyed by the GitLab access token**, so a refresh
+ * that rotates `access` misses that cache by construction (A9). Nothing else is
+ * cached in the plugin, so no cache can go stale across a refresh.
+ *
+ * @param credentials - the record half of the credentials seam.
+ * @param options - fetch and clock seams.
+ * @returns a resolver that answers the stored (or refreshed) GitLab token.
+ */
+export function createGitLabDuoAccess(
+  credentials: CredentialRecordsLike,
+  options: GitLabAccessOptions = {},
+): (signal?: AbortSignal) => Promise<string> {
+  return resolveWith(credentials, GITLAB_DUO_CREDENTIAL_KEY, 'GitLab Duo', options)
+}
+
+/** The shared resolver body: both GitLab routes differ only in their record key. */
+function resolveWith(
+  credentials: CredentialRecordsLike,
+  key: string,
+  label: string,
+  options: GitLabAccessOptions,
+): (signal?: AbortSignal) => Promise<string> {
+  const now = options.now ?? Date.now
   return async signal => {
-    const grant = readGitLabGrant(await credentials.readRecord(GITLAB_DUO_AGENT_CREDENTIAL_KEY))
+    const grant = readGitLabGrant(await credentials.readRecord(key))
     if (grant === undefined) {
       throw new LlmError(
-        `llm-omp-transports: no GitLab Duo Agent sign-in is stored at ${GITLAB_DUO_AGENT_CREDENTIAL_KEY}; run the GitLab Duo Agent authorization flow`,
+        `llm-omp-transports: no ${label} sign-in is stored at ${key}; run the ${label} authorization flow`,
         'MISSING_CREDENTIAL',
       )
     }
     if (grant.expires === undefined || grant.expires - REFRESH_WINDOW_MS > now()) return grant.access
 
     const stored = await withCredentialErrors(() =>
-      credentials.modifyRecord(GITLAB_DUO_AGENT_CREDENTIAL_KEY, async current => {
+      credentials.modifyRecord(key, async current => {
         const live = readGitLabGrant(current)
-        // Removed or replaced while this turn waited for the lock: leave it alone.
         if (live === undefined) return undefined
-        // Another writer refreshed it between the read and the lock.
         if (live.expires === undefined || live.expires - REFRESH_WINDOW_MS > now()) return undefined
         if (live.refresh === undefined) {
           throw new LlmError(
-            `llm-omp-transports: the GitLab Duo Agent grant stored at ${GITLAB_DUO_AGENT_CREDENTIAL_KEY} has no refresh token; sign in again`,
+            `llm-omp-transports: the ${label} grant stored at ${key} has no refresh token; sign in again`,
             'REAUTH_REQUIRED',
           )
         }
@@ -122,7 +177,6 @@ export function createGitLabDuoAgentAccess(
           payload: {
             ...(payloadOf(current) ?? {}),
             access: refreshed.access,
-            // A refresh that does not rotate the token keeps the stored one.
             refresh: refreshed.refresh,
             expires: refreshed.expires,
             ...(live.email === undefined ? {} : { email: live.email }),
@@ -131,41 +185,15 @@ export function createGitLabDuoAgentAccess(
       }),
     )
 
-    // The record is committed before the cancellation is reported: a rotated
-    // refresh token must not be discarded with the turn that rotated it.
+    // Committed before the cancellation is reported: a rotated token is never lost.
     throwIfAborted(signal)
     const resolved = readGitLabGrant(stored)
     if (resolved === undefined) {
       throw new LlmError(
-        `llm-omp-transports: the GitLab Duo Agent sign-in stored at ${GITLAB_DUO_AGENT_CREDENTIAL_KEY} disappeared while it was refreshed; sign in again`,
+        `llm-omp-transports: the ${label} sign-in stored at ${key} disappeared while it was refreshed; sign in again`,
         'MISSING_CREDENTIAL',
       )
     }
     return resolved.access
-  }
-}
-
-/** Reject an aborted signal, so a cancelled turn cannot look like a slow refresh. */
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw new LlmError(
-      'llm-omp-transports: the turn was cancelled while the GitLab Duo Agent sign-in was refreshed',
-      'ABORTED',
-    )
-  }
-}
-
-/** Map the auth module's failures onto the seam's stable codes. */
-async function withCredentialErrors<T>(write: () => Promise<T>): Promise<T> {
-  try {
-    return await write()
-  } catch (cause) {
-    if (cause instanceof LlmError) throw cause
-    if (cause instanceof GitLabAuthError) {
-      throw new LlmError(`llm-omp-transports: GitLab Duo Agent sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
-        cause,
-      })
-    }
-    throw cause
   }
 }

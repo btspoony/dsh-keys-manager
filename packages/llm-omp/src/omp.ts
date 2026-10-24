@@ -529,6 +529,74 @@ export type OmpDevinTransport = (
 ) => AsyncIterable<OmpAssistantMessageEvent>
 
 
+/** The three wires GitLab's Duo proxy fronts. */
+export type GitLabDuoApiRoute = 'anthropic-messages' | 'openai-responses' | 'openai-completions'
+
+/**
+ * One row of the generated GitLab Duo **proxy** table.
+ *
+ * The proxy route reuses the three generic wire transports behind GitLab's
+ * gateway, so a row carries three wire facts beside the model metadata: the
+ * upstream id the proxy serves (`upstreamModelId`, the alias table's value — the
+ * transport substitutes it for the id on the request), the wire that id routes to
+ * (`apiRoute`, from the compiled `api-routes` registry) and the full `compat`
+ * object verbatim (`compatConfig`, which the transport hands to `buildModel` and
+ * the inner transport re-reads).
+ */
+export interface GitLabDuoModelRow {
+  readonly id: string
+  readonly name: string
+  readonly api: 'gitlab-duo'
+  readonly provider: 'gitlab-duo'
+  /** Upstream model id the proxy expects on the wire. */
+  readonly upstreamModelId: string
+  /** Wire protocol this row routes to. */
+  readonly apiRoute: GitLabDuoApiRoute
+  readonly baseUrl: string
+  /** Combined request and response context window in tokens. */
+  readonly contextWindow: number
+  readonly maxTokens?: number
+  readonly input: ('text' | 'image')[]
+  readonly cost: ModelCost
+  readonly reasoning: boolean
+  /** The full resolved compat object; the transport forwards it to `buildModel`. */
+  readonly compat: Readonly<Record<string, unknown>>
+}
+
+/** The omp model object for a GitLab Duo proxy row: the catalog row is the model. */
+export interface OmpGitLabDuoModel extends GitLabDuoModelRow {}
+
+/**
+ * Request options handed to the omp GitLab Duo proxy transport (`streamGitLabDuo`).
+ *
+ * The transport performs everything the route needs on its own: it POSTs for the
+ * direct-access token, resolves the upstream id and the wire, rewrites the base
+ * URL to GitLab's proxy and folds the effort into the Anthropic thinking budget.
+ * So this surface is the standard stream knobs plus the credential — no headers
+ * (caller headers merge last and would overwrite the gateway's), no base URL.
+ */
+export interface OmpGitLabDuoOptions {
+  /** Bare GitLab token: an OAuth access token or `GITLAB_TOKEN`. */
+  readonly apiKey: string
+  readonly signal?: AbortSignal
+  readonly sessionId?: string
+  readonly maxTokens?: number
+  readonly temperature?: number
+  /** Thinking effort; the Anthropic wire folds it into a budget. */
+  readonly reasoning?: string
+  /** Per-request transport state the inner streams key their caches on. */
+  readonly providerSessionState?: Map<string, unknown>
+  /** Fill-absent attribution wrapper (`src/transport/fetch.ts`). */
+  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+}
+
+/** The injected GitLab Duo proxy transport shape: omp's `streamGitLabDuo`. */
+export type OmpGitLabDuoTransport = (
+  model: OmpGitLabDuoModel,
+  context: OmpContext,
+  options: OmpGitLabDuoOptions,
+) => AsyncIterable<OmpAssistantMessageEvent>
+
 /** The omp model object for a GitLab Duo agent row: the catalog row is the model. */
 export interface OmpGitLabDuoAgentModel extends GitLabDuoAgentModelRow {}
 

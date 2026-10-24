@@ -67,6 +67,13 @@ function source(file) {
   return sources.get(file)
 }
 
+/** The compiled compat registry (`rules.json`), read once. */
+let rulesCache
+function rules() {
+  rulesCache ??= source('src/compat/rules.json').data
+  return rulesCache
+}
+
 /** The four per-million prices omp prices a turn with. */
 function reduceCost(cost) {
   return {
@@ -217,6 +224,86 @@ function reduceFactoryDroid(row) {
 }
 
 /**
+ * The Duo proxy's alias → upstream id table, read from the pin's
+ * `provider-models/special.ts`.
+ *
+ * The table is a TypeScript literal (not JSON), and it is *deployment identity*,
+ * not model metadata: the proxy serves these upstream ids whatever the catalog
+ * calls the row. It is parsed here rather than hand-tracked so a pin bump that
+ * renames an upstream fails the manifest's source hash and this table together.
+ *
+ * @returns alias → upstream model id.
+ */
+function gitlabDuoAliases() {
+  const text = readFileSync(join(catalogRoot, 'src/provider-models/special.ts'), 'utf8')
+  const start = text.indexOf('const GITLAB_DUO_MODEL_IDENTITIES')
+  if (start === -1) throw new Error('llm-omp: the pin has no GITLAB_DUO_MODEL_IDENTITIES table')
+  const block = text.slice(start, text.indexOf('\n};', start))
+  const aliases = new Map()
+  for (const match of block.matchAll(/"([^"]+)":\s*\{[^}]*?upstreamModelId:\s*"([^"]+)"/g)) {
+    aliases.set(match[1], match[2])
+  }
+  if (aliases.size === 0) throw new Error('llm-omp: the Duo alias table parsed empty')
+  return aliases
+}
+
+/**
+ * The wire one Duo row routes to, from the compiled `api-routes` registry.
+ *
+ * Mirrors omp's `apiRouteFor`: the first route whose `prefix`/`exact` match list
+ * contains the id wins, and the provider's `default` applies otherwise. A row
+ * whose id matches nothing and whose provider has no default is a hard error —
+ * the transport would refuse the request, so the catalog must not ship it.
+ *
+ * @param id - the catalog row id (the alias the proxy serves).
+ * @returns the wire protocol.
+ */
+function gitlabDuoApiRoute(id) {
+  const entry = (rules().behavior?.apiRoutes ?? []).find(candidate => candidate.provider === 'gitlab-duo')
+  if (entry === undefined) throw new Error('llm-omp: the pin declares no gitlab-duo api-routes')
+  for (const route of entry.routes ?? []) {
+    const { prefix = [], exact = [] } = route.match ?? {}
+    if (exact.includes(id) || prefix.some(candidate => id.startsWith(candidate))) return route.api
+  }
+  if (typeof entry.default === 'string') return entry.default
+  throw new Error(`llm-omp: no Duo api route for ${id}`)
+}
+
+/**
+ * Reduce one GitLab Duo **proxy** row.
+ *
+ * The row is a proxy alias: its `api`/`provider` are the route, `upstreamModelId`
+ * is what the proxy expects on the wire (the transport substitutes it) and
+ * `apiRoute` picks the generic transport. `compat` is copied whole — the
+ * transport hands it to `buildModel` as `compatConfig` and the inner transport
+ * re-reads its flags — and the rest is the metadata the seam advertises.
+ *
+ * @param row - one `models.json` `gitlab-duo` row.
+ * @param aliases - the alias → upstream id table.
+ * @returns the generated row.
+ */
+function reduceGitLabDuo(row, aliases) {
+  const out = {
+    id: row.id,
+    name: row.name,
+    api: 'gitlab-duo',
+    provider: 'gitlab-duo',
+    // A bare upstream id resolves to itself: the reverse lookup in the pin maps
+    // it onto the alias that names the same upstream.
+    upstreamModelId: aliases.get(row.id) ?? row.id,
+    apiRoute: gitlabDuoApiRoute(row.id),
+    baseUrl: row.baseUrl,
+    contextWindow: row.contextWindow,
+    input: [...row.input],
+    cost: reduceCost(row.cost),
+    reasoning: row.reasoning === true,
+    compat: { ...row.compat },
+  }
+  if (typeof row.maxTokens === 'number') out.maxTokens = row.maxTokens
+  return out
+}
+
+/**
  * Reduce one GitLab Duo **agent** row.
  *
  * The roster is the single static row its pinned catalog declares; the live
@@ -328,6 +415,37 @@ const PROVIDERS = [
  */`,
   },
   {
+    key: 'gitlab-duo',
+    out: join(packageRoot, 'src', 'catalog', 'gitlab-duo.ts'),
+    constName: 'GITLAB_DUO_MODELS',
+    sourceConst: 'GITLAB_DUO_CATALOG_SOURCE',
+    rowType: 'GitLabDuoModelRow',
+    sourceFile: 'src/models.json',
+    select: (data, key) => data[key],
+    summary: 'Every GitLab Duo proxy row the pinned catalog serves, sorted by id.',
+    reduce: (row, provider) => reduceGitLabDuo(row, provider?.aliases ?? gitlabDuoAliases()),
+    doc: ({ version, rowCount, sourceHash }) => `/**
+ * Generated GitLab Duo proxy model table — do not edit by hand.
+ *
+ * Source: \`@oh-my-pi/pi-catalog@${version}\` \`src/models.json\` key
+ * \`gitlab-duo\` (${rowCount} rows, ${sourceHash}), plus the alias → upstream id
+ * table parsed from \`src/provider-models/special.ts\` and the wire per row from
+ * \`src/compat/rules.json\` \`behavior.apiRoutes\`. Regenerate with
+ * \`pnpm -C packages/llm-omp run generate:catalog\`.
+ *
+ * The route is a proxy: \`upstreamModelId\` is what GitLab's gateway expects on
+ * the wire (the transport substitutes it for the row id), \`apiRoute\` selects one
+ * of the three generic transports, and \`compat\` travels whole because the
+ * transport hands it to \`buildModel\` and the inner transport re-reads it.
+ *
+ * The drift gate in \`tests/build-gitlab.test.ts\` pins the catalog source hash, the
+ * alias-table source hash and every row's wire, so an omp bump that renames an
+ * upstream or reroutes a row fails before the table describes the wrong proxy.
+ *
+ * @module dsh-llm-omp-transports/catalog/gitlab-duo
+ */`,
+  },
+  {
     key: 'gitlab-duo-agent',
     out: join(packageRoot, 'src', 'catalog', 'gitlab-duo-agent.ts'),
     constName: 'GITLAB_DUO_AGENT_MODELS',
@@ -432,8 +550,11 @@ function generate(provider) {
     throw new Error(`llm-omp: \`${provider.sourceFile}\` has no \`${provider.key}\` models`)
   }
 
+  // The Duo proxy table also needs the pin's alias map; every other reducer
+  // ignores the second argument.
+  const context = provider.key === 'gitlab-duo' ? { aliases: gitlabDuoAliases() } : undefined
   const reduced = Object.values(rows)
-    .map(provider.reduce)
+    .map(row => provider.reduce(row, context))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   if (reduced.length === 0) throw new Error(`llm-omp: the installed catalog has no \`${provider.key}\` models`)
   const body = reduced.map(row => `  ${render(row, '  ')},`).join('\n')

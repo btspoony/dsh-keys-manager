@@ -25,9 +25,10 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
+import { GITLAB_DUO_CATALOG_SOURCE, GITLAB_DUO_MODELS } from '../src/catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_CATALOG_SOURCE, GITLAB_DUO_AGENT_MODELS } from '../src/catalog/gitlab-duo-agent.js'
-import { GITLAB_DUO_AGENT_AUTH } from '../src/gitlab/auth.js'
-import { gitlabDuoAgentCatalogModels } from '../src/index.js'
+import { GITLAB_DUO_AGENT_AUTH, GITLAB_DUO_AUTH } from '../src/gitlab/auth.js'
+import { gitlabDuoAgentCatalogModels, gitlabDuoCatalogModels } from '../src/index.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -47,6 +48,7 @@ interface OmpManifest {
   piUtilsVersion: string
   esbuildVersion: string
   entries: Record<string, OmpEntry>
+  shimSymbols: Record<string, string[]>
   sourceHashes: Record<string, string>
 }
 
@@ -156,5 +158,93 @@ describe('gitlab duo agent drift gate', () => {
     expect(generated.status, `${generated.stdout}\n${generated.stderr}`).toBe(0)
     expect(readFileSync(catalogPath).equals(before)).toBe(true)
     expect(gitlabDuoAgentCatalogModels()).toEqual(GITLAB_DUO_AGENT_MODELS.map(row => ({ id: row.id, name: row.name })))
+  })
+})
+
+describe('gitlab duo proxy drift gate', () => {
+  const duo = manifest.entries['gitlab-duo']
+  const metafile = JSON.parse(readFileSync(join(packageRoot, duo!.metafile), 'utf8')) as {
+    inputs: Record<string, { imports: { path: string }[] }>
+  }
+  const inputs = Object.keys(metafile.inputs).map(path => path.replace(/.*node_modules\//, ''))
+
+  it('builds under the 4 MB bound from the entry-scoped substitutions', () => {
+    // 2 654 940 bytes measured; the ceiling is 3 980 000 (plan D12: ≤4 MB).
+    expect(duo!.bytes).toBeLessThanOrEqual(4_000_000)
+    expect(duo!.moduleCount).toBe(231)
+    // The alias fired: the lean registry substitute is an input and the real
+    // dispatch table is not, so the builtin provider registry never enters.
+    expect(inputs).toContain('scripts/omp-shim/register-builtins-lean.ts')
+    expect(inputs).not.toContain('@oh-my-pi/pi-ai/src/providers/register-builtins.ts')
+    expect(inputs.filter(path => path.endsWith('models.json'))).toEqual([])
+    expect(inputs).not.toContain('@oh-my-pi/pi-ai/src/stream.ts')
+    expect(inputs).not.toContain('@oh-my-pi/pi-ai/src/env-api-key.ts')
+    // The three generic transports it delegates to are the real modules.
+    for (const kept of [
+      '@oh-my-pi/pi-ai/src/providers/anthropic.ts',
+      '@oh-my-pi/pi-ai/src/providers/openai-completions.ts',
+      '@oh-my-pi/pi-ai/src/providers/openai-responses.ts',
+    ]) {
+      expect(inputs, kept).toContain(kept)
+    }
+    expect(duo!.shimImports['bun-modules']).toEqual([])
+  })
+
+  it('records the per-entry shim surfaces, unmodified shared shims', () => {
+    expect(duo!.piUtilsShim).toBe('scripts/omp-shim/pi-utils-gitlab-duo.ts')
+    // The shared shim keeps its exact surface: this route's extra members live in
+    // its own extension module (the Google precedent).
+    expect(manifest.shimSymbols['pi-utils']).not.toContain('readSseEvents')
+    expect(duo!.shimImports['pi-utils']).toContain('readSseEvents')
+    expect(duo!.shimImports['pi-utils']).toContain('USER_AGENT')
+  })
+
+  it('hashes the proxy sources and the alias table the catalog is built from', () => {
+    for (const key of [
+      '@oh-my-pi/pi-ai/src/providers/gitlab-duo.ts',
+      '@oh-my-pi/pi-catalog/src/provider-models/special.ts',
+      '@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo.kdl',
+    ]) {
+      expect(manifest.sourceHashes[key], key).toBe(sha256(installedSourcePath(key)))
+    }
+  })
+
+  it('carries 16 rows with the upstream id and the wire each routes to', () => {
+    expect(GITLAB_DUO_MODELS).toHaveLength(16)
+    expect(GITLAB_DUO_CATALOG_SOURCE.rowCount).toBe(16)
+    expect(GITLAB_DUO_CATALOG_SOURCE.version).toBe(manifest.piCatalogVersion)
+    for (const row of GITLAB_DUO_MODELS) {
+      expect(row.api).toBe('gitlab-duo')
+      expect(row.provider).toBe('gitlab-duo')
+      expect(['anthropic-messages', 'openai-responses', 'openai-completions']).toContain(row.apiRoute)
+      expect(typeof row.upstreamModelId).toBe('string')
+      // The alias rows substitute an upstream id; bare upstream rows resolve to themselves.
+      if (row.id.startsWith('duo-chat-gpt')) expect(row.upstreamModelId).not.toBe(row.id)
+    }
+    // The three wires are all represented, and the alias table is folded in.
+    expect(new Set(GITLAB_DUO_MODELS.map(row => row.apiRoute)).size).toBe(3)
+    const aliasRow = GITLAB_DUO_MODELS.find(row => row.id === 'duo-chat-opus-4-6')!
+    expect(aliasRow.upstreamModelId).toBe('claude-opus-4-6')
+    const codex = GITLAB_DUO_MODELS.find(row => row.id === 'duo-chat-gpt-5-2-codex')!
+    expect(codex).toMatchObject({ upstreamModelId: 'gpt-5.2-codex', apiRoute: 'openai-responses' })
+  })
+
+  it('regenerates byte-identically and projects for the host picker', () => {
+    const catalogPath = join(packageRoot, 'src', 'catalog', 'gitlab-duo.ts')
+    const before = readFileSync(catalogPath)
+    const generated = spawnSync('node', ['scripts/generate-catalog.mjs'], { cwd: packageRoot, encoding: 'utf8' })
+    expect(generated.status, `${generated.stdout}\n${generated.stderr}`).toBe(0)
+    expect(readFileSync(catalogPath).equals(before)).toBe(true)
+    expect(gitlabDuoCatalogModels()).toEqual(GITLAB_DUO_MODELS.map(row => ({ id: row.id, name: row.name })))
+  })
+
+  it('pins the Duo login facts this package copies', () => {
+    const rule = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo.kdl'), 'utf8')
+    expect(rule).toContain(`client-id "${GITLAB_DUO_AUTH.clientId}"`)
+    expect(rule).toContain('callback port=8080 path="/callback" hostname="localhost"')
+    expect(rule).toContain('pkce #true')
+    expect(rule).toContain('after-exchange hook="gitlab-duo-clear-cache"')
+    // The refresh block declares no token/params: it reuses the login's endpoint.
+    expect(rule).toContain('refresh {\n\t\tafter-refresh hook="gitlab-duo-clear-cache"\n\t}')
   })
 })

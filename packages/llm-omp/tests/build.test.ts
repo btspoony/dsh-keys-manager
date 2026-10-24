@@ -79,6 +79,13 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // existing shims; a size near this ceiling means a provider registry or the
   // model catalog was pulled in, not that the route grew.
   'gitlab-duo-agent': 1_500_000,
+  // gitlab-duo: 2 654 940 bytes measured (231 modules) -> 3 980 000 (under the
+  // plan's 4 MB bound, D12). The graph bundles three production wire transports
+  // plus GitLab's gateway shim; the entry reuses the factory-droid substitutions
+  // (lean registry, lean stream facade, lean env-key map) so the builtin provider
+  // registry and the 12.4 MB model catalog stay out. A size near this ceiling means
+  // a substitution stopped firing, not that the route grew.
+  'gitlab-duo': 3_980_000,
 }
 
 /** One entry's measured build facts (manifest schema v2). */
@@ -115,6 +122,7 @@ const EXPORTS: Readonly<Record<string, string>> = {
   google: 'streamGoogleGeminiCli',
   'factory-droid': 'streamFactoryDroid',
   'gitlab-duo-agent': 'streamGitLabDuoWorkflow',
+  'gitlab-duo': 'streamGitLabDuo',
 }
 
 const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
@@ -236,6 +244,7 @@ describe('omp packed surface', () => {
       'lib/omp/devin.mjs',
       'lib/omp/google.mjs',
       'lib/omp/factory-droid.mjs',
+      'lib/omp/gitlab-duo.mjs',
       'lib/omp/gitlab-duo-agent.mjs',
       'bundle/cordis.patch.yml',
     ]) {
@@ -247,6 +256,7 @@ describe('omp packed surface', () => {
     expect(listing).not.toContain('lib/omp/google.metafile.json')
     expect(listing).not.toContain('lib/omp/factory-droid.metafile.json')
     expect(listing).not.toContain('lib/omp/gitlab-duo-agent.metafile.json')
+    expect(listing).not.toContain('lib/omp/gitlab-duo.metafile.json')
   })
 })
 

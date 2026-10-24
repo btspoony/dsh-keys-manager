@@ -122,6 +122,9 @@ export const GOOGLE_ANTIGRAVITY_FACTS: GoogleRouteFacts = {
 }
 
 /** The redirect URI one route advertises, on the port its listener actually got. */
-export function googleRedirectUri(facts: GoogleRouteFacts, port: number = facts.callback.port): string {
+export function googleRedirectUri(
+  facts: { readonly callback: GoogleCallbackFacts },
+  port: number = facts.callback.port,
+): string {
   return `http://${facts.callback.hostname}:${port}${facts.callback.path}`
 }

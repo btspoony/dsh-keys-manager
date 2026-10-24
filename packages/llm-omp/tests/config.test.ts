@@ -17,9 +17,11 @@ import { describe, expect, it } from 'vitest'
 import {
   FACTORY_DROID_TRANSPORT_ROUTE,
   GITLAB_DUO_AGENT_ROUTE,
+  GITLAB_DUO_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpFactoryDroidAdapter,
+  OmpGitLabDuoAdapter,
   OmpGitLabDuoAgentAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
@@ -32,6 +34,7 @@ import {
   devinCatalogModels,
   factoryDroidCatalogModels,
   gitlabDuoAgentCatalogModels,
+  gitlabDuoCatalogModels,
   googleAntigravityCatalogModels,
   googleGeminiCliCatalogModels,
 } from '../src/index.js'
@@ -39,6 +42,7 @@ import type { TransportModelProfile } from '../src/index.js'
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
 import { DEVIN_MODELS } from '../src/catalog/devin.js'
 import { FACTORY_DROID_MODELS } from '../src/catalog/factory-droid.js'
+import { GITLAB_DUO_MODELS } from '../src/catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from '../src/catalog/gitlab-duo-agent.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
@@ -88,6 +92,7 @@ describe('Config', () => {
         'google-gemini-cli': { models: [] },
         'google-antigravity': { models: [] },
         'factory-droid': { models: [] },
+        'gitlab-duo': { models: [] },
         'gitlab-duo-agent': { models: [] },
       },
     })
@@ -100,6 +105,7 @@ describe('Config', () => {
     expect(getPath(value, ['providers', 'google-gemini-cli']) !== undefined).toBe(true)
     expect(getPath(value, ['providers', 'google-antigravity']) !== undefined).toBe(true)
     expect(getPath(value, ['providers', 'factory-droid']) !== undefined).toBe(true)
+    expect(getPath(value, ['providers', 'gitlab-duo']) !== undefined).toBe(true)
     expect(getPath(value, ['providers', 'gitlab-duo-agent']) !== undefined).toBe(true)
   })
 
@@ -114,6 +120,7 @@ describe('Config', () => {
       'google-gemini-cli': { models: [] },
       'google-antigravity': { models: [] },
       'factory-droid': { models: [] },
+      'gitlab-duo': { models: [] },
       'gitlab-duo-agent': { models: [] },
     })
   })
@@ -158,6 +165,14 @@ describe('catalog projections', () => {
     expect(Object.keys(gemini[0]!)).toEqual(['id', 'name'])
     // The two routes advertise different models from one artifact.
     expect(gemini.map(row => row.id)).not.toEqual(antigravity.map(row => row.id))
+  })
+
+  it('projects the 16 gitlab-duo proxy rows as id/name pairs', () => {
+    const models = gitlabDuoCatalogModels()
+
+    expect(models).toHaveLength(GITLAB_DUO_MODELS.length)
+    expect(models.map(row => row.id)).toEqual(GITLAB_DUO_MODELS.map(row => row.id))
+    expect(models).toHaveLength(16)
   })
 
   it('projects the one gitlab-duo-agent row as an id/name pair', () => {
@@ -228,7 +243,7 @@ function fakeHost(record: { access: string; expires: number; projectId: string }
 }
 
 describe('apply registration', () => {
-  it('registers six adapters, six providers and six flows in the shipped order', () => {
+  it('registers seven adapters, seven providers and seven flows in the shipped order', () => {
     const host = fakeHost()
 
     // A missing artifact must not fail registration: `apply` only wires lazy
@@ -241,6 +256,7 @@ describe('apply registration', () => {
       [GOOGLE_GEMINI_CLI_ROUTE],
       [GOOGLE_ANTIGRAVITY_ROUTE],
       ['factory-droid'],
+      ['gitlab-duo'],
       ['gitlab-duo-agent'],
     ])
     expect(host.providers.map(entry => entry.provider)).toEqual([
@@ -249,6 +265,7 @@ describe('apply registration', () => {
       GOOGLE_GEMINI_CLI_ROUTE,
       GOOGLE_ANTIGRAVITY_ROUTE,
       'factory-droid',
+      'gitlab-duo',
       'gitlab-duo-agent',
     ])
     expect(host.providers.map(entry => entry.settingsPath.join('.'))).toEqual([
@@ -257,6 +274,7 @@ describe('apply registration', () => {
       'providers.google-gemini-cli',
       'providers.google-antigravity',
       'providers.factory-droid',
+      'providers.gitlab-duo',
       'providers.gitlab-duo-agent',
     ])
     expect(host.flows.map(flow => flow.key)).toEqual([
@@ -265,6 +283,7 @@ describe('apply registration', () => {
       'llm-omp-transports/google-gemini-cli',
       'llm-omp-transports/google-antigravity',
       'llm-omp-transports/factory-droid',
+      'llm-omp-transports/gitlab-duo',
       'llm-omp-transports/gitlab-duo-agent',
     ])
     expect(host.flows.map(flow => flow.label)).toEqual([
@@ -273,6 +292,7 @@ describe('apply registration', () => {
       'Google Gemini CLI',
       'Google Antigravity',
       'Factory Droid',
+      'GitLab Duo',
       'GitLab Duo Agent',
     ])
   })
@@ -316,11 +336,24 @@ describe('apply registration', () => {
     )
   })
 
-  it('registers the gitlab-duo-agent adapter last, over its one-row catalog', async () => {
+  it('registers the gitlab-duo proxy adapter over its 16-row catalog', async () => {
     const host = fakeHost()
     apply(host.ctx)
 
     const adapter = host.adapters[5]!.adapter
+    expect(adapter).toBeInstanceOf(OmpGitLabDuoAdapter)
+    expect((adapter as OmpGitLabDuoAdapter).providerInfo('gitlab-duo')).toEqual({
+      id: 'gitlab-duo',
+      name: 'GitLab Duo',
+    })
+    expect(await (adapter as OmpGitLabDuoAdapter).listModels('gitlab-duo')).toHaveLength(16)
+  })
+
+  it('registers the gitlab-duo-agent adapter last, over its one-row catalog', async () => {
+    const host = fakeHost()
+    apply(host.ctx)
+
+    const adapter = host.adapters[6]!.adapter
     expect(adapter).toBeInstanceOf(OmpGitLabDuoAgentAdapter)
     expect((adapter as OmpGitLabDuoAgentAdapter).providerInfo('gitlab-duo-agent')).toEqual({
       id: 'gitlab-duo-agent',

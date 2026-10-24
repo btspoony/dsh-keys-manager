@@ -18,6 +18,7 @@ import {
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 
+import { GITLAB_DUO_MODELS } from '../src/catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from '../src/catalog/gitlab-duo-agent.js'
 import type { OmpAssistantMessage, OmpAssistantMessageEvent, OmpUsage } from '../src/omp.js'
 import type { RouteProfile } from '../src/projection.js'
@@ -28,6 +29,7 @@ import {
   UNSUPPORTED_REASONING_EFFORT,
   projectEvents,
   projectGitLabDuoAgentRequest,
+  projectGitLabDuoRequest,
 } from '../src/projection.js'
 
 const ROW = GITLAB_DUO_AGENT_MODELS[0]!
@@ -313,5 +315,147 @@ describe('projectEvents with the gitlab-duo-agent profile', () => {
         },
       },
     })
+  })
+})
+
+describe('projectGitLabDuoRequest', () => {
+  const PROXY_ROW = GITLAB_DUO_MODELS.find(row => row.id === 'duo-chat-opus-4-6')!
+  const OPENAI_ROW = GITLAB_DUO_MODELS.find(row => row.id === 'duo-chat-gpt-5-2-codex')!
+
+  const PROXY_PROFILE = {
+    provider: 'gitlab-duo',
+    api: 'gitlab-duo',
+    fallbackErrorCode: 'PROVIDER_ERROR',
+  } as const satisfies RouteProfile
+
+  function proxyRequest(
+    messages: GenerateOptions['messages'],
+    extra: Partial<GenerateOptions> = {},
+  ): GenerateOptions {
+    return { provider: 'gitlab-duo', model: PROXY_ROW.id, messages, ...extra }
+  }
+
+  it('carries the row with its upstream id, wire and compat for the transport to use', () => {
+    const projected = projectGitLabDuoRequest(PROXY_ROW, proxyRequest([]), 'token')
+
+    // The transport substitutes the upstream id, picks the wire from `apiRoute`
+    // and hands `compat` to `buildModel`; the projection must not pre-empt it.
+    expect(projected.model).toMatchObject({
+      id: 'duo-chat-opus-4-6',
+      api: 'gitlab-duo',
+      provider: 'gitlab-duo',
+      upstreamModelId: 'claude-opus-4-6',
+      apiRoute: 'anthropic-messages',
+    })
+    expect(projected.model.compat).toEqual(PROXY_ROW.compat)
+    // A copy, not the catalog object: the transport mutates what it builds.
+    expect(projected.model.compat).not.toBe(PROXY_ROW.compat)
+    expect(projected.options).not.toHaveProperty('wireModelId')
+    expect(projected.options).not.toHaveProperty('headers')
+    expect(projected.options).not.toHaveProperty('externalToolExecutor')
+  })
+
+  it('forwards the token, session, knobs and the effort the Anthropic wire folds', () => {
+    const projected = projectGitLabDuoRequest(
+      PROXY_ROW,
+      proxyRequest([], {
+        sessionId: 'session-1' as never,
+        maxTokens: 2048,
+        temperature: 0.2,
+        reasoningEffort: 'high' as never,
+      }),
+      'gitlab-token',
+    )
+
+    expect(projected.options).toMatchObject({
+      apiKey: 'gitlab-token',
+      sessionId: 'session-1',
+      maxTokens: 2048,
+      temperature: 0.2,
+      reasoning: 'high',
+    })
+    // The gateway's own headers merge under the caller's, so attribution travels
+    // through the fill-absent wrapper instead.
+    expect(typeof projected.options.fetch).toBe('function')
+  })
+
+  it('routes an OpenAI row without inventing a wire of its own', () => {
+    const projected = projectGitLabDuoRequest(OPENAI_ROW, proxyRequest([], { model: OPENAI_ROW.id }), 't')
+
+    expect(projected.model).toMatchObject({ upstreamModelId: 'gpt-5.2-codex', apiRoute: 'openai-responses' })
+  })
+
+  it('projects the shared context and refuses images, a late system prompt and bad tool arguments', () => {
+    const projected = projectGitLabDuoRequest(
+      PROXY_ROW,
+      proxyRequest(
+        [createSystemMessage('You are terse.'), createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } })],
+        { tools: [{ name: 'lookup_doc', description: 'Look it up', parameters: {} }] },
+      ),
+      't',
+    )
+    expect(projected.context.systemPrompt).toEqual(['You are terse.'])
+    expect(projected.context.tools).toHaveLength(1)
+
+    expect(() =>
+      projectGitLabDuoRequest(PROXY_ROW, proxyRequest([createUserMessage({ content: [IMAGE], source: { kind: 'user' } })]), 't'),
+    ).toThrowError(expect.objectContaining({ code: CONTENT_UNSUPPORTED }))
+
+    expect(() =>
+      projectGitLabDuoRequest(
+        PROXY_ROW,
+        proxyRequest([
+          createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } }),
+          createSystemMessage('late'),
+        ]),
+        't',
+      ),
+    ).toThrowError(expect.objectContaining({ code: CONTENT_UNSUPPORTED }))
+
+    expect(() =>
+      projectGitLabDuoRequest(
+        PROXY_ROW,
+        proxyRequest([
+          createAssistantMessage({
+            content: [{ type: 'tool-call', id: ToolCallId('call-1'), name: 'lookup_doc', arguments: '[1]' }],
+            source: { provider: 'gitlab-duo', model: PROXY_ROW.id },
+          }),
+        ]),
+        't',
+      ),
+    ).toThrowError(expect.objectContaining({ code: TOOL_ARGUMENTS_INVALID }))
+  })
+
+  it('maps the proxy wire events with the Duo profile', async () => {
+    const chunks: StreamChunk[] = []
+    const events: OmpAssistantMessageEvent[] = [
+      { type: 'start' },
+      { type: 'text_start', contentIndex: 0 },
+      { type: 'text_delta', contentIndex: 0, delta: 'Hi' },
+      { type: 'text_end', contentIndex: 0, content: 'Hi' },
+      {
+        type: 'done',
+        reason: 'stop',
+        message: {
+          role: 'assistant',
+          model: PROXY_ROW.id,
+          stopReason: 'stop',
+          usage: usage({ input: 3, output: 1, totalTokens: 4 }),
+          content: [{ type: 'text' }],
+        },
+      },
+    ]
+    for await (const chunk of projectEvents(
+      (async function* () {
+        yield* events
+      })(),
+      undefined,
+      PROXY_PROFILE,
+    )) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+    expect(chunks).toContainEqual({ type: 'text-delta', index: 0, text: 'Hi' })
   })
 })

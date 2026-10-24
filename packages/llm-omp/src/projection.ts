@@ -80,6 +80,7 @@ import type {
   DevinModelRow,
   FactoryDroidModelRow,
   GitLabDuoAgentModelRow,
+  GitLabDuoModelRow,
   GoogleModelRow,
   OmpAssistantMessage,
   OmpAssistantMessageEvent,
@@ -92,6 +93,8 @@ import type {
   OmpFactoryDroidModel,
   OmpFactoryDroidOptions,
   OmpGitLabDuoAgentModel,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions,
   OmpGitLabDuoWorkflowOptions,
   OmpGoogleModel,
   OmpGoogleOptions,
@@ -138,11 +141,18 @@ export interface RouteProfile {
     | 'cursor'
     | 'devin'
     | 'factory-droid'
+    | 'gitlab-duo'
     | 'gitlab-duo-agent'
     | 'google-gemini-cli'
     | 'google-antigravity'
   /** omp's `Api` for the route. */
-  readonly api: 'cursor-agent' | 'devin-agent' | 'factory-droid-agent' | 'gitlab-duo-agent' | 'google-gemini-cli'
+  readonly api:
+    | 'cursor-agent'
+    | 'devin-agent'
+    | 'factory-droid-agent'
+    | 'gitlab-duo-agent'
+    | 'gitlab-duo'
+    | 'google-gemini-cli'
   /** Provider-neutral code an unclassified transport failure maps to. */
   readonly fallbackErrorCode: string
   /**
@@ -224,6 +234,18 @@ export const DEVIN_PROFILE = {
 export const FACTORY_DROID_PROFILE = {
   provider: 'factory-droid',
   api: 'factory-droid-agent',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies RouteProfile
+
+/**
+ * The GitLab Duo proxy route's projection facts.
+ *
+ * No marker: the proxy delegates to the three generic transports, whose tool
+ * calls are plain and finish `toolUse` — DSH's own loop executes them.
+ */
+export const GITLAB_DUO_PROFILE = {
+  provider: 'gitlab-duo',
+  api: 'gitlab-duo',
   fallbackErrorCode: 'PROVIDER_ERROR',
 } as const satisfies RouteProfile
 
@@ -458,6 +480,64 @@ export function projectFactoryDroidRequest(
       ...(options.stop !== undefined ? { stopSequences: [...options.stop] } : {}),
       // The wire keeps its own `factory-cli` identity headers, so attribution is
       // filled only where a request left the header absent.
+      fetch: attributionPreservingFetch,
+    },
+  }
+}
+
+/** The GitLab Duo proxy request projection's three positional transport arguments. */
+export interface ProjectedGitLabDuoRequest {
+  readonly model: OmpGitLabDuoModel
+  readonly context: OmpContext
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpGitLabDuoOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/**
+ * Project one DSH request onto the omp GitLab Duo proxy transport's arguments.
+ *
+ * The transport owns the route's mechanics: it POSTs for the direct-access token,
+ * substitutes `upstreamModelId` for the row id, picks the wire from `apiRoute`,
+ * rewrites the base URL to GitLab's gateway and folds the effort into the
+ * Anthropic thinking budget. So the projection sends the row (with its full
+ * `compat`, which travels to `buildModel` as `compatConfig`), the shared context
+ * and the standard stream knobs.
+ *
+ * A selected effort is forwarded as `reasoning`: this is the one route whose
+ * pinned rows declare a reasoning ladder (the Anthropic rows), and the transport
+ * refuses an effort the row does not support at the wire level.
+ *
+ * @param row - catalog row for the requested model.
+ * @param options - the assembled DSH request.
+ * @param accessToken - GitLab token already resolved for this call; omit it to
+ *   project before the credential is read.
+ * @returns the transport arguments, ready to hand to `streamGitLabDuo`.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
+ */
+export function projectGitLabDuoRequest(
+  row: GitLabDuoModelRow,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedGitLabDuoRequest {
+  const context = projectContext(GITLAB_DUO_PROFILE, options)
+  return {
+    model: { ...row, compat: { ...row.compat } },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.reasoningEffort !== undefined ? { reasoning: options.reasoningEffort } : {}),
+      // The gateway's headers merge under the caller's, so attribution rides the
+      // fill-absent wrapper instead of a caller header.
       fetch: attributionPreservingFetch,
     },
   }

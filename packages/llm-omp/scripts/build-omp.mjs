@@ -42,6 +42,14 @@ import { shimImportsOf } from './omp-reach.mjs'
 const scriptsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(scriptsDir)
 
+/**
+ * Importers whose `../stream` / `./register-builtins` edges the entry-scoped
+ * substitutions redirect. Factory-droid's own edges are the defaults; the Duo
+ * proxy provider is the fourth module that reaches the facade and the registry.
+ */
+const LEAN_STREAM_IMPORTERS = ['/pi-ai/src/providers/factory-droid.ts', '/pi-ai/src/providers/anthropic.ts']
+const GITLAB_DUO_STREAM_IMPORTERS = ['/pi-ai/src/providers/gitlab-duo.ts']
+
 /** One esbuild entry: the script to bundle and the artifact it writes. */
 const ENTRIES = [
   { name: 'cursor', entry: join(scriptsDir, 'omp-entry.ts'), out: join(packageRoot, 'lib', 'omp', 'cursor.mjs') },
@@ -69,6 +77,19 @@ const ENTRIES = [
   // The GitLab Duo agent route: one WebSocket workflow transport, no provider
   // registry (it imports the workflow module directly), so the existing shims
   // cover it unmodified.
+  // The Duo proxy route: three generic wire transports behind GitLab's gateway,
+  // reached through `providers/register-builtins` — the same retention edge the
+  // factory-droid entry's substitutions exist for, so it reuses them.
+  {
+    name: 'gitlab-duo',
+    entry: join(scriptsDir, 'omp-entry-gitlab-duo.ts'),
+    out: join(packageRoot, 'lib', 'omp', 'gitlab-duo.mjs'),
+    piUtils: join(scriptsDir, 'omp-shim', 'pi-utils-gitlab-duo.ts'),
+    substitutions: true,
+    leanStream: join(scriptsDir, 'omp-shim', 'pi-ai-stream-gitlab-duo.ts'),
+    streamImporters: GITLAB_DUO_STREAM_IMPORTERS,
+    registryImporters: ['/pi-ai/src/providers/gitlab-duo.ts'],
+  },
   {
     name: 'gitlab-duo-agent',
     entry: join(scriptsDir, 'omp-entry-gitlab-agent.ts'),
@@ -95,8 +116,6 @@ const LEAN_REGISTER_BUILTINS = join(scriptsDir, 'omp-shim', 'register-builtins-l
  * graph and S2 measures nothing.
  */
 const LEAN_PI_AI_STREAM = join(scriptsDir, 'omp-shim', 'pi-ai-stream-lean.ts')
-/** The two provider modules that read the facade in the factory-droid graph. */
-const LEAN_STREAM_IMPORTERS = ['/pi-ai/src/providers/factory-droid.ts', '/pi-ai/src/providers/anthropic.ts']
 
 /**
  * Shim module name → its path as esbuild keys the metafile (relative to the
@@ -256,7 +275,7 @@ function toPosix(path) {
  * verbatim substring of the pin, and the metafile must show no `models.json` and
  * no real `register-builtins.ts` input.
  */
-const ompFactoryDroidSubstitutions = () => ({
+const ompFactoryDroidSubstitutions = (entry = {}) => ({
   name: 'omp-factory-droid-substitutions',
   setup(build_) {
     build_.onResolve({ filter: /\/models\.json$/ }, args => {
@@ -269,7 +288,9 @@ const ompFactoryDroidSubstitutions = () => ({
       loader: 'js',
     }))
     build_.onResolve({ filter: /^\.\/register-builtins$/ }, args => {
-      if (!toPosix(args.importer).endsWith('/pi-ai/src/providers/factory-droid.ts')) return undefined
+      const importer = toPosix(args.importer)
+      const importers = ['/pi-ai/src/providers/factory-droid.ts', ...(entry.registryImporters ?? [])]
+      if (!importers.some(suffix => importer.endsWith(suffix))) return undefined
       return { path: LEAN_REGISTER_BUILTINS }
     })
     build_.onResolve({ filter: /^\.\.\/env-api-key$/ }, args => {
@@ -279,8 +300,9 @@ const ompFactoryDroidSubstitutions = () => ({
     })
     build_.onResolve({ filter: /^\.\.\/stream$/ }, args => {
       const importer = toPosix(args.importer)
-      if (!LEAN_STREAM_IMPORTERS.some(suffix => importer.endsWith(suffix))) return undefined
-      return { path: LEAN_PI_AI_STREAM }
+      const importers = [...LEAN_STREAM_IMPORTERS, ...(entry.streamImporters ?? [])]
+      if (!importers.some(suffix => importer.endsWith(suffix))) return undefined
+      return { path: entry.leanStream ?? LEAN_PI_AI_STREAM }
     })
   },
 })
@@ -317,7 +339,7 @@ async function bundleEntry(entry) {
     plugins: [
       ompJsonAsEsm(),
       ompShims(entry.piUtils ?? PI_UTILS_SHIM),
-      ...(entry.substitutions === true ? [ompFactoryDroidSubstitutions()] : []),
+      ...(entry.substitutions === true ? [ompFactoryDroidSubstitutions(entry)] : []),
     ],
   })
 
@@ -448,6 +470,15 @@ async function main() {
     '@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo-agent.kdl': join(
       piCatalogRoot,
       'src/compat/rules/auth/gitlab-duo-agent.kdl',
+    ),
+    // The Duo proxy graph: the provider, the three generic transports it delegates
+    // to (also covered above for factory-droid), the alias table its catalog comes
+    // from and its own auth rule.
+    '@oh-my-pi/pi-ai/src/providers/gitlab-duo.ts': join(piAiRoot, 'src/providers/gitlab-duo.ts'),
+    '@oh-my-pi/pi-catalog/src/provider-models/special.ts': join(piCatalogRoot, 'src/provider-models/special.ts'),
+    '@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo.kdl': join(
+      piCatalogRoot,
+      'src/compat/rules/auth/gitlab-duo.kdl',
     ),
   }
 

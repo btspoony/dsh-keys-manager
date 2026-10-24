@@ -158,6 +158,54 @@
         ]
       }
     },
+    "gitlab-duo": {
+      "entry": "lib/omp/gitlab-duo.mjs",
+      "metafile": "lib/omp/gitlab-duo.metafile.json",
+      "moduleCount": 231,
+      "bytes": 2654940,
+      "piUtilsShim": "scripts/omp-shim/pi-utils-gitlab-duo.ts",
+      "shimImports": {
+        "pi-utils": [
+          "$env",
+          "$flag",
+          "*",
+          "APP_NAME",
+          "APP_URL",
+          "LRUCache",
+          "USER_AGENT",
+          "classifyJsonPrefix",
+          "cloneJsonTree",
+          "escapeXmlText",
+          "extractHttpStatusFromError",
+          "extractRetryHint",
+          "fetchWithRetry",
+          "getAgentDir",
+          "getInstallId",
+          "getLogsDir",
+          "isBunTestRuntime",
+          "isEnoent",
+          "isRecord",
+          "isRetryableError",
+          "isUnexpectedSocketCloseMessage",
+          "logger",
+          "once",
+          "parseImageMetadata",
+          "parseJsonWithRepair",
+          "parseStreamingJson",
+          "parseStreamingJsonThrottled",
+          "readSseEvents",
+          "readSseJsonOrText",
+          "slugify",
+          "stringifyJson",
+          "structuredCloneJSON",
+          "wrapFetchForExtraCa"
+        ],
+        "bun-modules": [],
+        "bun-global": [
+          "Bun"
+        ]
+      }
+    },
     "gitlab-duo-agent": {
       "entry": "lib/omp/gitlab-duo-agent.mjs",
       "metafile": "lib/omp/gitlab-duo-agent.metafile.json",
@@ -283,6 +331,9 @@
     "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow.ts": "sha256:4423bf48c93c1d09e42b110c060d6fcd0c3a0554085f227d8a93b966eec314b1",
     "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow-chatml-note.md": "sha256:9f737714289af4e2d5193c8e60216b9ca1978113bd438cd71b4c4cb6226c078b",
     "@oh-my-pi/pi-catalog/src/discovery/gitlab-duo-workflow.ts": "sha256:74b884bd4b2a319e514fb15226772a262deec7402fd1f47099d4a2955e5f956e",
-    "@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo-agent.kdl": "sha256:c02c7f89fcf52375cbb6f01491c5dec4f4b71f6fc5c99c22412271e9b7ed44c9"
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo-agent.kdl": "sha256:c02c7f89fcf52375cbb6f01491c5dec4f4b71f6fc5c99c22412271e9b7ed44c9",
+    "@oh-my-pi/pi-ai/src/providers/gitlab-duo.ts": "sha256:b1e6f18a16b071e3101a7d14c861e0a5529de5be64fcb147a226dba0828f7805",
+    "@oh-my-pi/pi-catalog/src/provider-models/special.ts": "sha256:a6ea8e2bbb5bd9fc92c72ef2b7738510b7ed0252d630c33416becb9876a39967",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo.kdl": "sha256:9b96d43c8a00ef95ab34519779558b330b16244d93f604d1d9f70313e2781548"
   }
 }

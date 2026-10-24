@@ -29,6 +29,7 @@ import type {
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
 import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
@@ -39,6 +40,7 @@ import {
   DEVIN_PROFILE,
   FACTORY_DROID_PROFILE,
   GITLAB_DUO_AGENT_PROFILE,
+  GITLAB_DUO_PROFILE,
   GOOGLE_ANTIGRAVITY_PROFILE,
   GOOGLE_GEMINI_CLI_PROFILE,
   abortedFinish,
@@ -46,6 +48,7 @@ import {
   projectEvents,
   projectFactoryDroidRequest,
   projectGitLabDuoAgentRequest,
+  projectGitLabDuoRequest,
   projectGoogleRequest,
   projectRequest,
 } from './projection.js'
@@ -56,6 +59,7 @@ import type {
   DevinModelRow,
   FactoryDroidModelRow,
   GitLabDuoAgentModelRow,
+  GitLabDuoModelRow,
   GoogleModelRow,
   OmpCursorModel,
   OmpCursorOptions,
@@ -64,6 +68,8 @@ import type {
   OmpFactoryDroidModel,
   OmpFactoryDroidOptions,
   OmpGitLabDuoAgentModel,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions,
   OmpGitLabDuoWorkflowOptions,
   OmpGoogleModel,
   OmpGoogleOptions,
@@ -79,6 +85,8 @@ export const GOOGLE_GEMINI_CLI_ROUTE = 'google-gemini-cli'
 export const GOOGLE_ANTIGRAVITY_ROUTE = 'google-antigravity'
 /** The Factory Droid provider route this adapter owns. */
 export const FACTORY_DROID_ROUTE = 'factory-droid'
+/** The GitLab Duo proxy provider route this adapter owns. */
+export const GITLAB_DUO_ROUTE = 'gitlab-duo'
 /** The GitLab Duo agent (Duo Workflow) provider route this adapter owns. */
 export const GITLAB_DUO_AGENT_ROUTE = 'gitlab-duo-agent'
 
@@ -143,6 +151,7 @@ export interface TransportRoute<Row extends TransportRow, Model, Options extends
     | 'cursor'
     | 'devin'
     | 'factory-droid'
+    | 'gitlab-duo'
     | 'gitlab-duo-agent'
     | 'google-gemini-cli'
     | 'google-antigravity'
@@ -243,6 +252,29 @@ export const FACTORY_DROID_TRANSPORT_ROUTE: TransportRoute<
   profile: FACTORY_DROID_PROFILE,
   models: FACTORY_DROID_MODELS,
   project: (row, options) => projectFactoryDroidRequest(row, options),
+}
+
+/** The GitLab Duo proxy route's credential record. */
+export const GITLAB_DUO_CREDENTIAL_KEY = `llm-omp-transports/${GITLAB_DUO_ROUTE}` as const
+
+/**
+ * The GitLab Duo proxy route's facts.
+ *
+ * The rows come from the pinned catalog's proxy table; each carries the upstream
+ * id and the wire the gateway routes it to, so the route record needs no wire
+ * field — the transport resolves both from the row.
+ */
+export const GITLAB_DUO_TRANSPORT_ROUTE: TransportRoute<
+  GitLabDuoModelRow,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions
+> = {
+  id: GITLAB_DUO_ROUTE,
+  displayName: 'GitLab Duo',
+  credentialKey: GITLAB_DUO_CREDENTIAL_KEY,
+  profile: GITLAB_DUO_PROFILE,
+  models: GITLAB_DUO_MODELS,
+  project: (row, options) => projectGitLabDuoRequest(row, options),
 }
 
 /** The GitLab Duo agent route's credential record. */
@@ -528,5 +560,19 @@ export class OmpGitLabDuoAgentAdapter extends OmpTransportAdapter<
 > {
   constructor(options: OmpGitLabDuoAgentAdapterConfig) {
     super({ route: GITLAB_DUO_AGENT_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The DSH llm adapter configuration for the GitLab Duo proxy route. */
+export type OmpGitLabDuoAdapterConfig = OmpAdapterOptions<OmpGitLabDuoModel, OmpGitLabDuoOptions>
+
+/** The GitLab Duo adapter: the bundled proxy transport over its 16-row catalog. */
+export class OmpGitLabDuoAdapter extends OmpTransportAdapter<
+  GitLabDuoModelRow,
+  OmpGitLabDuoModel,
+  OmpGitLabDuoOptions
+> {
+  constructor(options: OmpGitLabDuoAdapterConfig) {
+    super({ route: GITLAB_DUO_TRANSPORT_ROUTE, ...options })
   }
 }

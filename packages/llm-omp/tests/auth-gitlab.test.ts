@@ -14,23 +14,31 @@ import { createHash } from 'node:crypto'
 
 import { describe, expect, it } from 'vitest'
 
+import { createServer } from 'node:http'
+
 import type { StoredCredentialRecord } from '../src/cursor/credentials.js'
+import { startCallbackListener } from '../src/google/callback-listener.js'
 import {
   GITLAB_DUO_AGENT_AUTH,
+  GITLAB_DUO_AUTH,
   GitLabAuthError,
   exchangeGitLabCode,
   generateGitLabAuthParams,
   loginGitLab,
+  gitlabDuoClient,
+  loginGitLabDuo,
   parseGitLabCallback,
   refreshGitLabToken,
 } from '../src/gitlab/auth.js'
 import type { GitLabFetch } from '../src/gitlab/auth.js'
 import {
   GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+  GITLAB_DUO_CREDENTIAL_KEY,
+  createGitLabDuoAccess,
   createGitLabDuoAgentAccess,
   readGitLabGrant,
 } from '../src/gitlab/credentials.js'
-import { gitlabDuoAgentAuthorizationFlow } from '../src/index.js'
+import { gitlabDuoAgentAuthorizationFlow, gitlabDuoAuthorizationFlow } from '../src/index.js'
 import type { CredentialRecordsLike } from '../src/cursor/credentials.js'
 
 const NOW = 1_700_000_000_000
@@ -395,3 +403,152 @@ describe('gitlab authorization flow', () => {
     expect(GITLAB_DUO_AGENT_AUTH.redirectUri).toBe('vscode://gitlab.gitlab-workflow/authentication')
   })
 })
+
+describe('gitlab duo proxy sign-in', () => {
+  const tokenBody = { access_token: 'duo-access', refresh_token: 'duo-refresh', expires_in: 7200, created_at: 1_700_000_000 }
+  /** A fresh response per call: a `Response` body can only be read once. */
+  const token = (): Response => json(tokenBody)
+
+  it('pins the loopback redirect with no port fallback', () => {
+    expect(GITLAB_DUO_AUTH.redirectUri).toBe('http://localhost:8080/callback')
+    expect(GITLAB_DUO_AUTH.callback).toEqual({ hostname: 'localhost', port: 8080, path: '/callback' })
+    // `GITLAB_CLIENT_ID` / `GITLAB_REDIRECT_URI` are the rule's overrides.
+    expect(gitlabDuoClient({})).toEqual({ clientId: GITLAB_DUO_AUTH.clientId, redirectUri: GITLAB_DUO_AUTH.redirectUri })
+    expect(
+      gitlabDuoClient({ GITLAB_CLIENT_ID: ' own-app ', GITLAB_REDIRECT_URI: 'http://localhost:9000/cb' }),
+    ).toEqual({ clientId: 'own-app', redirectUri: 'http://localhost:9000/cb' })
+  })
+
+  it('completes from a pasted callback when the listener cannot bind 8080', async () => {
+    const { fetch } = stubFetch(token)
+    const errors: string[] = []
+    // Hold a port so the listener's exact bind fails: this is the busy-8080 shape
+    // without depending on 8080 being free in the test environment.
+    const held = await holdPort()
+
+    try {
+      const grant = await loginGitLabDuo({
+        fetch,
+        now,
+        state: 'state-1',
+        port: held.port,
+        onListenerError: message => errors.push(message),
+        prompt: async () => 'http://localhost:8080/callback?code=code-1&state=state-1',
+      })
+
+      expect(grant).toMatchObject({ access: 'duo-access', refresh: 'duo-refresh' })
+      expect(errors).toHaveLength(1)
+    } finally {
+      await held.release()
+    }
+  })
+
+  it('refuses to fall back to an ephemeral port for this route (D13)', async () => {
+    // `portFallback: false` is the listener half of "the redirect URI is
+    // registered exactly": a taken port must fail, never silently move. Google's
+    // rules keep the fallback, which is why the option exists rather than a fork.
+    const held = await holdPort()
+    try {
+      await expect(
+        startCallbackListener({
+          facts: { callback: GITLAB_DUO_AUTH.callback },
+          expectedState: 'state-1',
+          port: held.port,
+          portFallback: false,
+        }),
+      ).rejects.toThrowError(/could not bind the sign-in listener/)
+    } finally {
+      await held.release()
+    }
+  })
+
+  it('maps a rejected exchange to AUTH_FAILED and commits nothing', async () => {
+    const { fetch } = stubFetch(() => json({ error: 'invalid_grant' }, 400))
+    const { session, committed } = flowSession(() =>
+      'http://localhost:8080/callback?code=c&state=state-1',
+    )
+
+    await expect(
+      gitlabDuoAuthorizationFlow({ fetch, state: 'state-1' }).run(session),
+    ).rejects.toMatchObject({ code: 'AUTH_FAILED' })
+    expect(committed).toEqual([])
+  })
+
+  it('commits the documented payload from the paste path', async () => {
+    const { fetch } = stubFetch(token)
+    const { session, committed, notices, prompts } = flowSession(() =>
+      'http://localhost:8080/callback?code=c&state=state-1',
+    )
+
+    await gitlabDuoAuthorizationFlow({ fetch, state: 'state-1', now }).run(session)
+
+    expect(notices[0]!.url).toContain('gitlab.com/oauth/authorize')
+    expect(prompts[0]!.placeholder).toContain('localhost:8080/callback')
+    expect(committed).toEqual([
+      {
+        kind: 'grant',
+        payload: { access: 'duo-access', refresh: 'duo-refresh', expires: NOW + 7_200_000 - 5 * 60 * 1000 },
+      },
+    ])
+  })
+
+  it('names the route on its flow entry', () => {
+    const flow = gitlabDuoAuthorizationFlow()
+
+    expect(flow.key).toBe(GITLAB_DUO_CREDENTIAL_KEY)
+    expect(flow.label).toBe('GitLab Duo')
+    expect(flow.methods).toEqual([{ id: 'oauth', label: 'Sign in with GitLab Duo' }])
+  })
+
+  it('resolves the proxy credential through the same CAS shape', async () => {
+    const writes = { count: 0 }
+    let record: StoredCredentialRecord | undefined = { kind: 'grant', payload: { access: 'stored', refresh: 'r', expires: NOW + 3_600_000 } }
+    const credentials: CredentialRecordsLike = {
+      readRecord: async () => record,
+      modifyRecord: async (_key, mutate) => {
+        writes.count += 1
+        record = (await mutate(record)) ?? record
+        return record
+      },
+    }
+    expect(await createGitLabDuoAccess(credentials, { now })()).toBe('stored')
+    expect(writes.count).toBe(0)
+  })
+})
+
+/** A flow session with scripted notice/prompt/commit collection. */
+function flowSession(paste: () => string) {
+  const notices: { message: string; url?: string }[] = []
+  const prompts: { kind: string; message: string; placeholder?: string }[] = []
+  const committed: { kind: string; payload: Record<string, unknown> }[] = []
+  return {
+    notices,
+    prompts,
+    committed,
+    session: {
+      method: 'oauth',
+      signal: new AbortController().signal,
+      notify: (notice: { message: string; url?: string }) => notices.push(notice),
+      prompt: async (prompt: { kind: string; message: string; placeholder?: string }) => {
+        prompts.push(prompt)
+        return paste()
+      },
+      commit: async (record: { kind: 'grant'; payload: unknown }) => {
+        committed.push({ kind: record.kind, payload: record.payload as Record<string, unknown> })
+      },
+    },
+  }
+}
+
+/** Hold a loopback port so a listener's exact bind must fail. */
+async function holdPort(): Promise<{ port: number; release: () => Promise<void> }> {
+  const server = createServer((_request, response) => response.end('held'))
+  const port = await new Promise<number>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, 'localhost', () => {
+      const address = server.address()
+      resolve(typeof address === 'object' && address !== null ? address.port : 0)
+    })
+  })
+  return { port, release: () => new Promise<void>(resolve => server.close(() => resolve())) }
+}
