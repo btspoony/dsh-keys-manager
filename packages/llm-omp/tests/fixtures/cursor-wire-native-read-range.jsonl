@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"read","name":"read","toolName":"read","toolCallId":"call-read-range","args":{"path":"src/app.ts:10-20"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

@@ -38,3 +38,5 @@ minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.3'
   - '@deepseek-ai/dsh-util-crypto@0.2.1-rc.3'
   - '@deepseek-ai/dsh-util-values@0.2.1-rc.3'
+patchedDependencies:
+  '@oh-my-pi/pi-ai@18.12.3': patches/@oh-my-pi__pi-ai@18.12.3.patch

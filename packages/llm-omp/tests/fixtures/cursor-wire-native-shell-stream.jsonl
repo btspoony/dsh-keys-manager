@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"shellStream","name":"shell","toolName":"shell","toolCallId":"call-native-shs","args":{"command":"npm test","workingDirectory":"/tmp/demo"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"shell","name":"shell","toolName":"shell","toolCallId":"call-shell-space","args":{"command":"ls","workingDirectory":"/tmp/my project"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

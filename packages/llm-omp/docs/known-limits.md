@@ -196,10 +196,45 @@ repository root docs.
   consistent. The seven `dsh_<native>` names are reserved: a DSH tool that
   already carries one is refused with `TOOL_ALIAS_COLLISION`, which fails the
   whole request and requires renaming the tool. Any other tool name travels
-  unchanged. Cursor-native exec frames (`read`, `shell`, `write`, `delete`,
-  `grep`, `ls`, `diagnostics`, streamed edits) still have no handler: the
-  transport answers them with "Tool not available" and they are **not**
-  executed by DSH (live reachability unverified).
+  unchanged. Cursor-native `read`, `shell` (batch and streamed),
+  `mini_swe_agent_bash`, `write` and `grep` exec frames are handed to DSH's own
+  tool loop the same way (unresolved call, result replayed on the next
+  request), translated into the DSH tool's parameters. Frames with no DSH
+  equivalent (`delete`, `ls`, `diagnostics`, background-shell spawn/stdin,
+  streamed edits) still have no handler: the transport answers them with "Tool
+  not available" and they are **not** executed by DSH (live reachability
+  unverified).
+- **The `pi*` exec frames have no handoff and are not gated client-side.**
+  `piReadArgs`/`piBashArgs`/`piEditArgs`/`piWriteArgs`/`piGrepArgs`/
+  `piFindArgs`/`piLsArgs` are dispatched whenever Cursor's server sends them.
+  The transport does declare its MCP tool set — the `requestContextArgs`
+  handshake answers with the projected `tools` list — but no exec-frame
+  capability is negotiated, so nothing suppresses these frames on the client
+  side and they *can* reach a live DSH session. Unanswered, each one
+  synthesizes a settled call and answers the server with a `Tool not available`
+  error result, so a turn that chooses one gains nothing. If one shows up in a
+  live seat it needs its own translation — the Pi result schemas differ from the
+  modern ones (`PiBashExecResult` carries `output`/`truncation`, not
+  `stdout`/`exitCode`).
+- A streamed shell frame that is handed off is answered with `start` →
+  `rejected` (handoff reason) → `exit` code 1 instead of running the command,
+  mirroring the batch branch's refusal. A server that needs streamed stdout to
+  keep the turn alive gets none, so such a turn ends on the reject.
+- The exec-frame handoff translation is **lossy**. DSH's `grep` has no parameter
+  for any of Cursor's `GrepArgs` refinements, so the handoff keeps only
+  `pattern`, `path` and `glob`→`include` and drops `caseInsensitive`,
+  `contextBefore`/`contextAfter`/`context`, `offset`, `headLimit`, `multiline`,
+  `sort`/`sortAscending`, `type`, `outputMode` and `sandboxPolicy`. Two of them
+  change the answer: `caseInsensitive` silently inverts to case-sensitive (a
+  request for "foo" stops matching "Foo"), and `offset` is the page cursor the
+  local tool would take as `skip`, so a page-2 request returns page 1 instead of
+  advancing.
+  `shell`'s millisecond budget is dropped and its working directory is folded
+  into the command as a leading `cd <dir> && …`, with the directory
+  single-quoted (POSIX `'\''` for an embedded quote) so a space or a
+  metacharacter cannot change the command. The model sees the DSH tool's own
+  schema, so a call that needed a dropped flag may behave differently than under
+  Cursor's native tool.
 - Tool declarations travel as MCP definitions. `toolHistory` is accepted but
   cannot be replayed — the active declaration set is what the request
   projects.

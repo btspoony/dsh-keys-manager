@@ -1,0 +1,3 @@
+{"kind":"exec","frame":"delete","name":"delete","toolName":"delete","toolCallId":"call-native-de","args":{"path":"gone.txt"}}
+{"kind":"turnEnded","usage":{"inputTokens":100,"outputTokens":2,"cacheReadTokens":0,"cacheWriteTokens":0}}
+{"kind":"end"}

@@ -1,0 +1,419 @@
+diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
+index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1c847ac3b 100644
+--- a/src/providers/cursor.ts
++++ b/src/providers/cursor.ts
+@@ -2162,6 +2162,7 @@ async function handleShellStreamArgs(
+ 	runTransport: CursorMessageWriter,
+ 	execHandlers: CursorExecHandlers | undefined,
+ 	onToolResult: CursorToolResultHandler | undefined,
++	handoff = false,
+ ): Promise<void> {
+ 	const normalizedWorkingDirectory = args.workingDirectory || process.cwd();
+ 	const normalizedArgs: ShellArgs = { ...args, workingDirectory: normalizedWorkingDirectory };
+@@ -2173,10 +2174,31 @@ async function handleShellStreamArgs(
+ 		hasExecHandlers: !!execHandlers,
+ 		hasShell: !!execHandlers?.shell,
+ 		hasShellStream: !!execHandlers?.shellStream,
++		handoff,
+ 	});
+ 
+ 	sendShellStreamEvent(runTransport, execMsg, { case: "start", value: create(ShellStreamStartSchema, {}) });
+ 
++	// Handed to the external tool loop: nothing runs here. The stream still
++	// needs a terminating verdict, and it uses the vocabulary a local refusal
++	// already uses — `rejected` carrying the handoff reason, then exit 1 — so
++	// the server never waits on events that will not come.
++	if (handoff) {
++		const handoffResult = sanitizeShellExecResult(
++			buildShellRejectedResult(
++				normalizedArgs.command,
++				normalizedWorkingDirectory,
++				MCP_EXTERNAL_HANDOFF_MESSAGE,
++			),
++		);
++		sendShellStreamExitFromResult(runTransport, execMsg, handoffResult, false);
++		// Same closing acknowledgement the executed path sends.
++		sendExecClientMessage(runTransport, execMsg, "shellResult", handoffResult);
++		sendExecClientStreamClose(runTransport, execMsg);
++		log("shellStream", "done", { elapsed: performance.now() - startTs, handoff: true });
++		return;
++	}
++
+ 	// Buffer for incomplete ANSI sequences across chunks
+ 	let stdoutBuffer = "";
+ 	let stderrBuffer = "";
+@@ -2488,6 +2510,11 @@ async function handleExecServerMessage(
+ 							offset: negativeOffset ? args.offset : undefined,
+ 							limit: negativeOffset ? args.limit : undefined,
+ 						};
++			// A handoff ships the block in the external read tool's dialect
++			// (`file_path`) and unresolved. Edit-owned reads stay local: StrReplace
++			// consumes the returned bytes, so a placeholder would corrupt the edit.
++			const readHandoff = !editOwned && isExternalExecHandoff(externalToolExecutor, execHandlers, "read");
++			const handoffRead = readHandoff ? handoffReadArgs(args) : undefined;
+ 			if (!editOwned) {
+ 				synthesizeCursorExecToolCall(
+ 					output,
+@@ -2495,9 +2522,12 @@ async function handleExecServerMessage(
+ 					state,
+ 					args.toolCallId,
+ 					"read",
+-					negativeOffset
+-						? { path: composed, offset: args.offset, limit: args.limit }
+-						: { path: piReadDisplayPath(args.path, args.offset, args.limit) },
++					readHandoff
++						? { file_path: handoffRead!.path, offset: handoffRead!.offset, limit: handoffRead!.limit }
++						: negativeOffset
++							? { path: composed, offset: args.offset, limit: args.limit }
++							: { path: piReadDisplayPath(args.path, args.offset, args.limit) },
++					{ executed: !readHandoff },
+ 				);
+ 			}
+ 			const { execResult: readResult, toolResult } = await resolveExecHandler(
+@@ -2510,9 +2540,9 @@ async function handleExecServerMessage(
+ 						result,
+ 						args.offset !== undefined || args.limit !== undefined || piReadPathHasRange(args.path),
+ 					),
+-				reason => buildReadRejectedResult(args.path, reason),
++				reason => buildReadRejectedResult(args.path, readHandoff ? MCP_EXTERNAL_HANDOFF_MESSAGE : reason),
+ 				error => buildReadErrorResult(args.path, error),
+-				editOwned ? null : { toolCallId: args.toolCallId, toolName: "read" },
++				readHandoff ? null : { toolCallId: args.toolCallId, toolName: "read" },
+ 			);
+ 			let execResult = readResult;
+ 			// StrReplace writes the returned bytes back. A truncated raw read would
+@@ -2595,22 +2625,35 @@ async function handleExecServerMessage(
+ 			}
+ 			// Mirror the coding-agent bridge's arg mapping so live UI (from
+ 			// `tool_execution_start`) and rebuilt transcript (from this block)
+-			// display identical args.
++			// display identical args. On a handoff the block is translated into
++			// the external grep tool's dialect instead: `glob` → `include`, and
++			// `case`/`skip` are dropped because that schema has no slot for them.
++			const grepHandoff = isExternalExecHandoff(externalToolExecutor, execHandlers, "grep");
+ 			const searchPath = args.glob ? `${args.path || "."}/${args.glob}` : args.path || ".";
+-			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "grep", {
+-				pattern: args.pattern,
+-				path: searchPath,
+-				case: args.caseInsensitive === true ? false : undefined,
+-				skip: piGrepSkip(args.offset),
+-			});
++			synthesizeCursorExecToolCall(
++				output,
++				stream,
++				state,
++				args.toolCallId,
++				"grep",
++				grepHandoff
++					? { pattern: args.pattern, path: args.path || ".", include: args.glob || undefined }
++					: {
++							pattern: args.pattern,
++							path: searchPath,
++							case: args.caseInsensitive === true ? false : undefined,
++							skip: piGrepSkip(args.offset),
++						},
++				{ executed: !grepHandoff },
++			);
+ 			const { execResult } = await resolveExecHandler(
+ 				args,
+ 				execHandlers?.grep?.bind(execHandlers),
+ 				onToolResult,
+ 				toolResult => buildGrepResultFromToolResult(args, toolResult),
+-				reason => buildGrepErrorResult(reason),
++				reason => buildGrepErrorResult(grepHandoff ? MCP_EXTERNAL_HANDOFF_MESSAGE : reason),
+ 				error => buildGrepErrorResult(error),
+-				{ toolCallId: args.toolCallId, toolName: "grep" },
++				grepHandoff ? null : { toolCallId: args.toolCallId, toolName: "grep" },
+ 			);
+ 			sendExecClientMessage(runTransport, execMsg, "grepResult", execResult);
+ 			return;
+@@ -2621,11 +2664,25 @@ async function handleExecServerMessage(
+ 			const editOwned = isEditOwnedToolCallId(state, output, args.toolCallId);
+ 			// Match the bridge: prefer `fileText`, fall back to decoded `fileBytes`.
+ 			const content = args.fileText ?? new TextDecoder().decode(args.fileBytes ?? new Uint8Array());
++			// A handoff ships the block in the external write tool's dialect
++			// (`file_path`). Edit-owned writes stay local: they are StrReplace's
++			// materialization step, not a model-visible tool call.
++			const writeHandoff = !editOwned && isExternalExecHandoff(externalToolExecutor, execHandlers, "write");
+ 			if (!editOwned) {
+-				synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "write", {
+-					path: args.path,
+-					content,
+-				});
++				synthesizeCursorExecToolCall(
++					output,
++					stream,
++					state,
++					args.toolCallId,
++					"write",
++					writeHandoff
++						? { file_path: args.path, content }
++						: {
++								path: args.path,
++								content,
++							},
++					{ executed: !writeHandoff },
++				);
+ 			}
+ 			const write = execHandlers?.write?.bind(execHandlers);
+ 			const writeHandler = write
+@@ -2648,9 +2705,9 @@ async function handleExecServerMessage(
+ 						},
+ 						toolResult,
+ 					),
+-				reason => buildWriteRejectedResult(args.path, reason),
++				reason => buildWriteRejectedResult(args.path, writeHandoff ? MCP_EXTERNAL_HANDOFF_MESSAGE : reason),
+ 				error => buildWriteErrorResult(args.path, error),
+-				{ toolCallId: args.toolCallId, toolName: editOwned ? "edit" : "write" },
++				writeHandoff ? null : { toolCallId: args.toolCallId, toolName: editOwned ? "edit" : "write" },
+ 			);
+ 			if (editOwned) markEditToolCallPaired(state, args.toolCallId);
+ 			sendExecClientMessage(runTransport, execMsg, "writeResult", execResult);
+@@ -2677,20 +2734,44 @@ async function handleExecServerMessage(
+ 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
+ 			const normalizedArgs: ShellArgs = { ...args, workingDirectory: args.workingDirectory || process.cwd() };
+ 			// Match the bridge (`CursorExecHandlers.shell`): map `workingDirectory`
+-			// → `cwd`, convert the millisecond budget to bash-tool seconds.
+-			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
+-				command: args.command,
+-				cwd: args.workingDirectory || undefined,
+-				timeout: shellDeadlineSeconds(args),
+-			});
++			// → `cwd`, convert the millisecond budget to bash-tool seconds. On a
++			// handoff the block is translated into the bash tool's own dialect —
++			// `workingDirectory` folded into the command — and ships unresolved so
++			// the external loop executes it; the frame is answered with the
++			// handoff placeholder and no transcript pair is made here.
++			const shellHandoff = isExternalExecHandoff(externalToolExecutor, execHandlers, "shell");
++			synthesizeCursorExecToolCall(
++				output,
++				stream,
++				state,
++				args.toolCallId,
++				"bash",
++				shellHandoff
++					? {
++							command: args.workingDirectory
++								? `cd ${shellQuoteForCd(args.workingDirectory)} && ${args.command}`
++								: args.command,
++						}
++					: {
++							command: args.command,
++							cwd: args.workingDirectory || undefined,
++							timeout: shellDeadlineSeconds(args),
++						},
++				{ executed: !shellHandoff },
++			);
+ 			const { execResult } = await resolveExecHandler(
+ 				args,
+ 				execHandlers?.shell?.bind(execHandlers),
+ 				onToolResult,
+ 				toolResult => buildShellResultFromToolResult(normalizedArgs, toolResult),
+-				reason => buildShellRejectedResult(normalizedArgs.command, normalizedArgs.workingDirectory, reason),
++				reason =>
++					buildShellRejectedResult(
++						normalizedArgs.command,
++						normalizedArgs.workingDirectory,
++						shellHandoff ? MCP_EXTERNAL_HANDOFF_MESSAGE : reason,
++					),
+ 				error => buildShellFailureResult(normalizedArgs.command, normalizedArgs.workingDirectory, error),
+-				{ toolCallId: args.toolCallId, toolName: "bash" },
++				shellHandoff ? null : { toolCallId: args.toolCallId, toolName: "bash" },
+ 			);
+ 			const sanitizedExecResult = sanitizeShellExecResult(execResult);
+ 			sendExecClientMessage(runTransport, execMsg, "shellResult", sanitizedExecResult);
+@@ -2699,12 +2780,31 @@ async function handleExecServerMessage(
+ 		case "shellStreamArgs": {
+ 			const args = execMsg.message.value;
+ 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
+-			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
+-				command: args.command,
+-				cwd: args.workingDirectory || undefined,
+-				timeout: shellDeadlineSeconds(args),
+-			});
+-			await handleShellStreamArgs(args, execMsg, runTransport, execHandlers, onToolResult);
++			// A stream frame counts as covered only when NEITHER shell handler is
++			// installed: both answer it, so either one wins over the handoff.
++			const streamHandoff =
++				isExternalExecHandoff(externalToolExecutor, execHandlers, "shell") &&
++				execHandlers?.shellStream === undefined;
++			synthesizeCursorExecToolCall(
++				output,
++				stream,
++				state,
++				args.toolCallId,
++				"bash",
++				streamHandoff
++					? {
++							command: args.workingDirectory
++								? `cd ${shellQuoteForCd(args.workingDirectory)} && ${args.command}`
++								: args.command,
++						}
++					: {
++							command: args.command,
++							cwd: args.workingDirectory || undefined,
++							timeout: shellDeadlineSeconds(args),
++						},
++				{ executed: !streamHandoff },
++			);
++			await handleShellStreamArgs(args, execMsg, runTransport, execHandlers, onToolResult, streamHandoff);
+ 			return;
+ 		}
+ 		case "backgroundShellSpawnArgs": {
+@@ -3173,23 +3273,44 @@ async function handleExecServerMessage(
+ 		}
+ 		case "miniSweAgentBashArgs": {
+ 			// Same `ShellArgs`/`ShellResult` pair as `shellArgs`, under its own frame
+-			// number, so the existing shell handler answers it unchanged.
++			// number, so the existing shell handler answers it unchanged — and the
++			// same handoff applies when no shell handler is installed.
+ 			const args = execMsg.message.value;
+ 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
+ 			const normalizedArgs: ShellArgs = { ...args, workingDirectory: args.workingDirectory || process.cwd() };
+-			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
+-				command: args.command,
+-				cwd: args.workingDirectory || undefined,
+-				timeout: shellDeadlineSeconds(args),
+-			});
++			const miniSweHandoff = isExternalExecHandoff(externalToolExecutor, execHandlers, "shell");
++			synthesizeCursorExecToolCall(
++				output,
++				stream,
++				state,
++				args.toolCallId,
++				"bash",
++				miniSweHandoff
++					? {
++							command: args.workingDirectory
++								? `cd ${shellQuoteForCd(args.workingDirectory)} && ${args.command}`
++								: args.command,
++						}
++					: {
++							command: args.command,
++							cwd: args.workingDirectory || undefined,
++							timeout: shellDeadlineSeconds(args),
++						},
++				{ executed: !miniSweHandoff },
++			);
+ 			const { execResult } = await resolveExecHandler(
+ 				normalizedArgs,
+ 				execHandlers?.shell?.bind(execHandlers),
+ 				onToolResult,
+ 				toolResult => buildShellResultFromToolResult(normalizedArgs, toolResult),
+-				reason => buildShellRejectedResult(normalizedArgs.command, normalizedArgs.workingDirectory, reason),
++				reason =>
++					buildShellRejectedResult(
++						normalizedArgs.command,
++						normalizedArgs.workingDirectory,
++						miniSweHandoff ? MCP_EXTERNAL_HANDOFF_MESSAGE : reason,
++					),
+ 				error => buildShellFailureResult(normalizedArgs.command, normalizedArgs.workingDirectory, error),
+-				{ toolCallId: args.toolCallId, toolName: "bash" },
++				miniSweHandoff ? null : { toolCallId: args.toolCallId, toolName: "bash" },
+ 			);
+ 			sendExecClientMessage(runTransport, execMsg, "miniSweAgentBashResult", sanitizeShellExecResult(execResult));
+ 			return;
+@@ -4971,6 +5092,103 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
+ 
+ const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
+ 
++/**
++ * Whether a native exec frame must be handed to the external tool loop instead
++ * of answered locally: the host claimed an external executor and installed no
++ * handler for this frame's tool — the same contract as the MCP handoff
++ * (`externalHandoff` in `mcpArgs`). The synthesized block ships unresolved, so
++ * the host's loop executes it and pairs the result in the next turn's history;
++ * the frame itself is answered with the handoff placeholder and gets no
++ * transcript pair here.
++ */
++function isExternalExecHandoff(
++	externalToolExecutor: boolean,
++	execHandlers: CursorExecHandlers | undefined,
++	tool: keyof CursorExecHandlers,
++): boolean {
++	return externalToolExecutor === true && execHandlers?.[tool] === undefined;
++}
++
++/**
++ * Quote one directory for a `cd` prefix, POSIX single-quote style: the value
++ * comes from the server, so it must never reach the shell as a bare word — a
++ * space would split it and a metacharacter (`;`, `&&`, `$(...)`, backticks)
++ * would change the command instead of the working directory. Only the
++ * directory is quoted; the server's own `command` runs untouched.
++ */
++function shellQuoteForCd(dir: string): string {
++	return `'${dir.replace(/'/g, `'\\''`)}'`;
++}
++
++/** One chunk of an OMP read selector: `N`, `N-M`, `N..M`, `N+M`, any with an `L` prefix. */
++const READ_HANDOFF_SELECTOR_RE = /^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$/i;
++
++/** One validated read selector chunk, with the numbers `parseInt` produced. */
++interface ReadSelectorChunk {
++	readonly start: number;
++	readonly separator: string | undefined;
++	readonly end: number | undefined;
++}
++
++/**
++ * Validate one read selector chunk exactly as `isReadRangeList` does, so a tail
++ * OMP would leave in the path is never stripped here.
++ *
++ * The two families have different rules: `N-M`/`N..M` may omit its end ("to the
++ * end of the file") but must not run backwards, while `N+M` requires a count of
++ * at least one — `N+0` would otherwise become a zero-line read that reads as an
++ * empty file. A leading zero is fine (`007` is line 7) but a line below 1 is
++ * not a selector at all.
++ */
++function readSelectorChunk(value: string): ReadSelectorChunk | null {
++	const match = READ_HANDOFF_SELECTOR_RE.exec(value);
++	if (match === null) return null;
++	const start = Number.parseInt(match[1] ?? "", 10);
++	if (!Number.isFinite(start) || start < 1) return null;
++	const separator = match[2];
++	const end = separator === undefined || match[3] === undefined ? undefined : Number.parseInt(match[3], 10);
++	if (separator === "+") return end !== undefined && end >= 1 ? { start, separator, end } : null;
++	if (separator !== undefined && end !== undefined && end < start) return null;
++	return { start, separator, end };
++}
++
++/**
++ * Split an OMP read selector out of a path before handing it to an external
++ * read tool.
++ *
++ * Cursor may send `foo.ts:10-20` or `foo.ts:raw:10-20`: those selectors
++ * describe the range a coding-agent read would have applied, but the external
++ * tool takes a literal filename plus `offset`/`limit`, so the raw string makes
++ * it look for a file whose name ends in `:10-20` and fails. Explicit
++ * `offset`/`limit` fields win over the selector. A comma list is a selector
++ * only when every chunk is valid — OMP rejects the whole list otherwise — and
++ * the first chunk supplies the range, which is what the docs promise.
++ */
++function handoffReadArgs(args: { path: string; offset?: number; limit?: number }): {
++	path: string;
++	offset?: number;
++	limit?: number;
++} {
++	const chunks = args.path.split(":");
++	const last = chunks.at(-1);
++	const parsed = (last?.split(",") ?? []).map(readSelectorChunk);
++	const selector = parsed.length > 0 && parsed.every(chunk => chunk !== null) ? parsed[0]! : null;
++	if (selector !== null) chunks.pop();
++	// `:raw` is a verbatim-read selector with no external counterpart.
++	if (chunks.at(-1)?.toLowerCase() === "raw") chunks.pop();
++	const path = chunks.join(":");
++	if (selector === null) return { path, offset: args.offset, limit: args.limit };
++	const { start, separator, end } = selector;
++	// `N-M`/`N..M` name an inclusive line window, so the external tool's limit is
++	// its length; `N+M` already carries a count.
++	const limitFromSelector = end === undefined ? undefined : separator === "+" ? end : end - start + 1;
++	return {
++		path,
++		offset: args.offset ?? start,
++		limit: args.limit ?? limitFromSelector,
++	};
++}
++
+ function buildMcpExternalHandoffResult() {
+ 	return create(McpResultSchema, {
+ 		result: {

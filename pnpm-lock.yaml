@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: false
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@oh-my-pi/pi-ai@18.12.3': f82497f2ead8283848346f4d2f5ef8636e6bbc3e0a617f0930637c76c6d7f174
+
 importers:
 
   .:
@@ -17,7 +20,7 @@ importers:
         version: 4.0.5
       '@oh-my-pi/pi-ai':
         specifier: 18.12.3
-        version: 18.12.3
+        version: 18.12.3(patch_hash=f82497f2ead8283848346f4d2f5ef8636e6bbc3e0a617f0930637c76c6d7f174)
       '@oh-my-pi/pi-catalog':
         specifier: 18.12.3
         version: 18.12.3
@@ -59,7 +62,7 @@ importers:
         version: 3.18.5
       '@oh-my-pi/pi-ai':
         specifier: 18.12.3
-        version: 18.12.3
+        version: 18.12.3(patch_hash=f82497f2ead8283848346f4d2f5ef8636e6bbc3e0a617f0930637c76c6d7f174)
       '@oh-my-pi/pi-catalog':
         specifier: 18.12.3
         version: 18.12.3
@@ -915,7 +918,7 @@ snapshots:
 
   '@oh-my-pi/omptype@18.12.3': {}
 
-  '@oh-my-pi/pi-ai@18.12.3':
+  '@oh-my-pi/pi-ai@18.12.3(patch_hash=f82497f2ead8283848346f4d2f5ef8636e6bbc3e0a617f0930637c76c6d7f174)':
     dependencies:
       '@oh-my-pi/omptype': 18.12.3
       '@oh-my-pi/pi-catalog': 18.12.3
