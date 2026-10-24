@@ -146,7 +146,7 @@ $DSH_HOME/keys-manager/state.json
 - **传输路由** —— 7 条随附 pi-ai 无法支持、由 `dsh-llm-omp-transports` 服务的路由。
 
 <details>
-<summary>已支持 —— 51 条路由与 9 个账户</summary>
+<summary>已支持 —— 全部插件额外、OAuth 账户与传输路由</summary>
 
 **插件扩展内置 —— 35** —— 收录自 [oh-my-pi](https://github.com/can1357/oh-my-pi) 的提供商目录（MIT）：
 
@@ -204,7 +204,7 @@ $DSH_HOME/keys-manager/state.json
 | Kilo | `kilo` | 插件自带客户端 —— 设备码 + 轮询 |
 | Z.AI Coding Plan | `zai` | 插件自带客户端 —— 粘贴 `zcode://` 跳转 |
 
-两个插件签发的凭据是静态的，标记为 `signin:kilo` / `signin:zai-coding-plan`，不会向 `llm-pi-ai/<provider>` 写入任何内容；七条 pi-ai 行则是提供商自己的授权。
+两个插件签发的凭据是静态的，标记为 `signin:kilo` / `signin:zai-coding-plan`，不会向 `llm-pi-ai/<provider>` 写入任何内容；七条 pi-ai 行则是提供商自己的授权。`kilo` 出现两次是刻意的：同一条路由既可以作为插件额外内置路由收 API key，也可以通过自带客户端以账户身份入池。
 
 **传输路由 —— 7** —— `cursor`、`devin`、`google-gemini-cli`、`google-antigravity`、`factory-droid`、`gitlab-duo`、`gitlab-duo-agent`；登录、刷新与模型细节见[传输路由](#传输路由)。
 

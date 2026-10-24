@@ -223,7 +223,7 @@ Four groups, one pool:
   `dsh-llm-omp-transports`.
 
 <details>
-<summary>Supported — 51 routes and 9 accounts</summary>
+<summary>Supported — every plugin extra, OAuth account and transport route</summary>
 
 **Plugin extra built-in — 35** — from
 [oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT):
@@ -286,7 +286,9 @@ the DSH process environment before it is added.
 
 The two plugin-signed credentials are static, tagged `signin:kilo` /
 `signin:zai-coding-plan`, and nothing is written to `llm-pi-ai/<provider>`; the
-seven pi-ai rows are the provider's own grants.
+seven pi-ai rows are the provider's own grants. `kilo` is listed twice on
+purpose: the same route takes an API key as an extra built-in and an account
+through its bundled client.
 
 **Transport routes — 7** — `cursor`, `devin`, `google-gemini-cli`,
 `google-antigravity`, `factory-droid`, `gitlab-duo`, `gitlab-duo-agent`; sign-in,
