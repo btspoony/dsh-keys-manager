@@ -6637,64 +6637,17 @@ export class KeysManagerService {
 
     for (const entry of directory) {
       if (entry.provider === 'deepseek-account' || entry.settingsNs === 'deepseek-account' || entry.provider.startsWith('deepseek-account')) continue
-      const namespace = this.namespace(descriptor, entry.settingsNs)
-      const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, entry.settingsPath))
-      const managed = this.store.provider(entry.provider)
-      const extra = EXTRA_PROVIDER_MAP.get(entry.provider)
-      // A transport route names its own credential record and registers no
-      // settings namespace, so the profile/capability read below can only
-      // describe the route wrongly: it is neither a DSH route nor key-pool
-      // capable, and it is never adoptable.
-      const transport = entry.settingsNs === TRANSPORT_CREDENTIAL_SCOPE
-      const oauthFlow = this.oauthFlowAvailable(entry.provider)
-      const signIn = signInCapable(entry.provider)
-      const caps = capabilityOf(entry, profile, oauthFlow, signIn)
-      const support: ProviderSupport = { supported: caps.keys, ...(caps.reason === undefined ? {} : { reason: caps.reason }) }
-      const accountSupport = accountSupportOf(entry, oauthFlow, signIn)
-      const apiKeyEnv = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : null
-      const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
-      const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
-      const projectedAccountId = managed === undefined ? null : this.oauthOwnerFor(managed.provider)
-      const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId, this.quotaViewFor(managed.provider, key.id))) : []
-      const warning = binding === 'mismatch'
-        ? 'The provider profile no longer points at Keys Manager. Re-adopt it after releasing it, or repair the provider in Models.'
-        : undefined
-      const models = profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? managed?.models ?? []
-      views.push({
-        provider: entry.provider,
-        displayName: extra?.name ?? entry.displayName ?? entry.provider,
-        source: extra !== undefined ? 'extra' : 'dsh',
-        origin: extra !== undefined || transport ? 'plugin' : entry.declared === true ? 'custom' : 'dsh',
-        managed: managed !== undefined,
-        createdProfile: managed?.createdProfile ?? false,
-        configured: active.has(entry.provider) || profile !== undefined,
-        active: active.has(entry.provider),
-        supported: transport ? false : support.supported,
-        ...(transport
-          ? { reason: 'This route is served by a transport plugin; manage its account from this provider card.' }
-          : support.reason === undefined ? {} : { reason: support.reason }),
-        accountSupported: transport ? false : accountSupport.supported,
-        ...(transport ? { transport: true } : {}),
-        settingsNs: entry.settingsNs,
-        settingsPath: [...entry.settingsPath],
-        apiKeyEnv,
-        brokerRef: managed?.brokerRef ?? null,
-        ...(bindingHealthy === undefined ? {} : { bindingHealthy }),
-        extra: extra !== undefined,
-        extraId: extra?.id ?? managed?.extraId ?? null,
-        api: (profile?.api as string | undefined) ?? extra?.api ?? managed?.api ?? null,
-        baseURL: (profile?.baseURL as string | undefined) ?? extra?.baseURL ?? entry.defaultBaseURL ?? managed?.baseURL ?? null,
-        env: [...(extra?.env ?? entry.nativeAuth?.env ?? [])],
-        defaultBaseURL: entry.defaultBaseURL ?? extra?.baseURL ?? null,
-        nativeAuth: entry.nativeAuth === undefined ? null : { env: [...entry.nativeAuth.env], oauth: entry.nativeAuth.oauth },
-        models,
-        keyCount: keys.length,
-        healthyKeyCount: keys.filter(key => key.status === 'active').length,
-        status: managed !== undefined ? statusOfProvider(managed.keys, now) : 'unmanaged',
-        keys,
-        ...(warning === undefined ? {} : { warning }),
-        ...this.unattributedView(entry.provider),
-      })
+      views.push(this.providerViewOf(entry, descriptor, active, now))
+      seen.add(entry.provider)
+    }
+
+    // A transport route whose credential record is absent is withdrawn from
+    // the directory by the transports plugin (signed-in routes only), but its
+    // Keys Manager card — and the sign-in button on it — must stay. Union the
+    // package's static list in for anything the directory no longer lists.
+    for (const entry of transportModule.TRANSPORT_PROVIDERS) {
+      if (seen.has(entry.provider)) continue
+      views.push(this.providerViewOf(entry, descriptor, active, now))
       seen.add(entry.provider)
     }
 
@@ -6918,6 +6871,72 @@ export class KeysManagerService {
   }
 
   /** Find one directory entry by route id. */
+  /**
+   * Build one provider view from a directory entry (live or the transports
+   * package's static list, which unions the signed-out transport routes back
+   * in). Extracted from `buildState` so both sources share one construction.
+   */
+  private providerViewOf(entry: DirectoryEntry, descriptor: SettingsSnapshot, active: Set<string>, now: number): ProviderView {
+    const namespace = this.namespace(descriptor, entry.settingsNs)
+    const profile = namespace === undefined ? undefined : asProfile(getPath(namespace.value, entry.settingsPath))
+    const managed = this.store.provider(entry.provider)
+    const extra = EXTRA_PROVIDER_MAP.get(entry.provider)
+    // A transport route names its own credential record and registers no
+    // settings namespace, so the profile/capability read below can only
+    // describe the route wrongly: it is neither a DSH route nor key-pool
+    // capable, and it is never adoptable.
+    const transport = entry.settingsNs === TRANSPORT_CREDENTIAL_SCOPE
+    const oauthFlow = this.oauthFlowAvailable(entry.provider)
+    const signIn = signInCapable(entry.provider)
+    const caps = capabilityOf(entry, profile, oauthFlow, signIn)
+    const support: ProviderSupport = { supported: caps.keys, ...(caps.reason === undefined ? {} : { reason: caps.reason }) }
+    const accountSupport = accountSupportOf(entry, oauthFlow, signIn)
+    const apiKeyEnv = profile !== undefined && typeof profile.apiKeyEnv === 'string' ? profile.apiKeyEnv : null
+    const binding = managed === undefined ? undefined : this.bindingState(managed, descriptor)
+    const bindingHealthy = binding === 'healthy' ? true : binding === 'mismatch' ? false : undefined
+    const projectedAccountId = managed === undefined ? null : this.oauthOwnerFor(managed.provider)
+    const keys = managed !== undefined ? managed.keys.map(key => publicKey(key, now, projectedAccountId, this.quotaViewFor(managed.provider, key.id))) : []
+    const warning = binding === 'mismatch'
+      ? 'The provider profile no longer points at Keys Manager. Re-adopt it after releasing it, or repair the provider in Models.'
+      : undefined
+    const models = profile !== undefined ? normalizeModels(profile.models) : extra?.models ?? managed?.models ?? []
+    return {
+      provider: entry.provider,
+      displayName: extra?.name ?? entry.displayName ?? entry.provider,
+      source: extra !== undefined ? 'extra' : 'dsh',
+      origin: extra !== undefined || transport ? 'plugin' : entry.declared === true ? 'custom' : 'dsh',
+      managed: managed !== undefined,
+      createdProfile: managed?.createdProfile ?? false,
+      configured: active.has(entry.provider) || profile !== undefined,
+      active: active.has(entry.provider),
+      supported: transport ? false : support.supported,
+      ...(transport
+        ? { reason: 'This route is served by a transport plugin; manage its account from this provider card.' }
+        : support.reason === undefined ? {} : { reason: support.reason }),
+      accountSupported: transport ? false : accountSupport.supported,
+      ...(transport ? { transport: true } : {}),
+      settingsNs: entry.settingsNs,
+      settingsPath: [...entry.settingsPath],
+      apiKeyEnv,
+      brokerRef: managed?.brokerRef ?? null,
+      ...(bindingHealthy === undefined ? {} : { bindingHealthy }),
+      extra: extra !== undefined,
+      extraId: extra?.id ?? managed?.extraId ?? null,
+      api: (profile?.api as string | undefined) ?? extra?.api ?? managed?.api ?? null,
+      baseURL: (profile?.baseURL as string | undefined) ?? extra?.baseURL ?? entry.defaultBaseURL ?? managed?.baseURL ?? null,
+      env: [...(extra?.env ?? entry.nativeAuth?.env ?? [])],
+      defaultBaseURL: entry.defaultBaseURL ?? extra?.baseURL ?? null,
+      nativeAuth: entry.nativeAuth === undefined ? null : { env: [...entry.nativeAuth.env], oauth: entry.nativeAuth.oauth },
+      models,
+      keyCount: keys.length,
+      healthyKeyCount: keys.filter(key => key.status === 'active').length,
+      status: managed !== undefined ? statusOfProvider(managed.keys, now) : 'unmanaged',
+      keys,
+      ...(warning === undefined ? {} : { warning }),
+      ...this.unattributedView(entry.provider),
+    }
+  }
+
   private directoryEntry(provider: string): DirectoryEntry | undefined {
     return this.ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider)
   }

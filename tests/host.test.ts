@@ -197,7 +197,7 @@ function fakeSettings(): any {
   }
 }
 
-function fakeLlm(): any {
+function fakeLlm(omitTransportRoutes: readonly string[] = []): any {
   return {
     listConfigurableProviders() {
       return [
@@ -338,13 +338,17 @@ function fakeLlm(): any {
         // The transports package registers its cursor route as configurable
         // with an empty Config schema, so its namespace never appears in
         // `settings.describe()`. The entry is here so the route's verdict is
-        // derived from `settingsNs`, not from a mounted namespace.
-        {
-          provider: 'cursor',
-          displayName: 'Cursor',
-          settingsNs: 'llm-omp-transports',
-          settingsPath: ['providers', 'cursor'],
-        },
+        // derived from `settingsNs`, not from a mounted namespace. Omitting it
+        // simulates the signed-out reconcile in the transports package; the
+        // static-list union in `buildState` must still yield the card.
+        ...(omitTransportRoutes.includes('cursor')
+          ? []
+          : [{
+              provider: 'cursor',
+              displayName: 'Cursor',
+              settingsNs: 'llm-omp-transports',
+              settingsPath: ['providers', 'cursor'],
+            }]),
       ]
     },
     listProviders() {
@@ -430,7 +434,10 @@ function fakeAuthorization(flows: Array<{ key: string; label: string; methods: A
   }
 }
 
-async function harness(flows?: Array<{ key: string; label: string; methods: Array<{ id: string; label: string }> }>): Promise<Harness> {
+async function harness(
+  flows?: Array<{ key: string; label: string; methods: Array<{ id: string; label: string }> }>,
+  omitTransportRoutes: readonly string[] = [],
+): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'keys-manager-host-'))
   const store = new KeysManagerStore(join(dir, 'state.json'))
   const credentials = fakeCredentials({
@@ -440,7 +447,7 @@ async function harness(flows?: Array<{ key: string; label: string; methods: Arra
     ANTHROPIC_API_KEY: 'sk-ant-api',
   })
   const settings = fakeSettings()
-  const llm = fakeLlm()
+  const llm = fakeLlm(omitTransportRoutes)
   // The pi-ai flow set is the default; a transport test passes its own list
   // (the transports package registers its flows on the same seam).
   const authorization = flows === undefined ? fakeAuthorization() : fakeAuthorization(flows)
@@ -18340,6 +18347,44 @@ test('the projected quota carries no host-side reason', async () => {
     assert.equal(row.quota?.status, 'error')
     assert.equal(Object.hasOwn(row.quota!, 'reason'), false)
     assert.deepEqual(row.quota?.windows, [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('a directory without cursor still yields the cursor transport view', async () => {
+  // The transports plugin withdraws a route with no credential record from
+  // the configurable-provider directory; `buildState` unions the package's
+  // static list back in so the card and its sign-in button survive.
+  const h = await harness(undefined, ['cursor'])
+  try {
+    const view = h.service.buildState().providers.find(entry => entry.provider === 'cursor')
+    assert.ok(view, 'the cursor view must exist')
+    assert.equal(view.transport, true)
+    assert.equal(view.origin, 'plugin')
+    assert.equal(view.supported, false)
+    assert.equal(view.accountSupported, false)
+    assert.equal(view.managed, false)
+    assert.equal(view.configured, false)
+    assert.equal(view.active, false)
+    assert.equal(view.status, 'unmanaged')
+    assert.equal(view.keyCount, 0)
+    assert.deepEqual(view.keys, [])
+    assert.deepEqual(view.models, [])
+    assert.equal(view.displayName, 'Cursor')
+    assert.equal(view.settingsNs, 'llm-omp-transports')
+    assert.deepEqual(view.settingsPath, ['providers', 'cursor'])
+    assert.match(view.reason ?? '', /transport plugin/)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a directory with cursor yields exactly one cursor transport view', async () => {
+  const h = await harness()
+  try {
+    const views = h.service.buildState().providers.filter(entry => entry.provider === 'cursor' && entry.transport === true)
+    assert.equal(views.length, 1)
   } finally {
     await h.close()
   }

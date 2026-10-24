@@ -99,6 +99,9 @@ Current design boundaries of the Keys Manager plugin:
   `google-antigravity`, `factory-droid`, `gitlab-duo`, `gitlab-duo-agent`)
   keeps exactly one grant at `llm-omp-transports/<route>`: there is no key
   pool behind it and no per-account rotation to configure.
+- A transport route with no stored credential is absent from DSH's provider
+  lists (the model picker and Settings → Models); its sign-in entry lives on
+  its Keys Manager provider card, which is always rendered.
 - A stored grant is `active` when its `access` token is usable and its route
   can serve it: a dated `expires` in the future, or — on `devin` only — no
   `expires` at all, the static-bearer shape its resolver accepts. No shipped
