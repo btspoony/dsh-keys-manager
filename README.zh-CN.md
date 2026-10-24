@@ -109,7 +109,7 @@ dsh plugin --profile web link .
 
 - **Cursor** —— 支持文本与推理流，把工具调用交给 DSH 的工具循环；遇到图片块以类型化错误拒绝。该客户端呈现 Cursor 厂商内部的 OAuth 身份。
 - **Devin** —— 没有刷新：记录是静态 bearer，有效期由令牌推导（JWT `exp` 减五分钟，否则一年）；没有可读有效期时行显示 `active`，倒计时列留空。
-- **两条 Google 路由** —— 共用一份生成的 `lib/omp/google.mjs` 产物，却各自保留独立的授权、账户行与模型目录。授权内容为 `{access, refresh, expires, projectId, email?}`；登录会解析该路由计费所用的 Google Cloud 项目，付费账户若无法发现项目则以 `AUTH_FAILED` 失败，直到设置 `GOOGLE_CLOUD_PROJECT`（或 `GOOGLE_CLOUD_PROJECT_ID`）。
+- **两条 Google 路由** —— 共用一份生成的 `lib/omp/google.mjs` 产物，却各自保留独立的授权、账户行与模型目录。授权内容为 `{access, refresh, expires, projectId, email?}`；登录会解析该路由计费所用的 Google Cloud 项目，`legacy-tier` 或付费账户若无法发现项目则以 `AUTH_FAILED` 失败，直到设置 `GOOGLE_CLOUD_PROJECT`（或 `GOOGLE_CLOUD_PROJECT_ID`）。
 - **Factory Droid** —— 一个代理背后是四套协议，由产物内的模型 id 选择；行上不带 base URL，账户的区域属性（`orgId`/`region`）在刷新后保留。
 - **GitLab Duo 一对** —— `gitlab-duo` 的 direct-access token 缓存以 GitLab token 为键，轮换后的 token 因此会未命中；`gitlab-duo-agent` 每个请求重新播种一条工作流并重放会话记录，而不是复用 socket。
 

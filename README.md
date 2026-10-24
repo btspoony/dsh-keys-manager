@@ -163,9 +163,9 @@ Providers the vendored pi-ai cannot speak are served by the companion
 - **Google routes** — both share one generated `lib/omp/google.mjs` artifact yet
   keep separate grants, account rows and catalogs. The grant is
   `{access, refresh, expires, projectId, email?}`; sign-in resolves the Cloud
-  project the route bills, and a paid tier whose project cannot be discovered
-  fails `AUTH_FAILED` until `GOOGLE_CLOUD_PROJECT` (or `GOOGLE_CLOUD_PROJECT_ID`)
-  is set.
+  project the route bills, and a `legacy-tier` or paid account whose project
+  cannot be discovered fails `AUTH_FAILED` until `GOOGLE_CLOUD_PROJECT` (or
+  `GOOGLE_CLOUD_PROJECT_ID`) is set.
 - **Factory Droid** — four wires behind one proxy, chosen by model id inside the
   artifact; rows carry no base URL and the account's residency
   (`orgId`/`region`) survives refresh.
