@@ -53,6 +53,16 @@
  * refused — without that, a session that ever changed tools could not use this
  * route at all.
  *
+ * Public surface, deliberately wider than "a profile type and one function":
+ * {@link RouteProfile} is the route-record type, and each route record
+ * ({@link CURSOR_PROFILE}, {@link DEVIN_PROFILE},
+ * {@link GOOGLE_GEMINI_CLI_PROFILE}, {@link GOOGLE_ANTIGRAVITY_PROFILE}) is
+ * exported beside its projection function, together with that function's
+ * return contract ({@link ProjectedRequest}, {@link ProjectedDevinRequest},
+ * {@link ProjectedGoogleRequest}). The adapter takes a route record instead of
+ * branching on the provider id, so the records are this package's route-record
+ * convention, not incidental exports.
+ *
  * @module dsh-llm-omp-transports/projection
  */
 import {

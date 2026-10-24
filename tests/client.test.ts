@@ -176,6 +176,7 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     signInAgain: '重新登录',
     loginPasteHint: '从浏览器地址栏复制完整 URL，或只粘贴授权码。',
     adopt: '接管 Provider',
+    signingIn: '正在登录…',
     loginPromptSubmit: '提交',
     delete: '删除',
     testKey: '测试连接',
@@ -2122,16 +2123,22 @@ function makePasteAttemptView(): AccountAttemptView {
     expect(oauthCapable({ ...kilo, accountSupported: false, nativeAuth: { env: [], oauth: true } })).toBe(false)
   })
 
-  test('an unmanaged extra card signs in directly instead of adopting first', async () => {
+  // I-000263: this card starts a sign-in without adopting, so its progress
+  // copy names the sign-in; the adopt copy stays on the real adopt buttons.
+  test('an unmanaged extra card signs in directly and reports a sign-in, never an adopt, while it starts', async () => {
+    expectLocaleParity(['signingIn'])
     const state = makeState()
     state.providers = [makeKiloProvider()]
     const harness = makeContext()
     const calls: string[] = []
+    let releaseLogin!: () => void
+    const loginEntered = new Promise<void>(resolve => { releaseLogin = resolve })
     harness.ctx.connection.rpc.call = async (_channel, endpoint, payload) => {
       calls.push(endpoint)
       if (endpoint === 'keysManager/getState') return { ok: true, value: state }
       if (endpoint === 'keysManager/beginAccountLogin') {
         expect(payload).toEqual({ args: { provider: 'kilo', alias: undefined } })
+        await loginEntered
         return { ok: true, value: makePendingAttemptView() }
       }
       if (endpoint === 'keysManager/accountAttempt') return { ok: true, value: makePendingAttemptView() }
@@ -2147,6 +2154,13 @@ function makePasteAttemptView(): AccountAttemptView {
     const addAccount = findButtons(view.nodes, '添加账户')[0]
     expect(addAccount).toBeDefined()
     ;(addAccount!.props!.onClick as () => void)()
+
+    // While the login call is in flight the button reports a sign-in. The
+    // adopt copy would claim a step this path never runs.
+    expect(findButtons(view.nodes, '正在登录…')).toHaveLength(1)
+    expect(findButtons(view.nodes, '接管中…')).toHaveLength(0)
+
+    releaseLogin()
     await view.flush()
 
     // The first sign-in creates the route, so no adopt step runs first.
@@ -2985,12 +2999,13 @@ describe('transport account surface', () => {
   })
 
   // I-000274: an empty catalog is also the all-models state, so the picker
-  // explains it only when the host's `warning` accompanies the read.
+  // explains it only when the host reports the missing build (I-000275: a
+  // stable marker, because the client owns the localized wording).
   test('an empty model catalog explains itself only when the host reports the missing build', async () => {
     const state = makeState()
     state.providers = [...state.providers, makeTransportProvider()]
     state.transportAccounts = [makeTransportAccount()]
-    let payload: Record<string, unknown> = { catalog: [], models: [], warning: 'ships no catalog for "cursor"' }
+    let payload: Record<string, unknown> = { catalog: [], models: [], missingCatalog: true }
     const harness = makeContext(endpoint => endpoint === 'keysManager/transportModels'
       ? { ok: true, value: payload }
       : { ok: true, value: state })
@@ -3028,9 +3043,9 @@ describe('transport account surface', () => {
     plain.unmount()
     setRuntimeContext(null)
 
-    // A warning next to real rows never replaces them: the hint is the
+    // The marker next to real rows never replaces them: the hint is the
     // empty-grid branch's job, and a catalog that exists stays saveable.
-    payload = { catalog: [{ id: 'model-a', name: 'Model A' }], models: [], warning: 'ships no catalog for "cursor"' }
+    payload = { catalog: [{ id: 'model-a', name: 'Model A' }], models: [], missingCatalog: true }
     const full = await openPicker()
     expect(findByClass(full.inside, 'km-model-option')).toHaveLength(1)
     expect(full.inside.some(node => node.text.includes('已安装的传输构建没有为该路由提供模型目录'))).toBe(false)

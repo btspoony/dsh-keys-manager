@@ -57,5 +57,6 @@
   "transportEmpty": "还没有传输账户。",
   "signInAgain": "重新登录",
   "loginPasteHint": "从浏览器地址栏复制完整 URL，或只粘贴授权码。",
-  "loginReveal": "显示粘贴的内容"
+  "loginReveal": "显示粘贴的内容",
+  "signingIn": "正在登录…"
 }

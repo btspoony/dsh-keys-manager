@@ -264,6 +264,17 @@ abstract class OmpTransportAdapter<
     return row
   }
 
+  /**
+   * Describe this adapter's own route, echoing the id it was asked about.
+   *
+   * @remarks
+   * The id is echoed back (`id: provider`) so a caller sees the route it named,
+   * but only for a route this adapter owns: a foreign id raises
+   * {@link UNKNOWN_PROVIDER} instead of answering another provider's id with
+   * this route's display name. That guard is a deliberate tightening over the
+   * Cursor adapter's first behaviour (it once returned a display name for any
+   * id); it applies to every route and is pinned in both directions.
+   */
   override providerInfo(provider: string): LlmProviderInfo {
     this.assertRoute(provider)
     return { id: provider, name: this.config.route.displayName }
