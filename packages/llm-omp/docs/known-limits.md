@@ -136,17 +136,20 @@ repository root docs.
   MCP advertisement, so a DSH tool with one of those names is advertised as
   `dsh_<name>`; the event stream restores the DSH name on the tool call, while
   history replay keeps the advertised alias so the follow-up request stays
-  consistent. Other tool names travel unchanged. Cursor-native
-  exec frames (`read`, `shell`, `write`, `delete`, `grep`, `ls`,
-  `diagnostics`, streamed edits) still have no handler: the transport answers
-  them with "Tool not available" and they are **not** executed by DSH (live
-  reachability unverified).
+  consistent. The seven `dsh_<native>` names are reserved: a DSH tool that
+  already carries one is refused with `TOOL_ALIAS_COLLISION`, which fails the
+  whole request and requires renaming the tool. Any other tool name travels
+  unchanged. Cursor-native exec frames (`read`, `shell`, `write`, `delete`,
+  `grep`, `ls`, `diagnostics`, streamed edits) still have no handler: the
+  transport answers them with "Tool not available" and they are **not**
+  executed by DSH (live reachability unverified).
 - Tool declarations travel as MCP definitions. `toolHistory` is accepted but
   cannot be replayed — the active declaration set is what the request
   projects.
 - A historical tool call whose arguments are not a JSON object, a malformed
-  tool-call event and an unknown event kind fail by name
-  (`TOOL_ARGUMENTS_INVALID`, `MALFORMED_TOOL_CALL`, `UNKNOWN_EVENT`).
+  tool-call event, an unknown event kind and a DSH tool already named like a
+  reserved alias fail by name (`TOOL_ARGUMENTS_INVALID`, `MALFORMED_TOOL_CALL`,
+  `UNKNOWN_EVENT`, `TOOL_ALIAS_COLLISION`).
 - A system message that is not part of the leading prompt is refused rather
   than reordered or dropped.
 

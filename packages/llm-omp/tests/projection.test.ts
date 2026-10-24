@@ -433,6 +433,37 @@ describe('projectRequest', () => {
     ).toThrowError(expect.objectContaining({ code: TOOL_ALIAS_COLLISION }))
   })
 
+  it('keeps a dsh_-prefixed tool whose suffix is not a reserved alias', async () => {
+    // The prefix alone is not reserved: only the seven native suffixes are, so
+    // a foreign `dsh_custom` passes through the request and the event stream.
+    const projected = projectRequest(
+      SONNET,
+      request([], { tools: [{ name: 'dsh_custom', description: 'Custom tool', parameters: {} }] }),
+      't',
+    )
+    expect(projected.context.tools).toEqual([{ name: 'dsh_custom', description: 'Custom tool', parameters: {} }])
+
+    const partial: OmpAssistantMessage = {
+      role: 'assistant',
+      model: 'claude-4.5-sonnet',
+      content: [{ type: 'toolCall', id: 'call-custom', name: 'dsh_custom', arguments: {} }],
+      usage: usage(),
+      stopReason: 'stop',
+    }
+    const chunks = await collect([
+      {
+        type: 'toolcall_end',
+        contentIndex: 0,
+        toolCall: { type: 'toolCall', id: 'call-custom', name: 'dsh_custom', arguments: { value: 1 } },
+      },
+      { type: 'done', reason: 'stop', message: partial },
+    ])
+    const blockEnd = chunks.find(
+      (chunk): chunk is Extract<StreamChunk, { type: 'block-end' }> => chunk.type === 'block-end',
+    )
+    expect(blockEnd?.block).toMatchObject({ type: 'tool-call', name: 'dsh_custom' })
+  })
+
   it('replays a colliding DSH tool call under its alias and pairs the result', () => {
     // History has to agree with the declaration set the same request
     // advertises: the server saw `dsh_read`, so the replay must say so too.

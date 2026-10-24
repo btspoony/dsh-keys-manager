@@ -178,10 +178,13 @@ records — not a second code path.
   MCP advertisement, so a DSH tool with one of those names is advertised as
   `dsh_<name>`; the event stream restores the DSH name on the tool call, while
   history replay keeps the advertised alias so the follow-up request stays
-  consistent. Other tool names travel unchanged. Cursor-native exec frames
-  (`read`, `shell`, `write`, `delete`, `grep`, `ls`, `diagnostics`,
-  streamed edits) are still answered by the transport with `Tool not available`
-  and are **not** executed by DSH (live reachability unverified).
+  consistent. The seven `dsh_<native>` names are reserved: a DSH tool that
+  already carries one is refused with `TOOL_ALIAS_COLLISION`, which fails the
+  whole request and requires renaming the tool. Any other tool name travels
+  unchanged. Cursor-native exec frames (`read`, `shell`, `write`, `delete`,
+  `grep`, `ls`, `diagnostics`, streamed edits) are still answered by the
+  transport with `Tool not available` and are **not** executed by DSH (live
+  reachability unverified).
 - **Advisory request knobs are ignored.** Cursor's agent protocol has no field
   for an output cap, sampling temperature, stop sequences or an auxiliary-call
   purpose; DSH's `maxTokens`, `temperature`, `stop` and `purpose` never reach
