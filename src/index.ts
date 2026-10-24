@@ -753,15 +753,17 @@ const DEVIN_ROUTE = 'devin'
  * The catalog accessor each transport route ships in the transports package.
  *
  * One exported function per route, the `cursorCatalogModels`/`devinCatalogModels`
- * shape. An installed transport build may predate the Google pair's exports, and
- * `factory-droid` is probed while its route stays unshipped (`I-000253`), so a
- * probe can legitimately find nothing.
+ * shape. An installed transport build may predate a route's export (every route
+ * added after the installed build, including the Google pair, `factory-droid`
+ * and the GitLab pair), so a probe can legitimately find nothing.
  */
 const TRANSPORT_CATALOG_EXPORTS: Readonly<Record<string, string>> = Object.freeze({
   [DEVIN_ROUTE]: 'devinCatalogModels',
   'google-gemini-cli': 'googleGeminiCliCatalogModels',
   'google-antigravity': 'googleAntigravityCatalogModels',
   'factory-droid': 'factoryDroidCatalogModels',
+  'gitlab-duo': 'gitlabDuoCatalogModels',
+  'gitlab-duo-agent': 'gitlabDuoAgentCatalogModels',
 })
 
 /**
