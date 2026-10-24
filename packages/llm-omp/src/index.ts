@@ -2,21 +2,23 @@
  * llm-omp-transports Host half — the transport plugin for providers whose wire protocols
  * cannot be expressed through DSH's provider *configuration* surfaces.
  *
- * The plugin registers its own route on the `llm` seam, so nothing here depends
- * on an upstream DSH change. Per run it:
+ * The plugin registers its own routes on the `llm` seam, so nothing here depends
+ * on an upstream DSH change. It serves four routes — `cursor`, `devin`,
+ * `google-gemini-cli` and `google-antigravity` — and per run it:
  *
- * - registers the bundled omp `cursor` adapter (`lib/omp/cursor.mjs`, imported
- *   lazily so an install without the artifact still loads), with an access
- *   resolver that reads and refreshes `llm-omp-transports/cursor` through
- *   `ctx.credentials`;
- * - declares the route as configurable, so the Models settings page has a
- *   profile entry for it;
- * - registers the `llm-omp-transports/cursor` authorization flow (browser
- *   sign-in, poll, commit).
+ * - registers the bundled omp adapters (`lib/omp/cursor.mjs`, `devin.mjs` and
+ *   the shared `google.mjs`, imported lazily so an install without an artifact
+ *   still loads), each with an access resolver that reads and refreshes its own
+ *   `llm-omp-transports/<route>` grant through `ctx.credentials`;
+ * - declares every route as configurable, so the Models settings page has a
+ *   profile entry for each;
+ * - registers one authorization flow per route: a browser sign-in plus poll for
+ *   Cursor, a paste-the-callback prompt for Devin, and a Node loopback listener
+ *   with a paste fallback for the Google pair.
  *
  * DSH ships no generic flow browser, so a surface that wants a "Sign in"
- * button calls {@link beginCursorSignIn}. The keys-manager Web page is that
- * surface in the next task; nothing here requires a client.
+ * button calls the route's own begin function ({@link beginCursorSignIn} and
+ * its siblings). The keys-manager Web page is that surface.
  *
  * @module dsh-llm-omp-transports
  */
@@ -56,13 +58,18 @@ import type { GoogleRouteFacts } from './google/route.js'
 /** Machine code for a transport artifact that cannot be loaded. */
 export const TRANSPORT_UNAVAILABLE = 'TRANSPORT_UNAVAILABLE'
 
-/** One model row the Cursor route can advertise. */
+/**
+ * One model row a transport route can advertise.
+ *
+ * Route-neutral: every route's `*CatalogModels()` projection returns these
+ * rows, and the host renders them in that route's model picker.
+ */
 export interface TransportCatalogModel {
   id: string
   name: string
 }
 
-/** One configured model row beneath `providers.cursor.models`. */
+/** One configured model row beneath `providers.<route>.models`. */
 export type TransportModelProfile = TransportCatalogModel
 
 /** The configured profile of one transport route. */
