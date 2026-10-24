@@ -313,7 +313,7 @@ describe('bundled devin transport over Connect frames', () => {
     })
   })
 
-  it('fails an oversize frame header with the server code', async () => {
+  it('fails an oversize frame header with the unclassified provider error', async () => {
     const header = Buffer.alloc(5)
     header[0] = 0
     header.writeUInt32BE(MAX_CONNECT_FRAME_PAYLOAD + 1, 1)

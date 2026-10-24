@@ -33,8 +33,8 @@ export function shapeTransportModels(value: unknown): TransportModelsView {
     }
   }
   const models = Array.isArray(record.models) ? record.models.filter((id): id is string => typeof id === 'string') : []
-  const warning = typeof record.warning === 'string' && record.warning.length > 0 ? record.warning : undefined
-  return warning === undefined ? { catalog, models } : { catalog, models, warning }
+  // Only the fact crosses the wire; the picker resolves its own localized copy.
+  return record.missingCatalog === true ? { catalog, models, missingCatalog: true } : { catalog, models }
 }
 
 /** Picker rows for every catalog model, preselecting the configured allow-list. */

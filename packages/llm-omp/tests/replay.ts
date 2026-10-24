@@ -24,6 +24,9 @@ import type {
   OmpDevinModel,
   OmpDevinOptions,
   OmpDevinTransport,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions,
+  OmpFactoryDroidTransport,
   OmpGoogleModel,
   OmpGoogleOptions,
   OmpGoogleTransport,
@@ -118,6 +121,34 @@ export function scriptedGoogleTransport(name: string): {
 } {
   const script = recordedScript(name)
   const calls: GoogleTransportCall[] = []
+  return {
+    calls,
+    transport: async function* (model, context, options) {
+      calls.push({ model, context, options })
+      yield* script
+    },
+  }
+}
+
+/** One Factory Droid transport invocation, captured for assertions about the projected request. */
+export interface FactoryDroidTransportCall {
+  readonly model: OmpFactoryDroidModel
+  readonly context: OmpContext
+  readonly options: OmpFactoryDroidOptions
+}
+
+/**
+ * The Factory Droid twin of {@link scriptedTransport}: the same event scripts,
+ * the fourth route's model/options types.
+ * @param name - fixture file name under `tests/fixtures/`.
+ * @returns the scripted transport plus the calls it received.
+ */
+export function scriptedFactoryDroidTransport(name: string): {
+  transport: OmpFactoryDroidTransport
+  calls: FactoryDroidTransportCall[]
+} {
+  const script = recordedScript(name)
+  const calls: FactoryDroidTransportCall[] = []
   return {
     calls,
     transport: async function* (model, context, options) {

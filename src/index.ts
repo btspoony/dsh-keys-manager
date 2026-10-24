@@ -2749,21 +2749,18 @@ export class KeysManagerService {
   }
 
   /**
-   * Explain a registered transport flow that has no catalog.
+   * Record that a registered transport flow has no catalog.
    *
    * An empty list is also the legitimate all-models state, so the only honest
-   * way to tell a stale transport build apart is to say so. The message rides
-   * every read whose accessor is missing — a once-only gate would leave a
-   * remounted or reloaded picker unexplained — while `catalogReports` keeps
-   * the state warning to one push per route.
+   * way to tell a stale transport build apart is to say so. The read answers a
+   * stable marker (never host copy — the picker owns the localized wording),
+   * while `catalogReports` keeps the human-readable state warning to one push
+   * per route.
    */
-  private reportMissingCatalog(route: string): string {
-    const message = `The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`
-    if (!this.catalogReports.has(route)) {
-      this.catalogReports.add(route)
-      this.pushWarning(message)
-    }
-    return message
+  private reportMissingCatalog(route: string): void {
+    if (this.catalogReports.has(route)) return
+    this.catalogReports.add(route)
+    this.pushWarning(`The installed dsh-llm-omp-transports build registers "${route}" but ships no catalog for it; the model list stays empty until the transport package is rebuilt or upgraded`)
   }
 
   /**
@@ -2778,14 +2775,17 @@ export class KeysManagerService {
   async transportModels(route: string): Promise<TransportModelsView> {
     this.assertTransportRoute(route)
     const configured = this.transportModelIds(route)
-    let warning: string | undefined
-    const catalog = transportCatalogOf(route, missing => { warning = this.reportMissingCatalog(missing) })
+    let missingCatalog = false
+    const catalog = transportCatalogOf(route, missing => {
+      missingCatalog = true
+      this.reportMissingCatalog(missing)
+    })
     // A settings profile can outlive a catalog id; the picker renders the
     // catalog, so an unknown id would count toward {n} of {total} while
     // matching no checkbox and failing every save.
     const known = new Set(catalog.map(row => row.id))
     const models = configured.filter(id => known.has(id))
-    return warning === undefined ? { catalog, models } : { catalog, models, warning }
+    return missingCatalog ? { catalog, models, missingCatalog: true } : { catalog, models }
   }
 
   /**

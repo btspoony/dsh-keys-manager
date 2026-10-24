@@ -18,7 +18,7 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 
 import { googleRedirectUri } from './route.js'
-import type { GoogleRouteFacts } from './route.js'
+import type { GoogleCallbackFacts } from './route.js'
 
 /** A sign-in step that failed in a way the flow reports as `AUTH_FAILED`. */
 export class GoogleAuthError extends Error {
@@ -98,11 +98,26 @@ export function refusedSignIn(text: string): string | undefined {
 
 /** Options for {@link startCallbackListener}; the signal comes from the flow attempt. */
 export interface CallbackListenerOptions {
-  readonly facts: GoogleRouteFacts
+  /**
+   * The loopback facts. Only `callback` is read, so a non-Google route can pass
+   * its own literal instead of a Google rule (the Duo proxy does exactly that).
+   */
+  readonly facts: { readonly callback: GoogleCallbackFacts }
   /** The state this attempt minted; a callback that carries another one is refused. */
   readonly expectedState: string
   /** First port to try; `0` asks for an ephemeral one (tests, and callers that must not own the rule's port). */
   readonly port?: number
+  /**
+   * Whether a taken port may fall back to an ephemeral one.
+   *
+   * Google's rules declare `portFallback`; the GitLab Duo proxy does not — its
+   * OAuth client is registered against the exact `localhost:8080/callback`, so a
+   * different port would make the browser land nowhere. `false` turns the
+   * fallback off and surfaces the bind failure instead.
+   */
+  readonly portFallback?: boolean
+  /** Advertised redirect override, for a route whose URI is registered exactly. */
+  readonly redirectUri?: string
   readonly signal?: AbortSignal
 }
 
@@ -234,7 +249,7 @@ export async function startCallbackListener(options: CallbackListenerOptions): P
 
   server = createServer(handler)
   try {
-    port = await listen(server, facts.callback.hostname, port, FALLBACK_ATTEMPTS)
+    port = await listen(server, facts.callback.hostname, port, options.portFallback === false ? 0 : FALLBACK_ATTEMPTS)
   } catch (cause) {
     await stop(cause instanceof GoogleAuthError ? cause : new GoogleAuthError(String(cause)))
     throw cause instanceof GoogleAuthError ? cause : new GoogleAuthError(String(cause))
@@ -252,7 +267,7 @@ export async function startCallbackListener(options: CallbackListenerOptions): P
       return port
     },
     get redirectUri() {
-      return googleRedirectUri(facts, port)
+      return options.redirectUri ?? googleRedirectUri(facts, port)
     },
     callback,
     close: () => stop(),

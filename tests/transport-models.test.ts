@@ -60,16 +60,15 @@ describe('transport model picker shaping', () => {
     expect(shapeTransportModels(null)).toEqual({ catalog: [], models: [] })
   })
 
-  test('carries the missing-catalog explanation only when the wire has one', () => {
-    expect(shapeTransportModels({ catalog: [], models: [], warning: 'ships no catalog' }).warning)
-      .toBe('ships no catalog')
-    // A malformed or blank field is not an explanation the picker should show.
-    expect(shapeTransportModels({ catalog: [], models: [], warning: 7 })).toEqual({ catalog: [], models: [] })
-    expect(shapeTransportModels({ catalog: [], models: [], warning: '' })).toEqual({ catalog: [], models: [] })
-    // A warning does not replace the catalog: both survive shaping, and the
+  test('carries the missing-catalog marker only when the host reports it', () => {
+    expect(shapeTransportModels({ catalog: [], models: [], missingCatalog: true }).missingCatalog).toBe(true)
+    // Anything but the stable `true` marker is not a report the picker shows.
+    expect(shapeTransportModels({ catalog: [], models: [], missingCatalog: 7 })).toEqual({ catalog: [], models: [] })
+    expect(shapeTransportModels({ catalog: [], models: [], missingCatalog: false })).toEqual({ catalog: [], models: [] })
+    // The marker does not replace the catalog: both survive shaping, and the
     // picker's own empty-grid guard decides whether the hint is shown.
-    expect(shapeTransportModels({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], warning: 'ships no catalog' }))
-      .toEqual({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], warning: 'ships no catalog' })
+    expect(shapeTransportModels({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], missingCatalog: true }))
+      .toEqual({ catalog: [{ id: 'a', name: 'Model A' }], models: ['a'], missingCatalog: true })
   })
 })
 

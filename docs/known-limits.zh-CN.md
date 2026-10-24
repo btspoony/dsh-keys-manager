@@ -31,7 +31,7 @@ Keys Manager 插件当前的设计边界：
 ## 传输路由（Cursor、Devin、Google）
 
 - 每条传输路由（`cursor`、`devin`、`google-gemini-cli`、`google-antigravity`）在 `llm-omp-transports/<route>` 只保留一条授权：其后没有 key 池，也没有可按账户配置的轮换。
-- 只要授权的 `access` 令牌可用且该路由能使用它，状态就是 `active`：要么 `expires` 在未来，要么仅在 `devin` 上完全没有 `expires`（其解析器接受的静态 bearer 形态）。目前没有任何已发布流程会写入这种记录（Devin 会从令牌推导有效期），且它不显示有效期。Cursor 解析器需要带有效期的授权，因此同样的记录出现在 `cursor` 上会显示 `needs-reauth`。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。
+- 只要授权的 `access` 令牌可用且该路由能使用它，状态就是 `active`：要么 `expires` 在未来，要么仅在 `devin` 上完全没有 `expires`（其解析器接受的静态 bearer 形态）。目前没有任何已发布流程会写入这种记录（Devin 会从令牌推导有效期），且它不显示有效期与倒计时。Cursor 解析器需要带有效期的授权，因此同样的记录出现在 `cursor` 上会显示 `needs-reauth`。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。
 - 授权过期在 Cursor 与 Devin 上的后果不同：Devin 没有刷新令牌，过期后停止服务，直到重新登录；Cursor 在凭据 seam 上自动刷新并继续服务，只有刷新被拒或没有存刷新令牌时才停止。
 - Cursor 与 Devin 两个客户端都是非官方实现，真实端点均未验证。它们的具体风险（厂商身份、ToS 风险、不转发图片、Devin 无刷新）见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
 - 两条 Google 路由共用一份生成的 `lib/omp/google.mjs` 产物，除此之外彼此独立：授权记录、账户行与模型目录都各自独立。其授权内容为 `{access, refresh, expires, projectId, email?}`，在凭据 seam 上刷新：刷新令牌仍有效时，过期的 access 令牌会自动续期；刷新被拒则该路由停止服务，直到重新登录。

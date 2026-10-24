@@ -107,3 +107,34 @@ artifact serving **two** route registrations, plus one Node loopback sign-in. Fo
    and refreshes inside `modifyRecord`, carrying identity fields (`projectId`) across the refresh that
    the token endpoint never returns. Attribution stays a *fill-absent* `fetch` wrapper: the transport
    merges caller headers last, so passing headers destroys the vendor identity.
+
+## Lessons from the M3 closing batch (issue #15 batch 6, iteration `iter-2026-Q4-m3-close`)
+
+Three routes (`factory-droid`, `gitlab-duo`, `gitlab-duo-agent`) closed the provider list. Five rules earned:
+
+1. **A provider that imports `providers/register-builtins` inherits the whole catalog — solve it with
+   importer-guarded, entry-scoped *build substitutions*, not a shim category.** The remedy that worked:
+   S1 replaces `pi-catalog/models.json` with `{}` (`getBundledModel` returning `undefined` is its
+   documented "not bundled" state); S2 redirects `register-builtins` to a tracked lean module that
+   re-exports the **real** stream functions (marker-delimited verbatim regions + containment asserts);
+   S2b does the same for the `../stream` edge; S2c substitutes the registry-derived `getEnvApiKey` map,
+   which is reachable only if a request omits an explicit credential — proven by a poisoned-env test at
+   the wire boundary. Result: 17 MB → 2.0 MB. Every redirect is importer-guarded and installed only for
+   the entry that needs it, so the released artifacts' bytes cannot move; `sourceHashes` + metafile
+   assertions ("no `models.json`, no real `register-builtins`") catch a substitution that silently stops
+   firing.
+2. **A server-orchestrated workflow transport can still use DSH's native tool loop.** GitLab's Duo
+   Workflow yields ordinary `toolcall_*` events at every tool boundary and re-seeds from the goal
+   transcript when no `providerSessionState` survives; a fresh per-request state map is correct and
+   cheaper to build than sticky resume. Prove it with one adapter driven across two requests (a new
+   workflow id, a new socket, the tool result in the second goal) — a fresh adapter per case hides
+   cross-request regressions.
+3. **Refresh identity is per route, not per provider family.** Two routes sharing a GitLab OAuth family
+   still need their own client id/redirect on refresh; an expired grant with the sibling's identity fails
+   server-side. Test an **expired** grant, not only a fresh one.
+4. **Per-entry shim extensions keep released artifacts byte-identical; a shared-shim edit does not.**
+   `pi-utils-google.ts`, `pi-utils-gitlab-duo.ts` and the lean modules are recorded per entry in the
+   manifest, so the drift gate measures each graph separately.
+5. **Attribution stays fill-absent and the wire owns its own paths.** When a vendor encodes the proxy path
+   in the transport (Factory's `/api/llm/{a,o,g}/v1/...`), generated rows must not carry the seed's host
+   `baseUrl`; the wire suite that asserts the final URL catches it, the adapter tests do not.

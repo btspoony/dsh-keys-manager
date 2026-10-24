@@ -1028,9 +1028,9 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
   const rows = view === null ? [] : modelPickerRows(view)
   // One predicate disables Save on an empty grid, which would otherwise end in
   // the host's un-localized "no model list"; the hint on top of it also needs
-  // the host's warning.
+  // the host's report that this build ships no catalog.
   const emptyCatalog = view !== null && view.catalog.length === 0
-  const warning = view === null ? undefined : view.warning
+  const missingCatalog = view !== null && view.missingCatalog === true
   const errorLine = error === null ? null : h('div', { className: 'km-inline-error', role: 'alert' }, error)
   return h('div', { className: 'km-models' },
     h('button', {
@@ -1071,7 +1071,7 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
             ))),
       // An empty grid is also the all-models state: only the host's report of
       // a missing catalog explains it.
-      emptyCatalog && warning !== undefined
+      emptyCatalog && missingCatalog
         ? h('div', { className: 'km-field-hint', role: 'status' }, t('transportModelsMissingCatalog'))
         : null,
       h('div', { className: 'km-models-actions' },
@@ -1291,7 +1291,9 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
                 ? h('div', { className: 'km-adopt-actions' },
                     h(Button, { variant: 'secondary', onClick: () => void adoptThenLogin(), disabled: adopting || startingLogin },
                       startingLogin ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'user', size: 14 }),
-                      h('span', null, startingLogin ? t('adopting') : t('addAccount')),
+                      // I-000263: this path signs in without adopting, so its
+                      // progress copy names the sign-in, not an adopt.
+                      h('span', null, startingLogin ? t('signingIn') : t('addAccount')),
                     ),
                   )
                 : null,

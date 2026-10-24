@@ -2,21 +2,23 @@
  * llm-omp-transports Host half — the transport plugin for providers whose wire protocols
  * cannot be expressed through DSH's provider *configuration* surfaces.
  *
- * The plugin registers its own route on the `llm` seam, so nothing here depends
- * on an upstream DSH change. Per run it:
+ * The plugin registers its own routes on the `llm` seam, so nothing here depends
+ * on an upstream DSH change. It serves four routes — `cursor`, `devin`,
+ * `google-gemini-cli` and `google-antigravity` — and per run it:
  *
- * - registers the bundled omp `cursor` adapter (`lib/omp/cursor.mjs`, imported
- *   lazily so an install without the artifact still loads), with an access
- *   resolver that reads and refreshes `llm-omp-transports/cursor` through
- *   `ctx.credentials`;
- * - declares the route as configurable, so the Models settings page has a
- *   profile entry for it;
- * - registers the `llm-omp-transports/cursor` authorization flow (browser
- *   sign-in, poll, commit).
+ * - registers the bundled omp adapters (`lib/omp/cursor.mjs`, `devin.mjs` and
+ *   the shared `google.mjs`, imported lazily so an install without an artifact
+ *   still loads), each with an access resolver that reads and refreshes its own
+ *   `llm-omp-transports/<route>` grant through `ctx.credentials`;
+ * - declares every route as configurable, so the Models settings page has a
+ *   profile entry for each;
+ * - registers one authorization flow per route: a browser sign-in plus poll for
+ *   Cursor, a paste-the-callback prompt for Devin, and a Node loopback listener
+ *   with a paste fallback for the Google pair.
  *
  * DSH ships no generic flow browser, so a surface that wants a "Sign in"
- * button calls {@link beginCursorSignIn}. The keys-manager Web page is that
- * surface in the next task; nothing here requires a client.
+ * button calls the route's own begin function ({@link beginCursorSignIn} and
+ * its siblings). The keys-manager Web page is that surface.
  *
  * @module dsh-llm-omp-transports
  */
@@ -27,16 +29,37 @@ import z from '@deepseek-ai/schemastery'
 import {
   CURSOR_ROUTE,
   DEVIN_ROUTE,
+  FACTORY_DROID_CREDENTIAL_KEY,
+  FACTORY_DROID_ROUTE,
+  FACTORY_DROID_TRANSPORT_ROUTE,
+  GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+  GITLAB_DUO_AGENT_ROUTE,
+  GITLAB_DUO_AGENT_TRANSPORT_ROUTE,
+  GITLAB_DUO_CREDENTIAL_KEY,
+  GITLAB_DUO_ROUTE,
+  GITLAB_DUO_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
+  OmpFactoryDroidAdapter,
+  OmpGitLabDuoAdapter,
+  OmpGitLabDuoAgentAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
 } from './adapter.js'
 import type { OmpTransportOf } from './adapter.js'
+import { FactoryDroidAuthError, loginFactoryDroid } from './factory-droid/auth.js'
+import type { FactoryDroidFetch } from './factory-droid/auth.js'
+import { createFactoryDroidAccess, readFactoryDroidGrant } from './factory-droid/credentials.js'
+import { GitLabAuthError, loginGitLab, loginGitLabDuo } from './gitlab/auth.js'
+import type { GitLabFetch } from './gitlab/auth.js'
+import { createGitLabDuoAccess, createGitLabDuoAgentAccess } from './gitlab/credentials.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
+import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
+import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { loginCursor } from './cursor/auth.js'
@@ -56,13 +79,18 @@ import type { GoogleRouteFacts } from './google/route.js'
 /** Machine code for a transport artifact that cannot be loaded. */
 export const TRANSPORT_UNAVAILABLE = 'TRANSPORT_UNAVAILABLE'
 
-/** One model row the Cursor route can advertise. */
+/**
+ * One model row a transport route can advertise.
+ *
+ * Route-neutral: every route's `*CatalogModels()` projection returns these
+ * rows, and the host renders them in that route's model picker.
+ */
 export interface TransportCatalogModel {
   id: string
   name: string
 }
 
-/** One configured model row beneath `providers.cursor.models`. */
+/** One configured model row beneath `providers.<route>.models`. */
 export type TransportModelProfile = TransportCatalogModel
 
 /** The configured profile of one transport route. */
@@ -70,8 +98,15 @@ export interface TransportProviderProfile {
   models: TransportModelProfile[]
 }
 
-/** The route ids this plugin registers: the shipped pair, then the Google pair. */
-type TransportRouteId = 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
+/** The route ids this plugin registers, in registration order. */
+type TransportRouteId =
+  | 'cursor'
+  | 'devin'
+  | 'google-gemini-cli'
+  | 'google-antigravity'
+  | 'factory-droid'
+  | 'gitlab-duo'
+  | 'gitlab-duo-agent'
 
 /** The `providers` profile a volatile config reference snapshots. */
 export interface TransportProvidersProfile {
@@ -79,6 +114,9 @@ export interface TransportProvidersProfile {
   devin?: TransportProviderProfile
   'google-gemini-cli'?: TransportProviderProfile
   'google-antigravity'?: TransportProviderProfile
+  'factory-droid'?: TransportProviderProfile
+  'gitlab-duo'?: TransportProviderProfile
+  'gitlab-duo-agent'?: TransportProviderProfile
 }
 
 /** A live config reference (cosmokit `Volatile`) a volatile schema node resolves to. */
@@ -148,6 +186,36 @@ export const Config = z.object({
           )
           .default([]),
       }),
+      'gitlab-duo': z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
+      'gitlab-duo-agent': z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
+      'factory-droid': z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
     })
     .default({
       cursor: { models: [] },
@@ -206,6 +274,41 @@ export function googleAntigravityCatalogModels(): TransportCatalogModel[] {
   return GOOGLE_ANTIGRAVITY_MODELS.map(row => ({ id: row.id, name: row.name }))
 }
 
+/**
+ * The full Factory Droid catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * Same shape as the other route pickers. The rows come from the KDL registry
+ * seed because the pinned `models.json` has no factory-droid rows; an account's
+ * feature flags can narrow what it may serve, which is why the allow-list exists.
+ */
+export function factoryDroidCatalogModels(): TransportCatalogModel[] {
+  return FACTORY_DROID_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
+/**
+ * The full GitLab Duo proxy catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * Same shape as the other route pickers. The rows are GitLab's proxy aliases; each
+ * carries the upstream id and the wire the gateway routes it to.
+ */
+export function gitlabDuoCatalogModels(): TransportCatalogModel[] {
+  return GITLAB_DUO_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
+/**
+ * The one GitLab Duo agent row, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * Same shape as the other route pickers. The route's roster is a single static
+ * row: GitLab's live model discovery is a non-goal for this slice, so the picker
+ * offers what the pinned catalog declares.
+ */
+export function gitlabDuoAgentCatalogModels(): TransportCatalogModel[] {
+  return GITLAB_DUO_AGENT_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
 export const name = 'llm-omp-transports'
 
 /**
@@ -247,6 +350,33 @@ const GOOGLE_ANTIGRAVITY_PROVIDER = {
   displayName: 'Google Antigravity',
   settingsNs: 'llm-omp-transports',
   settingsPath: ['providers', 'google-antigravity'],
+  declared: false,
+} as const
+
+/** The Factory Droid route's Models-page entry, beside the Google pair. */
+const FACTORY_DROID_PROVIDER = {
+  provider: FACTORY_DROID_TRANSPORT_ROUTE.id,
+  displayName: FACTORY_DROID_TRANSPORT_ROUTE.displayName,
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'factory-droid'],
+  declared: false,
+} as const
+
+/** The GitLab Duo proxy route's Models-page entry. */
+const GITLAB_DUO_PROVIDER = {
+  provider: GITLAB_DUO_TRANSPORT_ROUTE.id,
+  displayName: GITLAB_DUO_TRANSPORT_ROUTE.displayName,
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'gitlab-duo'],
+  declared: false,
+} as const
+
+/** The GitLab Duo agent route's Models-page entry. */
+const GITLAB_DUO_AGENT_PROVIDER = {
+  provider: GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id,
+  displayName: GITLAB_DUO_AGENT_TRANSPORT_ROUTE.displayName,
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'gitlab-duo-agent'],
   declared: false,
 } as const
 
@@ -510,6 +640,213 @@ export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = 
   return googleAuthorizationFlow(GOOGLE_ANTIGRAVITY_FACTS, options)
 }
 
+/** Test seams for the Factory Droid flow; the plugin uses the real network and timers. */
+export interface FactoryDroidFlowOptions {
+  readonly fetch?: FactoryDroidFetch
+  readonly now?: () => number
+  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+}
+
+/**
+ * The `llm-omp-transports/factory-droid` sign-in flow.
+ *
+ * @remarks
+ * WorkOS device authorization: the flow reports the verification page and the
+ * user code through `session.notify`, then polls until the grant completes. No
+ * loopback listener and no paste — the browser half happens on Factory's page,
+ * and the attempt's own signal is the only cancellation channel (every fetch and
+ * every sleep is wired to it, so a withdrawn attempt surfaces as the seam's
+ * cancellation). The committed payload carries the identity the transport needs
+ * for its API host alongside the tokens.
+ */
+export function factoryDroidAuthorizationFlow(options: FactoryDroidFlowOptions = {}): CursorAuthorizationFlow {
+  return {
+    key: FACTORY_DROID_CREDENTIAL_KEY,
+    label: 'Factory Droid',
+    methods: [{ id: 'oauth', label: 'Sign in with Factory Droid' }],
+    async run(session) {
+      let grant
+      try {
+        grant = await loginFactoryDroid({
+          fetch: options.fetch,
+          now: options.now,
+          sleep: options.sleep,
+          signal: session.signal,
+          onDevice: device => {
+            const url = device.verificationUriComplete ?? device.verificationUri
+            session.notify({
+              message: 'Open this page, enter the code, and approve the Factory sign-in; this window waits.',
+              url,
+              code: device.userCode,
+            })
+          },
+        })
+      } catch (cause) {
+        // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
+        if (session.signal.aborted) throw cause
+        if (cause instanceof FactoryDroidAuthError) {
+          throw new LlmError(`llm-omp-transports: Factory Droid sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
+            cause,
+          })
+        }
+        throw cause
+      }
+      await session.commit({
+        kind: 'grant',
+        // The seam validates the payload as a JSON value, so an absent identity
+        // field must be absent, not `undefined`.
+        payload: {
+          access: grant.access,
+          refresh: grant.refresh,
+          expires: grant.expires,
+          ...(grant.email === undefined ? {} : { email: grant.email }),
+          ...(grant.accountId === undefined ? {} : { accountId: grant.accountId }),
+          ...(grant.orgId === undefined ? {} : { orgId: grant.orgId }),
+          ...(grant.region === undefined ? {} : { region: grant.region }),
+          ...(grant.inferenceRegion === undefined ? {} : { inferenceRegion: grant.inferenceRegion }),
+        },
+      })
+    },
+  }
+}
+
+/** Test seams for the GitLab Duo agent flow; the plugin uses the real network. */
+export interface GitLabFlowOptions {
+  readonly fetch?: GitLabFetch
+  readonly now?: () => number
+  /** Fixed PKCE material, so a test can script the pasted callback. */
+  readonly state?: string
+  readonly verifier?: string
+}
+
+/**
+ * The `llm-omp-transports/gitlab-duo` sign-in flow.
+ *
+ * @remarks
+ * The rule's callback is `localhost:8080/callback` with no port fallback: the
+ * listener binds that exact port and, when it is taken, the flow surfaces the
+ * rule's instructions (register your own OAuth app or use a `GITLAB_TOKEN` PAT)
+ * and leaves the paste prompt as the only path — never a silent port change.
+ */
+export function gitlabDuoAuthorizationFlow(options: GitLabFlowOptions = {}): CursorAuthorizationFlow {
+  return {
+    key: GITLAB_DUO_CREDENTIAL_KEY,
+    label: 'GitLab Duo',
+    methods: [{ id: 'oauth', label: 'Sign in with GitLab Duo' }],
+    async run(session) {
+      let grant
+      try {
+        grant = await loginGitLabDuo({
+          fetch: options.fetch,
+          now: options.now,
+          state: options.state,
+          // A scripted PKCE verifier (tests) or the one the attempt generated.
+          ...(options.verifier === undefined ? {} : { verifier: options.verifier }),
+          signal: session.signal,
+          onAuthUrl: url =>
+            session.notify({ message: 'Open this page and approve the GitLab Duo sign-in.', url }),
+          onListenerError: () =>
+            session.notify({
+              message:
+                'Port 8080 is busy, so GitLab cannot redirect back automatically. If GitLab rejects the redirect URI, register your own OAuth app (GITLAB_CLIENT_ID + GITLAB_REDIRECT_URI) or use a Personal Access Token via GITLAB_TOKEN.',
+            }),
+          prompt: () =>
+            session.prompt({
+              kind: 'manual-code',
+              message:
+                'Paste the full callback URL GitLab sent your browser to (it starts with http://localhost:8080/callback).',
+              placeholder: 'http://localhost:8080/callback?code=…&state=…',
+              signal: session.signal,
+            }),
+        })
+      } catch (cause) {
+        if (session.signal.aborted) throw cause
+        if (cause instanceof GitLabAuthError) {
+          throw new LlmError(`llm-omp-transports: GitLab Duo sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
+            cause,
+          })
+        }
+        throw cause
+      }
+      await session.commit({
+        kind: 'grant',
+        payload: {
+          access: grant.access,
+          refresh: grant.refresh,
+          expires: grant.expires,
+          ...(grant.email === undefined ? {} : { email: grant.email }),
+        },
+      })
+    },
+  }
+}
+
+/**
+ * The `llm-omp-transports/gitlab-duo-agent` sign-in flow.
+ *
+ * @remarks
+ * GitLab's rule is `callback manual-only #true redirect-uri="vscode://…"`: the
+ * browser hands the code to VS Code, so there is no loopback listener at all and
+ * the human pastes the full `vscode://` URL back. The state is mandatory — with no
+ * listener, it is the only thing tying the pasted code to this attempt — and the
+ * exchange echoes the vscode redirect the client is registered with.
+ */
+export function gitlabDuoAgentAuthorizationFlow(options: GitLabFlowOptions = {}): CursorAuthorizationFlow {
+  return {
+    key: GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+    label: 'GitLab Duo Agent',
+    methods: [{ id: 'oauth', label: 'Sign in with GitLab Duo Agent' }],
+    async run(session) {
+      let grant
+      try {
+        grant = await loginGitLab({
+          fetch: options.fetch,
+          now: options.now,
+          state: options.state,
+          verifier: options.verifier,
+          signal: session.signal,
+          onAuthUrl: url =>
+            session.notify({
+              message:
+                'Open this page and approve the GitLab sign-in. Your browser will hand the code to VS Code; paste the full vscode:// address it lands on back here.',
+              url,
+            }),
+          prompt: () =>
+            session.prompt({
+              // The pasted callback carries the authorization code, so the shared
+              // dialog must mask it and offer the paste hint.
+              kind: 'manual-code',
+              message:
+                'Paste the full callback URL from VS Code (or your browser address bar). It starts with vscode://gitlab.gitlab-workflow/authentication.',
+              placeholder: 'vscode://gitlab.gitlab-workflow/authentication?code=…&state=…',
+              signal: session.signal,
+            }),
+        })
+      } catch (cause) {
+        // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
+        if (session.signal.aborted) throw cause
+        if (cause instanceof GitLabAuthError) {
+          throw new LlmError(`llm-omp-transports: GitLab Duo Agent sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
+            cause,
+          })
+        }
+        throw cause
+      }
+      await session.commit({
+        kind: 'grant',
+        // The seam validates the payload as a JSON value, so an absent field must
+        // be absent rather than `undefined`.
+        payload: {
+          access: grant.access,
+          refresh: grant.refresh,
+          expires: grant.expires,
+          ...(grant.email === undefined ? {} : { email: grant.email }),
+        },
+      })
+    },
+  }
+}
+
 /**
  * Load one bundled omp transport on first use.
  *
@@ -519,8 +856,14 @@ export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = 
  * request and its failure reaches that request as a typed `LlmError`.
  */
 function bundledTransport<Model, Options>(
-  artifact: 'cursor' | 'devin' | 'google',
-  exportName: 'streamCursor' | 'streamDevin' | 'streamGoogleGeminiCli',
+  artifact: 'cursor' | 'devin' | 'google' | 'factory-droid' | 'gitlab-duo' | 'gitlab-duo-agent',
+  exportName:
+    | 'streamCursor'
+    | 'streamDevin'
+    | 'streamGoogleGeminiCli'
+    | 'streamFactoryDroid'
+    | 'streamGitLabDuoWorkflow'
+    | 'streamGitLabDuo',
   label: string,
 ): OmpTransportOf<Model, Options> {
   return (model, context, options) =>
@@ -613,6 +956,75 @@ export function createGoogleAntigravityAdapter(
   })
 }
 
+/**
+ * Build the GitLab Duo proxy adapter this plugin registers.
+ *
+ * @remarks
+ * The bundled proxy transport, lazy, over the 16-row catalog and its own
+ * credential record. The transport performs the direct-access POST, the upstream
+ * id substitution and the wire routing itself.
+ */
+export function createGitLabDuoAdapter(
+  credentials: CredentialRecordsLike,
+  models?: () => readonly string[] | undefined,
+): OmpGitLabDuoAdapter {
+  return new OmpGitLabDuoAdapter({
+    access: createGitLabDuoAccess(credentials),
+    transport: bundledTransport('gitlab-duo', 'streamGitLabDuo', 'GitLab Duo'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
+/**
+ * Build the GitLab Duo agent adapter this plugin registers.
+ *
+ * @remarks
+ * The twin of {@link createFactoryDroidAdapter}: the bundled workflow transport,
+ * lazy, over the one static row and its own credential record.
+ */
+export function createGitLabDuoAgentAdapter(
+  credentials: CredentialRecordsLike,
+  models?: () => readonly string[] | undefined,
+): OmpGitLabDuoAgentAdapter {
+  return new OmpGitLabDuoAgentAdapter({
+    access: createGitLabDuoAgentAccess(credentials),
+    transport: bundledTransport('gitlab-duo-agent', 'streamGitLabDuoWorkflow', 'GitLab Duo Agent'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
+/**
+ * Build the Factory Droid adapter this plugin registers.
+ *
+ * @remarks
+ * The twin of {@link createGoogleAntigravityAdapter}: the transport is the
+ * bundled artifact, still loaded only on the first request, and the credential
+ * is the `llm-omp-transports/factory-droid` record.
+ */
+export function createFactoryDroidAdapter(
+  credentials: CredentialRecordsLike,
+  models?: () => readonly string[] | undefined,
+): OmpFactoryDroidAdapter {
+  return new OmpFactoryDroidAdapter({
+    access: createFactoryDroidAccess(credentials),
+    // The transport needs the account scope to pick the API host; it lives in the
+    // same record the token comes from, so read it beside the credential.
+    identity: async () => {
+      const grant = readFactoryDroidGrant(await credentials.readRecord(FACTORY_DROID_CREDENTIAL_KEY))
+      const scope = {
+        ...(grant?.orgId === undefined ? {} : { orgId: grant.orgId }),
+        ...(grant?.region === undefined ? {} : { region: grant.region }),
+        ...(grant?.inferenceRegion === undefined ? {} : { inferenceRegion: grant.inferenceRegion }),
+      }
+      // An empty scope is the transport's own graceful fallback (it reads the
+      // token's `external_org_id` claim); only a known scope is forwarded.
+      return Object.keys(scope).length === 0 ? undefined : { oauthIdentity: scope }
+    },
+    transport: bundledTransport('factory-droid', 'streamFactoryDroid', 'Factory Droid'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
   const host = ctx as Context & {
     credentials: CredentialRecordsLike
@@ -624,8 +1036,10 @@ export function apply(ctx: Context, config: Config = {}): void {
   // from `listModels`/`stream`, which would take the whole route down.
   const models = (route: TransportRouteId) => (): readonly string[] | undefined =>
     providers?.get()[route]?.models?.flatMap(row => (typeof row?.id === 'string' ? [row.id] : []))
-  // Stable order: the two shipped routes first, the Google pair last. Every
-  // artifact stays lazy, so a missing one cannot fail `apply`.
+  // Stable order: the two original routes first, then the Google pair, then the
+  // Factory route and both GitLab routes — the proxy before its agent (the order
+  // the flow table and the registration suites pin). Every artifact stays lazy, so
+  // a missing one cannot fail `apply`.
   ctx.llm.registerAdapter([CURSOR_ROUTE], createCursorAdapter(host.credentials, models('cursor')))
   ctx.llm.registerAdapter([DEVIN_ROUTE], createDevinAdapter(host.credentials, models('devin')))
   ctx.llm.registerAdapter(
@@ -636,19 +1050,61 @@ export function apply(ctx: Context, config: Config = {}): void {
     [GOOGLE_ANTIGRAVITY_ROUTE],
     createGoogleAntigravityAdapter(host.credentials, models('google-antigravity')),
   )
+  ctx.llm.registerAdapter(
+    [FACTORY_DROID_TRANSPORT_ROUTE.id],
+    createFactoryDroidAdapter(host.credentials, models('factory-droid')),
+  )
+  ctx.llm.registerAdapter([GITLAB_DUO_ROUTE], createGitLabDuoAdapter(host.credentials, models('gitlab-duo')))
+  ctx.llm.registerAdapter(
+    [GITLAB_DUO_AGENT_ROUTE],
+    createGitLabDuoAgentAdapter(host.credentials, models('gitlab-duo-agent')),
+  )
   ctx.llm.registerConfigurableProviders([
     CURSOR_PROVIDER,
     DEVIN_PROVIDER,
     GOOGLE_GEMINI_CLI_PROVIDER,
     GOOGLE_ANTIGRAVITY_PROVIDER,
+    FACTORY_DROID_PROVIDER,
+    GITLAB_DUO_PROVIDER,
+    GITLAB_DUO_AGENT_PROVIDER,
   ])
   host.authorization.registerFlow(cursorAuthorizationFlow())
   host.authorization.registerFlow(devinAuthorizationFlow())
   host.authorization.registerFlow(googleGeminiCliAuthorizationFlow())
   host.authorization.registerFlow(googleAntigravityAuthorizationFlow())
+  host.authorization.registerFlow(factoryDroidAuthorizationFlow())
+  host.authorization.registerFlow(gitlabDuoAuthorizationFlow())
+  host.authorization.registerFlow(gitlabDuoAgentAuthorizationFlow())
 }
 
-export { CURSOR_ROUTE, DEVIN_ROUTE, GOOGLE_ANTIGRAVITY_ROUTE, GOOGLE_GEMINI_CLI_ROUTE } from './adapter.js'
+export {
+  CURSOR_ROUTE,
+  DEVIN_ROUTE,
+  FACTORY_DROID_CREDENTIAL_KEY,
+  FACTORY_DROID_ROUTE,
+  FACTORY_DROID_TRANSPORT_ROUTE,
+  GITLAB_DUO_AGENT_CREDENTIAL_KEY,
+  GITLAB_DUO_AGENT_ROUTE,
+  GITLAB_DUO_AGENT_TRANSPORT_ROUTE,
+  GITLAB_DUO_CREDENTIAL_KEY,
+  GITLAB_DUO_ROUTE,
+  GITLAB_DUO_TRANSPORT_ROUTE,
+  GOOGLE_ANTIGRAVITY_ROUTE,
+  GOOGLE_GEMINI_CLI_ROUTE,
+} from './adapter.js'
+export { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+export { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
+export { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
+export { createGitLabDuoAccess } from './gitlab/credentials.js'
+export { loginGitLabDuo } from './gitlab/auth.js'
+export { GITLAB_DUO_AUTH } from './gitlab/auth.js'
+export { createGitLabDuoAgentAccess } from './gitlab/credentials.js'
+export { loginGitLab } from './gitlab/auth.js'
+export type { GitLabGrant } from './gitlab/auth.js'
+export { loginFactoryDroid } from './factory-droid/auth.js'
+export type { FactoryDroidGrant, FactoryDroidIdentity } from './factory-droid/auth.js'
+export { createFactoryDroidAccess } from './factory-droid/credentials.js'
+export type { FactoryDroidGrantPayload } from './factory-droid/credentials.js'
 export { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 export { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
 export { GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY, GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'
