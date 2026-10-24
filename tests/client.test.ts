@@ -249,6 +249,7 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     // countdown resolves the duration keys it formats. A pending, absent or
     // error state has no copy by design; `natively-managed` does have one.
     quotaNativelyManaged: '由 DSH 原生管理',
+    quotaResetDue: '已到重置时间',
     quotaSignInAgain: '请重新登录',
     quotaStale: '数据较旧',
     quotaCompactHint: '该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。',
@@ -4011,6 +4012,25 @@ describe('quota surface', () => {
     }
   })
 
+  test('a window whose reset time passed renders a reset marker, not a zero countdown', async () => {
+    // A window can outlive its reset time until the next TTL read lands, so the
+    // line says why the numbers look old instead of printing "0 秒".
+    const quota: QuotaView = {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      windows: [quotaWindow('week', 0.92, -2)],
+    }
+    const { view } = await mountExpanded(quotaState(quota))
+    try {
+      const line = findByClass(view.nodes, 'km-quota-inline')[0]!
+      expect(line.text).toBe('W 92% · 已到重置时间')
+      expect(line.text).not.toContain('0 秒')
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
   test('a stale snapshot keeps the numbers and appends the muted marker', async () => {
     const quota: QuotaView = {
       status: 'ok',
@@ -4331,6 +4351,7 @@ describe('quota surface', () => {
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
     expectLocaleParity([
       'quotaNativelyManaged',
+      'quotaResetDue',
       'quotaSignInAgain',
       'quotaStale',
       'quotaCompactHint',

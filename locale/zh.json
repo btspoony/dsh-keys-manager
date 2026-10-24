@@ -62,5 +62,6 @@
   "quotaSignInAgain": "请重新登录",
   "quotaStale": "数据较旧",
   "quotaCompactHint": "该 Provider 各账号中最紧的计划用量窗口；展开卡片查看每个账号。",
-  "quotaNativelyManaged": "由 DSH 原生管理"
+  "quotaNativelyManaged": "由 DSH 原生管理",
+  "quotaResetDue": "已到重置时间"
 }

@@ -1126,10 +1126,13 @@ function quotaInline(row: KeyView, t: T, now: number): React.ReactElement | null
       : null
   }
   const tightest = windows.reduce((best, window) => (window.usedFraction > best.usedFraction ? window : best))
-  // Week before session: the plan's long window leads the readout.
+  // Week before session: the plan's long window leads the readout. A window
+  // whose reset time already passed shows why its numbers look stale instead
+  // of a "0 秒" countdown while the next read is still pending.
+  const remainingMs = tightest.resetsAt - now
   const parts = [
     ...windows.map(window => `${QUOTA_WINDOW_LABEL[window.id]} ${quotaPercent(window.usedFraction)}%`).reverse(),
-    durationText(tightest.resetsAt - now, t),
+    remainingMs > 0 ? durationText(remainingMs, t) : t('quotaResetDue'),
   ]
   if (row.quota?.stale === true) parts.push(t('quotaStale'))
   return h('div', { className: 'km-quota-inline', title: parts.join(' · ') }, parts.join(' · '))

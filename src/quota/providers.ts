@@ -493,7 +493,10 @@ export const clineQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
     if (body.success === false) return 'usage request rejected'
     const data = asRecord(body.data) ?? body
     const limits = Array.isArray(data.limits) ? data.limits : []
-    const windows: QuotaWindow[] = []
+    // A plan can list more than one row per window; consumers `find()` the
+    // first match, so collapse to the tighter fraction instead of letting a
+    // loose row that arrives first win.
+    const windows = new Map<QuotaWindowId, QuotaWindow>()
     for (const raw of limits) {
       const row = asRecord(raw)
       if (row === undefined) continue
@@ -504,9 +507,9 @@ export const clineQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
       const usedFraction = fractionFromUsed(toNumber(row.percentUsed) ?? Number.NaN)
       const resetsAt = resetOf(row, ['resetsAt', 'resets_at'])
       if (usedFraction === undefined || resetsAt === undefined) continue
-      windows.push({ id, usedFraction, resetsAt })
+      windows.set(id, tighterWindow(windows.get(id), { id, usedFraction, resetsAt }))
     }
-    return windows
+    return [...windows.values()]
   })
 }
 

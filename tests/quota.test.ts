@@ -771,6 +771,31 @@ test('cline probe sends the desktop client headers and maps the two usable limit
   assert.equal(snapshot.windows[1]?.resetsAt, Date.parse('2026-10-10T00:00:00Z'))
 })
 
+test('cline probe collapses duplicate window rows onto the tighter one', async () => {
+  // Cline can list two rows for the same window; consumers find() the first
+  // match, so a loose row arriving first must not hide the tighter one.
+  const snapshot = await clineQuotaProbe({
+    token: 'sk-pass',
+    fetch: fakeFetch(
+      jsonResponse(200, {
+        success: true,
+        data: {
+          limits: [
+            { type: 'five_hour', percentUsed: 40, resetsAt: '2026-10-05T15:00:00Z' },
+            { type: 'five_hour', percentUsed: 80, resetsAt: '2026-10-05T18:00:00Z' },
+          ],
+        },
+      }),
+    ),
+  })
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(
+    snapshot.windows.map((window) => window.id),
+    ['session'],
+  )
+  near(snapshot.windows[0]?.usedFraction, 0.8)
+})
+
 test('cline probe reads a key refusal and a monthly-only account as error, 404 as absent', async () => {
   const refused = await clineQuotaProbe({
     token: 'sk-denied',
