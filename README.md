@@ -93,14 +93,15 @@ dsh plugin --profile web link .
 
 Providers that ship a native OAuth sign-in offer two ways to join the pool:
 **Add key** stores a static API key, while **Add account** runs the provider's
-OAuth sign-in flow and stores the resulting grant as an account row in the same
-pool.
+OAuth sign-in flow and stores the result as an account row in the same pool.
+Nine routes join as an **account**: seven through pi-ai's own flows, `kilo` and
+`zai` through the plugin's bundled clients (device code, pasted `zcode://`
+redirect), which mint a **static** credential renewed only by **Sign in again**.
 
 | Route group | How it joins | Refresh / renew |
 |---|---|---|
-| Seven pi-ai OAuth providers: Anthropic, GitHub Copilot, Kimi Coding, OpenAI Codex, OpenRouter, Radius, xAI | **Add account** — the provider's own OAuth flow | provider-managed refresh |
-| `kilo`, `zai` (Kilo, Z.AI Coding Plan) | **Add account** through the plugin's bundled clients: device code for Kilo, a pasted redirect for Z.AI | a static credential — **Sign in again** is the only renewal |
-| Seven transport routes: Cursor, Devin, the two Google routes, Factory Droid, the two GitLab Duo routes | **Transport accounts** — one grant per route | see [Transport routes](#transport-routes) |
+| 9 OAuth accounts | **Add account** — seven pi-ai flows, two plugin clients | provider-managed for the seven; **Sign in again** for the two static credentials |
+| 7 transport routes | **Transport accounts** — one grant per route | see [Transport routes](#transport-routes) |
 
 **API keys form the selection ring** — sticky sessions, round-robin, retry
 failover and cooldowns operate across the provider's keys — while **one
@@ -110,23 +111,10 @@ future work. When the projected grant fails, the account cools down and the
 pool falls back to its keys, or stops serving on an OAuth-only route until a
 manual re-login.
 
-<details>
-<summary>Sign-in flows (Kilo, Z.AI, muse-code)</summary>
-
-- **Kilo** (`kilo`, a plugin extra route): a device-code page plus a poll; the
-  first success creates the route and its first pool row, later ones append rows.
-- **Z.AI (GLM Coding Plan)** (`zai`, a shipped pi-ai route): adopt it first, then
-  paste the final redirect URL (a `zcode://` URL) or just the authorization code.
-
-Both mint a **static** credential tagged `signin:kilo` / `signin:zai-coding-plan`
-— **Sign in again** is the only renewal, nothing is written to
-`llm-pi-ai/<provider>`, and as logins rather than transports they join the key
-pool's selection, retry and cooldowns. **`muse-code` needs no transport**: the
-vendored pi-ai `meta` route (`openai-responses` on `https://api.meta.ai/v1`)
-serves it, the agreement check was static, and the first live call is a manual
-smoke check per [Known limits](docs/known-limits.md).
-
-</details>
+**`muse-code` needs no transport or account row of its own**: the vendored pi-ai
+`meta` route (`openai-responses` on `https://api.meta.ai/v1`) serves it, the
+agreement check was static, and the first live call is a manual smoke check per
+[Known limits](docs/known-limits.md).
 
 ### Transport routes
 
@@ -221,30 +209,24 @@ providers.
 
 ## Provider coverage
 
-Every provider card carries its origin:
+Four groups, one pool:
 
-- **DSH built-in** (`DSH 内置`) — a route from the shipped DSH pi-ai catalog.
-- **Plugin built-in** (`插件内置`) — a route from this plugin's extra catalog
-  in `src/providers.ts`.
-- **Custom** (`自定义`) — a hand-declared route in the active profile.
-
-The following DSH built-ins are explicitly outside single-key pool management:
-
-| Provider | Why |
-|---|---|
-| `amazon-bedrock` | AWS credential chain (profile, IAM keys, ECS/IRSA/EC2), not one API key |
-| `cloudflare-ai-gateway` | API key plus a Cloudflare account ID and gateway ID |
-| `cloudflare-workers-ai` | API key plus a Cloudflare account ID |
-| `openai-codex` | ChatGPT OAuth sign-in only; no API-key credential — usable as an [OAuth account](#accounts-and-sign-in) instead of a key |
-
-Every other DSH catalog route exposes an API-key credential, and the
-OAuth-capable ones are also usable as [accounts](#accounts-and-sign-in).
-
-The 35 extra providers come from
-[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT):
+- **DSH built-in** — routes from the shipped DSH pi-ai catalog. The set follows
+  your installed DSH version, so the Models page is the authoritative list; four
+  of them are outside single-key pooling (below).
+- **Plugin extra built-in** — 35 routes this plugin adds as ordinary
+  `llm-pi-ai` routes.
+- **OAuth accounts** — 9 routes that join as an account instead of a pasted key:
+  seven use pi-ai's own flows, `kilo` and `zai` are signed in by the plugin's
+  bundled clients.
+- **Transport routes** — 7 routes the vendored pi-ai cannot speak, served by
+  `dsh-llm-omp-transports`.
 
 <details>
-<summary>All 35 extra providers</summary>
+<summary>Supported — every plugin extra, OAuth account and transport route</summary>
+
+**Plugin extra built-in — 35** — from
+[oh-my-pi](https://github.com/can1357/oh-my-pi)'s provider catalog (MIT):
 
 | Provider | Route id | API key env |
 |---|---|---|
@@ -285,10 +267,49 @@ The 35 extra providers come from
 | Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
 
 Where two variables are listed, either is accepted; the first is the primary.
+CoreWeave Serverless Inference also needs `COREWEAVE_PROJECT=<team>/<project>` in
+the DSH process environment before it is added.
 
-CoreWeave Serverless Inference also needs `COREWEAVE_PROJECT=<team>/<project>` in the DSH process environment before it is added.
+**OAuth accounts — 9**
+
+| Provider | Route | Sign-in client |
+|---|---|---|
+| Anthropic | `anthropic` | pi-ai |
+| GitHub Copilot | `github-copilot` | pi-ai |
+| Kimi Coding | `kimi-coding` | pi-ai |
+| OpenAI Codex | `openai-codex` | pi-ai |
+| OpenRouter | `openrouter` | pi-ai |
+| Radius | `radius` | pi-ai |
+| xAI | `xai` | pi-ai |
+| Kilo | `kilo` | plugin bundled client — device code + poll |
+| Z.AI Coding Plan | `zai` | plugin bundled client — pasted `zcode://` redirect |
+
+The two plugin-signed credentials are static, tagged `signin:kilo` /
+`signin:zai-coding-plan`, and nothing is written to `llm-pi-ai/<provider>`; the
+seven pi-ai rows are the provider's own grants. `kilo` is listed twice on
+purpose: the same route takes an API key as an extra built-in and an account
+through its bundled client.
+
+**Transport routes — 7** — `cursor`, `devin`, `google-gemini-cli`,
+`google-antigravity`, `factory-droid`, `gitlab-duo`, `gitlab-duo-agent`; sign-in,
+refresh and model detail live in [Transport routes](#transport-routes).
 
 </details>
+
+<details>
+<summary>Not pooled — 4 DSH built-ins</summary>
+
+| Provider | Why |
+|---|---|
+| `amazon-bedrock` | AWS credential chain (profile, IAM keys, ECS/IRSA/EC2), not one API key |
+| `cloudflare-ai-gateway` | API key plus a Cloudflare account ID and gateway ID |
+| `cloudflare-workers-ai` | API key plus a Cloudflare account ID |
+| `openai-codex` | ChatGPT OAuth sign-in only; no API-key credential — usable as an [OAuth account](#accounts-and-sign-in) instead of a key |
+
+</details>
+
+Every other DSH catalog route exposes an API-key credential; a route you declare
+yourself in the profile (`自定义` / Custom) is pooled like any built-in.
 
 ## Documentation
 

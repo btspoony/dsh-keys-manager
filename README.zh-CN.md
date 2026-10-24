@@ -67,25 +67,16 @@ dsh plugin --profile web link .
 
 ### 账户与登录
 
-支持原生 OAuth 登录的提供商有两种入池方式：**添加密钥**保存静态 API key，**添加账户**则执行提供商的 OAuth 登录流程，把得到的授权作为账户行存进同一个池。
+支持原生 OAuth 登录的提供商有两种入池方式：**添加密钥**保存静态 API key，**添加账户**则执行提供商的 OAuth 登录流程，把结果作为账户行存进同一个池。九条路由以**账户**身份入池：七条走 pi-ai 自己的流程，`kilo` 与 `zai` 走插件自带的客户端（设备码、粘贴 `zcode://` 跳转），后两者签发的是**静态**凭据，只能靠**重新登录**续期。
 
 | 路由组 | 如何入池 | 刷新 / 续期 |
 |---|---|---|
-| 七家 pi-ai OAuth 提供商：Anthropic、GitHub Copilot、Kimi Coding、OpenAI Codex、OpenRouter、Radius、xAI | **添加账户** —— 提供商自己的 OAuth 流程 | 由提供商负责刷新 |
-| `kilo`、`zai`（Kilo、Z.AI Coding Plan） | **添加账户** —— 走插件自带的登录客户端：Kilo 用设备码，Z.AI 粘贴跳转地址 | 静态凭据，**重新登录**是唯一的续期方式 |
-| 七条传输路由：Cursor、Devin、两条 Google 路由、Factory Droid、两条 GitLab Duo 路由 | **传输账户** —— 每条路由一条授权 | 见[传输路由](#传输路由) |
+| 9 个 OAuth 账户 | **添加账户** —— 七个 pi-ai 流程，两个插件客户端 | 七个由提供商负责刷新；两个静态凭据靠**重新登录** |
+| 7 条传输路由 | **传输账户** —— 每条路由一条授权 | 见[传输路由](#传输路由) |
 
 **API key 构成选择环**——会话粘滞、轮询选择、重试切换与冷却都作用在该提供商的 key 之间；**每个提供商由一条被投影的 OAuth 授权服务**，账户行上的计数只反映该账户自身的成功与失败。按账户排名是后续工作。被投影的授权失败时，该账户进入冷却，池回落到它的 key；仅有 OAuth 的路由则停止服务，直到手动重新登录。
 
-<details>
-<summary>登录流程（Kilo、Z.AI、muse-code）</summary>
-
-- **Kilo**（`kilo`，插件内置扩展路由）：设备码页面加轮询；首次成功会创建该路由及其第一把 key 行，之后再登录则追加行。
-- **Z.AI (GLM Coding Plan)**（`zai`，DSH 随附的 pi-ai 路由）：需要先接管，然后粘贴最终跳转 URL（`zcode://` 链接）或授权码。
-
-两者签发的都是**静态凭据**，标记为 `signin:kilo` / `signin:zai-coding-plan`——**重新登录**是唯一的续期方式，不会向 `llm-pi-ai/<provider>` 写入任何内容；它们是登录而非传输，因此参与 key 池的选择、重试与冷却。**`muse-code` 不需要传输**：随附 pi-ai 的 `meta` 路由（`openai-responses` 走 `https://api.meta.ai/v1`）已提供它，该一致性检查是静态的，首次真实调用属于手动冒烟检查，详见[已知限制](docs/known-limits.zh-CN.md)。
-
-</details>
+**`muse-code` 不需要传输，也不需要自己的账户行**：随附 pi-ai 的 `meta` 路由（`openai-responses` 走 `https://api.meta.ai/v1`）已提供它，该一致性检查是静态的，首次真实调用属于手动冒烟检查，详见[已知限制](docs/known-limits.zh-CN.md)。
 
 ### 传输路由
 
@@ -147,28 +138,17 @@ $DSH_HOME/keys-manager/state.json
 
 ## 提供商覆盖
 
-每个提供商卡片标注来源：
+四组，一个池：
 
-- **DSH 内置**（英文界面显示 `DSH built-in`）——随附 DSH pi-ai 目录的路由。
-- **插件内置**（`Plugin built-in`）——来自本插件 `src/providers.ts` 扩展目录的路由。
-- **自定义**（`Custom`）——当前档案中手工声明的路由。
-
-以下 DSH 内置提供商明确不在单 key 池管理范围内：
-
-| 提供商 | 原因 |
-|---|---|
-| `amazon-bedrock` | AWS 凭据链（profile、IAM 密钥、ECS/IRSA/EC2），不是单一 API key |
-| `cloudflare-ai-gateway` | API key 之外还需 Cloudflare 账号 ID 与网关 ID |
-| `cloudflare-workers-ai` | API key 之外还需 Cloudflare 账号 ID |
-| `openai-codex` | 仅支持 ChatGPT OAuth 登录，无 API key 凭据——可作为 [OAuth 账户](#账户与登录)使用而非 key |
-
-其余 DSH 目录路由都提供 API key 凭据，同时支持 OAuth 的也可作为[账户](#账户与登录)使用。
-
-这 35 个额外提供商收录自
-[oh-my-pi](https://github.com/can1357/oh-my-pi) 的提供商目录（MIT）：
+- **DSH 内置** —— 随附 DSH pi-ai 目录的路由。集合随你安装的 DSH 版本而定，因此以 Models 页面为准；其中四个不在单 key 池管理范围内（见下）。
+- **插件扩展内置** —— 本插件以普通 `llm-pi-ai` 路由新增的 35 条。
+- **OAuth 账户** —— 9 条以账户而非粘贴 key 入池的路由：七条走 pi-ai 自己的流程，`kilo` 与 `zai` 由插件自带的客户端登录。
+- **传输路由** —— 7 条随附 pi-ai 无法支持、由 `dsh-llm-omp-transports` 服务的路由。
 
 <details>
-<summary>全部 35 个额外提供商</summary>
+<summary>已支持 —— 全部插件额外、OAuth 账户与传输路由</summary>
+
+**插件扩展内置 —— 35** —— 收录自 [oh-my-pi](https://github.com/can1357/oh-my-pi) 的提供商目录（MIT）：
 
 | 提供商 | Route id | API key 环境变量 |
 |---|---|---|
@@ -208,11 +188,41 @@ $DSH_HOME/keys-manager/state.json
 | Ollama Cloud | `ollama-cloud` | `OLLAMA_CLOUD_API_KEY` |
 | Yolo Auto | `yolo-auto` | `YOLO_AUTO_API_KEY` |
 
-列出两个变量时二者皆可接受，第一个为主变量。
+列出两个变量时二者皆可接受，第一个为主变量；CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中。
 
-CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<project>` 设置到 DSH 进程环境中。
+**OAuth 账户 —— 9**
+
+| 提供商 | 路由 | 登录客户端 |
+|---|---|---|
+| Anthropic | `anthropic` | pi-ai |
+| GitHub Copilot | `github-copilot` | pi-ai |
+| Kimi Coding | `kimi-coding` | pi-ai |
+| OpenAI Codex | `openai-codex` | pi-ai |
+| OpenRouter | `openrouter` | pi-ai |
+| Radius | `radius` | pi-ai |
+| xAI | `xai` | pi-ai |
+| Kilo | `kilo` | 插件自带客户端 —— 设备码 + 轮询 |
+| Z.AI Coding Plan | `zai` | 插件自带客户端 —— 粘贴 `zcode://` 跳转 |
+
+两个插件签发的凭据是静态的，标记为 `signin:kilo` / `signin:zai-coding-plan`，不会向 `llm-pi-ai/<provider>` 写入任何内容；七条 pi-ai 行则是提供商自己的授权。`kilo` 出现两次是刻意的：同一条路由既可以作为插件额外内置路由收 API key，也可以通过自带客户端以账户身份入池。
+
+**传输路由 —— 7** —— `cursor`、`devin`、`google-gemini-cli`、`google-antigravity`、`factory-droid`、`gitlab-duo`、`gitlab-duo-agent`；登录、刷新与模型细节见[传输路由](#传输路由)。
 
 </details>
+
+<details>
+<summary>不纳入池 —— 4 个 DSH 内置</summary>
+
+| 提供商 | 原因 |
+|---|---|
+| `amazon-bedrock` | AWS 凭据链（profile、IAM 密钥、ECS/IRSA/EC2），不是单一 API key |
+| `cloudflare-ai-gateway` | API key 之外还需 Cloudflare 账号 ID 与网关 ID |
+| `cloudflare-workers-ai` | API key 之外还需 Cloudflare 账号 ID |
+| `openai-codex` | 仅支持 ChatGPT OAuth 登录，无 API key 凭据——可作为 [OAuth 账户](#账户与登录)使用而非 key |
+
+</details>
+
+其余 DSH 目录路由都提供 API key 凭据；你在档案里自己声明的路由（`自定义` / Custom）与内置路由一样入池。
 
 ## 文档
 
@@ -223,8 +233,7 @@ CoreWeave Serverless Inference 还需在添加前把 `COREWEAVE_PROJECT=<team>/<
 | [已知限制](docs/known-limits.zh-CN.md) | 当前设计边界，含七条传输路由 |
 | [传输包（英文）](packages/llm-omp/README.md) | 传输路由：支持状态、风险、构建/测试与发布 |
 
-英文版本：[README.md](README.md) · [Development](docs/development.md) ·
-[Release](docs/release.md) · [Known limits](docs/known-limits.md)。
+英文版本：[README.md](README.md) · [Development](docs/development.md) · [Release](docs/release.md) · [Known limits](docs/known-limits.md)。
 
 ## 许可证
 
