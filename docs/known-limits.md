@@ -103,7 +103,8 @@ Current design boundaries of the Keys Manager plugin:
   can serve it: a dated `expires` in the future, or — on `devin` only — no
   `expires` at all, the static-bearer shape its resolver accepts. No shipped
   flow writes such a record today (Devin derives an expiry from the token), and
-  it shows no expiry value. The Cursor resolver needs a dated grant, so the
+  it shows no expiry time and no countdown. The Cursor resolver needs a dated
+  grant, so the
   same record on `cursor` reports `needs-reauth`. An `expires` that is present
   but unreadable is a corrupt record, not a static bearer, and the route reports
   `needs-reauth`.

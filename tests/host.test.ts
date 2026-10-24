@@ -17989,29 +17989,31 @@ test('a transport route without a shipped catalog resolves to the all-models sta
 test('a registered transport route with no shipped catalog reports why the list is empty', async () => {
   // Finding 9: the absent-accessor fallback answered `[]`, which the picker
   // renders as the legitimate all-models state. A stale transport build now
-  // explains itself on every read, while its state warning surfaces once.
+  // carries a stable marker on every read, while its state warning surfaces
+  // once.
   const ghost = { key: 'llm-omp-transports/ghost', label: 'Ghost', methods: [{ id: 'oauth', label: 'Sign in' }] }
   const h = await harness([...piAiFlows(), TRANSPORT_FLOW, ghost])
   try {
     h.settings.namespaces.push({ ns: TRANSPORT_NS, value: { providers: {} }, revision: 1 })
-    // The read that finds the missing catalog explains the empty list in its
-    // own response, not only in the next state build.
+    // The read that finds the missing catalog reports it in its own response,
+    // not only in the next state build.
     const first = await h.service.transportModels('ghost')
     assert.deepEqual(first.catalog, [])
-    assert.match(String(first.warning), /ships no catalog/)
-    // Every later read explains itself too: a save or a remount re-reads, and a
-    // once-only field would leave the empty grid unexplained again. Only the
-    // state warning stays one-shot.
+    assert.equal(first.missingCatalog, true)
+    // Every later read reports it too: a remount or a reload re-reads, and a
+    // once-only field would leave the empty grid unexplained again. (A save
+    // never gets that far — it throws on the empty catalog before its
+    // post-save re-read.) Only the state warning stays one-shot.
     const second = await h.service.transportModels('ghost')
     assert.deepEqual(second.catalog, [])
-    assert.match(String(second.warning), /ships no catalog/)
+    assert.equal(second.missingCatalog, true)
     const reported = h.service.getState().warnings.filter(message => /ships no catalog/.test(message))
     assert.equal(reported.length, 1)
     assert.match(reported[0]!, /"ghost"/)
-    // A route with a real catalog is not reported, and carries no explanation.
+    // A route with a real catalog is not reported, and carries no marker.
     const cursor = await h.service.transportModels('cursor')
     assert.ok(cursor.catalog.length > 0)
-    assert.equal(cursor.warning, undefined)
+    assert.equal(cursor.missingCatalog, undefined)
     assert.deepEqual(h.service.getState().warnings.filter(message => /ships no catalog/.test(message)), [])
   } finally {
     await h.close()
@@ -18041,15 +18043,18 @@ test.each(SIBLING_CATALOG_ROUTES)(
       transports[exportName] = () => catalog
       const projected = await h.service.transportModels(route)
       assert.deepEqual(projected.catalog, catalog)
-      assert.equal(projected.warning, undefined)
+      assert.equal(projected.missingCatalog, undefined)
       // The merged transport build ships the accessor; a build predating it
-      // registers the route but no catalog, which the read must explain rather
+      // registers the route but no catalog, which the read must report rather
       // than present as the legitimate all-models state.
       delete transports[exportName]
       const absent = await h.service.transportModels(route)
       assert.deepEqual(absent.catalog, [])
-      assert.match(String(absent.warning), /ships no catalog/)
-      assert.ok(String(absent.warning).includes(`"${route}"`))
+      assert.equal(absent.missingCatalog, true)
+      // The human-readable state warning still names the one route it is about.
+      const reported = h.service.getState().warnings.filter(message => /ships no catalog/.test(message))
+      assert.equal(reported.length, 1)
+      assert.ok(reported[0]!.includes(`"${route}"`))
     } finally {
       if (shipped === undefined) delete transports[exportName]
       else transports[exportName] = shipped

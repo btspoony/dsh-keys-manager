@@ -57,5 +57,6 @@
   "transportEmpty": "No transport accounts yet.",
   "signInAgain": "Sign in again",
   "loginPasteHint": "Paste the full URL from your browser address bar, or just the authorization code.",
-  "loginReveal": "Show pasted code"
+  "loginReveal": "Show pasted code",
+  "signingIn": "Signing in…"
 }

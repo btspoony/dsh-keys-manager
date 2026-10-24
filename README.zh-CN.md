@@ -149,7 +149,7 @@ Cursor 由随附的 `dsh-llm-omp-transports` 组件在独立 `cursor` 路由上�
 Devin 是同一个 `dsh-llm-omp-transports` 组件服务的第二条路由：独立 `devin` 路由，同样在 `llm-omp-transports/devin` 只保留一条授权。
 
 - 在 **传输账户**（`Transport accounts`）区块登录。omp 完成该登录需要一个只有 Bun 才提供的本地回环监听器，因此本插件打开授权页面后，要求你粘贴浏览器最终落到的地址（完整 URL 或 `code#state`）。重定向端口上没有任何监听，页面本身打不开，授权码会留在地址栏里供你复制。
-- **没有刷新。** 该记录是静态 bearer，其有效期由令牌推导（JWT `exp` 减五分钟，否则一年）。没有 `expires` 的授权按静态 bearer 服务，状态显示为 `active`，不显示有效期；可读的有效期一旦过期，需要手动重新登录。
+- **没有刷新。** 该记录是静态 bearer，其有效期由令牌推导（JWT `exp` 减五分钟，否则一年）。没有 `expires` 的授权按静态 bearer 服务，状态显示为 `active`，不显示有效期与倒计时（该列留空）；可读的有效期一旦过期，需要手动重新登录。
 - 模型来自固定的目录（两行：`swe-1-6` 与 `swe-1-6-fast`），构建时生成进传输包。
 - 该客户端是非官方实现，呈现已发布的 Devin CLI 身份；真实端点与协议行为均未验证。依赖它之前请阅读[传输包的已知限制](packages/llm-omp/docs/known-limits.md)。
 
