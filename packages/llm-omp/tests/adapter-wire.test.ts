@@ -94,7 +94,7 @@ type WireLine =
   | {
       kind: 'exec'
       /** Which exec frame to send; `mcp` is Cursor's call for an advertised tool. */
-      frame?: 'mcp' | 'read' | 'shell' | 'grep' | 'write' | 'delete'
+      frame?: 'mcp' | 'read' | 'shell' | 'shellStream' | 'grep' | 'write' | 'delete'
       name: string
       toolName: string
       toolCallId: string
@@ -167,8 +167,9 @@ function frameFor(line: WireLine): Buffer {
             case 'read':
               return { case: 'readArgs' as const, value: create(ReadArgsSchema, { toolCallId, path: String(line.args.path ?? '') }) }
             case 'shell':
+            case 'shellStream':
               return {
-                case: 'shellArgs' as const,
+                case: line.frame === 'shell' ? ('shellArgs' as const) : ('shellStreamArgs' as const),
                 value: create(ShellArgsSchema, { toolCallId, command: String(line.args.command ?? ''), workingDirectory: String(line.args.workingDirectory ?? '') }),
               }
             case 'grep':
@@ -240,6 +241,11 @@ const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 /** Decode one client frame the transport wrote (Connect envelope + protobuf). */
 function decodeClientFrame(frame: Buffer): AgentClientMessage {
   return fromBinary(AgentClientMessageSchema, frame.subarray(5, 5 + frame.readUInt32BE(1)))
+}
+
+/** Decode every client frame the transport wrote. */
+function decoded(target: FakeWire): AgentClientMessage[] {
+  return target.written.map(decodeClientFrame)
 }
 
 interface FakeWire {
@@ -579,6 +585,107 @@ describe('bundled streamCursor over a Connect frame stream', () => {
         : undefined
     expect(result?.result.case).toBe('rejected')
     expect(result?.result.value?.reason).toBe(HANDOFF_TEXT)
+  })
+
+  it('hands a streamed shell frame to DSH and answers the stream with rejected + exit 1', async () => {
+    const { events, wire } = await run('cursor-wire-native-shell-stream.jsonl', { externalToolExecutor: true })
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({
+      type: 'toolCall',
+      name: 'bash',
+      arguments: { command: 'cd /tmp/demo && npm test' },
+    })
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).not.toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    // The stream is answered in its own vocabulary: start, a rejected verdict
+    // carrying the handoff reason, then exit 1 — no real command ran.
+    const streamEvents = decoded(wire).flatMap(frame => {
+      const client = frame.message.case === 'execClientMessage' ? frame.message.value : undefined
+      if (client?.message.case !== 'shellStream') return []
+      const event = (client.message.value as { event: { case?: string; value?: unknown } }).event
+      return [{ case: event.case, value: event.value as Record<string, unknown> }]
+    })
+    expect(streamEvents.map(event => event.case)).toEqual(['start', 'rejected', 'exit'])
+    expect(streamEvents[1]!.value).toMatchObject({
+      command: 'npm test',
+      workingDirectory: '/tmp/demo',
+      reason: HANDOFF_TEXT,
+      isReadonly: false,
+    })
+    expect(streamEvents[2]!.value).toMatchObject({ code: 1, cwd: '/tmp/demo', aborted: false })
+
+    // The closing shellResult acknowledgement is the same refusal.
+    const shellResults = decoded(wire).filter(
+      frame => frame.message.case === 'execClientMessage' && frame.message.value.message.case === 'shellResult',
+    )
+    expect(shellResults).toHaveLength(1)
+    const ack = shellResults[0]!.message
+    const result = (ack.case === 'execClientMessage' && ack.value.message.case === 'shellResult'
+      ? ack.value.message.value
+      : undefined) as { result: { case?: string; value?: { reason?: string } } } | undefined
+    expect(result?.result.case).toBe('rejected')
+    expect(result?.result.value?.reason).toBe(HANDOFF_TEXT)
+  })
+
+  it('streams a shell frame locally when an execHandlers.shellStream handler is installed', async () => {
+    const { events, wire } = await run('cursor-wire-native-shell-stream.jsonl', {
+      externalToolExecutor: true,
+      // A host handler wins over the handoff: the command runs (here: emits one
+      // streamed line) and the frame is answered locally.
+      ...({
+        execHandlers: {
+          shellStream: async (_args: unknown, callbacks: { onStdout(data: string): void }) => {
+            callbacks.onStdout('streamed output\n')
+            return {
+              role: 'toolResult',
+              toolCallId: 'call-native-shs',
+              toolName: 'bash',
+              content: [{ type: 'text', text: 'streamed output' }],
+              isError: false,
+              timestamp: 0,
+            }
+          },
+        },
+      } as unknown as Record<string, never>),
+    } as Partial<OmpCursorOptions>)
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(call).toMatchObject({ type: 'toolCall', name: 'bash' })
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    const streamEvents = decoded(wire).flatMap(frame => {
+      const client = frame.message.case === 'execClientMessage' ? frame.message.value : undefined
+      if (client?.message.case !== 'shellStream') return []
+      const event = (client.message.value as { event: { case?: string; value?: unknown } }).event
+      return [{ case: event.case, value: event.value }]
+    })
+    expect(streamEvents.map(event => event.case)).toEqual(['start', 'stdout', 'exit'])
+    expect(streamEvents[1]!.value).toMatchObject({ data: 'streamed output\n' })
+    // Not the handoff placeholder: the local handler's own result went out.
+    expect(JSON.stringify(streamEvents)).not.toContain(HANDOFF_TEXT)
+  })
+
+  it('keeps today`s local rejection for a streamed shell frame without externalToolExecutor', async () => {
+    const { events, wire } = await run('cursor-wire-native-shell-stream.jsonl')
+
+    const call = events.find(event => event.type === 'toolcall_end')?.toolCall
+    expect(Object.getOwnPropertySymbols(call!).map(symbol => symbol.description)).toContain(
+      'provider.block.cursorExecResolved',
+    )
+
+    const streamEvents = decoded(wire).flatMap(frame => {
+      const client = frame.message.case === 'execClientMessage' ? frame.message.value : undefined
+      if (client?.message.case !== 'shellStream') return []
+      const event = (client.message.value as { event: { case?: string; value?: unknown } }).event
+      return [{ case: event.case, value: event.value as Record<string, unknown> }]
+    })
+    expect(streamEvents.map(event => event.case)).toEqual(['start', 'rejected', 'exit'])
+    expect(streamEvents[1]!.value).toMatchObject({ reason: 'Tool not available' })
   })
 
   it('still rejects a native delete frame with no unresolved call for DSH', async () => {

@@ -1,11 +1,14 @@
 ---
 category: Fixed
 ---
-- Cursor route: native `shell`/`read`/`grep`/`write` exec frames are now handed
-  to DSH's tool loop instead of answered with "Tool not available" — the call
-  ships unresolved, DSH executes its own `bash`/`read`/`grep`/`write` tool, and
-  the result is replayed on the next request. Frames without a DSH equivalent
-  (`delete`, `ls`, `diagnostics`, streamed edits) keep the previous rejection.
+- Cursor route: native `shell` (batch and streamed), `mini_swe_agent_bash`,
+  `read`, `grep` and `write` exec frames are now handed to DSH's tool loop
+  instead of answered with "Tool not available" — the call ships unresolved,
+  DSH executes its own `bash`/`read`/`grep`/`write` tool, and the result is
+  replayed on the next request. A streamed shell frame is answered with
+  `start` → `rejected` → `exit 1` instead of running. Frames without a DSH
+  equivalent (`delete`, `ls`, `diagnostics`, background-shell spawn/stdin,
+  streamed edits) keep the previous rejection.
 - The handoff translation into DSH's tool schemas is lossy: `grep`'s
   `ignoreCase`/`literal`/`context`/`offset` flags and `shell`'s timeout are
   dropped, and `shell`'s working directory is folded into the command as

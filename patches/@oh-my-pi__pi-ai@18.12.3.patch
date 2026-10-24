@@ -1,8 +1,48 @@
 diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
-index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a3ed4ea71 100644
+index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..8faeafe167bf68fc3f19f02a49a1014563456004 100644
 --- a/src/providers/cursor.ts
 +++ b/src/providers/cursor.ts
-@@ -2488,6 +2488,10 @@ async function handleExecServerMessage(
+@@ -2162,6 +2162,7 @@ async function handleShellStreamArgs(
+ 	runTransport: CursorMessageWriter,
+ 	execHandlers: CursorExecHandlers | undefined,
+ 	onToolResult: CursorToolResultHandler | undefined,
++	handoff = false,
+ ): Promise<void> {
+ 	const normalizedWorkingDirectory = args.workingDirectory || process.cwd();
+ 	const normalizedArgs: ShellArgs = { ...args, workingDirectory: normalizedWorkingDirectory };
+@@ -2173,10 +2174,31 @@ async function handleShellStreamArgs(
+ 		hasExecHandlers: !!execHandlers,
+ 		hasShell: !!execHandlers?.shell,
+ 		hasShellStream: !!execHandlers?.shellStream,
++		handoff,
+ 	});
+ 
+ 	sendShellStreamEvent(runTransport, execMsg, { case: "start", value: create(ShellStreamStartSchema, {}) });
+ 
++	// Handed to the external tool loop: nothing runs here. The stream still
++	// needs a terminating verdict, and it uses the vocabulary a local refusal
++	// already uses — `rejected` carrying the handoff reason, then exit 1 — so
++	// the server never waits on events that will not come.
++	if (handoff) {
++		const handoffResult = sanitizeShellExecResult(
++			buildShellRejectedResult(
++				normalizedArgs.command,
++				normalizedWorkingDirectory,
++				MCP_EXTERNAL_HANDOFF_MESSAGE,
++			),
++		);
++		sendShellStreamExitFromResult(runTransport, execMsg, handoffResult, false);
++		// Same closing acknowledgement the executed path sends.
++		sendExecClientMessage(runTransport, execMsg, "shellResult", handoffResult);
++		sendExecClientStreamClose(runTransport, execMsg);
++		log("shellStream", "done", { elapsed: performance.now() - startTs, handoff: true });
++		return;
++	}
++
+ 	// Buffer for incomplete ANSI sequences across chunks
+ 	let stdoutBuffer = "";
+ 	let stderrBuffer = "";
+@@ -2488,6 +2510,10 @@ async function handleExecServerMessage(
  							offset: negativeOffset ? args.offset : undefined,
  							limit: negativeOffset ? args.limit : undefined,
  						};
@@ -13,7 +53,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a
  			if (!editOwned) {
  				synthesizeCursorExecToolCall(
  					output,
-@@ -2495,9 +2499,12 @@ async function handleExecServerMessage(
+@@ -2495,9 +2521,12 @@ async function handleExecServerMessage(
  					state,
  					args.toolCallId,
  					"read",
@@ -29,7 +69,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a
  				);
  			}
  			const { execResult: readResult, toolResult } = await resolveExecHandler(
-@@ -2510,9 +2517,9 @@ async function handleExecServerMessage(
+@@ -2510,9 +2539,9 @@ async function handleExecServerMessage(
  						result,
  						args.offset !== undefined || args.limit !== undefined || piReadPathHasRange(args.path),
  					),
@@ -41,7 +81,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a
  			);
  			let execResult = readResult;
  			// StrReplace writes the returned bytes back. A truncated raw read would
-@@ -2595,22 +2602,35 @@ async function handleExecServerMessage(
+@@ -2595,22 +2624,35 @@ async function handleExecServerMessage(
  			}
  			// Mirror the coding-agent bridge's arg mapping so live UI (from
  			// `tool_execution_start`) and rebuilt transcript (from this block)
@@ -86,7 +126,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a
  			);
  			sendExecClientMessage(runTransport, execMsg, "grepResult", execResult);
  			return;
-@@ -2621,11 +2641,25 @@ async function handleExecServerMessage(
+@@ -2621,11 +2663,25 @@ async function handleExecServerMessage(
  			const editOwned = isEditOwnedToolCallId(state, output, args.toolCallId);
  			// Match the bridge: prefer `fileText`, fall back to decoded `fileBytes`.
  			const content = args.fileText ?? new TextDecoder().decode(args.fileBytes ?? new Uint8Array());
@@ -116,7 +156,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a
  			}
  			const write = execHandlers?.write?.bind(execHandlers);
  			const writeHandler = write
-@@ -2648,9 +2682,9 @@ async function handleExecServerMessage(
+@@ -2648,9 +2704,9 @@ async function handleExecServerMessage(
  						},
  						toolResult,
  					),
@@ -128,7 +168,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a
  			);
  			if (editOwned) markEditToolCallPaired(state, args.toolCallId);
  			sendExecClientMessage(runTransport, execMsg, "writeResult", execResult);
-@@ -2677,20 +2711,44 @@ async function handleExecServerMessage(
+@@ -2677,20 +2733,44 @@ async function handleExecServerMessage(
  			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
  			const normalizedArgs: ShellArgs = { ...args, workingDirectory: args.workingDirectory || process.cwd() };
  			// Match the bridge (`CursorExecHandlers.shell`): map `workingDirectory`
@@ -181,7 +221,98 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..09829ed99ab4689821fdc2c42897dc1a
  			);
  			const sanitizedExecResult = sanitizeShellExecResult(execResult);
  			sendExecClientMessage(runTransport, execMsg, "shellResult", sanitizedExecResult);
-@@ -4971,6 +5029,23 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
+@@ -2699,12 +2779,31 @@ async function handleExecServerMessage(
+ 		case "shellStreamArgs": {
+ 			const args = execMsg.message.value;
+ 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
+-			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
+-				command: args.command,
+-				cwd: args.workingDirectory || undefined,
+-				timeout: shellDeadlineSeconds(args),
+-			});
+-			await handleShellStreamArgs(args, execMsg, runTransport, execHandlers, onToolResult);
++			// A stream frame counts as covered only when NEITHER shell handler is
++			// installed: both answer it, so either one wins over the handoff.
++			const streamHandoff =
++				isExternalExecHandoff(externalToolExecutor, execHandlers, "shell") &&
++				execHandlers?.shellStream === undefined;
++			synthesizeCursorExecToolCall(
++				output,
++				stream,
++				state,
++				args.toolCallId,
++				"bash",
++				streamHandoff
++					? {
++							command: args.workingDirectory
++								? `cd ${args.workingDirectory} && ${args.command}`
++								: args.command,
++						}
++					: {
++							command: args.command,
++							cwd: args.workingDirectory || undefined,
++							timeout: shellDeadlineSeconds(args),
++						},
++				{ executed: !streamHandoff },
++			);
++			await handleShellStreamArgs(args, execMsg, runTransport, execHandlers, onToolResult, streamHandoff);
+ 			return;
+ 		}
+ 		case "backgroundShellSpawnArgs": {
+@@ -3173,23 +3272,44 @@ async function handleExecServerMessage(
+ 		}
+ 		case "miniSweAgentBashArgs": {
+ 			// Same `ShellArgs`/`ShellResult` pair as `shellArgs`, under its own frame
+-			// number, so the existing shell handler answers it unchanged.
++			// number, so the existing shell handler answers it unchanged — and the
++			// same handoff applies when no shell handler is installed.
+ 			const args = execMsg.message.value;
+ 			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
+ 			const normalizedArgs: ShellArgs = { ...args, workingDirectory: args.workingDirectory || process.cwd() };
+-			synthesizeCursorExecToolCall(output, stream, state, args.toolCallId, "bash", {
+-				command: args.command,
+-				cwd: args.workingDirectory || undefined,
+-				timeout: shellDeadlineSeconds(args),
+-			});
++			const miniSweHandoff = isExternalExecHandoff(externalToolExecutor, execHandlers, "shell");
++			synthesizeCursorExecToolCall(
++				output,
++				stream,
++				state,
++				args.toolCallId,
++				"bash",
++				miniSweHandoff
++					? {
++							command: args.workingDirectory
++								? `cd ${args.workingDirectory} && ${args.command}`
++								: args.command,
++						}
++					: {
++							command: args.command,
++							cwd: args.workingDirectory || undefined,
++							timeout: shellDeadlineSeconds(args),
++						},
++				{ executed: !miniSweHandoff },
++			);
+ 			const { execResult } = await resolveExecHandler(
+ 				normalizedArgs,
+ 				execHandlers?.shell?.bind(execHandlers),
+ 				onToolResult,
+ 				toolResult => buildShellResultFromToolResult(normalizedArgs, toolResult),
+-				reason => buildShellRejectedResult(normalizedArgs.command, normalizedArgs.workingDirectory, reason),
++				reason =>
++					buildShellRejectedResult(
++						normalizedArgs.command,
++						normalizedArgs.workingDirectory,
++						miniSweHandoff ? MCP_EXTERNAL_HANDOFF_MESSAGE : reason,
++					),
+ 				error => buildShellFailureResult(normalizedArgs.command, normalizedArgs.workingDirectory, error),
+-				{ toolCallId: args.toolCallId, toolName: "bash" },
++				miniSweHandoff ? null : { toolCallId: args.toolCallId, toolName: "bash" },
+ 			);
+ 			sendExecClientMessage(runTransport, execMsg, "miniSweAgentBashResult", sanitizeShellExecResult(execResult));
+ 			return;
+@@ -4971,6 +5091,23 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
  
  const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
  

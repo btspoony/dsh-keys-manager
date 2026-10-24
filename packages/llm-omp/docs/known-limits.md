@@ -196,12 +196,27 @@ repository root docs.
   consistent. The seven `dsh_<native>` names are reserved: a DSH tool that
   already carries one is refused with `TOOL_ALIAS_COLLISION`, which fails the
   whole request and requires renaming the tool. Any other tool name travels
-  unchanged. Cursor-native `read`, `shell`, `write` and `grep` exec frames are
-  handed to DSH's own tool loop the same way (unresolved call, result replayed
-  on the next request), translated into the DSH tool's parameters. Frames with
-  no DSH equivalent (`delete`, `ls`, `diagnostics`, streamed edits) still have
-  no handler: the transport answers them with "Tool not available" and they are
-  **not** executed by DSH (live reachability unverified).
+  unchanged. Cursor-native `read`, `shell` (batch and streamed),
+  `mini_swe_agent_bash`, `write` and `grep` exec frames are handed to DSH's own
+  tool loop the same way (unresolved call, result replayed on the next
+  request), translated into the DSH tool's parameters. Frames with no DSH
+  equivalent (`delete`, `ls`, `diagnostics`, background-shell spawn/stdin,
+  streamed edits) still have no handler: the transport answers them with "Tool
+  not available" and they are **not** executed by DSH (live reachability
+  unverified).
+- **The `pi*` exec frames have no handoff and are not gated client-side.**
+  `piReadArgs`/`piBashArgs`/`piEditArgs`/`piWriteArgs`/`piGrepArgs`/
+  `piFindArgs`/`piLsArgs` are dispatched whenever Cursor's server sends them:
+  this client advertises no capability set that would suppress them, so they
+  *can* reach a live DSH session. Unanswered, each one synthesizes a settled
+  call and answers the server with a `Tool not available` error result, so a
+  turn that chooses one gains nothing. If one shows up in a live seat it needs
+  its own translation — the Pi result schemas differ from the modern ones
+  (`PiBashExecResult` carries `output`/`truncation`, not `stdout`/`exitCode`).
+- A streamed shell frame that is handed off is answered with `start` →
+  `rejected` (handoff reason) → `exit` code 1 instead of running the command,
+  mirroring the batch branch's refusal. A server that needs streamed stdout to
+  keep the turn alive gets none, so such a turn ends on the reject.
 - The exec-frame handoff translation is **lossy**. `grep`'s `ignoreCase`,
   `literal`, `context` and `offset` flags have no slot in DSH's `grep` tool and
   are dropped; `shell`'s millisecond budget is dropped and its working
