@@ -418,6 +418,40 @@ export interface OmpDevinOptions {
 }
 
 /**
+ * The omp model object for a Factory Droid row: one catalog row plus the
+ * transport identity.
+ *
+ * The row is already the model — `api`/`provider` are declared by the registry
+ * seed and the transport multiplexes four wire protocols by model **id** (the
+ * KDL `api-routes` registry inside the artifact), so no per-route field decides
+ * the backend.
+ */
+export interface OmpFactoryDroidModel extends FactoryDroidModelRow {}
+
+/**
+ * Request options handed to the omp Factory Droid transport (`streamFactoryDroid`).
+ *
+ * No `headers`: the transport merges caller headers last
+ * (`factory-droid.ts:600`), which would overwrite the vendor identity headers
+ * (`User-Agent: factory-cli/…`, `X-Factory-Client: cli`). Attribution travels
+ * through the fill-absent `fetch` wrapper instead. No `reasoning`/
+ * `disableReasoning`: this pin exposes no effort ladder for the route, so the
+ * projection refuses a selected effort rather than guessing one.
+ */
+export interface OmpFactoryDroidOptions {
+  /** WorkOS access token from the credential record: the transport's only credential path. */
+  readonly apiKey: string
+  readonly signal?: AbortSignal
+  /** Mapped to the v4-shaped `x-session-id` inside the transport. */
+  readonly sessionId?: string
+  readonly maxTokens?: number
+  readonly temperature?: number
+  readonly stopSequences?: string[]
+  /** Fill-absent attribution wrapper (`src/transport/fetch.ts`). */
+  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+}
+
+/**
  * Request options handed to the omp Google transport (`streamGoogleGeminiCli`).
  *
  * No `headers`: caller headers merge last on the Cloud Code Assist wire and
@@ -473,6 +507,13 @@ export type OmpDevinTransport = (
   options: OmpDevinOptions,
 ) => AsyncIterable<OmpAssistantMessageEvent>
 
+
+/** The injected Factory Droid transport shape: omp's `streamFactoryDroid`. */
+export type OmpFactoryDroidTransport = (
+  model: OmpFactoryDroidModel,
+  context: OmpContext,
+  options: OmpFactoryDroidOptions,
+) => AsyncIterable<OmpAssistantMessageEvent>
 
 /** The injected Google transport shape: omp's `streamGoogleGeminiCli` for both routes. */
 export type OmpGoogleTransport = (

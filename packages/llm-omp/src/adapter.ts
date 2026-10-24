@@ -28,6 +28,7 @@ import type {
 
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
+import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
@@ -35,11 +36,13 @@ import { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
 import {
   CURSOR_PROFILE,
   DEVIN_PROFILE,
+  FACTORY_DROID_PROFILE,
   GOOGLE_ANTIGRAVITY_PROFILE,
   GOOGLE_GEMINI_CLI_PROFILE,
   abortedFinish,
   projectDevinRequest,
   projectEvents,
+  projectFactoryDroidRequest,
   projectGoogleRequest,
   projectRequest,
 } from './projection.js'
@@ -48,11 +51,14 @@ import type { OmpAssistantMessageEvent, OmpContext } from './omp.js'
 import type {
   CursorModelRow,
   DevinModelRow,
+  FactoryDroidModelRow,
   GoogleModelRow,
   OmpCursorModel,
   OmpCursorOptions,
   OmpDevinModel,
   OmpDevinOptions,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions,
   OmpGoogleModel,
   OmpGoogleOptions,
 } from './omp.js'
@@ -65,6 +71,8 @@ export const DEVIN_ROUTE = 'devin'
 export const GOOGLE_GEMINI_CLI_ROUTE = 'google-gemini-cli'
 /** The Antigravity provider route this adapter owns. */
 export const GOOGLE_ANTIGRAVITY_ROUTE = 'google-antigravity'
+/** The Factory Droid provider route this adapter owns. */
+export const FACTORY_DROID_ROUTE = 'factory-droid'
 
 /** Machine code for a model id the generated catalog does not contain. */
 export const UNKNOWN_MODEL = 'UNKNOWN_MODEL'
@@ -123,7 +131,7 @@ export interface ProjectedTransportRequest<Model, Options> {
 /** What differs between the routes: identity, catalog, projection and credential record. */
 export interface TransportRoute<Row extends TransportRow, Model, Options extends TransportOptions> {
   /** Provider id; also the registered route set the projection's profile accepts. */
-  readonly id: 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
+  readonly id: 'cursor' | 'devin' | 'factory-droid' | 'google-gemini-cli' | 'google-antigravity'
   /** Models-page / provider-info display name. */
   readonly displayName: string
   /** The `ctx.credentials` record this route reads. */
@@ -192,6 +200,35 @@ export const GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE: TransportRoute<GoogleModelRow, 
   models: GOOGLE_ANTIGRAVITY_MODELS,
   project: (row, options) => projectGoogleRequest(row, GOOGLE_ANTIGRAVITY_PROFILE, options),
   efforts: row => row.thinking?.efforts,
+}
+
+/**
+ * The Factory Droid route's credential record.
+ *
+ * The WorkOS device-code resolver that reads and writes it lands with the auth
+ * task; the key is declared here because the adapter is what names it in
+ * `assertUsableApiKey` refusals, and both sides must agree on the string.
+ */
+export const FACTORY_DROID_CREDENTIAL_KEY = `llm-omp-transports/${FACTORY_DROID_ROUTE}` as const
+
+/**
+ * The Factory Droid route's facts.
+ *
+ * The rows come from the KDL registry seed (the pin's `models.json` has no
+ * factory-droid rows), and the transport picks one of four wire protocols from
+ * the model id inside the artifact, so the route record carries no wire field.
+ */
+export const FACTORY_DROID_TRANSPORT_ROUTE: TransportRoute<
+  FactoryDroidModelRow,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions
+> = {
+  id: FACTORY_DROID_ROUTE,
+  displayName: 'Factory Droid',
+  credentialKey: FACTORY_DROID_CREDENTIAL_KEY,
+  profile: FACTORY_DROID_PROFILE,
+  models: FACTORY_DROID_MODELS,
+  project: (row, options) => projectFactoryDroidRequest(row, options),
 }
 
 /** What an adapter needs from its host plugin. */
@@ -402,5 +439,19 @@ export class OmpGoogleGeminiCliAdapter extends OmpTransportAdapter<GoogleModelRo
 export class OmpGoogleAntigravityAdapter extends OmpTransportAdapter<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> {
   constructor(options: OmpGoogleAdapterConfig) {
     super({ route: GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The DSH llm adapter configuration for the Factory Droid route. */
+export type OmpFactoryDroidAdapterConfig = OmpAdapterOptions<OmpFactoryDroidModel, OmpFactoryDroidOptions>
+
+/** The Factory Droid adapter: the bundled `streamFactoryDroid` over the registry seed catalog. */
+export class OmpFactoryDroidAdapter extends OmpTransportAdapter<
+  FactoryDroidModelRow,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions
+> {
+  constructor(options: OmpFactoryDroidAdapterConfig) {
+    super({ route: FACTORY_DROID_TRANSPORT_ROUTE, ...options })
   }
 }

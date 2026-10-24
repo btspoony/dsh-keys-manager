@@ -27,16 +27,22 @@ import z from '@deepseek-ai/schemastery'
 import {
   CURSOR_ROUTE,
   DEVIN_ROUTE,
+  FACTORY_DROID_CREDENTIAL_KEY,
+  FACTORY_DROID_ROUTE,
+  FACTORY_DROID_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
+  OmpFactoryDroidAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
 } from './adapter.js'
 import type { OmpTransportOf } from './adapter.js'
+import { createFactoryDroidAccess } from './factory-droid/credentials.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
 import { DEVIN_MODELS } from './catalog/devin.js'
+import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { loginCursor } from './cursor/auth.js'
@@ -70,8 +76,8 @@ export interface TransportProviderProfile {
   models: TransportModelProfile[]
 }
 
-/** The route ids this plugin registers: the shipped pair, then the Google pair. */
-type TransportRouteId = 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
+/** The route ids this plugin registers, in registration order. */
+type TransportRouteId = 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity' | 'factory-droid'
 
 /** The `providers` profile a volatile config reference snapshots. */
 export interface TransportProvidersProfile {
@@ -79,6 +85,7 @@ export interface TransportProvidersProfile {
   devin?: TransportProviderProfile
   'google-gemini-cli'?: TransportProviderProfile
   'google-antigravity'?: TransportProviderProfile
+  'factory-droid'?: TransportProviderProfile
 }
 
 /** A live config reference (cosmokit `Volatile`) a volatile schema node resolves to. */
@@ -148,6 +155,16 @@ export const Config = z.object({
           )
           .default([]),
       }),
+      'factory-droid': z.object({
+        models: z
+          .array(
+            z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          )
+          .default([]),
+      }),
     })
     .default({
       cursor: { models: [] },
@@ -206,6 +223,18 @@ export function googleAntigravityCatalogModels(): TransportCatalogModel[] {
   return GOOGLE_ANTIGRAVITY_MODELS.map(row => ({ id: row.id, name: row.name }))
 }
 
+/**
+ * The full Factory Droid catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * Same shape as the other route pickers. The rows come from the KDL registry
+ * seed because the pinned `models.json` has no factory-droid rows; an account's
+ * feature flags can narrow what it may serve, which is why the allow-list exists.
+ */
+export function factoryDroidCatalogModels(): TransportCatalogModel[] {
+  return FACTORY_DROID_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
 export const name = 'llm-omp-transports'
 
 /**
@@ -247,6 +276,15 @@ const GOOGLE_ANTIGRAVITY_PROVIDER = {
   displayName: 'Google Antigravity',
   settingsNs: 'llm-omp-transports',
   settingsPath: ['providers', 'google-antigravity'],
+  declared: false,
+} as const
+
+/** The Factory Droid route's Models-page entry, beside the Google pair. */
+const FACTORY_DROID_PROVIDER = {
+  provider: FACTORY_DROID_TRANSPORT_ROUTE.id,
+  displayName: FACTORY_DROID_TRANSPORT_ROUTE.displayName,
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'factory-droid'],
   declared: false,
 } as const
 
@@ -519,8 +557,8 @@ export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = 
  * request and its failure reaches that request as a typed `LlmError`.
  */
 function bundledTransport<Model, Options>(
-  artifact: 'cursor' | 'devin' | 'google',
-  exportName: 'streamCursor' | 'streamDevin' | 'streamGoogleGeminiCli',
+  artifact: 'cursor' | 'devin' | 'google' | 'factory-droid',
+  exportName: 'streamCursor' | 'streamDevin' | 'streamGoogleGeminiCli' | 'streamFactoryDroid',
   label: string,
 ): OmpTransportOf<Model, Options> {
   return (model, context, options) =>
@@ -613,6 +651,25 @@ export function createGoogleAntigravityAdapter(
   })
 }
 
+/**
+ * Build the Factory Droid adapter this plugin registers.
+ *
+ * @remarks
+ * The twin of {@link createGoogleAntigravityAdapter}: the transport is the
+ * bundled artifact, still loaded only on the first request, and the credential
+ * is the `llm-omp-transports/factory-droid` record.
+ */
+export function createFactoryDroidAdapter(
+  credentials: CredentialRecordsLike,
+  models?: () => readonly string[] | undefined,
+): OmpFactoryDroidAdapter {
+  return new OmpFactoryDroidAdapter({
+    access: createFactoryDroidAccess(credentials),
+    transport: bundledTransport('factory-droid', 'streamFactoryDroid', 'Factory Droid'),
+    ...(models === undefined ? {} : { models }),
+  })
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
   const host = ctx as Context & {
     credentials: CredentialRecordsLike
@@ -636,11 +693,16 @@ export function apply(ctx: Context, config: Config = {}): void {
     [GOOGLE_ANTIGRAVITY_ROUTE],
     createGoogleAntigravityAdapter(host.credentials, models('google-antigravity')),
   )
+  ctx.llm.registerAdapter(
+    [FACTORY_DROID_TRANSPORT_ROUTE.id],
+    createFactoryDroidAdapter(host.credentials, models('factory-droid')),
+  )
   ctx.llm.registerConfigurableProviders([
     CURSOR_PROVIDER,
     DEVIN_PROVIDER,
     GOOGLE_GEMINI_CLI_PROVIDER,
     GOOGLE_ANTIGRAVITY_PROVIDER,
+    FACTORY_DROID_PROVIDER,
   ])
   host.authorization.registerFlow(cursorAuthorizationFlow())
   host.authorization.registerFlow(devinAuthorizationFlow())
@@ -648,7 +710,17 @@ export function apply(ctx: Context, config: Config = {}): void {
   host.authorization.registerFlow(googleAntigravityAuthorizationFlow())
 }
 
-export { CURSOR_ROUTE, DEVIN_ROUTE, GOOGLE_ANTIGRAVITY_ROUTE, GOOGLE_GEMINI_CLI_ROUTE } from './adapter.js'
+export {
+  CURSOR_ROUTE,
+  DEVIN_ROUTE,
+  FACTORY_DROID_CREDENTIAL_KEY,
+  FACTORY_DROID_ROUTE,
+  FACTORY_DROID_TRANSPORT_ROUTE,
+  GOOGLE_ANTIGRAVITY_ROUTE,
+  GOOGLE_GEMINI_CLI_ROUTE,
+} from './adapter.js'
+export { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
+export { createFactoryDroidAccess } from './factory-droid/credentials.js'
 export { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 export { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
 export { GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY, GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'

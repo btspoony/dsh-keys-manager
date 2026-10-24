@@ -26,12 +26,11 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { getEnvApiKey, envKeyNameFor } from '../scripts/omp-shim/env-api-key-lean'
+import { getEnvApiKey, getEnvApiKeyName } from '../scripts/omp-shim/env-api-key-lean'
 import { FACTORY_DROID_CATALOG_SOURCE, FACTORY_DROID_MODELS } from '../src/catalog/factory-droid.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
@@ -93,6 +92,11 @@ const VERBATIM: readonly { lean: string; pinned: string; symbols: string[] }[] =
     lean: 'pi-ai-stream-lean.ts',
     pinned: join(piAiRoot, 'src', 'stream.ts'),
     symbols: ['OUTPUT_FALLBACK_BUFFER', 'mapAnthropicToolChoice'],
+  },
+  {
+    lean: 'env-api-key-lean.ts',
+    pinned: join(piAiRoot, 'src', 'env-api-key.ts'),
+    symbols: ['getEnvApiKey', 'getEnvApiKeyName', 'listProvidersWithEnvKey'],
   },
 ]
 
@@ -160,7 +164,7 @@ describe('factory-droid build substitutions', () => {
     const previous = process.env.OPENAI_API_KEY
     process.env.OPENAI_API_KEY = 'sk-catalog-sentinel'
     try {
-      expect(envKeyNameFor('openai')).toBe('OPENAI_API_KEY')
+      expect(getEnvApiKeyName('openai')).toBe('OPENAI_API_KEY')
       expect(getEnvApiKey('openai')).toBe('sk-catalog-sentinel')
     } finally {
       if (previous === undefined) delete process.env.OPENAI_API_KEY
@@ -169,7 +173,7 @@ describe('factory-droid build substitutions', () => {
     // The dropped half: a provider the catalog does not model has no resolver
     // here, where the pin's registry would have supplied one.
     expect(getEnvApiKey('foundry')).toBeUndefined()
-    expect(envKeyNameFor('foundry')).toBeUndefined()
+    expect(getEnvApiKeyName('foundry')).toBeUndefined()
   })
 })
 

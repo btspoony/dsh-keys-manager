@@ -78,6 +78,7 @@ import { attributionPreservingFetch } from './transport/fetch.js'
 import type {
   CursorModelRow,
   DevinModelRow,
+  FactoryDroidModelRow,
   GoogleModelRow,
   OmpAssistantMessage,
   OmpAssistantMessageEvent,
@@ -87,6 +88,8 @@ import type {
   OmpCursorOptions,
   OmpDevinModel,
   OmpDevinOptions,
+  OmpFactoryDroidModel,
+  OmpFactoryDroidOptions,
   OmpGoogleModel,
   OmpGoogleOptions,
   OmpGoogleThinking,
@@ -128,9 +131,9 @@ type FinishChunk = Extract<StreamChunk, { type: 'finish' }>
  */
 export interface RouteProfile {
   /** Provider route id: history identity and the label inside error messages. */
-  readonly provider: 'cursor' | 'devin' | 'google-gemini-cli' | 'google-antigravity'
+  readonly provider: 'cursor' | 'devin' | 'factory-droid' | 'google-gemini-cli' | 'google-antigravity'
   /** omp's `Api` for the route. */
-  readonly api: 'cursor-agent' | 'devin-agent' | 'google-gemini-cli'
+  readonly api: 'cursor-agent' | 'devin-agent' | 'factory-droid-agent' | 'google-gemini-cli'
   /** Provider-neutral code an unclassified transport failure maps to. */
   readonly fallbackErrorCode: string
   /**
@@ -199,6 +202,19 @@ export const CURSOR_PROFILE = {
 export const DEVIN_PROFILE = {
   provider: 'devin',
   api: 'devin-agent',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies RouteProfile
+
+/**
+ * The Factory Droid route's projection facts.
+ *
+ * No marker: the transport emits plain tool calls and finishes the turn
+ * `toolUse`, so DSH's own tool loop is the native mode (no exec channel, no
+ * `externalToolExecutor` — `FactoryDroidOptions` has no such field).
+ */
+export const FACTORY_DROID_PROFILE = {
+  provider: 'factory-droid',
+  api: 'factory-droid-agent',
   fallbackErrorCode: 'PROVIDER_ERROR',
 } as const satisfies RouteProfile
 
@@ -352,6 +368,73 @@ export function projectDevinRequest(
       // The chat request must keep the transport's own `connect-go` identity,
       // and the header-less handshake must still carry DSH's attribution: this
       // wrapper fills only headers a request left absent.
+      fetch: attributionPreservingFetch,
+    },
+  }
+}
+
+/** The Factory Droid request projection's three positional transport arguments. */
+export interface ProjectedFactoryDroidRequest {
+  readonly model: OmpFactoryDroidModel
+  readonly context: OmpContext
+  /**
+   * Transport options without the credential. The adapter resolves the token
+   * only for a request the projection accepted, then injects `apiKey`.
+   */
+  readonly options: Omit<OmpFactoryDroidOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/**
+ * Project one DSH request onto the omp Factory Droid transport's arguments.
+ *
+ * The transport multiplexes four wire protocols by model **id**, so nothing here
+ * chooses a backend: the row's id is the wire decision, made inside the artifact
+ * from the bundled KDL registry. The route's tool model is the native DSH loop
+ * (plain calls, `toolUse` finish, no exec channel), so `externalToolExecutor` is
+ * never sent, and there is no `wireModelId`: the pinned registry exposes no
+ * effort ladder for this provider, so a selected effort is refused instead of
+ * being guessed.
+ *
+ * The request knobs the wires carry are forwarded: `maxTokens`, `temperature`
+ * and stop sequences reach every family (`StreamOptions`).
+ *
+ * @param row - catalog row for the requested model.
+ * @param options - the assembled DSH request.
+ * @param accessToken - bearer token already resolved for this call; omit it to
+ *   project before the credential is read.
+ * @returns the transport arguments, ready to hand to `streamFactoryDroid`.
+ * @throws LlmError with {@link CONTENT_UNSUPPORTED} for content kinds this route
+ *   cannot send, and for a system message that is not part of the leading prompt.
+ * @throws LlmError with {@link TOOL_ARGUMENTS_INVALID} for a historical tool call
+ *   whose arguments are not a JSON object.
+ * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for any selected
+ *   effort: the pinned registry declares no effort ladder for these rows.
+ */
+export function projectFactoryDroidRequest(
+  row: FactoryDroidModelRow,
+  options: GenerateOptions,
+  accessToken?: string,
+): ProjectedFactoryDroidRequest {
+  if (options.reasoningEffort !== undefined) {
+    throw new LlmError(
+      `llm-omp-transports: factory-droid model "${row.id}" does not advertise reasoning efforts`,
+      UNSUPPORTED_REASONING_EFFORT,
+    )
+  }
+  const context = projectContext(FACTORY_DROID_PROFILE, options)
+  return {
+    model: { ...row },
+    context,
+    options: {
+      ...(accessToken !== undefined ? { apiKey: accessToken } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      // The transport maps this onto the v4-shaped `x-session-id`.
+      ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+      ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.stop !== undefined ? { stopSequences: [...options.stop] } : {}),
+      // The wire keeps its own `factory-cli` identity headers, so attribution is
+      // filled only where a request left the header absent.
       fetch: attributionPreservingFetch,
     },
   }

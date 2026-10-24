@@ -15,8 +15,10 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 
 import {
+  FACTORY_DROID_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
+  OmpFactoryDroidAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
 } from '../src/adapter.js'
@@ -26,12 +28,14 @@ import {
   apply,
   cursorCatalogModels,
   devinCatalogModels,
+  factoryDroidCatalogModels,
   googleAntigravityCatalogModels,
   googleGeminiCliCatalogModels,
 } from '../src/index.js'
 import type { TransportModelProfile } from '../src/index.js'
 import { CURSOR_MODELS } from '../src/catalog/cursor.js'
 import { DEVIN_MODELS } from '../src/catalog/devin.js'
+import { FACTORY_DROID_MODELS } from '../src/catalog/factory-droid.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 
@@ -79,6 +83,7 @@ describe('Config', () => {
         devin: { models: [] },
         'google-gemini-cli': { models: [] },
         'google-antigravity': { models: [] },
+        'factory-droid': { models: [] },
       },
     })
     expect(getPath(value, ['providers', 'cursor'])).toBeDefined()
@@ -89,6 +94,7 @@ describe('Config', () => {
     // The Google pair resolves the same way, so each is a configured provider.
     expect(getPath(value, ['providers', 'google-gemini-cli']) !== undefined).toBe(true)
     expect(getPath(value, ['providers', 'google-antigravity']) !== undefined).toBe(true)
+    expect(getPath(value, ['providers', 'factory-droid']) !== undefined).toBe(true)
   })
 
   it('hands the running plugin a live providers reference', () => {
@@ -101,6 +107,7 @@ describe('Config', () => {
       devin: { models: [] },
       'google-gemini-cli': { models: [] },
       'google-antigravity': { models: [] },
+      'factory-droid': { models: [] },
     })
   })
 
@@ -144,6 +151,16 @@ describe('catalog projections', () => {
     expect(Object.keys(gemini[0]!)).toEqual(['id', 'name'])
     // The two routes advertise different models from one artifact.
     expect(gemini.map(row => row.id)).not.toEqual(antigravity.map(row => row.id))
+  })
+
+  it('projects every factory-droid row as an id/name pair, from the registry seed', () => {
+    const models = factoryDroidCatalogModels()
+
+    expect(models).toHaveLength(FACTORY_DROID_MODELS.length)
+    expect(models.map(row => row.id)).toEqual(FACTORY_DROID_MODELS.map(row => row.id))
+    expect(Object.keys(models[0]!)).toEqual(['id', 'name'])
+    // The rows do not come from `models.json`; the seed is the KDL registry.
+    expect(FACTORY_DROID_MODELS).toHaveLength(62)
   })
 
   it('projects every devin row as an id/name pair, in catalog order', () => {
@@ -197,7 +214,7 @@ function fakeHost(record: { access: string; expires: number; projectId: string }
 }
 
 describe('apply registration', () => {
-  it('registers four adapters, four providers and four flows in the shipped order', () => {
+  it('registers five adapters, five providers and four flows in the shipped order', () => {
     const host = fakeHost()
 
     // A missing artifact must not fail registration: `apply` only wires lazy
@@ -209,19 +226,23 @@ describe('apply registration', () => {
       ['devin'],
       [GOOGLE_GEMINI_CLI_ROUTE],
       [GOOGLE_ANTIGRAVITY_ROUTE],
+      ['factory-droid'],
     ])
     expect(host.providers.map(entry => entry.provider)).toEqual([
       'cursor',
       'devin',
       GOOGLE_GEMINI_CLI_ROUTE,
       GOOGLE_ANTIGRAVITY_ROUTE,
+      'factory-droid',
     ])
     expect(host.providers.map(entry => entry.settingsPath.join('.'))).toEqual([
       'providers.cursor',
       'providers.devin',
       'providers.google-gemini-cli',
       'providers.google-antigravity',
+      'providers.factory-droid',
     ])
+    // Four flows: the factory-droid device-code flow lands with the auth task.
     expect(host.flows.map(flow => flow.key)).toEqual([
       'llm-omp-transports/cursor',
       'llm-omp-transports/devin',
@@ -258,6 +279,54 @@ describe('apply registration', () => {
     expect(await (antigravity as OmpGoogleAntigravityAdapter).listModels(GOOGLE_ANTIGRAVITY_ROUTE)).toHaveLength(
       GOOGLE_ANTIGRAVITY_MODELS.length,
     )
+  })
+
+  it('registers the factory-droid adapter last, over the registry seed catalog', async () => {
+    const host = fakeHost()
+    apply(host.ctx)
+
+    const adapter = host.adapters[4]!.adapter
+    expect(adapter).toBeInstanceOf(OmpFactoryDroidAdapter)
+    expect((adapter as OmpFactoryDroidAdapter).providerInfo('factory-droid')).toEqual({
+      id: 'factory-droid',
+      name: 'Factory Droid',
+    })
+    expect(await (adapter as OmpFactoryDroidAdapter).listModels('factory-droid')).toHaveLength(
+      FACTORY_DROID_MODELS.length,
+    )
+  })
+
+  it('narrows the factory-droid route by its own configured allow-list', async () => {
+    const host = fakeHost()
+    apply(host.ctx, {
+      providers: { get: () => ({ 'factory-droid': { models: [{ id: 'claude-fable-5.1', name: 'Fable 5.1' }] } }) },
+    })
+
+    const adapter = host.adapters[4]!.adapter as OmpFactoryDroidAdapter
+    expect((await adapter.listModels('factory-droid')).map(row => row.id)).toEqual(['claude-fable-5.1'])
+    await expect(adapter.resolveModel('factory-droid', 'inkling')).rejects.toMatchObject({ code: 'UNKNOWN_MODEL' })
+  })
+
+  it('surfaces a missing factory-droid bundle at request time as TRANSPORT_UNAVAILABLE', async () => {
+    // Same contract as the Google pair: `apply` wires only the lazy loader, so a
+    // source checkout without `pnpm build` fails the request, never registration.
+    const host = fakeHost()
+    apply(host.ctx)
+    const adapter = host.adapters[4]!.adapter as OmpFactoryDroidAdapter
+    const chunks: StreamChunk[] = []
+
+    await expect(
+      (async () => {
+        for await (const chunk of adapter.stream({
+          provider: FACTORY_DROID_TRANSPORT_ROUTE.id,
+          model: 'claude-fable-5.1',
+          messages: [createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } })],
+        })) {
+          chunks.push(chunk)
+        }
+      })(),
+    ).rejects.toMatchObject({ code: TRANSPORT_UNAVAILABLE })
+    expect(chunks).toEqual([])
   })
 
   it('narrows each Google route by its own configured allow-list', async () => {

@@ -17,10 +17,12 @@ import { describe, expect, it } from 'vitest'
 import {
   CURSOR_ROUTE,
   DEVIN_ROUTE,
+  FACTORY_DROID_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
+  OmpFactoryDroidAdapter,
   OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
 } from '../src/adapter.js'
@@ -655,7 +657,7 @@ describe('llm-omp-transports registration', () => {
     }
   }
 
-  it('registers all four adapters, their Models-page entries and all four flows', () => {
+  it('registers all five adapters, their Models-page entries and the four shipped flows', () => {
     const host = fakeHost()
     apply(host.ctx)
 
@@ -666,6 +668,7 @@ describe('llm-omp-transports registration', () => {
       `adapter:${DEVIN_ROUTE}`,
       `adapter:${GOOGLE_GEMINI_CLI_ROUTE}`,
       `adapter:${GOOGLE_ANTIGRAVITY_ROUTE}`,
+      `adapter:${FACTORY_DROID_TRANSPORT_ROUTE.id}`,
       'providers',
       'flow:llm-omp-transports/cursor',
       'flow:llm-omp-transports/devin',
@@ -677,11 +680,15 @@ describe('llm-omp-transports registration', () => {
       [DEVIN_ROUTE],
       [GOOGLE_GEMINI_CLI_ROUTE],
       [GOOGLE_ANTIGRAVITY_ROUTE],
+      [FACTORY_DROID_TRANSPORT_ROUTE.id],
     ])
     expect(host.adapters[0]!.adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(host.adapters[1]!.adapter).toBeInstanceOf(OmpDevinAdapter)
     expect(host.adapters[2]!.adapter).toBeInstanceOf(OmpGoogleGeminiCliAdapter)
     expect(host.adapters[3]!.adapter).toBeInstanceOf(OmpGoogleAntigravityAdapter)
+    // The route registers here; its device-code flow lands with the auth task,
+    // so it is the one adapter without a flow in this list.
+    expect(host.adapters[4]!.adapter).toBeInstanceOf(OmpFactoryDroidAdapter)
     expect(host.directories).toEqual([
       [
         {
@@ -710,6 +717,13 @@ describe('llm-omp-transports registration', () => {
           displayName: 'Google Antigravity',
           settingsNs: 'llm-omp-transports',
           settingsPath: ['providers', 'google-antigravity'],
+          declared: false,
+        },
+        {
+          provider: 'factory-droid',
+          displayName: 'Factory Droid',
+          settingsNs: 'llm-omp-transports',
+          settingsPath: ['providers', 'factory-droid'],
           declared: false,
         },
       ],

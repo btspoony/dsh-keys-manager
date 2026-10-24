@@ -67,26 +67,25 @@ const serviceProviderMap: Record<string, KeyResolver> = {
   ...LEGACY_ENV_KEYS,
 }
 
-/**
- * Get the env-var API key for a provider, exactly as the pin's function does for
- * every provider the catalog models.
- *
- * @param provider - provider id, e.g. `openai`.
- * @returns the key, or `undefined` when no plain-variable fallback is declared.
- */
+// --- BEGIN PINNED REGION (verbatim; do not edit by hand) ---------------------
 export function getEnvApiKey(provider: string): string | undefined {
-  const resolver = serviceProviderMap[provider]
-  if (typeof resolver === 'string') return $env[resolver]
-  return resolver?.()
+	const resolver = serviceProviderMap[provider];
+	if (typeof resolver === "string") {
+		return $env[resolver];
+	}
+	return resolver?.();
 }
+// --- END PINNED REGION ------------------------------------------------------
 
-/**
- * Name of the env variable that backs {@link getEnvApiKey} for a provider.
- *
- * @param provider - provider id.
- * @returns the variable name, or `undefined` when the fallback is not a plain one.
- */
-export function envKeyNameFor(provider: string): string | undefined {
-  const resolver = serviceProviderMap[provider]
-  return typeof resolver === 'string' ? resolver : undefined
+// --- BEGIN PINNED REGION (verbatim; do not edit by hand) ---------------------
+export function getEnvApiKeyName(provider: string): string | undefined {
+	const resolver = serviceProviderMap[provider];
+	return typeof resolver === "string" ? resolver : undefined;
 }
+// --- END PINNED REGION ------------------------------------------------------
+
+// --- BEGIN PINNED REGION (verbatim; do not edit by hand) ---------------------
+export function listProvidersWithEnvKey(): string[] {
+	return Object.keys(serviceProviderMap);
+}
+// --- END PINNED REGION ------------------------------------------------------

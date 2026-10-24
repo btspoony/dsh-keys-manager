@@ -1,0 +1,10 @@
+{"type":"start"}
+{"type":"thinking_start","contentIndex":0}
+{"type":"thinking_delta","contentIndex":0,"delta":"The user "}
+{"type":"thinking_delta","contentIndex":0,"delta":"greets me."}
+{"type":"thinking_end","contentIndex":0,"content":"The user greets me."}
+{"type":"text_start","contentIndex":1}
+{"type":"text_delta","contentIndex":1,"delta":"Hello "}
+{"type":"text_delta","contentIndex":1,"delta":"from Factory"}
+{"type":"text_end","contentIndex":1,"content":"Hello from Factory"}
+{"type":"done","reason":"stop","message":{"role":"assistant","model":"claude-fable-5.1","api":"factory-droid-agent","provider":"factory-droid","stopReason":"stop","timestamp":1760000000100,"content":[{"type":"thinking","thinking":"The user greets me."},{"type":"text","text":"Hello from Factory"}],"usage":{"input":900,"output":20,"cacheRead":100,"cacheWrite":0,"totalTokens":1020,"reasoningTokens":8}}}
