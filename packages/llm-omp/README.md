@@ -11,8 +11,8 @@ and the plugin page lists both bundle components
 |---|---|
 | npm package | `dsh-llm-omp-transports` |
 | Plugin id | `llm-omp-transports` |
-| Routes | `cursor`, `devin`, `google-gemini-cli`, `google-antigravity` (the seam is provider-generic) |
-| Credential scope | `llm-omp-transports/<provider>`: `llm-omp-transports/cursor`, `llm-omp-transports/devin`, `llm-omp-transports/google-gemini-cli`, `llm-omp-transports/google-antigravity` |
+| Routes | `cursor`, `devin`, `google-gemini-cli`, `google-antigravity`, `factory-droid`, `gitlab-duo`, `gitlab-duo-agent` (the seam is provider-generic) |
+| Credential scope | `llm-omp-transports/<provider>` — one record per route (`cursor`, `devin`, `google-gemini-cli`, `google-antigravity`, `factory-droid`, `gitlab-duo`, `gitlab-duo-agent`) |
 | Runtime | Node 24 (the bundle imports Node builtins only) |
 | License | MIT |
 
@@ -124,6 +124,55 @@ records — not a second code path.
   decodes through `Bun.Image`, which does not exist under Node, so that path is
   dead here by construction; the projection never reaches it.
 
+## Factory Droid support status
+
+- **Text streaming** — yes, including reasoning parts and usage.
+- **Wires** — four protocols behind one proxy, selected by the model **id** inside the
+  artifact (Anthropic Messages for Claude rows, the Responses API for GPT/Grok, Chat
+  Completions for Kimi/GLM/DeepSeek, native generateContent for Gemini). The plugin never
+  chooses a backend, and rows carry no base URL: the transport derives the per-wire proxy
+  path and honours the account's residency host.
+- **Sign-in** — WorkOS **device code**: the flow shows the verification page and the user
+  code, the human approves in the browser, and the poll completes the grant. No listener and
+  no paste; the attempt's own signal is the only cancellation channel.
+- **Refresh** — yes: one refresh inside a 60 s window under the credential store's per-key
+  lock, keeping the account scope (`orgId`/`region`/`inferenceRegion`), which the adapter
+  forwards to the transport as `oauthIdentity` so a EU account gets its own host.
+- **Catalog** — 62 rows from the KDL registry seed (`models.json` has no factory-droid key),
+  zero-cost Factory credits.
+- **Build** — the graph needs three **entry-scoped build substitutions** (empty catalog data,
+  a lean provider registry, a lean env-key map) to fit its ceiling; see the limits below.
+
+## GitLab Duo support status
+
+Two routes over GitLab's AI surface, both registered from one catalog pin.
+
+**`gitlab-duo` (proxy).** The transport POSTs for a direct-access token, substitutes the
+row's `upstreamModelId` and delegates to one of three generic wire transports
+(Anthropic Messages, OpenAI Responses, Chat Completions) through GitLab's gateway.
+
+- 16 catalog rows carrying the upstream id, the wire and the full compat object.
+- **Sign-in** — OAuth code with PKCE, the loopback listener on `localhost:8080/callback`
+  **without port fallback** (the redirect is registered exactly) and a paste prompt as the
+  fallback path. `GITLAB_CLIENT_ID`/`GITLAB_REDIRECT_URI` support a custom OAuth app, and a
+  `GITLAB_TOKEN` personal access token works as the bearer.
+- **Refresh** — one refresh inside a 60 s window; the artifact's direct-access token cache
+  is keyed on the GitLab token, so a rotated token misses it by construction.
+
+**`gitlab-duo-agent` (Duo Workflow).** One WebSocket workflow per turn; GitLab's
+server-side loop yields at every tool call, so DSH's native tool loop executes them and the
+next turn replays the result through the goal transcript.
+
+- 1 static row (`claude_sonnet_4_6_vertex`, 1M context); live model discovery is not
+  implemented, and the server may pin another model on its side.
+- **Sign-in** — paste-only: the browser hands the code to VS Code, so the human pastes the
+  full `vscode://gitlab.gitlab-workflow/authentication?code=…&state=…` URL. The state is
+  mandatory (no listener means it is the only thing tying the paste to the attempt), and a
+  refresh echoes the `vscode` redirect.
+- **Session state** — a fresh map per request (plan A6): each turn re-seeds a workflow and
+  replays the transcript instead of resuming another turn's socket. Correct but heavier;
+  sticky resume is a follow-up.
+
 ## Hard constraints
 
 - **Pinned, build-time-only omp.** `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-catalog`
@@ -208,6 +257,13 @@ records — not a second code path.
   code skips the state check (the page is the only place the state could
   travel).
 
+- **The Factory Droid artifact strips the registry-derived env-key map.** Its graph would
+  otherwise pull omp's whole provider registry, so one entry-scoped substitution keeps the
+  pin's `getEnvApiKey` but not the `PROVIDER_REGISTRY` half — the computed Foundry/ADC/Bedrock
+  resolvers are gone. That path is unreachable for this route (every request carries the
+  stored WorkOS token), and a catalog-declared plain variable (`OPENAI_API_KEY`, …) still
+  resolves. The install id is per-process rather than persisted for the same reason: the
+  transport must not write to a user's home.
 - **Unofficial Google clients.** The Google routes reuse the OAuth clients and
   client identities the pinned omp rules capture — Gemini CLI
   (`GeminiCLI/0.46.0/...` plus `Client-Metadata`) and Antigravity
@@ -282,6 +338,18 @@ plugin surface.
 ## License
 
 Released under the [MIT License](../../LICENSE).
+
+- **The GitLab Duo proxy is the largest artifact.** It bundles three production wire
+  transports plus GitLab's gateway shim, which is why its ceiling is the package's highest;
+  the same entry-scoped substitutions keep the model catalog and the builtin registry out.
+- **Duo's Anthropic inner wire is not proven end-to-end in the suite.** The transport retries
+  a refused turn on that wire, so the test bounds the turn and asserts the request; the SSE
+  decode itself is exercised through the OpenAI wires and by the sibling routes' suites.
+- **`gitlab-duo-agent`'s checkpoint loop is not proven in-suite.** The suite proves the REST
+  bootstrap, the bearer, and that no socket opens before a workflow exists, plus the adapter's
+  tool handoff contract; the fake-socket round trip (start frame, checkpoint deltas,
+  `runMCPTool` reseed, stall restart) needs a scripted nine-call bootstrap and a checkpoint
+  corpus, and is the recorded follow-up. The first live turn is a manual smoke item.
 
 ## Deferred
 

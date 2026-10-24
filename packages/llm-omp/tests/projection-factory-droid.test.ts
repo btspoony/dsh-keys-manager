@@ -102,8 +102,11 @@ describe('projectFactoryDroidRequest', () => {
       id: 'claude-fable-5.1',
       api: 'factory-droid-agent',
       provider: 'factory-droid',
-      baseUrl: ROW.baseUrl,
     })
+    // No `baseUrl` on the row: the transport derives the per-wire proxy path (and
+    // the residency host) from the wire it resolves, so a static catalog cannot
+    // send every wire to the bare host.
+    expect(projected.model).not.toHaveProperty('baseUrl')
     expect(projected.context.systemPrompt).toEqual(['You are terse.'])
     expect(projected.context.messages).toEqual([
       { role: 'user', content: [{ type: 'text', text: 'Hello' }], timestamp: 0 },

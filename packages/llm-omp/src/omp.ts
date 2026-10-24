@@ -169,7 +169,13 @@ export interface FactoryDroidModelRow {
   readonly name: string
   readonly api: 'factory-droid-agent'
   readonly provider: 'factory-droid'
-  readonly baseUrl: string
+  /**
+   * No `baseUrl`: the transport derives the per-wire proxy path from the wire it
+   * resolved, and honours the account's residency (`api.factory.ai` vs the EU
+   * host) when it does. A host-only base URL from the seed would point every wire
+   * at the bare host (`/v1/messages` instead of `/api/llm/a/v1/messages`), which
+   * is the one place a static catalog must not out-guess the pinned registry.
+   */
   /** Combined request and response context window in tokens. */
   readonly contextWindow: number
   /** Per-response output cap the catalog advertises. */

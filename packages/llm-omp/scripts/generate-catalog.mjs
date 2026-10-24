@@ -214,7 +214,9 @@ function reduceFactoryDroid(row) {
     name: row.name,
     api: row.api,
     provider: row.provider,
-    baseUrl: row.baseUrl,
+    // No `baseUrl`: the transport derives the per-wire proxy path (and the
+    // residency host) from the wire it resolved; a host-only seed URL would send
+    // every wire to the bare host, a divergence from the pinned full build.
     contextWindow: row.contextWindow,
     maxTokens: row.maxTokens,
     input: [...row.input],

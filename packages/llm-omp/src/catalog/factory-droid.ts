@@ -36,7 +36,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Aster 07/15 (Preview)",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -56,7 +55,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Atlas 07/21 (Preview)",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -76,7 +74,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Fable 5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -96,7 +93,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Fable 5.1",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -116,7 +112,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Haiku 4.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 180000,
     "maxTokens": 32000,
     "input": [
@@ -136,7 +131,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Haiku 5.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 872000,
     "maxTokens": 128000,
     "input": [
@@ -156,7 +150,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 4.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 180000,
     "maxTokens": 64000,
     "input": [
@@ -176,7 +169,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 4.6",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -196,7 +188,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 4.7",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -216,7 +207,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 4.8",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -236,7 +226,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 4.8 Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -256,7 +245,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -276,7 +264,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 5.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 872000,
     "maxTokens": 128000,
     "input": [
@@ -296,7 +283,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 5.5 Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 872000,
     "maxTokens": 128000,
     "input": [
@@ -316,7 +302,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Opus 5 Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 867000,
     "maxTokens": 128000,
     "input": [
@@ -336,7 +321,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Sonnet 4.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 180000,
     "maxTokens": 32000,
     "input": [
@@ -356,7 +340,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Sonnet 4.6",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 931000,
     "maxTokens": 64000,
     "input": [
@@ -376,7 +359,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Sonnet 5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 872000,
     "maxTokens": 128000,
     "input": [
@@ -396,7 +378,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Sonnet 5.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 872000,
     "maxTokens": 128000,
     "input": [
@@ -416,7 +397,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "DeepSeek V4 Flash 0731",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 908928,
     "maxTokens": 131072,
     "input": [
@@ -435,7 +415,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "DeepSeek V4 Pro",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 908928,
     "maxTokens": 131072,
     "input": [
@@ -454,7 +433,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "DeepSeek V4.1 Flash",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 908928,
     "maxTokens": 131072,
     "input": [
@@ -474,7 +452,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Garnet 07/15 (Preview)",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1000000,
     "maxTokens": 65536,
     "input": [
@@ -494,7 +471,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Gemini 3 Flash",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1000000,
     "maxTokens": 65536,
     "input": [
@@ -514,7 +490,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Gemini 3.1 Pro",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1000000,
     "maxTokens": 65536,
     "input": [
@@ -534,7 +509,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Gemini 3.5 Flash",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1000000,
     "maxTokens": 65536,
     "input": [
@@ -554,7 +528,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Gemini 3.6 Flash",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1000000,
     "maxTokens": 65536,
     "input": [
@@ -574,7 +547,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Gemini 3.7 Flash",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1000000,
     "maxTokens": 65536,
     "input": [
@@ -594,7 +566,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Gemini 3.8 Flash",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1000000,
     "maxTokens": 65536,
     "input": [
@@ -614,7 +585,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GLM-5.2",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 908928,
     "maxTokens": 131072,
     "input": [
@@ -633,7 +603,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GLM-5.2 Fast",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 393216,
     "maxTokens": 131072,
     "input": [
@@ -652,7 +621,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GLM-5.3",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 908928,
     "maxTokens": 131072,
     "input": [
@@ -671,7 +639,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GLM-5.3-Flash",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 917504,
     "maxTokens": 131072,
     "input": [
@@ -691,7 +658,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.2",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 272000,
     "maxTokens": 128000,
     "input": [
@@ -711,7 +677,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.3-Codex",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 272000,
     "maxTokens": 128000,
     "input": [
@@ -731,7 +696,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.3-Codex Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 272000,
     "maxTokens": 128000,
     "input": [
@@ -751,7 +715,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.4",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -771,7 +734,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.4 Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -791,7 +753,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.4 Mini",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 272000,
     "maxTokens": 128000,
     "input": [
@@ -811,7 +772,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.4 Mini Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 272000,
     "maxTokens": 128000,
     "input": [
@@ -831,7 +791,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -851,7 +810,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.5 Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -871,7 +829,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.5 Pro",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -891,7 +848,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.6 Luna",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -911,7 +867,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.6 Sol",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -931,7 +886,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.6 Sol Fast Mode",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -951,7 +905,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-5.6 Terra",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -971,7 +924,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-6 Astra",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -991,7 +943,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-6 Luna",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -1011,7 +962,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-6 Sol",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -1031,7 +981,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "GPT-6.1 Sol",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 922000,
     "maxTokens": 128000,
     "input": [
@@ -1051,7 +1000,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Grok 4.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 200000,
     "maxTokens": 63356,
     "input": [
@@ -1071,7 +1019,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Grok 4.6",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 200000,
     "maxTokens": 63356,
     "input": [
@@ -1091,7 +1038,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Grok 4.7",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 436644,
     "maxTokens": 63356,
     "input": [
@@ -1111,7 +1057,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Inkling",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 1007232,
     "maxTokens": 32768,
     "input": [
@@ -1131,7 +1076,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Kimi K3",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 196608,
     "maxTokens": 65536,
     "input": [
@@ -1151,7 +1095,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "MiniMax M2.7",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 196600,
     "maxTokens": 64000,
     "input": [
@@ -1170,7 +1113,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "MiniMax M3",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 448000,
     "maxTokens": 64000,
     "input": [
@@ -1190,7 +1132,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Mistral Large 4",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 524288,
     "maxTokens": 64000,
     "input": [
@@ -1210,7 +1151,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Mistral Medium 3.5",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 192000,
     "maxTokens": 64000,
     "input": [
@@ -1230,7 +1170,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Nemotron 3 Ultra",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 136464,
     "maxTokens": 65536,
     "input": [
@@ -1249,7 +1188,6 @@ export const FACTORY_DROID_MODELS: readonly FactoryDroidModelRow[] = [
     "name": "Qwen3.8 Max",
     "api": "factory-droid-agent",
     "provider": "factory-droid",
-    "baseUrl": "https://api.factory.ai",
     "contextWindow": 131072,
     "maxTokens": 131072,
     "input": [
