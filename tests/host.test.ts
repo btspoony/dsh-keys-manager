@@ -19167,3 +19167,60 @@ test('quota refresh evicts a removed key and a released provider', async () => {
     await h.close()
   }
 })
+
+test('quota refresh never exceeds the probe concurrency cap', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    for (let index = 0; index < 11; index += 1) {
+      await h.service.addKey('zai-coding-cn', `extra-${index}`, `sk-extra-${index}`)
+    }
+    const provider = h.store.provider('zai-coding-cn')!
+    assert.equal(provider.keys.length, 12)
+
+    let active = 0
+    let peak = 0
+    h.service.quotaFetch = (async () => {
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      active -= 1
+      return new Response(
+        JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00.000Z' } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    await h.service.quotaRefresh('zai-coding-cn')
+    // Four rows at a time, twelve rows: the cap holds for the whole refresh.
+    assert.equal(peak, 4)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a fresh cache entry performs no credential read at all', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.service.quotaFetch = (async () => new Response(
+      JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00.000Z' } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof fetch
+    await h.service.quotaRefresh('zai-coding-cn')
+
+    // Second refresh inside the TTL: the loader never runs, so no credential is
+    // looked up at all. The fake store reads through these maps, so spying on
+    // them observes the real read path (the service captured its resolve
+    // reference at attach time, so wrapping `raw.resolve` would not).
+    const refLookups = vi.spyOn(h.credentials.refs, 'get')
+    const recordLookups = vi.spyOn(h.credentials.records, 'get')
+    await h.service.quotaRefresh('zai-coding-cn')
+    assert.equal(refLookups.mock.calls.length, 0)
+    assert.equal(recordLookups.mock.calls.length, 0)
+    refLookups.mockRestore()
+    recordLookups.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
