@@ -174,16 +174,20 @@ function quotaWindowOf(windows: readonly QuotaWindow[] | undefined, id: QuotaWin
 export function quotaRank(windows: readonly QuotaWindow[] | undefined, now: number): QuotaRank {
   const week = quotaWindowOf(windows, 'week')
   const session = quotaWindowOf(windows, 'session')
-  if (week !== undefined && week.usedFraction < 1 && week.resetsAt > now) {
+  // Every branch requires a LIVE window: an expired one describes the window
+  // that just ended, so its usage says nothing — not even "exhausted".
+  const weekLive = week !== undefined && week.resetsAt > now
+  const sessionLive = session !== undefined && session.resetsAt > now
+  if (weekLive && week.usedFraction < 1) {
     return { tier: 0, resetsAt: week.resetsAt }
   }
-  if (week !== undefined && week.usedFraction >= 1) {
+  if (weekLive && week.usedFraction >= 1) {
     return { tier: 3, resetsAt: week.resetsAt }
   }
-  if (session !== undefined && session.usedFraction < 0.9 && session.resetsAt > now) {
+  if (sessionLive && session.usedFraction < 0.9) {
     return { tier: 1, resetsAt: session.resetsAt }
   }
-  if (session !== undefined && session.usedFraction >= 0.9) {
+  if (sessionLive && session.usedFraction >= 0.9) {
     return { tier: 3, resetsAt: session.resetsAt }
   }
   return NO_QUOTA_RANK

@@ -15,6 +15,7 @@ import {
   patchSettings,
   pickHealthyExcluding,
   pickRoundRobin,
+  quotaRank,
   rankCandidates,
   shouldFailover,
   statusOfKey,
@@ -588,6 +589,30 @@ test('rankCandidates treats a window whose reset instant has passed as absent', 
   // The session-only row (tier 1) leads; the reset weekly falls to tier 2 with
   // the snapshot-less row, in cursor order.
   assert.deepEqual(order, ['session', 'just-reset', 'unknown'])
+})
+
+test('rankCandidates treats an expired exhausted window as absent, not as tier 3', () => {
+  // A weekly window that reached 100% but has already reset describes the
+  // window that just ended; it must not pin the account to the exhausted tier.
+  const withSession = key('with-session')
+  const liveSession = key('live-session')
+  const alone = key('alone')
+  const p = provider([withSession, liveSession, alone])
+  const quotas: Record<string, ReturnType<typeof quotaWindows> | undefined> = {
+    'with-session': quotaWindows({
+      week: { usedFraction: 1, resetsAt: now - MIN },
+      session: { usedFraction: 0.2, resetsAt: now + MIN },
+    }),
+    'live-session': quotaWindows({ session: { usedFraction: 0.3, resetsAt: now + 2 * MIN } }),
+    alone: quotaWindows({ week: { usedFraction: 1, resetsAt: now - MIN } }),
+  }
+  const order = rankCandidates(p, now, id => quotas[id]).map(k => k.id)
+  // The expired window falls back to its live session (tier 1, ordered by its
+  // own reset), ahead of the other live session; the window-less row is tier 2.
+  assert.deepEqual(order, ['with-session', 'live-session', 'alone'])
+  // A live exhausted window keeps its tier-3 classification.
+  const live = quotaWindows({ week: { usedFraction: 1, resetsAt: now + DAY } })
+  assert.deepEqual(quotaRank(live, now), { tier: 3, resetsAt: now + DAY })
 })
 
 test('rankCandidates keeps cursor order for rows without usable snapshots', () => {

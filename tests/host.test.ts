@@ -18729,6 +18729,29 @@ async function seedQuotaSnapshots(
 
 const QUOTA_DAY = 24 * 60 * 60 * 1000
 
+/**
+ * Seed one stale last-good snapshot (what the cache serves for up to 24 h
+ * after a failed probe) next to a fresh one, through the real cache API.
+ */
+async function seedStaleQuotaSnapshot(
+  h: Harness,
+  provider: string,
+  staleKeyId: string,
+  staleWindows: QuotaWindow[],
+  freshKeyId: string,
+  freshWindows: QuotaWindow[],
+): Promise<void> {
+  const clock = { value: 1_700_000_000_000 }
+  const cache = new QuotaCache({ now: () => clock.value })
+  await cache.get(provider, staleKeyId, async () => ({ status: 'ok', fetchedAt: 0, windows: staleWindows }))
+  // Past the server's maximum freshness (375 s): the next load runs and fails,
+  // so the cache answers the last-good snapshot flagged `stale`.
+  clock.value += 400_000
+  await cache.get(provider, staleKeyId, async () => ({ status: 'error', fetchedAt: 0, windows: [] }))
+  await cache.get(provider, freshKeyId, async () => ({ status: 'ok', fetchedAt: 0, windows: freshWindows }))
+  ;(h.service as unknown as { quotaCaches: Map<string, QuotaCache> }).quotaCaches.set(provider, cache)
+}
+
 test('quota ranking selects the key whose weekly quota resets soonest', async () => {
   const h = await harness()
   try {
@@ -18834,6 +18857,74 @@ test('quota ranking failover skips the key it already tried', async () => {
     assert.equal(pick(provider, now)?.id, first.id)
     assert.equal(pick(provider, now, new Set([first.id]))?.id, second.id)
     assert.equal(pick(provider, now, new Set([first.id, second.id])), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking ignores a stale last-good snapshot instead of trusting it', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    await seedStaleQuotaSnapshot(
+      h,
+      'zai-coding-cn',
+      first.id,
+      // Would be tier 0 on its own: 10% used, soonest reset.
+      [{ id: 'week', usedFraction: 0.1, resetsAt: now + QUOTA_DAY }],
+      second.id,
+      // A fresh, weaker signal: session below 90% is tier 1.
+      [{ id: 'session', usedFraction: 0.2, resetsAt: now + 2 * QUOTA_DAY }],
+    )
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-stale-snapshot')
+    // The stale row ranks unknown; the live session row wins.
+    assert.equal(selection.key?.id, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking lets an exhausted sticky binding yield to unknown siblings', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    // The bound key is exhausted (tier 3); its only sibling has no snapshot.
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [second.id]: [{ id: 'week', usedFraction: 1, resetsAt: now + QUOTA_DAY }],
+    })
+    h.store.bind('session-exhausted-binding', 'zai-coding-cn', second.id)
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-exhausted-binding')
+    // The exhausted account must not own the session while the sibling is unknown.
+    assert.equal(selection.key?.id, first.id)
+    assert.equal(h.store.binding('session-exhausted-binding', 'zai-coding-cn')?.keyId, first.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking keeps a sticky binding when every candidate is unknown', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [, second] = provider.keys
+    h.store.bind('session-unknown-binding', 'zai-coding-cn', second.id)
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-unknown-binding')
+    // No quota signal at all: the pre-ranking sticky behaviour is unchanged.
+    assert.equal(selection.key?.id, second.id)
+    assert.equal(h.store.binding('session-unknown-binding', 'zai-coding-cn')?.keyId, second.id)
   } finally {
     await h.close()
   }

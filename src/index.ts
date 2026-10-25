@@ -6982,7 +6982,12 @@ export class KeysManagerService {
    * never a probe. A row with no snapshot simply ranks as unknown.
    */
   private quotaWindowsOf(provider: string, keyId: string): readonly QuotaWindow[] | undefined {
-    return this.quotaCaches.get(provider)?.peek(provider, keyId)?.windows
+    const snapshot = this.quotaCaches.get(provider)?.peek(provider, keyId)
+    // Ranking refuses anything the display path would not trust as live: a
+    // non-`ok` state carries no quota fact, and a last-good snapshot kept
+    // behind a failed probe must not outrank a fresh read for up to a day.
+    if (snapshot === undefined || snapshot.status !== 'ok' || snapshot.stale === true) return undefined
+    return snapshot.windows
   }
 
   /** The quota tier of one key (`0`/`1` are the sticky-safe tiers). */
@@ -6998,9 +7003,13 @@ export class KeysManagerService {
    * and the route must keep its pre-ranking sticky behaviour byte for byte.
    */
   private stickyBindingHolds(providerId: string, provider: ProviderRecord, bound: KeyRecord, now: number): boolean {
-    const quotaSignal = provider.keys.some(candidate =>
-      isSelectable(candidate, now) && this.quotaTierOf(providerId, candidate.id, now) <= 1)
-    return !quotaSignal || this.quotaTierOf(providerId, bound.id, now) <= 1
+    // (a) A binding that still has usable quota keeps the session.
+    if (this.quotaTierOf(providerId, bound.id, now) <= 1) return true
+    // (b) The genuine no-quota-signal route: EVERY selectable key ranks
+    // unknown (tier 2), so the pre-ranking sticky behaviour applies unchanged.
+    // A tier-3 binding yields here as soon as any sibling reports real usage.
+    return provider.keys.every(candidate =>
+      !isSelectable(candidate, now) || this.quotaTierOf(providerId, candidate.id, now) === 2)
   }
 
   /**
