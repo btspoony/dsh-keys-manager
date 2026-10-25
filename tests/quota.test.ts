@@ -1087,6 +1087,36 @@ test('cache keeps last good data as stale through failures, then drops it after 
   assert.equal(gone.stale, false)
 })
 
+test('cache keeps last good data for absent as well', async () => {
+  let now = 0
+  const cache = new QuotaCache({ now: () => now, random: () => 0.5 })
+  await cache.get('claude', 'k', async () => okSnapshot([WEEK]))
+
+  now = 400_000
+  const stale = await cache.get('claude', 'k', failing('absent'))
+  assert.equal(stale.status, 'ok')
+  assert.equal(stale.stale, true)
+  assert.deepEqual(stale.windows, [WEEK])
+})
+
+test('a deterministic credential failure replaces the last good snapshot', async () => {
+  for (const status of ['natively-managed', 'unauthorized'] as const) {
+    let now = 0
+    const cache = new QuotaCache({ now: () => now, random: () => 0.5 })
+    await cache.get('claude', 'k', async () => okSnapshot([WEEK]))
+
+    now = 400_000
+    const served = await cache.get('claude', 'k', failing(status))
+    // Old numbers must not outlive a deterministic fact about the credential.
+    assert.equal(served.status, status)
+    assert.equal(served.stale, false)
+    assert.deepEqual(served.windows, [])
+    // The next state read sees the new status, not the retained snapshot.
+    assert.equal(cache.peek('claude', 'k')?.status, status)
+    assert.equal(cache.peek('claude', 'k')?.stale, false)
+  }
+})
+
 test('cache turns a throwing loader into an error snapshot', async () => {
   const cache = new QuotaCache({ now: () => 0 })
   const served = await cache.get('claude', 'k', async () => {

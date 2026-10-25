@@ -19039,3 +19039,42 @@ test('quota ranking retries across tiers instead of falling back to cursor rotat
     await h.close()
   }
 })
+
+test('quota refresh replaces a cached ok reading once the credential expires', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount()
+  try {
+    const provider = h.store.provider('anthropic')!
+    const row = provider.keys.find(candidate => candidate.id === rowId)!
+    // A cached `ok` reading for this row, produced by an earlier successful probe.
+    const clock = { value: Date.now() }
+    const cache = new QuotaCache({ now: () => clock.value })
+    await cache.get('anthropic', row.id, async () => ({
+      status: 'ok',
+      fetchedAt: 0,
+      windows: [{ id: 'week', usedFraction: 0.4, resetsAt: Date.now() + 86_400_000 }],
+    }))
+    ;(h.service as unknown as { quotaCaches: Map<string, QuotaCache> }).quotaCaches.set('anthropic', cache)
+
+    // The grant payload that served the probe is now expired, and the vendor
+    // refuses it. The row timestamp agrees, but the payload is authoritative.
+    const stored = h.credentials.records.get(grantRef)!
+    ;(stored.payload as Record<string, unknown>).expires = Date.now() - 60_000
+    h.service.quotaFetch = (async () => new Response(
+      JSON.stringify({ error: { type: 'invalid_authentication_error' } }),
+      { status: 401, headers: { 'content-type': 'application/json' } },
+    )) as typeof fetch
+    // Past the cache's freshness window, so the read actually runs.
+    clock.value += 400_000
+
+    const state = await h.service.quotaRefresh('anthropic')
+    const view = state.providers
+      .find(candidate => candidate.provider === 'anthropic')!
+      .keys.find(candidate => candidate.id === rowId)!
+    // The deterministic credential fact replaces the cached numbers, so the
+    // client's cadence can actually surface it.
+    assert.equal(view.quota?.status, 'natively-managed')
+    assert.deepEqual(view.quota?.windows, [])
+  } finally {
+    await h.close()
+  }
+})
