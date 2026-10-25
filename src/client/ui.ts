@@ -542,9 +542,11 @@ interface KeyRowProps {
   now: number
   /** Start a fresh sign-in that replaces this row's literal (sign-in rows only). */
   onReauthenticate?: () => void
+  /** The last quota read for this provider was rejected. */
+  quotaRejected?: boolean
 }
 
-function KeyRow({ provider, keyRecord, now, onReauthenticate }: KeyRowProps): React.ReactElement {
+function KeyRow({ provider, keyRecord, now, onReauthenticate, quotaRejected }: KeyRowProps): React.ReactElement {
   const key = keyRecord
   const runtime = useRuntime()
   const t = useT()
@@ -693,7 +695,7 @@ function KeyRow({ provider, keyRecord, now, onReauthenticate }: KeyRowProps): Re
         h('button', { type: 'button', className: 'km-menu-item km-menu-danger', role: 'menuitem', onClick: () => { setMenu(false); setConfirm(true) }, disabled: busy }, h(Icon, { name: 'trash', size: 15 }), t('delete')),
       ) : null,
     ),
-    quotaInline(key, t, now),
+    quotaInline(key, t, now, quotaRejected),
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
     testLine(test, t),
     confirm ? h(Modal, {
@@ -714,6 +716,8 @@ interface AccountRowProps {
   now: number
   /** Start a fresh OAuth sign-in that replaces this account's grant. */
   onReauthenticate: () => void
+  /** The last quota read for this provider was rejected. */
+  quotaRejected?: boolean
 }
 
 /**
@@ -722,7 +726,7 @@ interface AccountRowProps {
  * account glyph, the brand accent bar, and the identity line: accounts are
  * addressed by their provider-disclosed identity instead of a human alias.
  */
-function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowProps): React.ReactElement {
+function AccountRow({ provider, keyRecord, now, onReauthenticate, quotaRejected }: AccountRowProps): React.ReactElement {
   const runtime = useRuntime()
   const t = useT()
   const locale = useLocaleId()
@@ -846,7 +850,7 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate }: AccountRowPr
         h('button', { type: 'button', className: 'km-menu-item km-menu-danger', role: 'menuitem', onClick: () => { setMenu(false); setConfirm(true) }, disabled: busy }, h(Icon, { name: 'trash', size: 15 }), t('delete')),
       ) : null,
     ),
-    quotaInline(keyRecord, t, now),
+    quotaInline(keyRecord, t, now, quotaRejected),
     error !== null ? h('div', { className: 'km-key-error', role: 'alert' }, error) : null,
     testLine(test, t),
     confirm ? h(Modal, {
@@ -1116,15 +1120,21 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
  * only on an OAuth row (it has a sign-in to offer); an API key has none, so
  * that row stays silent too. `stale` keeps the numbers with a marker.
  */
-function quotaInline(row: KeyView, t: T, now: number): React.ReactElement | null {
+function quotaInline(row: KeyView, t: T, now: number, rejected = false): React.ReactElement | null {
   const windows = quotaWindows(row.quota)
   if (windows.length === 0) {
     if (row.quota?.status === 'natively-managed') {
       return h('div', { className: 'km-quota-inline' }, t('quotaNativelyManaged'))
     }
-    return row.quota?.status === 'unauthorized' && row.kind === 'oauth'
-      ? h('div', { className: 'km-quota-inline' }, t('quotaSignInAgain'))
-      : null
+    if (row.quota?.status === 'unauthorized' && row.kind === 'oauth') {
+      return h('div', { className: 'km-quota-inline' }, t('quotaSignInAgain'))
+    }
+    // A rejected read is a fact about this card session, not a plan state: say
+    // so instead of leaving the row blank until the next cadence window.
+    if (rejected && row.quota === undefined) {
+      return h('div', { className: 'km-quota-inline' }, t('quotaNotReported'))
+    }
+    return null
   }
   const tightest = windows.reduce((best, window) => (window.usedFraction > best.usedFraction ? window : best))
   // Week before session: the plan's long window leads the readout. A window
@@ -1150,11 +1160,16 @@ function quotaSignature(provider: ProviderView): string {
  * TTL. Usage itself renders on the account rows, so this component emits no
  * surface of its own.
  */
-function QuotaRefresh({ provider, now }: { provider: ProviderView; now: number }): null {
+function QuotaRefresh({ provider, now, onRejected }: {
+  provider: ProviderView
+  now: number
+  /** Report a rejected read so the row can say "not reported". */
+  onRejected: (rejected: boolean) => void
+}): null {
   const runtime = useRuntime()
-  // A rejected refresh leaves the rows unchanged, so the signature cannot move
-  // on its own; remembering the attempted signature keeps a failed read from
-  // retrying on every minute tick. A successful answer clears it.
+  // In-flight marker only: it coalesces a double render while the read runs.
+  // Rejections do NOT hold it — the cadence below decides the next attempt, so
+  // a failed read can never lock the row for the rest of the session.
   const attempted = React.useRef<string | null>(null)
   // At most one read per cadence window. A row the host keeps answering with
   // the same snapshot — in particular a stale last-good `ok` — is re-checked
@@ -1179,10 +1194,11 @@ function QuotaRefresh({ provider, now }: { provider: ProviderView; now: number }
     attempted.current = signature
     lastAttemptAt.current = now
     void runtime.store.refreshQuota(provider.provider).then(outcome => {
-      // A rejected read keeps the one-shot lock; a successful answer frees the
-      // row for the next cadence window. The row keeps rendering whatever
-      // snapshot it already held while the read is in flight.
-      if (outcome.ok) attempted.current = null
+      // Both outcomes free the in-flight marker; the cadence (not a per-read
+      // lock) bounds the next attempt. A rejection is reported so the card can
+      // render "not reported" instead of staying blank.
+      attempted.current = null
+      onRejected(!outcome.ok)
     })
     return undefined
   }, [provider.provider, signature, minute, needsRefresh])
@@ -1209,6 +1225,9 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
   const [login, setLogin] = React.useState<{ attemptId: string } | null>(null)
   const [startingLogin, setStartingLogin] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  // The last quota read for this provider was rejected; rows with no snapshot
+  // render "not reported" until a later cadence read answers.
+  const [quotaRejected, setQuotaRejected] = React.useState(false)
   const managed = provider.managed
   const broken = managed && provider.bindingHealthy === false
   const keyCount = provider.keyCount
@@ -1448,7 +1467,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
           ),
         ),
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
-        provider.keys.length > 0 ? h(QuotaRefresh, { provider, now }) : null,
+        provider.keys.length > 0 ? h(QuotaRefresh, { provider, now, onRejected: setQuotaRejected }) : null,
         provider.keys.length === 0
           // Round-4 finding 4 (I-000085): the empty body must name an action
           // this route actually offers. Add key is disabled without key
@@ -1469,8 +1488,8 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
                 : null,
             )
           : h('div', { className: 'km-keys' }, provider.keys.map(key => key.kind === 'oauth'
-              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) })
-              : h(KeyRow, { key: key.id, provider, keyRecord: key, now, onReauthenticate: () => void openLogin(key.id, key.alias) }))),
+              ? h(AccountRow, { key: key.id, provider, keyRecord: key, now, quotaRejected, onReauthenticate: () => void openLogin(key.id, key.alias) })
+              : h(KeyRow, { key: key.id, provider, keyRecord: key, now, quotaRejected, onReauthenticate: () => void openLogin(key.id, key.alias) }))),
       ),
       h('div', { className: 'km-provider-foot' },
         h('span', { className: 'km-muted' }, provider.extra ? `${t('api')}: ${provider.api ?? '—'} · ${t('models')}: ${provider.models.length}` : null),

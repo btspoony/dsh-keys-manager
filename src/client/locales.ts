@@ -196,6 +196,7 @@ const zh = {
       // `natively-managed` does: it is the host saying a DSH projection serves
       // the route while its usage stays unreadable, which is its own verdict.
       quotaNativelyManaged: '由 DSH 原生管理',
+      quotaNotReported: '未报告',
       quotaResetDue: '已到重置时间',
       quotaSignInAgain: '请重新登录',
       quotaStale: '数据较旧',
@@ -391,6 +392,7 @@ const en = {
       transportModelsMissingCatalog: 'The installed transport build ships no model catalog for this route; the list stays empty until dsh-llm-omp-transports is rebuilt or upgraded.',
       // Plan usage on a key row (issue #22).
       quotaNativelyManaged: 'Managed by DSH',
+      quotaNotReported: 'Not reported',
       quotaResetDue: 'Reset due',
       quotaSignInAgain: 'Sign in again',
       quotaStale: 'Stale',
