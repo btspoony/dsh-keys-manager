@@ -1139,6 +1139,68 @@ describe('quota read install guards', () => {
     expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
   })
 
+  test('a quota answer that arrives after the borrow window closed is still recovered', async () => {
+    const borrowed = makeState()
+    borrowed.providers[0]!.keys[0]!.projected = true
+    let releaseQuota: () => void = () => {}
+    const quotaGate = new Promise<void>(resolve => {
+      releaseQuota = resolve
+    })
+    const harness = makeContext({ ok: true, value: makeState() })
+    const baseCall = harness.ctx.connection.rpc.call
+    ;(harness.ctx.connection.rpc as { call: typeof baseCall }).call = async (channel, endpoint, payload) => {
+      harness.calls.push({ channel, endpoint, payload })
+      if (endpoint === 'keysManager/quotaRefresh') {
+        // The borrow window closes while this answer is still in flight.
+        await quotaGate
+        return { ok: true, value: borrowed }
+      }
+      return baseCall(channel, endpoint, payload)
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    // Start a row test (borrow window opens), start the quota read, then finish
+    // the test BEFORE the quota answer lands.
+    const testRequest = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    const quotaRequest = store.refreshQuota('zai-coding-cn')
+    await testRequest
+    await new Promise(resolve => setTimeout(resolve, 0))
+    releaseQuota()
+    await quotaRequest
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The answer describes a window that no longer holds, so it is dropped —
+    // and because no later tail run exists, the finally-block recovery re-reads.
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+    expect(harness.calls.at(-1)?.endpoint).toBe('keysManager/getState')
+  })
+
+  test('a successful quota read moves an error-status snapshot back to ready', async () => {
+    let quotaFails = true
+    const harness = makeContext(endpoint => {
+      if (endpoint === 'keysManager/getState' && quotaFails) {
+        return { ok: false, error: { message: 'state unavailable' } }
+      }
+      return { ok: true, value: makeState() }
+    })
+    const store = createStore(harness.ctx)
+    await store.load()
+    // No state yet → the snapshot is an error.
+    expect(store.getSnapshot().status).toBe('error')
+    expect(store.getSnapshot().error).toBe('state unavailable')
+
+    quotaFails = false
+    const outcome = await store.refreshQuota('zai-coding-cn')
+    expect(outcome.ok).toBe(true)
+    // A successful read installs a usable snapshot (status flips to ready) while
+    // the unacknowledged banner is preserved.
+    expect(store.getSnapshot().status).toBe('ready')
+    expect(store.getSnapshot().state?.managedCount).toBe(1)
+    expect(store.getSnapshot().error).toBe('state unavailable')
+  })
+
   test('a background quota read keeps an unacknowledged error banner', async () => {
     const harness = makeContext(endpoint => endpoint === 'keysManager/addKey'
       ? { ok: false, error: { message: 'write failed' } }
