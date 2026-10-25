@@ -19330,6 +19330,46 @@ test('buildState attaches a transport row\'s cached quota and leaves it undefine
   }
 })
 
+test('a transport snapshot is dropped when the grant is removed or replaced', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    h.service.quotaFetch = (async () => new Response(factoryLimits(), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+
+    await h.service.quotaRefresh('factory-droid')
+    assert.equal(caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)?.status, 'ok')
+
+    // Removal: the snapshot described the account that just went away.
+    await h.service.removeTransportAccount('factory-droid')
+    assert.equal(caches.get(FACTORY_SCOPE), undefined)
+    const removed = h.service.buildState().transportAccounts?.find(row => row.id === 'factory-droid')
+    assert.equal(removed?.quota, undefined)
+
+    // A committed sign-in is a new account too: drop what the old one cached.
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    await h.service.quotaRefresh('factory-droid')
+    assert.equal(caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)?.status, 'ok')
+    const flows = (h.ctx.authorization as unknown as { begin: (...args: unknown[]) => Promise<unknown> })
+    const realBegin = flows.begin
+    flows.begin = async () => ({ status: 'authorized' })
+    try {
+      await h.service.beginTransportLogin('factory-droid')
+      await new Promise(resolve => setTimeout(resolve, 0))
+    } finally {
+      flows.begin = realBegin
+    }
+    assert.equal(caches.get(FACTORY_SCOPE), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a transport route with no row keeps the clearing early return', async () => {
   const h = await factoryHarness()
   try {

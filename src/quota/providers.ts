@@ -523,14 +523,18 @@ export const clineQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
  * seed routes in `src/providers.ts`, the sign-in routes in `src/oauth`).
  * Unknown ids have no entry by design and resolve to `absent`.
  *
+ * Transport routes sit beside the pool routes: the host resolves their
+ * `llm-omp-transports/<route>` grant and probes it read-only.
+ * - `factory-droid`: probed with the grant's own bearer plus the
+ *   `X-Factory-Org-Id` the payload carries; no rotation or write-back.
+ *
  * Deliberately absent, each verified against a reference implementation:
  * - `ollama-cloud`: the pinned reference (oh-my-pi `packages/ai/src/usage/ollama.ts`)
  *   reports no standalone quota endpoint for Ollama.
- * - `cursor` / `factory-droid`: transport routes (`llm-omp-transports/<route>`).
- *   Their grants are read only inside the host service, and both need vendor
- *   credential work (Cursor rotates the refresh-token grant on 401 and writes
- *   the successor back; Factory sends droid's org header), so a probe cannot
- *   reach them from the quota path.
+ * - `cursor`: absent because its only usable numbers are a **monthly** billing
+ *   bucket (`billingCycleEnd` / `usage-summary`), and this model has only
+ *   `session`/`week`; a monthly period is never relabelled as a week. Adding it
+ *   later needs a monthly window in the model, not a `week` relabel.
  * - `openrouter`: no reference in tokscale, magpie or oh-my-pi reads a usage
  *   endpoint, so `GET /api/v1/key`'s shape is unconfirmed and unshipped.
  *

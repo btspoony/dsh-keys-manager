@@ -2770,6 +2770,9 @@ export class KeysManagerService {
         }
         if (outcome.status === 'authorized') {
           this.finishLoginAttempt(attempt, 'ready')
+          // A new grant is a new account: the cached usage belonged to the
+          // previous credential, so the next read must probe again.
+          this.dropTransportQuota(flow.key)
           void this.refreshTransportAccounts()
           return
         }
@@ -2832,8 +2835,17 @@ export class KeysManagerService {
       await pending.settled
     }
     await records.deleteRecord(flow.key)
+    // The snapshot under this scope describes the account that just went away;
+    // keeping it would show the previous account's numbers for one TTL.
+    this.dropTransportQuota(flow.key)
     await this.refreshTransportAccounts()
     return this.buildState()
+  }
+
+  /** Drop the cached usage snapshot for one transport scope. */
+  private dropTransportQuota(scope: string): void {
+    this.quotaCaches.get(scope)?.retain(scope, undefined)
+    this.quotaCaches.delete(scope)
   }
 
   /** The route's removal epoch; absent means never removed. */
@@ -6965,12 +6977,8 @@ export class KeysManagerService {
       })
       // An expired stored token cannot be refreshed from here, so a refusal is
       // "a model request will fix this", not a sign-in prompt.
-      if (
-        snapshot.status === 'unauthorized'
-        && grant.expires !== undefined
-        && usableExpiry(grant.expires) !== undefined
-        && grant.expires <= Date.now()
-      ) {
+      const grantExpiry = usableExpiry(grant.expires)
+      if (snapshot.status === 'unauthorized' && grantExpiry !== undefined && grantExpiry <= Date.now()) {
         return {
           status: 'natively-managed' as const,
           fetchedAt: snapshot.fetchedAt,

@@ -3004,6 +3004,31 @@ describe('transport account surface', () => {
     expect(dicts.zh.transportRemoveTitle).toContain('{name}')
   })
 
+  test('an orphan transport account refreshes its own usage', async () => {
+    const quota: QuotaView = { status: 'ok', fetchedAt: Date.now(), windows: [quotaWindow('week', 0.5, 60 * 60 * 1000)] }
+    // No provider card for this route: the row renders in the orphan section,
+    // starts with no snapshot, and the answer carries one.
+    const bare = makeTransportAccount({ id: 'orphan-route', scope: 'llm-omp-transports/orphan-route' })
+    const answered = makeState()
+    answered.transportAccounts = [{ ...bare, quota }]
+    const initial = makeState()
+    initial.transportAccounts = [bare]
+    const harness = makeContext(endpoint => endpoint === 'keysManager/quotaRefresh'
+      ? { ok: true, value: answered }
+      : { ok: true, value: initial })
+    setRuntimeContext({ ctx: harness.ctx, store: createStore(harness.ctx) })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+
+    // The row itself triggers the read, so the numbers can arrive without a remount.
+    expect(harness.calls.filter(call => call.endpoint === 'keysManager/quotaRefresh')).toHaveLength(1)
+    const inline = findByClass(view.nodes, 'km-quota-inline')
+    expect(inline).toHaveLength(1)
+    expect(inline[0]!.text).toContain('W 50%')
+    view.unmount()
+    setRuntimeContext(null)
+  })
+
   test('a transport account row renders its usage line, and a snapshotless row renders none', async () => {
     const quota: QuotaView = {
       status: 'ok',
