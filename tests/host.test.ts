@@ -18929,3 +18929,58 @@ test('quota ranking keeps a sticky binding when every candidate is unknown', asy
     await h.close()
   }
 })
+
+test('quota ranking retries across tiers instead of falling back to cursor rotation', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'c', 'sk-c')
+    await h.service.addKey('zai-coding-cn', 'b', 'sk-b')
+    const provider = h.store.provider('zai-coding-cn')!
+    // Array order [A, C, B]: after A is picked, plain cursor rotation would
+    // resume at C. Ranked order is A (tier 0), B (tier 1), C (tier 2).
+    const [a, c, b] = provider.keys
+    provider.keys = [a, c, b]
+    provider.cursor = 0
+    h.store.touch()
+
+    const now = Date.now()
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [a.id]: [{ id: 'week', usedFraction: 0.5, resetsAt: now + QUOTA_DAY }],
+      [b.id]: [{ id: 'session', usedFraction: 0.2, resetsAt: now + 2 * QUOTA_DAY }],
+      // C deliberately has no snapshot: tier 2, next in cursor order after A.
+    })
+
+    // A's credential read fails (a transient store error), so the exclusive
+    // loop has to walk the ranked list for its retry.
+    const originals = (h.service as unknown as {
+      credentialOriginals: WeakMap<object, { resolve: (ref: string) => Promise<unknown> }>
+    }).credentialOriginals
+    const raw = h.credentials.raw
+    const current = originals.get(raw)!
+    const probed: string[] = []
+    originals.set(raw, {
+      ...current,
+      resolve: async (ref: string) => {
+        probed.push(ref)
+        if (ref === a.ref) throw new Error('credential store unavailable')
+        return current.resolve.call(raw, ref)
+      },
+    })
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-mixed-tier')
+
+    // 1) Probes ran in tier order: the tier-0 key first, its tier-1 retry next.
+    assert.deepEqual(probed, [a.ref, b.ref])
+    // 2) The retry landed on B (tier 1), not on C (tier 2) — the key plain
+    // cursor rotation would have returned after A.
+    assert.equal(selection.key?.id, b.id)
+    // 3) The selected row's own credential value is what the caller gets.
+    assert.equal(selection.value, 'sk-b')
+    // 4) The cursor advanced past B, the same formula pickRoundRobin uses.
+    const index = provider.keys.findIndex(candidate => candidate.id === b.id)
+    assert.equal(provider.cursor, (index + 1) % provider.keys.length)
+  } finally {
+    await h.close()
+  }
+})
