@@ -19137,3 +19137,33 @@ test('quota matrix: a store that keeps throwing reports a transient error and ke
     await h.close()
   }
 })
+
+test('quota refresh evicts a removed key and a released provider', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [first.id]: [{ id: 'week', usedFraction: 0.4, resetsAt: now + QUOTA_DAY }],
+      [second.id]: [{ id: 'week', usedFraction: 0.4, resetsAt: now + 2 * QUOTA_DAY }],
+    })
+    const caches = (h.service as unknown as { quotaCaches: Map<string, import('../src/quota/cache').QuotaCache> }).quotaCaches
+    assert.notEqual(caches.get('zai-coding-cn')?.peek('zai-coding-cn', second.id), undefined)
+
+    // The row is deleted, the next refresh must not keep its snapshot.
+    await h.service.deleteKey('zai-coding-cn', second.id)
+    await h.service.quotaRefresh('zai-coding-cn')
+    assert.equal(caches.get('zai-coding-cn')?.peek('zai-coding-cn', second.id), undefined)
+    assert.notEqual(caches.get('zai-coding-cn')?.peek('zai-coding-cn', first.id), undefined)
+
+    // Releasing the provider drops the whole cache.
+    await h.service.releaseProvider('zai-coding-cn')
+    await h.service.quotaRefresh('zai-coding-cn')
+    assert.equal(caches.has('zai-coding-cn'), false)
+  } finally {
+    await h.close()
+  }
+})

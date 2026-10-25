@@ -6833,8 +6833,16 @@ export class KeysManagerService {
     // Own-property lookup: `store.provider` indexes a plain object, so a
     // prototype key would answer a function instead of a record.
     const record = Object.hasOwn(this.store.providers, provider) ? this.store.provider(provider) : undefined
-    if (record === undefined) return this.buildState()
+    if (record === undefined) {
+      // A released provider keeps no snapshots: nothing would ever read them
+      // again, and a re-adoption must start from a clean slate.
+      this.quotaCaches.get(provider)?.retain(provider, undefined)
+      this.quotaCaches.delete(provider)
+      return this.buildState()
+    }
     const cache = this.quotaCache(provider)
+    // Rows deleted since the last refresh must not linger in the cache either.
+    cache.retain(provider, new Set(record.keys.map(key => key.id)))
     // The cache classifies probe failures; allSettled is the second line of
     // defence so one rejected row can never reject the RPC.
     await Promise.allSettled(record.keys.map(key => this.refreshQuotaRow(provider, cache, key)))

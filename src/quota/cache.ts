@@ -123,7 +123,31 @@ export class QuotaCache {
    * state path uses this so a card render can never reach a vendor (D2).
    */
   peek(provider: string, keyId: string): QuotaSnapshotView | undefined {
-    return this.entries.get(`${provider}\u0000${keyId}`)?.snapshot
+    const snapshot = this.entries.get(`${provider}\u0000${keyId}`)?.snapshot
+    // Copy-on-read: the windows array is shared with the entry, and a caller
+    // that mutates it (sorting for display, splicing a window) must not corrupt
+    // what the next render or the ranking reads.
+    return snapshot === undefined ? undefined : { ...snapshot, windows: [...snapshot.windows] }
+  }
+
+  /**
+   * Drop entries that no longer describe a live account (`I-000297`).
+   * `keep` returns the ids the provider record still holds; `undefined` drops
+   * the whole provider (a released route keeps nothing).
+   */
+  retain(provider: string, keep: ReadonlySet<string> | undefined): void {
+    const prefix = `${provider}\u0000`
+    for (const key of [...this.entries.keys()]) {
+      if (!key.startsWith(prefix)) continue
+      const keyId = key.slice(prefix.length)
+      if (keep !== undefined && keep.has(keyId)) continue
+      this.entries.delete(key)
+    }
+    if (keep === undefined) {
+      for (const key of [...this.inFlight.keys()]) {
+        if (key.startsWith(prefix)) this.inFlight.delete(key)
+      }
+    }
   }
 
   private retryDelay(status: QuotaSnapshot['status']): number {

@@ -1149,3 +1149,33 @@ test('the probe read type cannot name the host-only status', () => {
   const labels: Record<QuotaWindowId, string> = QUOTA_WINDOW_LABEL
   assert.deepEqual(Object.keys(labels).sort(), ['session', 'week'])
 })
+
+test('cache eviction drops removed keys and whole released providers', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  const load = async (): Promise<QuotaSnapshot> => okSnapshot([WEEK])
+  await cache.get('claude', 'a', load)
+  await cache.get('claude', 'b', load)
+  await cache.get('codex', 'a', load)
+
+  // `a` was removed from the provider record: its snapshot goes, `b` stays.
+  cache.retain('claude', new Set(['b']))
+  assert.equal(cache.peek('claude', 'a'), undefined)
+  assert.notEqual(cache.peek('claude', 'b'), undefined)
+  // Another provider is untouched by one provider's retention pass.
+  assert.notEqual(cache.peek('codex', 'a'), undefined)
+
+  // A released provider drops everything it held.
+  cache.retain('codex', undefined)
+  assert.equal(cache.peek('codex', 'a'), undefined)
+})
+
+test('peek returns a copy: mutating the served windows cannot corrupt the cache', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  await cache.get('claude', 'k', async () => okSnapshot([WEEK]))
+  const first = cache.peek('claude', 'k')!
+  first.windows.push({ id: 'session', usedFraction: 0.1, resetsAt: 0 })
+  first.windows[0]!.usedFraction = 0.99
+
+  const second = cache.peek('claude', 'k')!
+  assert.deepEqual(second.windows, [WEEK])
+})
