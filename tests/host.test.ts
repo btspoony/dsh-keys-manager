@@ -10,6 +10,8 @@ import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOf
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import type { OmpOAuthAdapter } from '../src/oauth/adapter'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
+import { QuotaCache } from '../src/quota/cache'
+import type { QuotaWindow } from '../src/quota/model'
 import { resolveQuota } from '../src/quota/providers'
 import { KeysManagerStore, sanitizeState } from '../src/store'
 import { cursorCatalogModels } from 'dsh-llm-omp-transports'
@@ -18703,6 +18705,226 @@ test('quota matrix: no projection at all keeps the unauthorized state', async ()
     assert.equal(row.quota?.status, 'unauthorized')
     assert.deepEqual(row.quota?.windows, [])
     assert.equal(fetched.length, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * Quota-aware ranking (issue #22, ranking half). The tests seed the runtime
+ * quota cache directly: no probe runs, and `selectKey` reads the same snapshot
+ * the card would.
+ */
+async function seedQuotaSnapshots(
+  h: Harness,
+  provider: string,
+  snapshots: Record<string, QuotaWindow[]>,
+): Promise<void> {
+  const cache = new QuotaCache({ now: () => Date.now() })
+  for (const [keyId, windows] of Object.entries(snapshots)) {
+    await cache.get(provider, keyId, async () => ({ status: 'ok', fetchedAt: Date.now(), windows }))
+  }
+  ;(h.service as unknown as { quotaCaches: Map<string, QuotaCache> }).quotaCaches.set(provider, cache)
+}
+
+const QUOTA_DAY = 24 * 60 * 60 * 1000
+
+/**
+ * Seed one stale last-good snapshot (what the cache serves for up to 24 h
+ * after a failed probe) next to a fresh one, through the real cache API.
+ */
+async function seedStaleQuotaSnapshot(
+  h: Harness,
+  provider: string,
+  staleKeyId: string,
+  staleWindows: QuotaWindow[],
+  freshKeyId: string,
+  freshWindows: QuotaWindow[],
+): Promise<void> {
+  const clock = { value: 1_700_000_000_000 }
+  const cache = new QuotaCache({ now: () => clock.value })
+  await cache.get(provider, staleKeyId, async () => ({ status: 'ok', fetchedAt: 0, windows: staleWindows }))
+  // Past the server's maximum freshness (375 s): the next load runs and fails,
+  // so the cache answers the last-good snapshot flagged `stale`.
+  clock.value += 400_000
+  await cache.get(provider, staleKeyId, async () => ({ status: 'error', fetchedAt: 0, windows: [] }))
+  await cache.get(provider, freshKeyId, async () => ({ status: 'ok', fetchedAt: 0, windows: freshWindows }))
+  ;(h.service as unknown as { quotaCaches: Map<string, QuotaCache> }).quotaCaches.set(provider, cache)
+}
+
+test('quota ranking selects the key whose weekly quota resets soonest', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [first.id]: [{ id: 'week', usedFraction: 0.4, resetsAt: now + 7 * QUOTA_DAY }],
+      [second.id]: [{ id: 'week', usedFraction: 0.4, resetsAt: now + 2 * QUOTA_DAY }],
+    })
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-quota-order')
+    // Leftover quota that resets first is the first to waste.
+    assert.equal(selection.key?.id, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking leaves a route without snapshots on plain cursor rotation', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+
+    const a = await h.service.selectKey('zai-coding-cn', 'session-plain-a')
+    const b = await h.service.selectKey('zai-coding-cn', 'session-plain-b')
+    // Exactly what the pristine round-robin fixture asserts.
+    assert.equal(a.key?.id, first.id)
+    assert.equal(b.key?.id, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking drops a sticky binding that falls outside tiers 0-1 and rebinds', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    // Only the first key reports usable quota; the bound key ranks unknown.
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [first.id]: [{ id: 'week', usedFraction: 0.2, resetsAt: now + QUOTA_DAY }],
+    })
+    h.store.bind('session-stale-binding', 'zai-coding-cn', second.id)
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-stale-binding')
+    assert.equal(selection.key?.id, first.id)
+    // The request rebound the session to the key it actually used.
+    assert.equal(h.store.binding('session-stale-binding', 'zai-coding-cn')?.keyId, first.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking never selects a cooling key', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [first.id]: [{ id: 'week', usedFraction: 0.1, resetsAt: now + QUOTA_DAY }],
+      [second.id]: [{ id: 'week', usedFraction: 0.9, resetsAt: now + 2 * QUOTA_DAY }],
+    })
+    // The best-ranked key is resting: cooldown stays a hard exclusion.
+    first.cooldownUntil = now + 5 * 60 * 1000
+    h.store.touch()
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-cooling')
+    assert.equal(selection.key?.id, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking failover skips the key it already tried', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [first.id]: [{ id: 'week', usedFraction: 0.1, resetsAt: now + QUOTA_DAY }],
+      [second.id]: [{ id: 'week', usedFraction: 0.2, resetsAt: now + 2 * QUOTA_DAY }],
+    })
+
+    const pick = (h.service as unknown as {
+      pickRanked: (record: ProviderRecord, at: number, tried?: ReadonlySet<string>) => KeyRecord | undefined
+    }).pickRanked.bind(h.service)
+    // The first pick follows the ranking; the retry loop walks past it.
+    assert.equal(pick(provider, now)?.id, first.id)
+    assert.equal(pick(provider, now, new Set([first.id]))?.id, second.id)
+    assert.equal(pick(provider, now, new Set([first.id, second.id])), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking ignores a stale last-good snapshot instead of trusting it', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    await seedStaleQuotaSnapshot(
+      h,
+      'zai-coding-cn',
+      first.id,
+      // Would be tier 0 on its own: 10% used, soonest reset.
+      [{ id: 'week', usedFraction: 0.1, resetsAt: now + QUOTA_DAY }],
+      second.id,
+      // A fresh, weaker signal: session below 90% is tier 1.
+      [{ id: 'session', usedFraction: 0.2, resetsAt: now + 2 * QUOTA_DAY }],
+    )
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-stale-snapshot')
+    // The stale row ranks unknown; the live session row wins.
+    assert.equal(selection.key?.id, second.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking lets an exhausted sticky binding yield to unknown siblings', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    // The bound key is exhausted (tier 3); its only sibling has no snapshot.
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [second.id]: [{ id: 'week', usedFraction: 1, resetsAt: now + QUOTA_DAY }],
+    })
+    h.store.bind('session-exhausted-binding', 'zai-coding-cn', second.id)
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-exhausted-binding')
+    // The exhausted account must not own the session while the sibling is unknown.
+    assert.equal(selection.key?.id, first.id)
+    assert.equal(h.store.binding('session-exhausted-binding', 'zai-coding-cn')?.keyId, first.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota ranking keeps a sticky binding when every candidate is unknown', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [, second] = provider.keys
+    h.store.bind('session-unknown-binding', 'zai-coding-cn', second.id)
+
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-unknown-binding')
+    // No quota signal at all: the pre-ranking sticky behaviour is unchanged.
+    assert.equal(selection.key?.id, second.id)
+    assert.equal(h.store.binding('session-unknown-binding', 'zai-coding-cn')?.keyId, second.id)
   } finally {
     await h.close()
   }

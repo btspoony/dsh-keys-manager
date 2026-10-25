@@ -32,6 +32,8 @@ import {
   patchSettings,
   pickHealthyExcluding,
   pickRoundRobin,
+  quotaRank,
+  rankCandidates,
   shouldFailover,
   statusOfKey,
   statusOfProvider,
@@ -88,6 +90,7 @@ import { EXTRA_PROVIDER_MAP, EXTRA_PROVIDERS } from './providers.js'
 import { QuotaCache } from './quota/cache.js'
 import type { QuotaSnapshotView } from './quota/cache.js'
 import type { QuotaFetch } from './quota/fetch.js'
+import type { QuotaWindow } from './quota/model.js'
 import { resolveQuota } from './quota/providers.js'
 import { KeysManagerStore, ensureStateFile, statePath } from './store.js'
 
@@ -6974,6 +6977,55 @@ export class KeysManagerService {
     }
   }
 
+  /**
+   * One row's cached quota windows for ranking (issue #22): a read-only peek,
+   * never a probe. A row with no snapshot simply ranks as unknown.
+   */
+  private quotaWindowsOf(provider: string, keyId: string): readonly QuotaWindow[] | undefined {
+    const snapshot = this.quotaCaches.get(provider)?.peek(provider, keyId)
+    // Ranking refuses anything the display path would not trust as live: a
+    // non-`ok` state carries no quota fact, and a last-good snapshot kept
+    // behind a failed probe must not outrank a fresh read for up to a day.
+    if (snapshot === undefined || snapshot.status !== 'ok' || snapshot.stale === true) return undefined
+    return snapshot.windows
+  }
+
+  /** The quota tier of one key (`0`/`1` are the sticky-safe tiers). */
+  private quotaTierOf(provider: string, keyId: string, now: number): number {
+    return quotaRank(this.quotaWindowsOf(provider, keyId), now).tier
+  }
+
+  /**
+   * Whether a sticky binding may hold for this request (D3).
+   *
+   * The binding yields only to an actual quota signal: when no selectable key
+   * of the route reports usable quota, every candidate ranks unknown (tier 2)
+   * and the route must keep its pre-ranking sticky behaviour byte for byte.
+   */
+  private stickyBindingHolds(providerId: string, provider: ProviderRecord, bound: KeyRecord, now: number): boolean {
+    // (a) A binding that still has usable quota keeps the session.
+    if (this.quotaTierOf(providerId, bound.id, now) <= 1) return true
+    // (b) The genuine no-quota-signal route: EVERY selectable key ranks
+    // unknown (tier 2), so the pre-ranking sticky behaviour applies unchanged.
+    // A tier-3 binding yields here as soon as any sibling reports real usage.
+    return provider.keys.every(candidate =>
+      !isSelectable(candidate, now) || this.quotaTierOf(providerId, candidate.id, now) === 2)
+  }
+
+  /**
+   * The next selectable key in quota order, skipping ids already tried and
+   * advancing the cursor past whatever it picks — the same cursor contract
+   * `pickRoundRobin` keeps for the unranked path.
+   */
+  private pickRanked(provider: ProviderRecord, now: number, tried?: ReadonlySet<string>): KeyRecord | undefined {
+    const ranked = rankCandidates(provider, now, keyId => this.quotaWindowsOf(provider.provider, keyId))
+    const chosen = ranked.find(candidate => tried?.has(candidate.id) !== true)
+    if (chosen === undefined) return undefined
+    const index = provider.keys.findIndex(candidate => candidate.id === chosen.id)
+    if (index >= 0) provider.cursor = (index + 1) % provider.keys.length
+    return chosen
+  }
+
   /** Project the cached quota of one row; a pure memory read, never a probe. */
   private quotaViewFor(provider: string, keyId: string): QuotaView | undefined {
     const snapshot = this.quotaCaches.get(provider)?.peek(provider, keyId)
@@ -8427,10 +8479,10 @@ export class KeysManagerService {
       const binding = this.store.binding(sessionId, providerId)
       if (binding !== undefined) {
         const bound = provider.keys.find(candidate => candidate.id === binding.keyId)
-        if (isSelectable(bound, now)) key = bound
+        if (isSelectable(bound, now) && this.stickyBindingHolds(providerId, provider, bound, now)) key = bound
       }
     }
-    if (key === undefined) key = pickRoundRobin(provider, now)
+    if (key === undefined) key = this.pickRanked(provider, now)
 
     const tryCandidate = async (candidate: KeyRecord | undefined): Promise<KeySelection | undefined> => {
       if (candidate === undefined) return undefined
@@ -8456,7 +8508,7 @@ export class KeysManagerService {
       tried.add(key.id)
       const selected = await tryCandidate(key)
       if (selected !== undefined) return selected
-      key = pickRoundRobin(provider, now, tried)
+      key = this.pickRanked(provider, now, tried)
     }
 
     // A previously missing key may have been restored in the credential store.
