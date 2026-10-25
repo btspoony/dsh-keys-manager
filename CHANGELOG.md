@@ -2,6 +2,18 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.9] - 2026-10-25
+
+### Fixed
+
+- Read a provider card's plan usage from the credential that actually serves the route: an OAuth account managed natively by DSH no longer shows "sign in again" (and no longer re-prompts after a successful sign-in), and when that credential is unreadable the row says "managed by DSH" instead of pretending the provider reports no usage.
+
+### Changed
+
+- Plan usage now renders as one muted line at the bottom of each key or account row (`W 61% · 5h 32% · 3 天后重置`) instead of a separate block on the provider card, so the card no longer grows a usage section.
+- A route that cannot report usage shows nothing at all — no block, no line, no placeholder; the "sign in again" note stays for an OAuth account whose grant needs renewing.
+- Usage coverage now includes Command Code, xAI SuperGrok and Cline, alongside Claude, Codex, Z.AI, Kimi, MiniMax and OpenCode Go.
+
 ## [0.2.8] - 2026-10-24
 
 ### Changed
