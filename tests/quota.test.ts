@@ -17,6 +17,7 @@ import {
   clineQuotaProbe,
   codexQuotaProbe,
   commandcodeQuotaProbe,
+  factoryDroidQuotaProbe,
   kimiQuotaProbe,
   minimaxQuotaProbe,
   opencodeGoQuotaProbe,
@@ -829,11 +830,13 @@ test('batch A and B route ids resolve, the non-portable ones stay absent', async
   assert.equal(quotaProbe('commandcode'), commandcodeQuotaProbe)
   assert.equal(quotaProbe('xai'), xaiQuotaProbe)
   assert.equal(quotaProbe('cline-pass'), clineQuotaProbe)
-  // Transport routes: their grant is read only inside the host service and
-  // both need vendor credential work (Cursor rotates its refresh grant on 401,
-  // Factory sends droid's org header), so the quota path cannot reach them.
+  // Factory Droid's billing read needs only the grant's own bearer + org id, so
+  // the quota path can reach it (`I-000317`).
+  assert.equal(quotaProbe('factory-droid'), factoryDroidQuotaProbe)
+  // Cursor stays absent: its usage payloads are monthly billing buckets, and a
+  // monthly-only window is never relabelled as session/week.
   // `openrouter` has no reference implementation, `ollama-cloud` no endpoint.
-  for (const route of ['cursor', 'factory-droid', 'openrouter', 'ollama-cloud']) {
+  for (const route of ['cursor', 'openrouter', 'ollama-cloud']) {
     assert.equal(quotaProbe(route), undefined, route)
     const snapshot = await resolveQuota(route, { token: 'tok' })
     assert.equal(snapshot.status, 'absent', route)
@@ -1229,4 +1232,75 @@ test('a released provider leaves neither entries nor in-flight work', async () =
   assert.equal(secondLoads, 1)
   // Everything the released provider held is gone, including the fresh answer.
   assert.equal(cache.peek('claude', 'a'), undefined)
+})
+
+test('factory-droid probe maps the five-hour and weekly windows', async () => {
+  const now = Date.now()
+  const requested: Array<{ url: string; headers: Record<string, string> }> = []
+  const body = {
+    usesTokenRateLimitsBilling: true,
+    limits: {
+      standard: {
+        fiveHour: { usedPercent: 40, windowEnd: new Date(now + 3_600_000).toISOString() },
+        weekly: { usedPercent: 90, windowEnd: new Date(now + 86_400_000).toISOString() },
+        monthly: { usedPercent: 10, windowEnd: new Date(now + 2_592_000_000).toISOString() },
+      },
+    },
+  }
+  const snapshot = await resolveQuota('factory-droid', {
+    token: 'at-factory',
+    orgId: 'org-9',
+    region: 'global',
+    fetch: (async (url: string, init: RequestInit) => {
+      requested.push({ url, headers: init.headers as Record<string, string> })
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch,
+  })
+  assert.equal(snapshot.status, 'ok')
+  assert.deepEqual(snapshot.windows.map(window => window.id), ['session', 'week'])
+  assert.equal(snapshot.windows[0]!.usedFraction, 0.4)
+  assert.equal(snapshot.windows[1]!.usedFraction, 0.9)
+  assert.equal(requested[0]!.url, 'https://api.factory.ai/api/billing/limits')
+  assert.equal(requested[0]!.headers.Authorization, 'Bearer at-factory')
+  assert.equal(requested[0]!.headers['X-Factory-Org-Id'], 'org-9')
+  assert.equal(requested[0]!.headers['X-Client-Version'], '0.237.0')
+  assert.equal(requested[0]!.headers['X-Factory-Client'], 'cli')
+})
+
+test('factory-droid probe degrades instead of guessing', async () => {
+  const now = Date.now()
+  const answer = (status: number, body: unknown): typeof fetch => (async () =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
+
+  // An EU account reads the EU host.
+  let host = ''
+  const eu = await resolveQuota('factory-droid', {
+    token: 'at-factory',
+    orgId: 'org-9',
+    region: 'eu',
+    fetch: (async (url: string) => {
+      host = url
+      return new Response(JSON.stringify({ usesTokenRateLimitsBilling: true, limits: { standard: {
+        fiveHour: { usedPercent: 1, windowEnd: new Date(now + 3_600_000).toISOString() },
+      } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch,
+  })
+  assert.equal(host, 'https://api.eu.factory.ai/api/billing/limits')
+  assert.equal(eu.status, 'ok')
+
+  assert.equal((await resolveQuota('factory-droid', { token: 't', fetch: answer(401, {}) })).status, 'unauthorized')
+  assert.equal(
+    (await resolveQuota('factory-droid', { token: 't', fetch: answer(200, { usesTokenRateLimitsBilling: false }) })).status,
+    'absent',
+  )
+  // A monthly-only (or lapsed) window is never relabelled as a week.
+  const monthlyOnly = await resolveQuota('factory-droid', {
+    token: 't',
+    fetch: answer(200, { usesTokenRateLimitsBilling: true, limits: { standard: {
+      monthly: { usedPercent: 20, windowEnd: new Date(now + 2_592_000_000).toISOString() },
+      weekly: { usedPercent: 20, windowEnd: new Date(now - 60_000).toISOString() },
+    } } }),
+  })
+  assert.equal(monthlyOnly.status, 'error')
+  assert.deepEqual(monthlyOnly.windows, [])
 })
