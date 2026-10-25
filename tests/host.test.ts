@@ -18667,6 +18667,65 @@ test('quota matrix: an expired pool credential reports natively-managed on 401',
   }
 })
 
+test('quota matrix: a fresh payload expiry outranks a past row timestamp', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    poolGrant: {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool', expires: Date.now() + 3_600_000 },
+    },
+    rowExpiresAt: Date.now() - 60_000,
+    fetchStatus: 401,
+  })
+  try {
+    const touch = vi.spyOn(h.store, 'touch')
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // The token the vendor actually saw is fresh, so the refusal is real and
+    // actionable; the stale row timestamp must not mask it.
+    assert.equal(row.quota?.status, 'unauthorized')
+    assert.equal(fetched.length, 1)
+    assert.equal(touch.mock.calls.length, 0)
+    touch.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: a past payload expiry outranks a future row timestamp', async () => {
+  const { h, service } = await foreignQuotaFixture({
+    poolGrant: {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool', expires: Date.now() - 60_000 },
+    },
+    rowExpiresAt: Date.now() + 3_600_000,
+    fetchStatus: 401,
+  })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // The payload is the credential that was used: it expired, so the honest
+    // label is "managed natively", never a sign-in prompt.
+    assert.equal(row.quota?.status, 'natively-managed')
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: agreeing payload and row expiry keep the existing label', async () => {
+  const { h, service } = await foreignQuotaFixture({
+    poolGrant: {
+      kind: 'grant',
+      payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool', expires: Date.now() - 120_000 },
+    },
+    rowExpiresAt: Date.now() - 60_000,
+    fetchStatus: 401,
+  })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    assert.equal(row.quota?.status, 'natively-managed')
+  } finally {
+    await h.close()
+  }
+})
+
 test('quota matrix: an unexpired pool credential keeps the unauthorized state on 401', async () => {
   const { h, service, fetched } = await foreignQuotaFixture({
     poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },

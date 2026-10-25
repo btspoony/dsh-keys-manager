@@ -662,27 +662,35 @@ function missingHeaders(declared: Record<string, string> | undefined, stored: Re
  */
 /** The credential source a probe would use, or why no probe can run. */
 type QuotaCredential =
-  | { kind: 'credential'; source: 'pool' | 'projection'; token: string; accountId?: string }
+  | { kind: 'credential'; source: 'pool' | 'projection'; token: string; accountId?: string; expiresAt?: number }
   | { kind: 'natively-managed' }
   | { kind: 'missing' }
 
 /**
- * Whether one OAuth row's stored access token is already expired.
+ * Whether the credential a probe just used is already expired.
  *
- * Only pi-ai refreshes these grants, and only on model traffic, so an expired
- * row is a refresh problem the user cannot fix from this card. A missing or
- * unusable `expiresAt` counts as NOT expired: the conservative label wins.
+ * The grant payload's expiry wins: it describes the token the vendor actually
+ * saw, while the row timestamp can lag behind a rotation. The row value is only
+ * a fallback for payloads without a usable expiry — never a "fresh" guess.
+ * A missing or unusable value counts as NOT expired (the conservative label).
  */
-function credentialExpired(key: KeyRecord, now: number): boolean {
-  const expiresAt = key.oauth?.expiresAt
-  return typeof expiresAt === 'number' && Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now
+function credentialExpired(key: KeyRecord, now: number, payloadExpiresAt?: number): boolean {
+  const payloadExpiry = usableExpiry(payloadExpiresAt)
+  if (payloadExpiry !== undefined) return payloadExpiry <= now
+  const rowExpiry = usableExpiry(key.oauth?.expiresAt)
+  return rowExpiry !== undefined && rowExpiry <= now
 }
 
 /** One pool grant read: usable, or the read itself failed. */
 type QuotaPoolGrant =
-  | { kind: 'credential'; source: 'pool'; token: string; accountId?: string }
+  | { kind: 'credential'; source: 'pool'; token: string; accountId?: string; expiresAt?: number }
   | { kind: 'unreadable' }
   | undefined
+
+/** A payload/row expiry value this manager can reason about, or `undefined`. */
+function usableExpiry(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
 
 /** Public, secret-free key row. */
 function publicKey(key: KeyRecord, now: number, projectedAccountId?: string | null, quota?: QuotaView): KeyView {
@@ -6889,7 +6897,11 @@ export class KeysManagerService {
       // A pool-sourced 401 with a stored token that has already expired is a
       // refresh problem, not a sign-in prompt: re-signing-in this row cannot
       // help, and pi-ai only refreshes on model traffic (D1).
-      if (credential.source === 'pool' && snapshot.status === 'unauthorized' && credentialExpired(key, Date.now())) {
+      if (
+        credential.source === 'pool'
+        && snapshot.status === 'unauthorized'
+        && credentialExpired(key, Date.now(), credential.expiresAt)
+      ) {
         return {
           status: 'natively-managed' as const,
           fetchedAt: snapshot.fetchedAt,
@@ -6939,11 +6951,13 @@ export class KeysManagerService {
     try {
       const record = await records.readRecord(grantRef)
       if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return undefined
+      const expires = usableExpiry(record.payload.expires)
       return {
         kind: 'credential',
         source: 'pool',
         token: record.payload.access,
         ...(accountId === undefined ? {} : { accountId }),
+        ...(expires === undefined ? {} : { expiresAt: expires }),
       }
     } catch {
       return { kind: 'unreadable' }
@@ -6966,11 +6980,13 @@ export class KeysManagerService {
       if (record === undefined) return { kind: 'missing' }
       if (record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return { kind: 'natively-managed' }
       const accountId = record.payload.accountId
+      const expires = usableExpiry(record.payload.expires)
       return {
         kind: 'credential',
         source: 'projection',
         token: record.payload.access,
         ...(typeof accountId === 'string' && accountId.length > 0 ? { accountId } : {}),
+        ...(expires === undefined ? {} : { expiresAt: expires }),
       }
     } catch {
       return { kind: 'natively-managed' }
