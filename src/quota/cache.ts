@@ -55,6 +55,12 @@ interface CacheEntry {
 export class QuotaCache {
   private readonly entries = new Map<string, CacheEntry>()
   private readonly inFlight = new Map<string, Promise<QuotaSnapshotView>>()
+  /**
+   * The surviving key ids per provider after the last `retain`. A loader that
+   * settles after its key was evicted must not write the entry back (the same
+   * bug class as an evicted row resurrecting on a later read).
+   */
+  private readonly liveKeys = new Map<string, Set<string>>()
   private readonly ttlMs: number
   private readonly jitterRatio: number
   private readonly failureBackoffMs: number
@@ -110,11 +116,15 @@ export class QuotaCache {
       transient && lastGood !== undefined && now - lastGood.fetchedAt <= this.staleMs
     const served: QuotaSnapshotView =
       keepLastGood && lastGood !== undefined ? { ...lastGood, stale: true } : { ...stamped, stale: false }
-    this.entries.set(key, {
-      snapshot: served,
-      nextAttemptAt: now + this.retryDelay(stamped.status),
-      lastGood,
-    })
+    // Write-back only while the key is still live: `retain` may have evicted it
+    // while the probe was in flight.
+    if (this.keyIsLive(key)) {
+      this.entries.set(key, {
+        snapshot: served,
+        nextAttemptAt: now + this.retryDelay(stamped.status),
+        lastGood,
+      })
+    }
     return served
   }
 
@@ -137,17 +147,27 @@ export class QuotaCache {
    */
   retain(provider: string, keep: ReadonlySet<string> | undefined): void {
     const prefix = `${provider}\u0000`
+    const live = new Set(keep ?? [])
+    // Remember the surviving set first: a loader that settles from now on is
+    // fenced by it (a released provider keeps an empty set, so nothing is
+    // written back either).
+    this.liveKeys.set(provider, live)
     for (const key of [...this.entries.keys()]) {
       if (!key.startsWith(prefix)) continue
-      const keyId = key.slice(prefix.length)
-      if (keep !== undefined && keep.has(keyId)) continue
-      this.entries.delete(key)
+      if (!live.has(key.slice(prefix.length))) this.entries.delete(key)
     }
-    if (keep === undefined) {
-      for (const key of [...this.inFlight.keys()]) {
-        if (key.startsWith(prefix)) this.inFlight.delete(key)
-      }
+    for (const key of [...this.inFlight.keys()]) {
+      if (!key.startsWith(prefix)) continue
+      if (!live.has(key.slice(prefix.length))) this.inFlight.delete(key)
     }
+  }
+
+  /** Whether a cache key still belongs to the provider's retained key set. */
+  private keyIsLive(key: string): boolean {
+    const separator = key.indexOf('\u0000')
+    if (separator < 0) return true
+    const live = this.liveKeys.get(key.slice(0, separator))
+    return live === undefined || live.has(key.slice(separator + 1))
   }
 
   private retryDelay(status: QuotaSnapshot['status']): number {

@@ -354,15 +354,23 @@ export function createStore(ctx: ClientContext, options: ClientStoreOptions = {}
       }
       // The read itself. It keeps running after the caller gave up, and then
       // throws its answer away on the stamp check below (`I-000322`).
+      //
+      // It must NEVER reject: once the race below settled on the timeout,
+      // nobody is listening any more, and an unhandled rejection terminates a
+      // Node process (and fires `unhandledrejection` in a browser).
       const read = (async (): Promise<ActionOutcome> => {
-        const result = await rpc('quotaRefresh', { provider })
-        if (!result.ok) throw new Error(result.error.message)
-        if (quotaGenerations.get(provider) !== stamp) {
-          return { ok: false, error: 'superseded by a newer usage read' }
+        try {
+          const result = await rpc('quotaRefresh', { provider })
+          if (!result.ok) return { ok: false, error: result.error.message }
+          if (quotaGenerations.get(provider) !== stamp) {
+            return { ok: false, error: 'superseded by a newer usage read' }
+          }
+          const state = result.value as StateView
+          if (!settled) install(state)
+          return { ok: true, value: state }
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
         }
-        const state = result.value as StateView
-        if (!settled) install(state)
-        return { ok: true, value: state }
       })()
       let timer: ReturnType<typeof setTimeout> | undefined
       const request = (async (): Promise<ActionOutcome> => {

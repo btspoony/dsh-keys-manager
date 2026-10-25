@@ -4627,6 +4627,42 @@ describe('quota surface', () => {
     expect(store.getSnapshot().state?.managedCount).toBe(7)
   })
 
+  test('a rejection that lands after the bounded wait is not an unhandled rejection', async () => {
+    const state = quotaState(undefined)
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    let rejectRead: (error: Error) => void = () => {}
+    const stubborn = new Promise<RpcResult>((_resolve, reject) => {
+      rejectRead = reject
+    })
+    const { view } = await mountExpanded(
+      state,
+      endpoint => endpoint === 'keysManager/quotaRefresh'
+        ? stubborn as unknown as RpcResult
+        : { ok: true, value: state },
+      undefined,
+      { quotaWaitMs: 20 },
+    )
+    try {
+      // The wait expired; the abandoned read now fails at the transport level.
+      await new Promise(resolve => setTimeout(resolve, 40))
+      rejectRead(new Error('transport down'))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await view.flush()
+      // The abandoned tail must not surface as an unhandled rejection.
+      expect(unhandled).toHaveLength(0)
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+      view.unmount()
+      setRuntimeContext(null)
+    }
+  })
+
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
     expectLocaleParity([
       'quotaNativelyManaged',

@@ -1179,3 +1179,54 @@ test('peek returns a copy: mutating the served windows cannot corrupt the cache'
   const second = cache.peek('claude', 'k')!
   assert.deepEqual(second.windows, [WEEK])
 })
+
+test('a loader that settles after eviction cannot resurrect its entry', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const pending = cache.get('claude', 'gone', async () => {
+    await gate
+    return okSnapshot([WEEK])
+  })
+  // The row is removed while its probe is still in flight.
+  cache.retain('claude', new Set(['kept']))
+  release()
+  const served = await pending
+  // The caller still gets the answer it waited for…
+  assert.equal(served.status, 'ok')
+  assert.deepEqual(served.windows, [WEEK])
+  // …but nothing was written back.
+  assert.equal(cache.peek('claude', 'gone'), undefined)
+})
+
+test('a released provider leaves neither entries nor in-flight work', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  let firstLoads = 0
+  const pending = cache.get('claude', 'a', async () => {
+    firstLoads += 1
+    await gate
+    return okSnapshot([WEEK])
+  })
+  cache.retain('claude', undefined)
+
+  // The released provider's in-flight entry was fenced, so a new read starts a
+  // fresh loader instead of sharing the abandoned one.
+  let secondLoads = 0
+  const fresh = cache.get('claude', 'a', async () => {
+    secondLoads += 1
+    return okSnapshot([WEEK])
+  })
+  release()
+  await pending
+  await fresh
+  assert.equal(firstLoads, 1)
+  assert.equal(secondLoads, 1)
+  // Everything the released provider held is gone, including the fresh answer.
+  assert.equal(cache.peek('claude', 'a'), undefined)
+})
