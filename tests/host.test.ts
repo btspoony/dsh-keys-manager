@@ -18939,9 +18939,11 @@ test('quota ranking retries across tiers instead of falling back to cursor rotat
     const provider = h.store.provider('zai-coding-cn')!
     // Array order [A, C, B]: after A is picked, plain cursor rotation would
     // resume at C. Ranked order is A (tier 0), B (tier 1), C (tier 2).
+    // The starting cursor is deliberately non-zero, so the asserted value after
+    // selecting B (0) cannot also be the untouched initial value.
     const [a, c, b] = provider.keys
     provider.keys = [a, c, b]
-    provider.cursor = 0
+    provider.cursor = 1
     h.store.touch()
 
     const now = Date.now()
@@ -18951,35 +18953,29 @@ test('quota ranking retries across tiers instead of falling back to cursor rotat
       // C deliberately has no snapshot: tier 2, next in cursor order after A.
     })
 
-    // A's credential read fails (a transient store error), so the exclusive
-    // loop has to walk the ranked list for its retry.
-    const originals = (h.service as unknown as {
-      credentialOriginals: WeakMap<object, { resolve: (ref: string) => Promise<unknown> }>
-    }).credentialOriginals
-    const raw = h.credentials.raw
-    const current = originals.get(raw)!
-    const probed: string[] = []
-    originals.set(raw, {
-      ...current,
-      resolve: async (ref: string) => {
-        probed.push(ref)
-        if (ref === a.ref) throw new Error('credential store unavailable')
-        return current.resolve.call(raw, ref)
-      },
-    })
+    // A's credential is missing (the fixture's own failure seam), so the
+    // exclusive loop has to continue past the tier-0 key for its retry.
+    h.credentials.refs.delete(a.ref)
 
     const selection = await h.service.selectKey('zai-coding-cn', 'session-mixed-tier')
 
-    // 1) Probes ran in tier order: the tier-0 key first, its tier-1 retry next.
-    assert.deepEqual(probed, [a.ref, b.ref])
+    // 1) The tier-0 key was probed first and marked missing — had B been tried
+    // first it would have answered and A would never be touched.
+    assert.equal(a.valueMissing, true)
     // 2) The retry landed on B (tier 1), not on C (tier 2) — the key plain
     // cursor rotation would have returned after A.
     assert.equal(selection.key?.id, b.id)
     // 3) The selected row's own credential value is what the caller gets.
     assert.equal(selection.value, 'sk-b')
-    // 4) The cursor advanced past B, the same formula pickRoundRobin uses.
+    // 4) C was never selected: plain cursor rotation would have consumed it.
+    assert.equal(c.lastUsedAt, 0)
+    assert.equal(c.totalUses, 0)
+    // 5) The cursor advanced past B, the same formula pickRoundRobin uses, and
+    // differs from the initial 1 — an implementation that leaves the cursor
+    // alone cannot pass.
     const index = provider.keys.findIndex(candidate => candidate.id === b.id)
     assert.equal(provider.cursor, (index + 1) % provider.keys.length)
+    assert.notEqual(provider.cursor, 1)
   } finally {
     await h.close()
   }
