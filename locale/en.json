@@ -63,5 +63,6 @@
   "quotaStale": "Stale",
   "quotaCompactHint": "The tightest plan window across this provider's accounts; expand the card for every account.",
   "quotaNativelyManaged": "Managed by DSH",
-  "quotaResetDue": "Reset due"
+  "quotaResetDue": "Reset due",
+  "quotaNotReported": "Not reported"
 }

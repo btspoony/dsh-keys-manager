@@ -249,6 +249,7 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     // countdown resolves the duration keys it formats. A pending, absent or
     // error state has no copy by design; `natively-managed` does have one.
     quotaNativelyManaged: '由 DSH 原生管理',
+    quotaNotReported: '未报告',
     quotaResetDue: '已到重置时间',
     quotaSignInAgain: '请重新登录',
     quotaStale: '数据较旧',
@@ -4217,7 +4218,7 @@ describe('quota surface', () => {
     }
   })
 
-  test('a rejecting quota RPC keeps the card rendered and stops after one attempt', async () => {
+  test('a rejecting quota RPC reports "not reported" and retries on the cadence', async () => {
     const base = Date.now()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
     try {
@@ -4227,23 +4228,60 @@ describe('quota surface', () => {
           ? { ok: false, error: { message: 'quota endpoint unavailable' } }
           : { ok: true, value: state },
       )
+      const tickTo = async (at: number): Promise<void> => {
+        clock.mockReturnValue(at)
+        store.tick()
+        view.render()
+        await view.flush()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
       try {
-        // One attempt on expand; the failed answer leaves the rows unchanged
-        // and must not start an unbounded retry (review finding F2).
+        // One attempt on expand; the row says why it has nothing to show
+        // instead of hanging on a pending state (this replaces the old
+        // "stops after one attempt, renders nothing" expectation).
         expect(quotaRefreshes(harness)).toBe(1)
-        for (let minute = 1; minute <= 3; minute += 1) {
-          clock.mockReturnValue(base + minute * 60_000)
-          store.tick()
-          view.render()
-          await view.flush()
-          await new Promise(resolve => setTimeout(resolve, 0))
-        }
+        expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+        // Inside the cadence window nothing is re-issued.
+        await tickTo(base + 60_000)
+        await tickTo(base + 3 * 60_000)
         expect(quotaRefreshes(harness)).toBe(1)
-        // The card is still rendered, and the pending row shows no surface.
+        expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+        // One slower cadence later a fresh attempt is made, and its rejection
+        // keeps the label rather than blanking the row.
+        await tickTo(base + 11 * 60_000)
+        expect(quotaRefreshes(harness)).toBe(2)
+        expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
         expect(findByClass(view.nodes, 'km-provider-body')).toHaveLength(1)
-        expect(quotaNodes(view.nodes)).toHaveLength(0)
       } finally {
         view.unmount()
+      }
+    } finally {
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a remount after a rejection retries immediately', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    try {
+      const state = quotaState(undefined)
+      const answer: RpcAnswer = endpoint => endpoint === 'keysManager/quotaRefresh'
+        ? { ok: false, error: { message: 'quota endpoint unavailable' } }
+        : { ok: true, value: state }
+      const first = await mountExpanded(state, answer)
+      expect(quotaRefreshes(first.harness)).toBe(1)
+      expect(findByClass(first.view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+      first.view.unmount()
+      setRuntimeContext(null)
+
+      // A fresh mount has fresh bookkeeping: it asks at once.
+      const second = await mountExpanded(state, answer)
+      try {
+        expect(quotaRefreshes(second.harness)).toBe(1)
+        expect(findByClass(second.view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+      } finally {
+        second.view.unmount()
       }
     } finally {
       clock.mockRestore()
@@ -4453,6 +4491,7 @@ describe('quota surface', () => {
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
     expectLocaleParity([
       'quotaNativelyManaged',
+      'quotaNotReported',
       'quotaResetDue',
       'quotaSignInAgain',
       'quotaStale',

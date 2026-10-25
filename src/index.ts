@@ -665,6 +665,8 @@ type QuotaCredential =
   | { kind: 'credential'; source: 'pool' | 'projection'; token: string; accountId?: string; expiresAt?: number }
   | { kind: 'natively-managed' }
   | { kind: 'missing' }
+  /** The credential store could not be read: a transient failure, not an auth fact. */
+  | { kind: 'transient' }
 
 /**
  * Whether the credential a probe just used is already expired.
@@ -684,7 +686,7 @@ function credentialExpired(key: KeyRecord, now: number, payloadExpiresAt?: numbe
 /** One pool grant read: usable, or the read itself failed. */
 type QuotaPoolGrant =
   | { kind: 'credential'; source: 'pool'; token: string; accountId?: string; expiresAt?: number }
-  | { kind: 'unreadable' }
+  | { kind: 'transient' }
   | undefined
 
 /** A payload/row expiry value this manager can reason about, or `undefined`. */
@@ -6856,6 +6858,16 @@ export class KeysManagerService {
   private async refreshQuotaRow(provider: string, cache: QuotaCache, key: KeyRecord): Promise<void> {
     const credential = await this.quotaCredential(provider, key)
     await cache.get(provider, key.id, async () => {
+      if (credential.kind === 'transient') {
+        // A store that kept failing is "could not read usage now", never an
+        // auth fact: `error` keeps the last-good numbers on display.
+        return {
+          status: 'error' as const,
+          fetchedAt: 0,
+          windows: [],
+          reason: 'the credential store could not be read',
+        }
+      }
       if (credential.kind === 'natively-managed') {
         // The route is served by a DSH-managed projection we cannot read. That
         // is not "your pool credential is invalid": the honest state keeps the
@@ -6925,9 +6937,12 @@ export class KeysManagerService {
     if (key.kind === 'oauth') {
       const own = await this.readGrantCredential(key.oauth?.grantRef, key.oauth?.accountId)
       if (own !== undefined && own.kind === 'credential') return own
+      // A store that kept throwing says nothing about this credential: report
+      // the transient class instead of falling back to another account or
+      // claiming the grant is unreadable.
+      if (own !== undefined && own.kind === 'transient') return { kind: 'transient' }
       // Only a route this manager already classifies as foreign may borrow the
-      // projection's credential. Without the gate a transient credential-store
-      // error would pair this row's identity with another account's usage.
+      // projection's credential; anything else keeps its own row's identity.
       if (!this.foreignProjections.has(provider)) return { kind: 'missing' }
       return this.projectionQuotaCredential(provider)
     }
@@ -6938,9 +6953,12 @@ export class KeysManagerService {
   }
 
   /**
-   * A readable pool grant for one row, `undefined` when no usable record exists,
-   * or `unreadable` when the read itself failed. The distinction matters: only
-   * a foreign route may fall back to the projection after a failed read.
+   * A readable pool grant for one row (`undefined` when no usable record
+   * exists), or `transient` when the store itself kept failing.
+   *
+   * One retry covers a momentarily locked store (D2). A missing or invalid
+   * record is a deterministic fact; a read that throws twice is not — the row
+   * must report a transient failure, never an auth one.
    */
   private async readGrantCredential(
     grantRef: string | undefined,
@@ -6948,49 +6966,57 @@ export class KeysManagerService {
   ): Promise<QuotaPoolGrant> {
     const records = this.credentialRecords()
     if (grantRef === undefined || grantRef.length === 0 || records === undefined) return undefined
-    try {
-      const record = await records.readRecord(grantRef)
-      if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return undefined
-      const expires = usableExpiry(record.payload.expires)
-      return {
-        kind: 'credential',
-        source: 'pool',
-        token: record.payload.access,
-        ...(accountId === undefined ? {} : { accountId }),
-        ...(expires === undefined ? {} : { expiresAt: expires }),
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const record = await records.readRecord(grantRef)
+        if (record === undefined || record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return undefined
+        const expires = usableExpiry(record.payload.expires)
+        return {
+          kind: 'credential',
+          source: 'pool',
+          token: record.payload.access,
+          ...(accountId === undefined ? {} : { accountId }),
+          ...(expires === undefined ? {} : { expiresAt: expires }),
+        }
+      } catch {
+        // Try once more; the second throw is reported as transient below.
       }
-    } catch {
-      return { kind: 'unreadable' }
     }
+    return { kind: 'transient' }
   }
 
   /**
    * The provider's live projection as a quota credential.
    *
-   * A record that exists but cannot be read (wrong kind, unrecognized payload)
-   * or a read that throws is classified `natively-managed`, never `missing`: we
-   * cannot prove no account serves the route, and claiming otherwise is exactly
-   * the false "sign in again" this plan removes.
+   * A record that exists but carries no readable grant (wrong kind, unrecognized
+   * payload) is classified `natively-managed`, never `missing`: we cannot prove
+   * no account serves the route, and claiming otherwise is exactly the false
+   * "sign in again" this plan removes. A read that keeps THROWING is different —
+   * it is retried once, then reported as `transient` (`error`), because a store
+   * failure says nothing about the credential.
    */
   private async projectionQuotaCredential(provider: string): Promise<QuotaCredential> {
     const records = this.credentialRecords()
     if (records === undefined) return { kind: 'missing' }
-    try {
-      const record = await records.readRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
-      if (record === undefined) return { kind: 'missing' }
-      if (record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return { kind: 'natively-managed' }
-      const accountId = record.payload.accountId
-      const expires = usableExpiry(record.payload.expires)
-      return {
-        kind: 'credential',
-        source: 'projection',
-        token: record.payload.access,
-        ...(typeof accountId === 'string' && accountId.length > 0 ? { accountId } : {}),
-        ...(expires === undefined ? {} : { expiresAt: expires }),
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const record = await records.readRecord(`${OAUTH_GRANT_RECORD_SCOPE}/${provider}`)
+        if (record === undefined) return { kind: 'missing' }
+        if (record.kind !== 'grant' || !isOAuthGrantPayload(record.payload)) return { kind: 'natively-managed' }
+        const accountId = record.payload.accountId
+        const expires = usableExpiry(record.payload.expires)
+        return {
+          kind: 'credential',
+          source: 'projection',
+          token: record.payload.access,
+          ...(typeof accountId === 'string' && accountId.length > 0 ? { accountId } : {}),
+          ...(expires === undefined ? {} : { expiresAt: expires }),
+        }
+      } catch {
+        // Same one-retry rule as the pool read.
       }
-    } catch {
-      return { kind: 'natively-managed' }
     }
+    return { kind: 'transient' }
   }
 
   /**

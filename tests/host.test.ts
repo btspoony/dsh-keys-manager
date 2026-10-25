@@ -18541,18 +18541,21 @@ test('quota matrix: an unreadable projection reports natively-managed, not sign-
   }
 })
 
-test('quota matrix: a failed projection read is unreadable, never sign-in-again', async () => {
+test('quota matrix: a projection read that keeps throwing is transient, never sign-in-again', async () => {
   // The record must exist for the route to be classified foreign (hydration
-  // reads it before the transient failure is injected); the quota read is what
-  // throws.
+  // reads it before the failure is injected). Both reads of this refresh throw,
+  // so the retry cannot rescue it: a store failure is not an auth fact.
   const { h, service, fetched } = await foreignQuotaFixture({
     projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
-    projectionReadFailures: 1,
+    projectionReadFailures: 2,
   })
   try {
+    const touch = vi.spyOn(h.store, 'touch')
     const row = quotaRowOf(await service.quotaRefresh('anthropic'))
-    assert.equal(row.quota?.status, 'natively-managed')
+    assert.equal(row.quota?.status, 'error')
     assert.equal(fetched.length, 0)
+    assert.equal(touch.mock.calls.length, 0)
+    touch.mockRestore()
   } finally {
     await h.close()
   }
@@ -18578,7 +18581,7 @@ test('quota matrix: a refused projection token reports natively-managed', async 
   }
 })
 
-test('quota matrix: a transient pool read failure on a non-foreign route stays unauthorized', async () => {
+test('quota matrix: a pool read that keeps throwing on a non-foreign route reports a transient error', async () => {
   // The projection record exists but its `accountId` matches the pool row, so
   // hydration treats that row as the owner (not foreign). The fallback must not
   // run: the projection's credential would be misattributed to this row.
@@ -18588,58 +18591,55 @@ test('quota matrix: a transient pool read failure on a non-foreign route stays u
       kind: 'grant',
       payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign', accountId: 'acc-pool' },
     },
-    poolReadFailures: 1,
+    poolReadFailures: 2,
   })
   try {
     assert.equal(isForeign(service), false)
     const row = quotaRowOf(await service.quotaRefresh('anthropic'))
-    assert.equal(row.quota?.status, 'unauthorized')
+    // A store that kept failing says nothing about the credential; the
+    // projection is still never borrowed for a non-foreign route.
+    assert.equal(row.quota?.status, 'error')
     assert.equal(fetched.length, 0)
   } finally {
     await h.close()
   }
 })
 
-test('quota matrix: on a foreign route a transient pool read failure uses the projection', async () => {
+test('quota matrix: a foreign route never borrows the projection when the pool read keeps throwing', async () => {
   const { h, service, fetched } = await foreignQuotaFixture({
     poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
     projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
-    poolReadFailures: 1,
+    poolReadFailures: 2,
   })
   try {
     assert.equal(isForeign(service), true)
+    // A store failure is transient; substituting another account's credential
+    // would misattribute its usage to this row.
     const first = quotaRowOf(await service.quotaRefresh('anthropic'))
-    assert.equal(first.quota?.status, 'ok')
-    assert.equal(fetched.length, 1)
-    // The read failed once, so the serving projection is the right credential.
-    assert.equal(fetched[0]!.authorization, 'Bearer at-native-foreign')
-
-    // The store recovers: the pool copy wins again on the next refresh.
-    ;(service as unknown as { quotaCaches: Map<string, unknown> }).quotaCaches.delete('anthropic')
-    const second = quotaRowOf(await service.quotaRefresh('anthropic'))
-    assert.equal(second.quota?.status, 'ok')
-    assert.equal(fetched.length, 2)
-    assert.equal(fetched[1]!.authorization, 'Bearer at-pool')
+    assert.equal(first.quota?.status, 'error')
+    assert.equal(fetched.length, 0)
   } finally {
     await h.close()
   }
 })
 
-test('quota matrix: a foreign route recovers from transient read failures to ok', async () => {
-  const { h, service } = await foreignQuotaFixture({
+test('quota matrix: a foreign route recovers from a transient read failure to ok', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
     poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
     projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
-    poolReadFailures: 1,
-    projectionReadFailures: 1,
+    poolReadFailures: 2,
   })
   try {
     const degraded = quotaRowOf(await service.quotaRefresh('anthropic'))
-    assert.equal(degraded.quota?.status, 'natively-managed')
+    assert.equal(degraded.quota?.status, 'error')
     // Past the cache's failure backoff (cleared here instead of sleeping).
     ;(service as unknown as { quotaCaches: Map<string, unknown> }).quotaCaches.delete('anthropic')
     const recovered = quotaRowOf(await service.quotaRefresh('anthropic'))
     assert.equal(recovered.quota?.status, 'ok')
+    // The recovered read shows the same window identity as before, not just the
+    // right bearer token.
     assert.deepEqual(recovered.quota?.windows.map(window => window.id), ['session'])
+    assert.equal(fetched.at(-1)?.authorization, 'Bearer at-pool')
   } finally {
     await h.close()
   }
@@ -19074,6 +19074,65 @@ test('quota refresh replaces a cached ok reading once the credential expires', a
     // client's cadence can actually surface it.
     assert.equal(view.quota?.status, 'natively-managed')
     assert.deepEqual(view.quota?.windows, [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: a pool read that throws once retries and uses the pool token', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    projection: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-native-foreign', access: 'at-native-foreign' } },
+    poolReadFailures: 1,
+  })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // The transient throw was retried in place: the pool credential is used,
+    // never the projection fallback.
+    assert.equal(row.quota?.status, 'ok')
+    assert.equal(fetched.length, 1)
+    assert.equal(fetched[0]!.authorization, 'Bearer at-pool')
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: a store that keeps throwing reports a transient error and keeps last-good', async () => {
+  const { h, rowId, grantRef } = await harnessWithSeededAccount()
+  try {
+    const row = h.store.provider('anthropic')!.keys.find(candidate => candidate.id === rowId)!
+    // A cached ok reading exists for this row.
+    const clock = { value: Date.now() }
+    const cache = new QuotaCache({ now: () => clock.value })
+    await cache.get('anthropic', row.id, async () => ({
+      status: 'ok',
+      fetchedAt: 0,
+      windows: [{ id: 'week', usedFraction: 0.4, resetsAt: Date.now() + 86_400_000 }],
+    }))
+    ;(h.service as unknown as { quotaCaches: Map<string, QuotaCache> }).quotaCaches.set('anthropic', cache)
+
+    // The credential store is unavailable for the rest of this refresh.
+    const touch = vi.spyOn(h.store, 'touch')
+    const raw = h.credentials.raw
+    const realRead = raw.readRecord.bind(raw)
+    raw.readRecord = async (key: string): Promise<FakeCredentialRecord | undefined> => {
+      if (key === grantRef) throw new Error('credential store unavailable')
+      return realRead(key)
+    }
+    clock.value += 400_000
+
+    const state = await h.service.quotaRefresh('anthropic')
+    const view = state.providers
+      .find(candidate => candidate.provider === 'anthropic')!
+      .keys.find(candidate => candidate.id === rowId)!
+    // A transient read failure is not an auth fact: the numbers stay (stale),
+    // and the card has no reason to prompt a sign-in.
+    assert.equal(view.quota?.status, 'ok')
+    assert.equal(view.quota?.stale, true)
+    assert.ok((view.quota?.windows.length ?? 0) > 0)
+    assert.equal(touch.mock.calls.length, 0)
+    touch.mockRestore()
+    assert.equal(cache.peek('anthropic', row.id)?.status, 'ok')
   } finally {
     await h.close()
   }
