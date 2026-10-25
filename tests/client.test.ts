@@ -4006,10 +4006,11 @@ describe('quota surface', () => {
     state: StateView,
     answer?: RpcAnswer,
     decorate?: (harness: Harness) => void,
+    storeOptions: { quotaWaitMs?: number } = {},
   ): Promise<{ view: ReturnType<typeof mountView>; harness: Harness; store: ReturnType<typeof createStore> }> {
     const harness = makeContext(answer ?? { ok: true, value: state })
     decorate?.(harness)
-    const store = createStore(harness.ctx)
+    const store = createStore(harness.ctx, storeOptions)
     setRuntimeContext({ ctx: harness.ctx, store })
     const view = mountView(KeysManagerBody)
     await view.flush()
@@ -4548,6 +4549,82 @@ describe('quota surface', () => {
       clock.mockRestore()
       setRuntimeContext(null)
     }
+  })
+
+  test('a never-settling read reaches "not reported" and retries on the cadence', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    const state = quotaState(undefined)
+    const { view, harness, store } = await mountExpanded(
+      state,
+      endpoint => endpoint === 'keysManager/quotaRefresh'
+        ? new Promise<RpcResult>(() => {}) as unknown as RpcResult
+        : { ok: true, value: state },
+      undefined,
+      { quotaWaitMs: 20 },
+    )
+    const tickTo = async (at: number): Promise<void> => {
+      clock.mockReturnValue(at)
+      store.tick()
+      view.render()
+      await view.flush()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    try {
+      expect(quotaRefreshes(harness)).toBe(1)
+      // The bounded wait expires: the row reports instead of staying pending.
+      await new Promise(resolve => setTimeout(resolve, 40))
+      await view.flush()
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+      // Inside the cadence window nothing is re-issued…
+      await tickTo(base + 60_000)
+      expect(quotaRefreshes(harness)).toBe(1)
+      // …and after it, one fresh bounded attempt.
+      await tickTo(base + 11 * 60_000)
+      expect(quotaRefreshes(harness)).toBe(2)
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+    } finally {
+      view.unmount()
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('an answer that lands after the bound never overwrites a newer read', async () => {
+    const first = makeState()
+    const second = makeState()
+    second.managedCount = 7
+    let releaseFirst: () => void = () => {}
+    const firstGate = new Promise<void>(resolve => {
+      releaseFirst = resolve
+    })
+    let call = 0
+    const harness = makeContext(() => ({ ok: true, value: second }))
+    const baseCall = harness.ctx.connection.rpc.call
+    ;(harness.ctx.connection.rpc as { call: typeof baseCall }).call = async (channel, endpoint, payload) => {
+      harness.calls.push({ channel, endpoint, payload })
+      if (endpoint !== 'keysManager/quotaRefresh') return baseCall(channel, endpoint, payload)
+      call += 1
+      if (call === 1) {
+        // The first read answers only after it was given up on.
+        await firstGate
+        return { ok: true, value: first }
+      }
+      return { ok: true, value: second }
+    }
+    const store = createStore(harness.ctx, { quotaWaitMs: 20 })
+    await store.load()
+
+    const late = await store.refreshQuota('zai-coding-cn')
+    expect(late.ok).toBe(false)
+    const fresh = await store.refreshQuota('zai-coding-cn')
+    expect(fresh.ok).toBe(true)
+    expect(store.getSnapshot().state?.managedCount).toBe(7)
+
+    // The abandoned read finally answers: it must be discarded.
+    releaseFirst()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(store.getSnapshot().state?.managedCount).toBe(7)
   })
 
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
