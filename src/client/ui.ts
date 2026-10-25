@@ -1,7 +1,7 @@
 /** Keys Manager browser components, rendered from the plugin-detail card and
  * the Models provider-card extension slot. */
 import React from 'react'
-import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
+import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, QuotaView, StateView, AccountAttemptView, TransportAccountStatus, TransportAccountView, TransportModelsView } from './types'
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import {
@@ -871,6 +871,7 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate, quotaRejected 
 
 interface TransportAccountRowProps {
   account: TransportAccountView
+  now: number
 }
 
 /**
@@ -883,7 +884,7 @@ interface TransportAccountRowProps {
  * IS the route's live credential. Removal deletes that record, and sign-in
  * starts the transports package's own flow.
  */
-function TransportAccountRow({ account }: TransportAccountRowProps): React.ReactElement {
+function TransportAccountRow({ account, now }: TransportAccountRowProps): React.ReactElement {
   const runtime = useRuntime()
   const t = useT()
   const locale = useLocaleId()
@@ -891,6 +892,9 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
   const [error, setError] = React.useState<string | null>(null)
   const [confirm, setConfirm] = React.useState(false)
   const [login, setLogin] = React.useState<{ attemptId: string } | null>(null)
+  // The row drives its own usage read: it is the only place this route's
+  // snapshot renders, whether it sits inside a card or in the orphan section.
+  const [quotaRejected, setQuotaRejected] = React.useState(false)
 
   async function signIn(): Promise<void> {
     setBusy(true)
@@ -942,6 +946,13 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
       : h('div', { className: 'km-key-last' },
           h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
         ),
+    h(QuotaRefresh, {
+      providerId: account.id,
+      now,
+      onRejected: setQuotaRejected,
+      quotas: [account.quota],
+    }),
+    quotaInline(account, t, now, quotaRejected),
     h('div', { className: 'km-key-actions' },
       h(Button, {
         size: 'small',
@@ -1120,7 +1131,12 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
  * only on an OAuth row (it has a sign-in to offer); an API key has none, so
  * that row stays silent too. `stale` keeps the numbers with a marker.
  */
-function quotaInline(row: KeyView, t: T, now: number, rejected = false): React.ReactElement | null {
+function quotaInline(
+  row: { quota?: KeyView['quota']; kind?: KeyView['kind'] },
+  t: T,
+  now: number,
+  rejected = false,
+): React.ReactElement | null {
   const windows = quotaWindows(row.quota)
   if (windows.length === 0) {
     if (row.quota?.status === 'natively-managed') {
@@ -1149,22 +1165,30 @@ function quotaInline(row: KeyView, t: T, now: number, rejected = false): React.R
   return h('div', { className: 'km-quota-inline', title: parts.join(' · ') }, parts.join(' · '))
 }
 
-/** Snapshot fingerprint: one stable string per account row. */
-function quotaSignature(provider: ProviderView): string {
-  return provider.keys.map(key => `${key.id}:${key.quota?.status ?? '-'}:${key.quota?.fetchedAt ?? 0}`).join('|')
+/**
+ * Snapshot fingerprint for one read: the rows this trigger watches. A mount
+ * with a different set of rows or statuses is a different read.
+ */
+function quotaSignature(quotas: ReadonlyArray<QuotaView | undefined>): string {
+  return quotas
+    .map(quota => `${quota?.status ?? 'none'}:${quota?.fetchedAt ?? 0}`)
+    .join('|')
 }
 
 /**
- * Headless per-provider refresh trigger for an expanded card. Pull-only (D2):
- * it asks for a read when a row has no snapshot or its snapshot is past the
- * TTL. Usage itself renders on the account rows, so this component emits no
- * surface of its own.
+ * Headless per-provider refresh trigger. Pull-only (D2): it asks for a read
+ * when a row has no snapshot or its snapshot is past the TTL. Usage itself
+ * renders on the account rows, so this component emits no surface of its own.
+ * It is mounted by every surface that shows a quota line — an expanded pool
+ * card and an orphan transport row alike.
  */
-function QuotaRefresh({ provider, now, onRejected }: {
-  provider: ProviderView
+function QuotaRefresh({ providerId, now, onRejected, quotas }: {
+  providerId: string
   now: number
   /** Report a rejected read so the row can say "not reported". */
   onRejected: (rejected: boolean) => void
+  /** Every quota row this surface shows (pool keys, or a transport account). */
+  quotas: ReadonlyArray<QuotaView | undefined>
 }): null {
   const runtime = useRuntime()
   // In-flight marker only: it coalesces a double render while the read runs.
@@ -1176,12 +1200,11 @@ function QuotaRefresh({ provider, now, onRejected }: {
   // every QUOTA_RETRY_MS: never once per minute, and never "once for the
   // lifetime of this mount".
   const lastAttemptAt = React.useRef<number | null>(null)
-  const quotas = provider.keys.map(key => key.quota)
   const needsRefresh = quotaNeedsRefresh(quotas, now)
   // Re-evaluated once a minute so a TTL/cadence expiry refreshes an already
   // open card without a timer of its own (the page tick supplies `now`).
   const minute = Math.floor(now / 60_000)
-  const signature = quotaSignature(provider)
+  const signature = quotaSignature(quotas)
 
   React.useEffect(() => {
     if (!needsRefresh) {
@@ -1193,7 +1216,7 @@ function QuotaRefresh({ provider, now, onRejected }: {
     if (lastAttemptAt.current !== null && now - lastAttemptAt.current < QUOTA_RETRY_MS) return undefined
     attempted.current = signature
     lastAttemptAt.current = now
-    void runtime.store.refreshQuota(provider.provider).then(outcome => {
+    void runtime.store.refreshQuota(providerId).then(outcome => {
       // Both outcomes free the in-flight marker; the cadence (not a per-read
       // lock) bounds the next attempt. A rejection is reported so the card can
       // render "not reported" instead of staying blank.
@@ -1201,7 +1224,7 @@ function QuotaRefresh({ provider, now, onRejected }: {
       onRejected(!outcome.ok)
     })
     return undefined
-  }, [provider.provider, signature, minute, needsRefresh])
+  }, [providerId, signature, minute, needsRefresh])
 
   return null
 }
@@ -1394,7 +1417,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
       transport
         ? h('div', { className: 'km-transport-body' },
             transportAccount !== undefined
-              ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount }))
+              ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount, now }))
               : h('div', { className: 'km-muted' }, t('transportProviderHint')),
             h(TransportModels, { route: provider.provider }),
           )
@@ -1467,7 +1490,14 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
           ),
         ),
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
-        provider.keys.length > 0 ? h(QuotaRefresh, { provider, now, onRejected: setQuotaRejected }) : null,
+        provider.keys.length > 0
+          ? h(QuotaRefresh, {
+              providerId: provider.provider,
+              now,
+              onRejected: setQuotaRejected,
+              quotas: provider.keys.map(key => key.quota),
+            })
+          : null,
         provider.keys.length === 0
           // Round-4 finding 4 (I-000085): the empty body must name an action
           // this route actually offers. Add key is disabled without key
@@ -2086,6 +2116,7 @@ function KeysManagerBody(): React.ReactElement {
         ? h('div', { className: 'km-provider-list' }, visibleOrphans.map(account => h(TransportAccountRow, {
             key: account.scope,
             account,
+            now,
           })))
         : null,
     ) : null,

@@ -691,6 +691,29 @@ type QuotaPoolGrant =
   | { kind: 'transient' }
   | undefined
 
+/** The read-only grant fields a transport route's usage probe needs. */
+interface TransportGrant {
+  access: string
+  expires?: number
+  orgId?: string
+  region?: string
+}
+
+/** Read a transport grant payload; `undefined` when it is not usable. */
+function readTransportGrant(record: CredentialRecordLike | undefined): TransportGrant | undefined {
+  if (record?.kind !== 'grant') return undefined
+  const payload = record.payload
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return undefined
+  const fields = payload as Record<string, unknown>
+  if (typeof fields.access !== 'string' || fields.access.length === 0) return undefined
+  return {
+    access: fields.access,
+    ...(typeof fields.expires === 'number' && Number.isFinite(fields.expires) ? { expires: fields.expires } : {}),
+    ...(typeof fields.orgId === 'string' && fields.orgId.length > 0 ? { orgId: fields.orgId } : {}),
+    ...(typeof fields.region === 'string' && fields.region.length > 0 ? { region: fields.region } : {}),
+  }
+}
+
 /** A payload/row expiry value this manager can reason about, or `undefined`. */
 function usableExpiry(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
@@ -2747,6 +2770,9 @@ export class KeysManagerService {
         }
         if (outcome.status === 'authorized') {
           this.finishLoginAttempt(attempt, 'ready')
+          // A new grant is a new account: the cached usage belonged to the
+          // previous credential, so the next read must probe again.
+          this.dropTransportQuota(flow.key)
           void this.refreshTransportAccounts()
           return
         }
@@ -2809,8 +2835,17 @@ export class KeysManagerService {
       await pending.settled
     }
     await records.deleteRecord(flow.key)
+    // The snapshot under this scope describes the account that just went away;
+    // keeping it would show the previous account's numbers for one TTL.
+    this.dropTransportQuota(flow.key)
     await this.refreshTransportAccounts()
     return this.buildState()
+  }
+
+  /** Drop the cached usage snapshot for one transport scope. */
+  private dropTransportQuota(scope: string): void {
+    this.quotaCaches.get(scope)?.retain(scope, undefined)
+    this.quotaCaches.delete(scope)
   }
 
   /** The route's removal epoch; absent means never removed. */
@@ -6803,7 +6838,11 @@ export class KeysManagerService {
       pausedKeyCount: allKeys.filter(key => key.status === 'paused').length,
       bindingsCount: Object.keys(this.store.state.sessionBindings).length,
       warnings,
-      transportAccounts: this.transportRows.map(row => ({ ...row })),
+      transportAccounts: this.transportRows.map(row => {
+        // Same projection the pool rows get; the cache key is the row's scope.
+        const quota = this.quotaViewFor(row.scope, row.scope)
+        return quota === undefined ? { ...row } : { ...row, quota }
+      }),
     }
   }
 
@@ -6836,6 +6875,14 @@ export class KeysManagerService {
     // prototype key would answer a function instead of a record.
     const record = Object.hasOwn(this.store.providers, provider) ? this.store.provider(provider) : undefined
     if (record === undefined) {
+      // Not a pi-ai pool route: a transport route (`llm-omp-transports/<id>`)
+      // keeps its grant on the transports package's own scope, so the usage read
+      // resolves that record instead of a pool row (D2).
+      const transport = await this.transportRowOf(provider)
+      if (transport !== undefined) {
+        await this.refreshTransportQuota(provider, transport)
+        return this.buildState()
+      }
       // A released provider keeps no snapshots: nothing would ever read them
       // again, and a re-adoption must start from a clean slate.
       this.quotaCaches.get(provider)?.retain(provider, undefined)
@@ -6869,6 +6916,78 @@ export class KeysManagerService {
     const cache = new QuotaCache()
     this.quotaCaches.set(provider, cache)
     return cache
+  }
+
+  /** The listed transport row for a route id, refreshing the rows once if needed. */
+  private async transportRowOf(provider: string): Promise<TransportAccountView | undefined> {
+    const listed = this.transportRows.find(row => row.id === provider)
+    if (listed !== undefined) return listed
+    // The card may be opened before the first transport pass; one read pass is
+    // cheap and keeps this path consistent with what the UI lists.
+    await this.refreshTransportAccounts()
+    return this.transportRows.find(row => row.id === provider)
+  }
+
+  /**
+   * Refresh one transport route's usage.
+   *
+   * The grant is read-only: no rotation, no repair, no write-back. A record
+   * that is missing or unparseable means "this account's usage is managed
+   * natively" — never a sign-in prompt. The cache is keyed by the scope, so a
+   * transport snapshot can never collide with a pool route's cache (D2).
+   */
+  private async refreshTransportQuota(provider: string, row: TransportAccountView): Promise<void> {
+    const cache = this.quotaCache(row.scope)
+    await cache.get(row.scope, row.scope, async () => {
+      const records = this.credentialRecords()
+      if (records === undefined) {
+        return {
+          status: 'natively-managed' as const,
+          fetchedAt: 0,
+          windows: [],
+          reason: 'no credential store to read the transport grant',
+        }
+      }
+      let record: CredentialRecordLike | undefined
+      try {
+        record = await records.readRecord(row.scope)
+      } catch {
+        // A store that cannot be read is transient, exactly like the pool path.
+        return {
+          status: 'error' as const,
+          fetchedAt: 0,
+          windows: [],
+          reason: 'the transport grant could not be read',
+        }
+      }
+      const grant = readTransportGrant(record)
+      if (grant === undefined) {
+        return {
+          status: 'natively-managed' as const,
+          fetchedAt: 0,
+          windows: [],
+          reason: 'the transport grant is not readable by this plugin',
+        }
+      }
+      const snapshot = await resolveQuota(provider, {
+        token: grant.access,
+        ...(grant.orgId === undefined ? {} : { orgId: grant.orgId }),
+        ...(grant.region === undefined ? {} : { region: grant.region }),
+        ...(this.quotaFetch === undefined ? {} : { fetch: this.quotaFetch }),
+      })
+      // An expired stored token cannot be refreshed from here, so a refusal is
+      // "a model request will fix this", not a sign-in prompt.
+      const grantExpiry = usableExpiry(grant.expires)
+      if (snapshot.status === 'unauthorized' && grantExpiry !== undefined && grantExpiry <= Date.now()) {
+        return {
+          status: 'natively-managed' as const,
+          fetchedAt: snapshot.fetchedAt,
+          windows: [],
+          reason: 'the stored transport credential expired and only a model request refreshes it',
+        }
+      }
+      return snapshot
+    })
   }
 
   /**

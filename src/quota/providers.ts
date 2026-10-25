@@ -19,6 +19,10 @@ import type { QuotaSnapshot, QuotaWindow, QuotaWindowId } from './model.js'
 export interface QuotaProbeInput {
   token: string
   accountId?: string
+  /** Organization scope, only consumed by the Factory Droid probe. */
+  orgId?: string
+  /** API host residency (`'eu'` selects the EU host), only for Factory Droid. */
+  region?: string
   signal?: AbortSignal
   /** Injected for tests; the platform `fetch` in production. */
   fetch?: QuotaFetch
@@ -519,14 +523,18 @@ export const clineQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
  * seed routes in `src/providers.ts`, the sign-in routes in `src/oauth`).
  * Unknown ids have no entry by design and resolve to `absent`.
  *
+ * Transport routes sit beside the pool routes: the host resolves their
+ * `llm-omp-transports/<route>` grant and probes it read-only.
+ * - `factory-droid`: probed with the grant's own bearer plus the
+ *   `X-Factory-Org-Id` the payload carries; no rotation or write-back.
+ *
  * Deliberately absent, each verified against a reference implementation:
  * - `ollama-cloud`: the pinned reference (oh-my-pi `packages/ai/src/usage/ollama.ts`)
  *   reports no standalone quota endpoint for Ollama.
- * - `cursor` / `factory-droid`: transport routes (`llm-omp-transports/<route>`).
- *   Their grants are read only inside the host service, and both need vendor
- *   credential work (Cursor rotates the refresh-token grant on 401 and writes
- *   the successor back; Factory sends droid's org header), so a probe cannot
- *   reach them from the quota path.
+ * - `cursor`: absent because its only usable numbers are a **monthly** billing
+ *   bucket (`billingCycleEnd` / `usage-summary`), and this model has only
+ *   `session`/`week`; a monthly period is never relabelled as a week. Adding it
+ *   later needs a monthly window in the model, not a `week` relabel.
  * - `openrouter`: no reference in tokscale, magpie or oh-my-pi reads a usage
  *   endpoint, so `GET /api/v1/key`'s shape is unconfirmed and unshipped.
  *
@@ -534,6 +542,78 @@ export const clineQuotaProbe: QuotaProbe = async ({ token, signal, fetch }) => {
  * international endpoints, so a CN key reports `unauthorized`; add per-region
  * base URLs when a CN-hosted account must show quota.
  */
+/**
+ * Factory Droid's plan-usage read (`GET /api/billing/limits`, reference
+ * oh-my-pi `usage/factory-droid.ts`). Auth is the stored WorkOS bearer plus the
+ * `X-Factory-Org-Id` the grant itself carries, so the request needs no rotation
+ * and no other sign-in state.
+ */
+const FACTORY_DROID_CLIENT_VERSION = '0.237.0'
+// shortcut: client version pinned from oh-my-pi 0.237.0; bump it if the endpoint starts version-gating
+const FACTORY_DROID_LIMITS_PATH = '/api/billing/limits'
+
+function factoryDroidHost(region: string | undefined): string {
+  return region === 'eu' ? 'https://api.eu.factory.ai' : 'https://api.factory.ai'
+}
+
+/**
+ * Factory freezes a lapsed window at its last-used value instead of rolling it
+ * forward, so only an active window (`windowEnd >= now`) carries a meaning.
+ */
+function factoryDroidWindow(
+  input: unknown,
+  id: QuotaWindowId,
+  now: number,
+): QuotaWindow | undefined {
+  const bucket = asRecord(input)
+  if (bucket === undefined) return undefined
+  const usedPercent = toNumber(bucket.usedPercent)
+  const windowEnd = resetOf(bucket, ['windowEnd'])
+  const usedFraction = usedPercent === undefined ? undefined : fractionFromUsed(usedPercent)
+  if (usedFraction === undefined || windowEnd === undefined || windowEnd < now) return undefined
+  return { id, usedFraction, resetsAt: windowEnd }
+}
+
+export const factoryDroidQuotaProbe: QuotaProbe = async ({ token, orgId, region, signal, fetch }) => {
+  const read = await readQuotaJson(
+    `${factoryDroidHost(region)}${FACTORY_DROID_LIMITS_PATH}`,
+    {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+      'X-Client-Version': FACTORY_DROID_CLIENT_VERSION,
+      'X-Factory-Client': 'cli',
+      ...(orgId === undefined || orgId.length === 0 ? {} : { 'X-Factory-Org-Id': orgId }),
+    },
+    { fetch, signal },
+  )
+  if (!read.ok) return { status: read.status, fetchedAt: Date.now(), windows: [], reason: read.reason }
+  const body = read.body
+  const fetchedAt = Date.now()
+  if (body.usesTokenRateLimitsBilling === false) {
+    return {
+      status: 'absent',
+      fetchedAt,
+      windows: [],
+      reason: 'this account does not use token-rate-limit billing',
+    }
+  }
+  const limits = asRecord(body.limits)
+  if (limits === undefined) return { status: 'error', fetchedAt, windows: [], reason: 'no limits payload' }
+  // Two pools can be reported (Standard credits / Droid Core); one readout can
+  // only show one, so Standard wins and Core is the fallback.
+  const pool = asRecord(limits.standard) ?? asRecord(limits.core)
+  if (pool === undefined) return { status: 'error', fetchedAt, windows: [], reason: 'no usable credit pool' }
+  const windows = [
+    factoryDroidWindow(pool.fiveHour, 'session', fetchedAt),
+    factoryDroidWindow(pool.weekly, 'week', fetchedAt),
+  ].filter((window): window is QuotaWindow => window !== undefined)
+  if (windows.length === 0) {
+    // A monthly-only payload is not a week: never relabel it.
+    return { status: 'error', fetchedAt, windows: [], reason: 'no active five-hour or weekly window' }
+  }
+  return { status: 'ok', fetchedAt, windows }
+}
+
 const QUOTA_PROBES: Readonly<Record<string, QuotaProbe>> = Object.freeze({
   claude: claudeQuotaProbe,
   anthropic: claudeQuotaProbe,
@@ -552,6 +632,7 @@ const QUOTA_PROBES: Readonly<Record<string, QuotaProbe>> = Object.freeze({
   commandcode: commandcodeQuotaProbe,
   xai: xaiQuotaProbe,
   'cline-pass': clineQuotaProbe,
+  'factory-droid': factoryDroidQuotaProbe,
 })
 
 /** The probe for a route id, or `undefined` when the provider exposes no usage API. */

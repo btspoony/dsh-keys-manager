@@ -19224,3 +19224,272 @@ test('a fresh cache entry performs no credential read at all', async () => {
     await h.close()
   }
 })
+
+/**
+ * Factory Droid usage through the transport seam (`I-000317`).
+ *
+ * The route's grant lives on `llm-omp-transports/factory-droid`; the quota path
+ * reads it, probes once, and never writes. No pool record and no pi-ai
+ * projection may appear.
+ */
+const FACTORY_SCOPE = 'llm-omp-transports/factory-droid'
+const FACTORY_FLOW = {
+  key: FACTORY_SCOPE,
+  label: 'Factory Droid',
+  methods: [{ id: 'oauth', label: 'Sign in with Factory Droid' }],
+}
+
+function factoryGrant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    access: 'factory-access',
+    refresh: 'factory-refresh',
+    expires: Date.now() + 3_600_000,
+    orgId: 'org-42',
+    region: 'global',
+    ...overrides,
+  }
+}
+
+function factoryHarness(): Promise<Harness> {
+  return harness([...piAiFlows(), FACTORY_FLOW])
+}
+
+/** A Factory billing response with a live five-hour and weekly window. */
+function factoryLimits(): string {
+  const now = Date.now()
+  return JSON.stringify({
+    usesTokenRateLimitsBilling: true,
+    limits: {
+      standard: {
+        fiveHour: { usedPercent: 40, windowEnd: new Date(now + 3_600_000).toISOString() },
+        weekly: { usedPercent: 90, windowEnd: new Date(now + 86_400_000).toISOString() },
+      },
+    },
+  })
+}
+
+test('quota refresh reads a transport route grant and reports its windows', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    let authorization = ''
+    let org = ''
+    h.service.quotaFetch = (async (_url: string, init: RequestInit) => {
+      const headers = init.headers as Record<string, string>
+      authorization = headers.Authorization ?? ''
+      org = headers['X-Factory-Org-Id'] ?? ''
+      return new Response(factoryLimits(), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+
+    const state = await h.service.quotaRefresh('factory-droid')
+    const account = state.transportAccounts?.find(row => row.id === 'factory-droid')
+    assert.equal(account?.scope, FACTORY_SCOPE)
+    // The transport route is not a pi-ai pool row; nothing was harvested.
+    assert.equal(h.credentials.records.has('llm-pi-ai/factory-droid'), false)
+    const provider = state.providers.find(candidate => candidate.provider === 'factory-droid')!
+    assert.equal(provider.transport, true)
+    assert.equal(provider.keys.length, 0)
+    assert.equal(authorization, 'Bearer factory-access')
+    assert.equal(org, 'org-42')
+    // The snapshot is cached under the transport scope, with the windows the
+    // billing payload reported.
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+    const cached = caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)
+    assert.equal(cached?.status, 'ok')
+    assert.deepEqual(cached?.windows.map(window => window.id), ['session', 'week'])
+    assert.equal(cached?.windows[0]!.usedFraction, 0.4)
+    assert.equal(cached?.windows[1]!.usedFraction, 0.9)
+  } finally {
+    await h.close()
+  }
+})
+
+test('buildState attaches a transport row\'s cached quota and leaves it undefined otherwise', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    h.service.quotaFetch = (async () => new Response(factoryLimits(), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+
+    // Before any quota read: the row exists with no snapshot.
+    await h.service.refreshTransportAccounts()
+    const before = h.service.buildState().transportAccounts?.find(row => row.id === 'factory-droid')
+    assert.equal(before?.quota, undefined)
+
+    await h.service.quotaRefresh('factory-droid')
+    const after = h.service.buildState().transportAccounts?.find(row => row.id === 'factory-droid')
+    assert.equal(after?.quota?.status, 'ok')
+    assert.deepEqual(after?.quota?.windows.map(window => window.id), ['session', 'week'])
+    assert.equal(after?.quota?.windows[0]!.usedFraction, 0.4)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a transport snapshot is dropped when the grant is removed or replaced', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    h.service.quotaFetch = (async () => new Response(factoryLimits(), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+
+    await h.service.quotaRefresh('factory-droid')
+    assert.equal(caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)?.status, 'ok')
+
+    // Removal: the snapshot described the account that just went away.
+    await h.service.removeTransportAccount('factory-droid')
+    assert.equal(caches.get(FACTORY_SCOPE), undefined)
+    const removed = h.service.buildState().transportAccounts?.find(row => row.id === 'factory-droid')
+    assert.equal(removed?.quota, undefined)
+
+    // A committed sign-in is a new account too: drop what the old one cached.
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    await h.service.quotaRefresh('factory-droid')
+    assert.equal(caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)?.status, 'ok')
+    const flows = (h.ctx.authorization as unknown as { begin: (...args: unknown[]) => Promise<unknown> })
+    const realBegin = flows.begin
+    flows.begin = async () => ({ status: 'authorized' })
+    try {
+      await h.service.beginTransportLogin('factory-droid')
+      await new Promise(resolve => setTimeout(resolve, 0))
+    } finally {
+      flows.begin = realBegin
+    }
+    assert.equal(caches.get(FACTORY_SCOPE), undefined)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a transport route with no row keeps the clearing early return', async () => {
+  const h = await factoryHarness()
+  try {
+    let called = 0
+    h.service.quotaFetch = (async () => {
+      called += 1
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+
+    // Seed a snapshot for a route id that has neither a pi-ai record nor a
+    // transport row: the early return must delete it, not leave a ghost cache.
+    const ghost = new (await import('../src/quota/cache')).QuotaCache({ now: () => 0 })
+    await ghost.get('not-a-route', 'not-a-route', async () => ({
+      status: 'ok',
+      fetchedAt: 0,
+      windows: [{ id: 'week', usedFraction: 0.5, resetsAt: 60_000 }],
+    }))
+    caches.set('not-a-route', ghost)
+
+    const state = await h.service.quotaRefresh('not-a-route')
+    assert.equal(called, 0)
+    assert.equal(caches.has('not-a-route'), false)
+    assert.equal(ghost.peek('not-a-route', 'not-a-route'), undefined)
+    assert.equal(state.providers.some(provider => provider.provider === 'not-a-route'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a transport usage read never writes: 401 degrades, missing grant is natively managed', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    const before = JSON.stringify([...h.credentials.records.entries()])
+    const writeCalls: string[] = []
+    const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+    type ModifyArgs = Parameters<typeof realModify>
+    h.credentials.raw.modifyRecord = async (...args: ModifyArgs) => {
+      writeCalls.push('modifyRecord')
+      return realModify(...args)
+    }
+    const touch = vi.spyOn(h.store, 'touch')
+
+    h.service.quotaFetch = (async () => new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })) as typeof fetch
+    await h.service.quotaRefresh('factory-droid')
+    assert.equal(touch.mock.calls.length, 0)
+    assert.deepEqual(writeCalls, [])
+    assert.equal(JSON.stringify([...h.credentials.records.entries()]), before)
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+    const refused = caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)
+    assert.equal(refused?.status, 'unauthorized')
+    assert.deepEqual(refused?.windows, [])
+
+    // A grant that cannot be parsed is natively managed, not a sign-in prompt.
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: { refresh: 'no-access' } })
+    caches.delete(FACTORY_SCOPE)
+    await h.service.quotaRefresh('factory-droid')
+    assert.deepEqual(writeCalls, [])
+    assert.equal(touch.mock.calls.length, 0)
+    assert.equal(
+      caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)?.status,
+      'natively-managed',
+    )
+
+    // A missing record reads the same way.
+    h.credentials.records.delete(FACTORY_SCOPE)
+    caches.delete(FACTORY_SCOPE)
+    await h.service.quotaRefresh('factory-droid')
+    assert.equal(
+      caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)?.status,
+      'natively-managed',
+    )
+    assert.deepEqual(writeCalls, [])
+    touch.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('an expired transport grant is natively managed on 401, with one read and no writes', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, {
+      kind: 'grant',
+      payload: factoryGrant({ expires: Date.now() - 60_000 }),
+    })
+    let probes = 0
+    h.service.quotaFetch = (async () => {
+      probes += 1
+      return new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+
+    let modifyCalls = 0
+    const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+    type ModifyArgs = Parameters<typeof realModify>
+    h.credentials.raw.modifyRecord = async (...args: ModifyArgs) => {
+      modifyCalls += 1
+      return realModify(...args)
+    }
+    const touch = vi.spyOn(h.store, 'touch')
+
+    await h.service.quotaRefresh('factory-droid')
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+    const row = caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)
+    // The stored credential is past its expiry, so a 401 means "a model
+    // request will refresh it", not "sign in again".
+    assert.equal(row?.status, 'natively-managed')
+    assert.deepEqual(row?.windows, [])
+    assert.equal(probes, 1)
+    assert.equal(modifyCalls, 0)
+    assert.equal(touch.mock.calls.length, 0)
+    touch.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
