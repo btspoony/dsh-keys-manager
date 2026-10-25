@@ -18636,6 +18636,9 @@ test('quota matrix: a foreign route recovers from a transient read failure to ok
     ;(service as unknown as { quotaCaches: Map<string, unknown> }).quotaCaches.delete('anthropic')
     const recovered = quotaRowOf(await service.quotaRefresh('anthropic'))
     assert.equal(recovered.quota?.status, 'ok')
+    // The recovered read shows the same window identity as before, not just the
+    // right bearer token.
+    assert.deepEqual(recovered.quota?.windows.map(window => window.id), ['session'])
     assert.equal(fetched.at(-1)?.authorization, 'Bearer at-pool')
   } finally {
     await h.close()

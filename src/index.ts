@@ -6942,8 +6942,7 @@ export class KeysManagerService {
       // claiming the grant is unreadable.
       if (own !== undefined && own.kind === 'transient') return { kind: 'transient' }
       // Only a route this manager already classifies as foreign may borrow the
-      // projection's credential. Without the gate a transient credential-store
-      // error would pair this row's identity with another account's usage.
+      // projection's credential; anything else keeps its own row's identity.
       if (!this.foreignProjections.has(provider)) return { kind: 'missing' }
       return this.projectionQuotaCredential(provider)
     }
@@ -6989,10 +6988,12 @@ export class KeysManagerService {
   /**
    * The provider's live projection as a quota credential.
    *
-   * A record that exists but cannot be read (wrong kind, unrecognized payload)
-   * or a read that throws is classified `natively-managed`, never `missing`: we
-   * cannot prove no account serves the route, and claiming otherwise is exactly
-   * the false "sign in again" this plan removes.
+   * A record that exists but carries no readable grant (wrong kind, unrecognized
+   * payload) is classified `natively-managed`, never `missing`: we cannot prove
+   * no account serves the route, and claiming otherwise is exactly the false
+   * "sign in again" this plan removes. A read that keeps THROWING is different —
+   * it is retried once, then reported as `transient` (`error`), because a store
+   * failure says nothing about the credential.
    */
   private async projectionQuotaCredential(provider: string): Promise<QuotaCredential> {
     const records = this.credentialRecords()

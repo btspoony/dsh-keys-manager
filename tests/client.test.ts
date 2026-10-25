@@ -4491,6 +4491,7 @@ describe('quota surface', () => {
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
     expectLocaleParity([
       'quotaNativelyManaged',
+      'quotaNotReported',
       'quotaResetDue',
       'quotaSignInAgain',
       'quotaStale',
