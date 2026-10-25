@@ -44,11 +44,18 @@ export function modelPickerRows(view: TransportModelsView): Array<{ id: string; 
 }
 
 /**
- * How long a snapshot serves before the card asks for a new one (D4). This is
- * the server's MAXIMUM freshness (`ttlMs * (1 + jitterRatio)` = 300 s × 1.25);
- * asking earlier could be answered by a guaranteed cache hit.
+ * How long an `ok` snapshot serves before the card asks for a new one (D4).
+ * This is the server's MAXIMUM freshness (`ttlMs * (1 + jitterRatio)` =
+ * 300 s × 1.25); asking earlier could be answered by a guaranteed cache hit.
  */
 export const QUOTA_TTL_MS = 375_000
+
+/**
+ * How long a non-`ok` snapshot is trusted before the card retries it (D2).
+ * Long enough not to hammer private endpoints, short enough that a token pi-ai
+ * refreshed on model traffic shows up in the same session.
+ */
+export const QUOTA_RETRY_MS = 10 * 60 * 1000
 
 /** Short window labels; technical abbreviations, identical in both locales. */
 export const QUOTA_WINDOW_LABEL: Record<QuotaWindowId, string> = { session: '5h', week: 'W' }
@@ -83,13 +90,17 @@ export function tightestQuotaWindow(quotas: ReadonlyArray<QuotaView | undefined>
 }
 
 /**
- * True while any row still has no snapshot, or holds a usable one past its
- * TTL. The host's cache owns `fetchedAt` for every status and owns the retry
- * schedule for non-`ok` answers (10 s / 60 s backoff); only `ok` snapshots age
- * out on the client, otherwise a non-reporting row would be asked forever.
+ * True while any row still has no snapshot, holds a usable one past its TTL, or
+ * holds a non-`ok` one past the slower retry cadence.
+ *
+ * Every snapshot carries the host cache's `fetchedAt`, so a failed or
+ * non-reporting state is retried every `QUOTA_RETRY_MS` instead of sticking
+ * until the card remounts; the host's own per-row backoff still gates the
+ * vendor call behind it.
  */
 export function quotaNeedsRefresh(quotas: ReadonlyArray<QuotaView | undefined>, now: number): boolean {
-  return quotas.some(
-    quota => quota === undefined || (quota.status === 'ok' && now - quota.fetchedAt > QUOTA_TTL_MS),
-  )
+  return quotas.some(quota => {
+    if (quota === undefined) return true
+    return now - quota.fetchedAt > (quota.status === 'ok' ? QUOTA_TTL_MS : QUOTA_RETRY_MS)
+  })
 }

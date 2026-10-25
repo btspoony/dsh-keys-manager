@@ -663,6 +663,18 @@ type QuotaCredential =
   | { kind: 'natively-managed' }
   | { kind: 'missing' }
 
+/**
+ * Whether one OAuth row's stored access token is already expired.
+ *
+ * Only pi-ai refreshes these grants, and only on model traffic, so an expired
+ * row is a refresh problem the user cannot fix from this card. A missing or
+ * unusable `expiresAt` counts as NOT expired: the conservative label wins.
+ */
+function credentialExpired(key: KeyRecord, now: number): boolean {
+  const expiresAt = key.oauth?.expiresAt
+  return typeof expiresAt === 'number' && Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt <= now
+}
+
 /** One pool grant read: usable, or the read itself failed. */
 type QuotaPoolGrant =
   | { kind: 'credential'; source: 'pool'; token: string; accountId?: string }
@@ -6869,6 +6881,17 @@ export class KeysManagerService {
           fetchedAt: snapshot.fetchedAt,
           windows: [],
           reason: 'the serving projection credential was refused',
+        }
+      }
+      // A pool-sourced 401 with a stored token that has already expired is a
+      // refresh problem, not a sign-in prompt: re-signing-in this row cannot
+      // help, and pi-ai only refreshes on model traffic (D1).
+      if (credential.source === 'pool' && snapshot.status === 'unauthorized' && credentialExpired(key, Date.now())) {
+        return {
+          status: 'natively-managed' as const,
+          fetchedAt: snapshot.fetchedAt,
+          windows: [],
+          reason: 'the stored credential expired and only a model request refreshes it',
         }
       }
       return snapshot

@@ -18414,13 +18414,22 @@ async function foreignQuotaFixture(options: {
   projectionReadFailures?: number
   /** Vendor answer for probes; 401 exercises a refused projection token. */
   fetchStatus?: number
+  /** The OAuth row's stored token expiry (`oauth.expiresAt`). */
+  rowExpiresAt?: number
 } = {}): Promise<ForeignQuotaFixture> {
   const h = await harness()
   await h.service.adoptProvider('anthropic')
   const deadRef = 'keys-manager/anthropic-dead00000000'
   const managed = h.store.provider('anthropic')!
   // Replace whatever adoption imported with the single OAuth row under test.
-  managed.keys = [accountRow({ provider: 'anthropic', accountId: 'acc-pool', grantRef: deadRef })]
+  managed.keys = [
+    accountRow({
+      provider: 'anthropic',
+      accountId: 'acc-pool',
+      grantRef: deadRef,
+      ...(options.rowExpiresAt === undefined ? {} : { expiresAt: options.rowExpiresAt }),
+    }),
+  ]
   if (options.poolGrant !== undefined) h.credentials.records.set(deadRef, options.poolGrant)
   // The route IS served: a projection grant exists under the pi-ai record key
   // and nothing in it matches the pool row (different refresh, no
@@ -18629,6 +18638,58 @@ test('quota matrix: a foreign route recovers from transient read failures to ok'
     const recovered = quotaRowOf(await service.quotaRefresh('anthropic'))
     assert.equal(recovered.quota?.status, 'ok')
     assert.deepEqual(recovered.quota?.windows.map(window => window.id), ['session'])
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: an expired pool credential reports natively-managed on 401', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    rowExpiresAt: Date.now() - 60_000,
+    fetchStatus: 401,
+  })
+  try {
+    const touch = vi.spyOn(h.store, 'touch')
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // Only pi-ai refreshes this token (on model traffic), so telling the user
+    // to sign in again would be a prompt they cannot satisfy here.
+    assert.equal(row.quota?.status, 'natively-managed')
+    assert.deepEqual(row.quota?.windows, [])
+    assert.equal(fetched.length, 1)
+    assert.equal(fetched[0]!.authorization, 'Bearer at-pool')
+    assert.equal(touch.mock.calls.length, 0)
+    touch.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: an unexpired pool credential keeps the unauthorized state on 401', async () => {
+  const { h, service, fetched } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    rowExpiresAt: Date.now() + 3_600_000,
+    fetchStatus: 401,
+  })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // A live token refused by the vendor is a real auth problem: actionable.
+    assert.equal(row.quota?.status, 'unauthorized')
+    assert.equal(fetched.length, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota matrix: a missing expiresAt keeps the conservative unauthorized state', async () => {
+  const { h, service } = await foreignQuotaFixture({
+    poolGrant: { kind: 'grant', payload: { type: 'oauth', refresh: 'rt-pool', access: 'at-pool' } },
+    fetchStatus: 401,
+  })
+  try {
+    const row = quotaRowOf(await service.quotaRefresh('anthropic'))
+    // Older rows carry no expiry; never guess "expired" from a missing value.
+    assert.equal(row.quota?.status, 'unauthorized')
   } finally {
     await h.close()
   }
