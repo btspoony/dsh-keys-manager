@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import React from 'react'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
-import { cooldownMinutes, cooldownMs, graceMinutes, graceMs, quotaNeedsRefresh } from '../src/client/format'
+import { QUOTA_RETRY_MS, cooldownMinutes, cooldownMs, graceMinutes, graceMs, quotaNeedsRefresh } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
 import { KeysManagerBody, KeysManagerCard, oauthCapable, originOf } from '../src/client/ui'
 import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, QuotaView, QuotaWindowId, QuotaWindowView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
@@ -4190,11 +4190,11 @@ describe('quota surface', () => {
     const base = Date.now()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
     try {
-      // The host's cache owns `fetchedAt` for every status and owns non-`ok`
-      // retry (backoff); only `ok` snapshots age on the client, so a
-      // non-reporting row is never asked again (review findings F1/FIX-6).
+      // A fresh non-`ok` snapshot waits for the slower retry cadence: three
+      // minute ticks are still inside the ten-minute window, so the row is not
+      // asked again (review findings F1/FIX-6 + this plan's D2).
       const { view, harness, store } = await mountExpanded(
-        quotaState({ status: 'absent', fetchedAt: 0, windows: [] }),
+        quotaState({ status: 'absent', fetchedAt: Date.now(), windows: [] }),
       )
       try {
         expect(quotaRefreshes(harness)).toBe(0)
@@ -4343,9 +4343,74 @@ describe('quota surface', () => {
     expect(quotaNeedsRefresh([fresh], 374_999)).toBe(false)
     expect(quotaNeedsRefresh([fresh], 375_000)).toBe(false)
     expect(quotaNeedsRefresh([fresh], 375_001)).toBe(true)
-    // Non-`ok` statuses never age: the host owns their retry schedule.
-    expect(quotaNeedsRefresh([{ status: 'absent', fetchedAt: 0, windows: [] }], Number.MAX_SAFE_INTEGER)).toBe(false)
+    // Non-`ok` statuses age on the slower retry cadence, never on the ok TTL.
+    const absent = { status: 'absent' as const, fetchedAt: 0, windows: [] }
+    expect(quotaNeedsRefresh([absent], QUOTA_RETRY_MS)).toBe(false)
+    expect(quotaNeedsRefresh([absent], QUOTA_RETRY_MS + 1)).toBe(true)
+    expect(quotaNeedsRefresh([{ status: 'error', fetchedAt: 0, windows: [] }], QUOTA_RETRY_MS + 1)).toBe(true)
     expect(quotaNeedsRefresh([undefined], 0)).toBe(true)
+  })
+
+  test('a non-ok snapshot older than ten minutes refreshes once per cadence, keeping its label', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    const staleQuota = (): QuotaView => ({ status: 'natively-managed', fetchedAt: Date.now(), windows: [] })
+    const stale = quotaState({ status: 'natively-managed', fetchedAt: base - 11 * 60_000, windows: [] })
+    // The host re-stamps `fetchedAt` on every read, so each answer is fresh.
+    let current = stale
+    const answer = (endpoint: string): RpcResult => {
+      if (endpoint === 'keysManager/quotaRefresh') current = quotaState(staleQuota())
+      return { ok: true, value: current }
+    }
+    const { view, harness, store } = await mountExpanded(stale, answer)
+    const tickTo = async (at: number): Promise<void> => {
+      clock.mockReturnValue(at)
+      store.tick()
+      view.render()
+      await view.flush()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    try {
+      // The stale row is retried as soon as the card opens…
+      expect(quotaRefreshes(harness)).toBe(1)
+      // …and the last known label stays on screen while/after the retry.
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('由 DSH 原生管理')
+
+      // One cadence later the last read is stale again: exactly one more read.
+      await tickTo(base + 11 * 60_000)
+      expect(quotaRefreshes(harness)).toBe(2)
+
+      // A tick inside the window does not read again, and the label survives.
+      await tickTo(base + 12 * 60_000)
+      expect(quotaRefreshes(harness)).toBe(2)
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('由 DSH 原生管理')
+    } finally {
+      view.unmount()
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a non-ok snapshot younger than ten minutes is not retried', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    const young = quotaState({ status: 'natively-managed', fetchedAt: base - 9 * 60_000, windows: [] })
+    const { view, harness, store } = await mountExpanded(young, () => ({ ok: true, value: young }))
+    try {
+      expect(quotaRefreshes(harness)).toBe(0)
+      // Nine minutes plus one lands exactly on the cadence: still not older.
+      clock.mockReturnValue(base + 60_000)
+      store.tick()
+      view.render()
+      await view.flush()
+      await new Promise(resolve => setTimeout(resolve, 0))
+      expect(quotaRefreshes(harness)).toBe(0)
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('由 DSH 原生管理')
+    } finally {
+      view.unmount()
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
   })
 
   test('the quota key set holds EN+ZH parity in both locale sources', () => {
