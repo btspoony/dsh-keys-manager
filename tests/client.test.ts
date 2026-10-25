@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import React from 'react'
 import { apply } from '../src/client/index'
 import { createStore } from '../src/client/store'
-import { QUOTA_RETRY_MS, cooldownMinutes, cooldownMs, graceMinutes, graceMs, quotaNeedsRefresh } from '../src/client/format'
+import { QUOTA_RETRY_MS, QUOTA_TTL_MS, cooldownMinutes, cooldownMs, graceMinutes, graceMs, quotaNeedsRefresh } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
 import { KeysManagerBody, KeysManagerCard, oauthCapable, originOf } from '../src/client/ui'
 import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, QuotaView, QuotaWindowId, QuotaWindowView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
@@ -4302,7 +4302,7 @@ describe('quota surface', () => {
     }
   })
 
-  test('a successful but still-stale answer earns exactly one real retry', async () => {
+  test('a successful but still-stale answer is retried once per cadence window', async () => {
     const base = Date.now()
     const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
     // Test sentinel for a permanently stale `ok` row: `fetchedAt: 0` is far
@@ -4310,25 +4310,26 @@ describe('quota surface', () => {
     // value the host emits — the cache stamps `fetchedAt: now`).
     const stale = quotaState({ status: 'ok', fetchedAt: 0, windows: [quotaWindow('week', 0.5, 30)] })
     const { view, harness, store } = await mountExpanded(stale, { ok: true, value: stale })
-    try {
-      // Expand issues the first read; its answer leaves the rows unchanged.
-      expect(quotaRefreshes(harness)).toBe(1)
-      // The next minute tick must ISSUE the retry, not just plan it.
-      clock.mockReturnValue(base + 60_000)
+    const tickTo = async (at: number): Promise<void> => {
+      clock.mockReturnValue(at)
       store.tick()
       view.render()
       await view.flush()
       await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    try {
+      // Expand issues the first read; its answer leaves the rows unchanged.
+      expect(quotaRefreshes(harness)).toBe(1)
+      // Inside the cadence window nothing is re-issued, and the stale numbers
+      // keep rendering.
+      await tickTo(base + 60_000)
+      expect(quotaRefreshes(harness)).toBe(1)
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('W 50% · 2 天')
+      // One cadence window later the unchanged row is retried exactly once…
+      await tickTo(base + 11 * 60_000)
       expect(quotaRefreshes(harness)).toBe(2)
-      // The retry also comes back unchanged: the budget is spent, so the next
-      // ticks stay at two RPCs until the signature moves or the card remounts.
-      for (let minute = 2; minute <= 3; minute += 1) {
-        clock.mockReturnValue(base + minute * 60_000)
-        store.tick()
-        view.render()
-        await view.flush()
-        await new Promise(resolve => setTimeout(resolve, 0))
-      }
+      // …and a tick inside the next window does not read again.
+      await tickTo(base + 12 * 60_000)
       expect(quotaRefreshes(harness)).toBe(2)
       expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('W 50% · 2 天')
     } finally {
@@ -4343,12 +4344,48 @@ describe('quota surface', () => {
     expect(quotaNeedsRefresh([fresh], 374_999)).toBe(false)
     expect(quotaNeedsRefresh([fresh], 375_000)).toBe(false)
     expect(quotaNeedsRefresh([fresh], 375_001)).toBe(true)
+    // A stale last-good `ok` snapshot is re-checked on the slow cadence, not
+    // trusted for the cache's 24 h retention and not served for a day.
+    const staleOk = { status: 'ok' as const, fetchedAt: 0, stale: true, windows: [] }
+    // Not the fresh TTL: a stale row must not be re-read every 375 s.
+    expect(quotaNeedsRefresh([staleOk], QUOTA_TTL_MS + 1)).toBe(false)
+    expect(quotaNeedsRefresh([staleOk], QUOTA_RETRY_MS)).toBe(false)
+    expect(quotaNeedsRefresh([staleOk], QUOTA_RETRY_MS + 1)).toBe(true)
     // Non-`ok` statuses age on the slower retry cadence, never on the ok TTL.
     const absent = { status: 'absent' as const, fetchedAt: 0, windows: [] }
     expect(quotaNeedsRefresh([absent], QUOTA_RETRY_MS)).toBe(false)
     expect(quotaNeedsRefresh([absent], QUOTA_RETRY_MS + 1)).toBe(true)
     expect(quotaNeedsRefresh([{ status: 'error', fetchedAt: 0, windows: [] }], QUOTA_RETRY_MS + 1)).toBe(true)
     expect(quotaNeedsRefresh([undefined], 0)).toBe(true)
+  })
+
+  test('a stale usage reading is replaced when the retry reports another state', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    // Last-good numbers behind a failed probe: stale, and past the cadence.
+    const stale = quotaState({
+      status: 'ok',
+      fetchedAt: base - 11 * 60_000,
+      stale: true,
+      windows: [quotaWindow('week', 0.5, 30)],
+    })
+    const refreshed = quotaState({ status: 'natively-managed', fetchedAt: base, windows: [] })
+    let current = stale
+    const answer = (endpoint: string): RpcResult => {
+      if (endpoint === 'keysManager/quotaRefresh') current = refreshed
+      return { ok: true, value: current }
+    }
+    const { view, harness } = await mountExpanded(stale, answer)
+    try {
+      expect(quotaRefreshes(harness)).toBe(1)
+      // The old numbers are gone: the card now shows the honest state.
+      expect(hostNodes(view.nodes).map(node => node.text).join('')).not.toContain('W 50%')
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('由 DSH 原生管理')
+    } finally {
+      view.unmount()
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
   })
 
   test('a non-ok snapshot older than ten minutes refreshes once per cadence, keeping its label', async () => {

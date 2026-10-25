@@ -98,9 +98,16 @@ export class QuotaCache {
     const previous = this.entries.get(key)
     // The cache owns the clock, so probe time and test time cannot diverge.
     const stamped: QuotaSnapshot = { ...result, fetchedAt: now }
-    const lastGood = stamped.status === 'ok' ? stamped : previous?.lastGood
+    // Only transient outcomes keep the last-good numbers for display. A
+    // deterministic fact about the credential (`unauthorized`, or the
+    // host-synthesized `natively-managed`) must replace them: serving old
+    // numbers there would hide a refusal or an expired credential for up to
+    // `staleMs`, and no client-side retry could ever surface the truth.
+    const transient = stamped.status === 'error' || stamped.status === 'absent'
+    const lastGood =
+      stamped.status === 'ok' ? stamped : transient ? previous?.lastGood : undefined
     const keepLastGood =
-      stamped.status !== 'ok' && lastGood !== undefined && now - lastGood.fetchedAt <= this.staleMs
+      transient && lastGood !== undefined && now - lastGood.fetchedAt <= this.staleMs
     const served: QuotaSnapshotView =
       keepLastGood && lastGood !== undefined ? { ...lastGood, stale: true } : { ...stamped, stale: false }
     this.entries.set(key, {

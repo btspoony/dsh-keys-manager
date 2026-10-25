@@ -101,6 +101,11 @@ export function tightestQuotaWindow(quotas: ReadonlyArray<QuotaView | undefined>
 export function quotaNeedsRefresh(quotas: ReadonlyArray<QuotaView | undefined>, now: number): boolean {
   return quotas.some(quota => {
     if (quota === undefined) return true
-    return now - quota.fetchedAt > (quota.status === 'ok' ? QUOTA_TTL_MS : QUOTA_RETRY_MS)
+    if (quota.status !== 'ok') return now - quota.fetchedAt > QUOTA_RETRY_MS
+    // A stale last-good `ok` snapshot (kept by the host cache over a failed
+    // probe) is display data, not a fact: re-check it on the slow cadence
+    // instead of trusting it for the cache's 24 h retention.
+    if (quota.stale === true) return now - quota.fetchedAt > QUOTA_RETRY_MS
+    return now - quota.fetchedAt > QUOTA_TTL_MS
   })
 }
