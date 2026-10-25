@@ -6826,7 +6826,11 @@ export class KeysManagerService {
       pausedKeyCount: allKeys.filter(key => key.status === 'paused').length,
       bindingsCount: Object.keys(this.store.state.sessionBindings).length,
       warnings,
-      transportAccounts: this.transportRows.map(row => ({ ...row })),
+      transportAccounts: this.transportRows.map(row => {
+        // Same projection the pool rows get; the cache key is the row's scope.
+        const quota = this.quotaViewFor(row.scope, row.scope)
+        return quota === undefined ? { ...row } : { ...row, quota }
+      }),
     }
   }
 

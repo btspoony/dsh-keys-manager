@@ -871,6 +871,9 @@ function AccountRow({ provider, keyRecord, now, onReauthenticate, quotaRejected 
 
 interface TransportAccountRowProps {
   account: TransportAccountView
+  now: number
+  /** The last usage read for this route was rejected. */
+  quotaRejected?: boolean
 }
 
 /**
@@ -883,7 +886,7 @@ interface TransportAccountRowProps {
  * IS the route's live credential. Removal deletes that record, and sign-in
  * starts the transports package's own flow.
  */
-function TransportAccountRow({ account }: TransportAccountRowProps): React.ReactElement {
+function TransportAccountRow({ account, now, quotaRejected }: TransportAccountRowProps): React.ReactElement {
   const runtime = useRuntime()
   const t = useT()
   const locale = useLocaleId()
@@ -942,6 +945,7 @@ function TransportAccountRow({ account }: TransportAccountRowProps): React.React
       : h('div', { className: 'km-key-last' },
           h('div', { className: 'km-key-time' }, t('transportExpires', { time: formatClock(account.expiresAt, locale, t) })),
         ),
+    quotaInline(account, t, now, quotaRejected),
     h('div', { className: 'km-key-actions' },
       h(Button, {
         size: 'small',
@@ -1120,7 +1124,12 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
  * only on an OAuth row (it has a sign-in to offer); an API key has none, so
  * that row stays silent too. `stale` keeps the numbers with a marker.
  */
-function quotaInline(row: KeyView, t: T, now: number, rejected = false): React.ReactElement | null {
+function quotaInline(
+  row: { quota?: KeyView['quota']; kind?: KeyView['kind'] },
+  t: T,
+  now: number,
+  rejected = false,
+): React.ReactElement | null {
   const windows = quotaWindows(row.quota)
   if (windows.length === 0) {
     if (row.quota?.status === 'natively-managed') {
@@ -1160,11 +1169,15 @@ function quotaSignature(provider: ProviderView): string {
  * TTL. Usage itself renders on the account rows, so this component emits no
  * surface of its own.
  */
-function QuotaRefresh({ provider, now, onRejected }: {
+function QuotaRefresh({ provider, now, onRejected, quotas, extraSignature = '' }: {
   provider: ProviderView
   now: number
   /** Report a rejected read so the row can say "not reported". */
   onRejected: (rejected: boolean) => void
+  /** Every quota row this card shows (pool keys plus a transport account). */
+  quotas: ReadonlyArray<ProviderView['keys'][number]['quota']>
+  /** Extra fingerprint for a row outside `provider.keys` (the transport account). */
+  extraSignature?: string
 }): null {
   const runtime = useRuntime()
   // In-flight marker only: it coalesces a double render while the read runs.
@@ -1176,12 +1189,11 @@ function QuotaRefresh({ provider, now, onRejected }: {
   // every QUOTA_RETRY_MS: never once per minute, and never "once for the
   // lifetime of this mount".
   const lastAttemptAt = React.useRef<number | null>(null)
-  const quotas = provider.keys.map(key => key.quota)
   const needsRefresh = quotaNeedsRefresh(quotas, now)
   // Re-evaluated once a minute so a TTL/cadence expiry refreshes an already
   // open card without a timer of its own (the page tick supplies `now`).
   const minute = Math.floor(now / 60_000)
-  const signature = quotaSignature(provider)
+  const signature = `${quotaSignature(provider)}${extraSignature}`
 
   React.useEffect(() => {
     if (!needsRefresh) {
@@ -1394,7 +1406,7 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
       transport
         ? h('div', { className: 'km-transport-body' },
             transportAccount !== undefined
-              ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount }))
+              ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount, now, quotaRejected }))
               : h('div', { className: 'km-muted' }, t('transportProviderHint')),
             h(TransportModels, { route: provider.provider }),
           )
@@ -1467,7 +1479,22 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
           ),
         ),
         adding ? h(KeyForm, { provider, onDone: () => setAdding(false), autoFocus: true }) : null,
-        provider.keys.length > 0 ? h(QuotaRefresh, { provider, now, onRejected: setQuotaRejected }) : null,
+        provider.keys.length > 0 || transportAccount !== undefined
+          ? h(QuotaRefresh, {
+              provider,
+              now,
+              onRejected: setQuotaRejected,
+              quotas: [
+                ...provider.keys.map(key => key.quota),
+                // A transport account is its route's only row: an absent
+                // snapshot must still count as "needs a read".
+                ...(transportAccount === undefined ? [] : [transportAccount.quota]),
+              ],
+              ...(transportAccount === undefined
+                ? {}
+                : { extraSignature: `:${transportAccount.quota?.status ?? 'none'}:${transportAccount.quota?.fetchedAt ?? 0}` }),
+            })
+          : null,
         provider.keys.length === 0
           // Round-4 finding 4 (I-000085): the empty body must name an action
           // this route actually offers. Add key is disabled without key
@@ -2086,6 +2113,7 @@ function KeysManagerBody(): React.ReactElement {
         ? h('div', { className: 'km-provider-list' }, visibleOrphans.map(account => h(TransportAccountRow, {
             key: account.scope,
             account,
+            now,
           })))
         : null,
     ) : null,

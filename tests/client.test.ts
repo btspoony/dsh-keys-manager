@@ -3004,6 +3004,47 @@ describe('transport account surface', () => {
     expect(dicts.zh.transportRemoveTitle).toContain('{name}')
   })
 
+  test('a transport account row renders its usage line, and a snapshotless row renders none', async () => {
+    const quota: QuotaView = {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      windows: [quotaWindow('week', 0.4, 60 * 60 * 1000)],
+    }
+    const withQuota = makeState()
+    withQuota.providers = [...withQuota.providers, makeTransportProvider()]
+    withQuota.transportAccounts = [makeTransportAccount({ quota })]
+    const harness = makeContext({ ok: true, value: withQuota })
+    setRuntimeContext({ ctx: harness.ctx, store: createStore(harness.ctx) })
+    const view = mountView(KeysManagerBody)
+    await view.flush()
+    openProviderCard(view, 'cursor')
+    view.render()
+    await view.flush()
+    const inline = findByClass(descendants(view.nodes, providerCard(view.nodes, 'cursor')), 'km-quota-inline')
+    expect(inline).toHaveLength(1)
+    expect(inline[0]!.text).toContain('W 40%')
+    view.unmount()
+    setRuntimeContext(null)
+
+    const withoutQuota = makeState()
+    withoutQuota.providers = [...withoutQuota.providers, makeTransportProvider()]
+    withoutQuota.transportAccounts = [makeTransportAccount()]
+    const bare = makeContext({ ok: true, value: withoutQuota })
+    setRuntimeContext({ ctx: bare.ctx, store: createStore(bare.ctx) })
+    const bareView = mountView(KeysManagerBody)
+    await bareView.flush()
+    // Expanding the transport card reads usage, but with no snapshot and a
+    // pending answer the row must stay free of a quota line.
+    const head = findByClass(bareView.nodes, 'km-provider-head')
+      .find(node => descendants(bareView.nodes, node).some(inner => inner.text === 'cursor'))!
+    ;(head.props!.onClick as () => void)()
+    bareView.render()
+    await bareView.flush()
+    expect(findByClass(descendants(bareView.nodes, providerCard(bareView.nodes, 'cursor')), 'km-quota-inline')).toHaveLength(0)
+    bareView.unmount()
+    setRuntimeContext(null)
+  })
+
   test('a transport route is a provider card with its account inside and no standalone section', async () => {
     const state = makeState()
     state.providers = [...state.providers, makeTransportProvider()]

@@ -19306,6 +19306,30 @@ test('quota refresh reads a transport route grant and reports its windows', asyn
   }
 })
 
+test('buildState attaches a transport row\'s cached quota and leaves it undefined otherwise', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, { kind: 'grant', payload: factoryGrant() })
+    h.service.quotaFetch = (async () => new Response(factoryLimits(), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+
+    // Before any quota read: the row exists with no snapshot.
+    await h.service.refreshTransportAccounts()
+    const before = h.service.buildState().transportAccounts?.find(row => row.id === 'factory-droid')
+    assert.equal(before?.quota, undefined)
+
+    await h.service.quotaRefresh('factory-droid')
+    const after = h.service.buildState().transportAccounts?.find(row => row.id === 'factory-droid')
+    assert.equal(after?.quota?.status, 'ok')
+    assert.deepEqual(after?.quota?.windows.map(window => window.id), ['session', 'week'])
+    assert.equal(after?.quota?.windows[0]!.usedFraction, 0.4)
+  } finally {
+    await h.close()
+  }
+})
+
 test('a transport route with no row keeps the clearing early return', async () => {
   const h = await factoryHarness()
   try {

@@ -257,6 +257,8 @@ export interface TransportAccountView {
   status: TransportAccountStatus
   /** Derived from {@link status}: true only while it is `'active'`. */
   active: boolean
+  /** Latest cached plan usage; absent until a quota refresh ran for this route. */
+  quota?: QuotaView
 }
 
 /** One model row a transport route can advertise. */
