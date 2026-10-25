@@ -132,8 +132,11 @@ export interface StateDocument {
 }
 
 /** One plan window projected into an account row. */
+/** The plan windows a card can render; the one declaration every layer imports. */
+export type QuotaWindowId = 'session' | 'week'
+
 export interface QuotaWindowView {
-  id: 'session' | 'week'
+  id: QuotaWindowId
   /** Share of the window already used, `0`..`1`. */
   usedFraction: number
   /** Reset time as epoch milliseconds. */

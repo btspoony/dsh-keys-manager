@@ -14,10 +14,17 @@ import type { QuotaStatus } from './model.js'
 /** Injected for tests; the platform `fetch` in production. */
 export type QuotaFetch = typeof fetch
 
+/**
+ * The failure classes a probe read can produce. `natively-managed` is
+ * host-synthesized (the route is served by a projection this process cannot
+ * read), so the probe layer must not be able to name it (`I-000315`).
+ */
+export type QuotaReadFailure = Exclude<QuotaStatus, 'ok' | 'natively-managed'>
+
 /** A parsed 2xx body, or the classified reason the read produced nothing. */
 export type QuotaRead =
   | { ok: true; body: Record<string, unknown> }
-  | { ok: false; status: Exclude<QuotaStatus, 'ok'>; reason: string }
+  | { ok: false; status: QuotaReadFailure; reason: string }
 
 /** Per-call overrides; all optional so probes stay one-liners. */
 export interface QuotaReadOptions {

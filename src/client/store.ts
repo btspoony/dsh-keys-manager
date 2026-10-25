@@ -44,7 +44,16 @@ async function withDeadline<T>(work: Promise<T>, ms: number, label: string): Pro
 }
 
 /** Create the store bound to one connected Client context. */
-export function createStore(ctx: ClientContext): ClientStore {
+/** How long a quota read may stay unanswered before the card reports it (`I-000322`). */
+export const QUOTA_WAIT_MS = 30_000
+
+/** Overrides, test-only. */
+export interface ClientStoreOptions {
+  /** Bound on one quota read; defaults to {@link QUOTA_WAIT_MS}. */
+  quotaWaitMs?: number
+}
+
+export function createStore(ctx: ClientContext, options: ClientStoreOptions = {}): ClientStore {
   let snapshot: ClientSnapshot = {
     status: 'idle',
     state: null,
@@ -69,6 +78,10 @@ export function createStore(ctx: ClientContext): ClientStore {
   // One in-flight quota read per provider, so a double render or a retry click
   // cannot double a vendor probe.
   const quotaInFlight = new Map<string, Promise<ActionOutcome>>()
+  // Per-provider request generation: a read that settles after its bound (or
+  // after a newer read was issued) must not install anything (`I-000322`).
+  const quotaGenerations = new Map<string, number>()
+  const quotaWaitMs = options.quotaWaitMs ?? QUOTA_WAIT_MS
   const listeners = new Set<() => void>()
   const emit = (): void => {
     for (const listener of [...listeners]) {
@@ -317,29 +330,69 @@ export function createStore(ctx: ClientContext): ClientStore {
       // Capture the borrow generation exactly like `load` does: the answer must
       // be judged against the window it was STARTED in.
       const generation = testGeneration
+      // Per-provider stamp: an answer that outlives its bound is discarded by
+      // comparing this value, never installed.
+      const stamp = (quotaGenerations.get(provider) ?? 0) + 1
+      quotaGenerations.set(provider, stamp)
       let dropped = false
-      const request = (async (): Promise<ActionOutcome> => {
+      let settled = false
+      /** Install one answer; shared by the live path and the abandoned tail. */
+      const install = (state: StateView): void => {
+        // Same install guard as every other state answer: a view that lands
+        // inside a row test's borrow window carries the tested row as
+        // projected with its activation disabled. Drop it and let the idle
+        // tail re-read once that window closes.
+        if (activeTests > 0 || testGeneration !== generation) {
+          stateDropped = true
+          dropped = true
+        } else {
+          // A background read must not clear a banner the user has not
+          // acknowledged; the idle path loads with `keepError` for the same
+          // reason.
+          update({ status: 'ready', state, now: Date.now(), error: snapshot.error })
+        }
+      }
+      // The read itself. It keeps running after the caller gave up, and then
+      // throws its answer away on the stamp check below (`I-000322`).
+      //
+      // It must NEVER reject: once the race below settled on the timeout,
+      // nobody is listening any more, and an unhandled rejection terminates a
+      // Node process (and fires `unhandledrejection` in a browser).
+      const read = (async (): Promise<ActionOutcome> => {
         try {
           const result = await rpc('quotaRefresh', { provider })
-          if (!result.ok) throw new Error(result.error.message)
-          const state = result.value as StateView
-          // Same install guard as every other state answer: a view that lands
-          // inside a row test's borrow window carries the tested row as
-          // projected with its activation disabled. Drop it and let the idle
-          // tail re-read once that window closes.
-          if (activeTests > 0 || testGeneration !== generation) {
-            stateDropped = true
-            dropped = true
-          } else {
-            // A background read must not clear a banner the user has not
-            // acknowledged; the idle path loads with `keepError` for the same
-            // reason.
-            update({ status: 'ready', state, now: Date.now(), error: snapshot.error })
+          if (!result.ok) return { ok: false, error: result.error.message }
+          if (quotaGenerations.get(provider) !== stamp) {
+            return { ok: false, error: 'superseded by a newer usage read' }
           }
+          const state = result.value as StateView
+          if (!settled) install(state)
           return { ok: true, value: state }
         } catch (error) {
           return { ok: false, error: messageOf(error) }
+        }
+      })()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const request = (async (): Promise<ActionOutcome> => {
+        try {
+          const answer = await Promise.race([
+            read,
+            new Promise<'timed-out'>(resolve => {
+              timer = setTimeout(() => resolve('timed-out'), quotaWaitMs)
+            }),
+          ])
+          if (answer === 'timed-out') {
+            // Give up on this read for the caller, and invalidate it so a late
+            // settle cannot overwrite whatever a newer read installs.
+            quotaGenerations.set(provider, stamp + 1)
+            return { ok: false, error: 'the usage read did not answer in time' }
+          }
+          return answer
+        } catch (error) {
+          return { ok: false, error: messageOf(error) }
         } finally {
+          if (timer !== undefined) clearTimeout(timer)
+          settled = true
           quotaInFlight.delete(provider)
           // A borrow that already closed before this answer arrived has no
           // later tail run to recover the dropped view, so recover it here.

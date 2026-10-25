@@ -1139,6 +1139,68 @@ describe('quota read install guards', () => {
     expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
   })
 
+  test('a quota answer that arrives after the borrow window closed is still recovered', async () => {
+    const borrowed = makeState()
+    borrowed.providers[0]!.keys[0]!.projected = true
+    let releaseQuota: () => void = () => {}
+    const quotaGate = new Promise<void>(resolve => {
+      releaseQuota = resolve
+    })
+    const harness = makeContext({ ok: true, value: makeState() })
+    const baseCall = harness.ctx.connection.rpc.call
+    ;(harness.ctx.connection.rpc as { call: typeof baseCall }).call = async (channel, endpoint, payload) => {
+      harness.calls.push({ channel, endpoint, payload })
+      if (endpoint === 'keysManager/quotaRefresh') {
+        // The borrow window closes while this answer is still in flight.
+        await quotaGate
+        return { ok: true, value: borrowed }
+      }
+      return baseCall(channel, endpoint, payload)
+    }
+    const store = createStore(harness.ctx)
+    await store.load()
+
+    // Start a row test (borrow window opens), start the quota read, then finish
+    // the test BEFORE the quota answer lands.
+    const testRequest = store.testKey('zai-coding-cn', 'k_aaaaaaaa')
+    const quotaRequest = store.refreshQuota('zai-coding-cn')
+    await testRequest
+    await new Promise(resolve => setTimeout(resolve, 0))
+    releaseQuota()
+    await quotaRequest
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The answer describes a window that no longer holds, so it is dropped —
+    // and because no later tail run exists, the finally-block recovery re-reads.
+    expect(store.getSnapshot().state?.providers[0]?.keys[0]?.projected).toBeUndefined()
+    expect(harness.calls.at(-1)?.endpoint).toBe('keysManager/getState')
+  })
+
+  test('a successful quota read moves an error-status snapshot back to ready', async () => {
+    let quotaFails = true
+    const harness = makeContext(endpoint => {
+      if (endpoint === 'keysManager/getState' && quotaFails) {
+        return { ok: false, error: { message: 'state unavailable' } }
+      }
+      return { ok: true, value: makeState() }
+    })
+    const store = createStore(harness.ctx)
+    await store.load()
+    // No state yet → the snapshot is an error.
+    expect(store.getSnapshot().status).toBe('error')
+    expect(store.getSnapshot().error).toBe('state unavailable')
+
+    quotaFails = false
+    const outcome = await store.refreshQuota('zai-coding-cn')
+    expect(outcome.ok).toBe(true)
+    // A successful read installs a usable snapshot (status flips to ready) while
+    // the unacknowledged banner is preserved.
+    expect(store.getSnapshot().status).toBe('ready')
+    expect(store.getSnapshot().state?.managedCount).toBe(1)
+    expect(store.getSnapshot().error).toBe('state unavailable')
+  })
+
   test('a background quota read keeps an unacknowledged error banner', async () => {
     const harness = makeContext(endpoint => endpoint === 'keysManager/addKey'
       ? { ok: false, error: { message: 'write failed' } }
@@ -3944,10 +4006,11 @@ describe('quota surface', () => {
     state: StateView,
     answer?: RpcAnswer,
     decorate?: (harness: Harness) => void,
+    storeOptions: { quotaWaitMs?: number } = {},
   ): Promise<{ view: ReturnType<typeof mountView>; harness: Harness; store: ReturnType<typeof createStore> }> {
     const harness = makeContext(answer ?? { ok: true, value: state })
     decorate?.(harness)
-    const store = createStore(harness.ctx)
+    const store = createStore(harness.ctx, storeOptions)
     setRuntimeContext({ ctx: harness.ctx, store })
     const view = mountView(KeysManagerBody)
     await view.flush()
@@ -4484,6 +4547,118 @@ describe('quota surface', () => {
     } finally {
       view.unmount()
       clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('a never-settling read reaches "not reported" and retries on the cadence', async () => {
+    const base = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(base)
+    const state = quotaState(undefined)
+    const { view, harness, store } = await mountExpanded(
+      state,
+      endpoint => endpoint === 'keysManager/quotaRefresh'
+        ? new Promise<RpcResult>(() => {}) as unknown as RpcResult
+        : { ok: true, value: state },
+      undefined,
+      { quotaWaitMs: 20 },
+    )
+    const tickTo = async (at: number): Promise<void> => {
+      clock.mockReturnValue(at)
+      store.tick()
+      view.render()
+      await view.flush()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    }
+    try {
+      expect(quotaRefreshes(harness)).toBe(1)
+      // The bounded wait expires: the row reports instead of staying pending.
+      await new Promise(resolve => setTimeout(resolve, 40))
+      await view.flush()
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+      // Inside the cadence window nothing is re-issued…
+      await tickTo(base + 60_000)
+      expect(quotaRefreshes(harness)).toBe(1)
+      // …and after it, one fresh bounded attempt.
+      await tickTo(base + 11 * 60_000)
+      expect(quotaRefreshes(harness)).toBe(2)
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+    } finally {
+      view.unmount()
+      clock.mockRestore()
+      setRuntimeContext(null)
+    }
+  })
+
+  test('an answer that lands after the bound never overwrites a newer read', async () => {
+    const first = makeState()
+    const second = makeState()
+    second.managedCount = 7
+    let releaseFirst: () => void = () => {}
+    const firstGate = new Promise<void>(resolve => {
+      releaseFirst = resolve
+    })
+    let call = 0
+    const harness = makeContext(() => ({ ok: true, value: second }))
+    const baseCall = harness.ctx.connection.rpc.call
+    ;(harness.ctx.connection.rpc as { call: typeof baseCall }).call = async (channel, endpoint, payload) => {
+      harness.calls.push({ channel, endpoint, payload })
+      if (endpoint !== 'keysManager/quotaRefresh') return baseCall(channel, endpoint, payload)
+      call += 1
+      if (call === 1) {
+        // The first read answers only after it was given up on.
+        await firstGate
+        return { ok: true, value: first }
+      }
+      return { ok: true, value: second }
+    }
+    const store = createStore(harness.ctx, { quotaWaitMs: 20 })
+    await store.load()
+
+    const late = await store.refreshQuota('zai-coding-cn')
+    expect(late.ok).toBe(false)
+    const fresh = await store.refreshQuota('zai-coding-cn')
+    expect(fresh.ok).toBe(true)
+    expect(store.getSnapshot().state?.managedCount).toBe(7)
+
+    // The abandoned read finally answers: it must be discarded.
+    releaseFirst()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    expect(store.getSnapshot().state?.managedCount).toBe(7)
+  })
+
+  test('a rejection that lands after the bounded wait is not an unhandled rejection', async () => {
+    const state = quotaState(undefined)
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    let rejectRead: (error: Error) => void = () => {}
+    const stubborn = new Promise<RpcResult>((_resolve, reject) => {
+      rejectRead = reject
+    })
+    const { view } = await mountExpanded(
+      state,
+      endpoint => endpoint === 'keysManager/quotaRefresh'
+        ? stubborn as unknown as RpcResult
+        : { ok: true, value: state },
+      undefined,
+      { quotaWaitMs: 20 },
+    )
+    try {
+      // The wait expired; the abandoned read now fails at the transport level.
+      await new Promise(resolve => setTimeout(resolve, 40))
+      rejectRead(new Error('transport down'))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await view.flush()
+      // The abandoned tail must not surface as an unhandled rejection.
+      expect(unhandled).toHaveLength(0)
+      expect(findByClass(view.nodes, 'km-quota-inline')[0]!.text).toBe('未报告')
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+      view.unmount()
       setRuntimeContext(null)
     }
   })

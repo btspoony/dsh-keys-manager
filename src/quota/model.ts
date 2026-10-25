@@ -10,6 +10,8 @@
  *
  * @module dsh-keys-manager/quota/model
  */
+import type { QuotaWindowId } from '../domain.js'
+
 
 /**
  * Outcome class of one quota read. Only `ok` carries usable windows; probes
@@ -18,8 +20,7 @@
  */
 export type QuotaStatus = 'ok' | 'absent' | 'unauthorized' | 'error' | 'natively-managed'
 
-/** The plan windows the UI can render; a provider may expose either or both. */
-export type QuotaWindowId = 'session' | 'week'
+export type { QuotaWindowId }
 
 /** One usage window of a managed account's plan. */
 export interface QuotaWindow {

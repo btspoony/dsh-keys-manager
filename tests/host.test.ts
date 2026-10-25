@@ -19137,3 +19137,90 @@ test('quota matrix: a store that keeps throwing reports a transient error and ke
     await h.close()
   }
 })
+
+test('quota refresh evicts a removed key and a released provider', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    await h.service.addKey('zai-coding-cn', 'second', 'sk-second')
+    const provider = h.store.provider('zai-coding-cn')!
+    const [first, second] = provider.keys
+    const now = Date.now()
+    await seedQuotaSnapshots(h, 'zai-coding-cn', {
+      [first.id]: [{ id: 'week', usedFraction: 0.4, resetsAt: now + QUOTA_DAY }],
+      [second.id]: [{ id: 'week', usedFraction: 0.4, resetsAt: now + 2 * QUOTA_DAY }],
+    })
+    const caches = (h.service as unknown as { quotaCaches: Map<string, import('../src/quota/cache').QuotaCache> }).quotaCaches
+    assert.notEqual(caches.get('zai-coding-cn')?.peek('zai-coding-cn', second.id), undefined)
+
+    // The row is deleted, the next refresh must not keep its snapshot.
+    await h.service.deleteKey('zai-coding-cn', second.id)
+    await h.service.quotaRefresh('zai-coding-cn')
+    assert.equal(caches.get('zai-coding-cn')?.peek('zai-coding-cn', second.id), undefined)
+    assert.notEqual(caches.get('zai-coding-cn')?.peek('zai-coding-cn', first.id), undefined)
+
+    // Releasing the provider drops the whole cache.
+    await h.service.releaseProvider('zai-coding-cn')
+    await h.service.quotaRefresh('zai-coding-cn')
+    assert.equal(caches.has('zai-coding-cn'), false)
+  } finally {
+    await h.close()
+  }
+})
+
+test('quota refresh never exceeds the probe concurrency cap', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    for (let index = 0; index < 11; index += 1) {
+      await h.service.addKey('zai-coding-cn', `extra-${index}`, `sk-extra-${index}`)
+    }
+    const provider = h.store.provider('zai-coding-cn')!
+    assert.equal(provider.keys.length, 12)
+
+    let active = 0
+    let peak = 0
+    h.service.quotaFetch = (async () => {
+      active += 1
+      peak = Math.max(peak, active)
+      await new Promise(resolve => setTimeout(resolve, 5))
+      active -= 1
+      return new Response(
+        JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00.000Z' } }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }) as typeof fetch
+
+    await h.service.quotaRefresh('zai-coding-cn')
+    // Four rows at a time, twelve rows: the cap holds for the whole refresh.
+    assert.equal(peak, 4)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a fresh cache entry performs no credential read at all', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    h.service.quotaFetch = (async () => new Response(
+      JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00.000Z' } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof fetch
+    await h.service.quotaRefresh('zai-coding-cn')
+
+    // Second refresh inside the TTL: the loader never runs, so no credential is
+    // looked up at all. The fake store reads through these maps, so spying on
+    // them observes the real read path (the service captured its resolve
+    // reference at attach time, so wrapping `raw.resolve` would not).
+    const refLookups = vi.spyOn(h.credentials.refs, 'get')
+    const recordLookups = vi.spyOn(h.credentials.records, 'get')
+    await h.service.quotaRefresh('zai-coding-cn')
+    assert.equal(refLookups.mock.calls.length, 0)
+    assert.equal(recordLookups.mock.calls.length, 0)
+    refLookups.mockRestore()
+    recordLookups.mockRestore()
+  } finally {
+    await h.close()
+  }
+})

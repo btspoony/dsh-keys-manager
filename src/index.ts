@@ -110,6 +110,8 @@ const ORIGINAL = Symbol.for('cordis.original')
  */
 const PRE_CLOSE_RESTORE = Symbol('keys-manager.pre-close restore')
 type RestoreCapability = typeof PRE_CLOSE_RESTORE
+/** Rows one quota refresh probes at once (`I-000296`). */
+const QUOTA_PROBE_CONCURRENCY = 4
 const MAX_SWITCHES = 6
 const ATTEMPT_TTL_MS = 60 * 60 * 1000
 /** A retry pin only lives for this long; an expired pin is treated as absent. */
@@ -6833,11 +6835,30 @@ export class KeysManagerService {
     // Own-property lookup: `store.provider` indexes a plain object, so a
     // prototype key would answer a function instead of a record.
     const record = Object.hasOwn(this.store.providers, provider) ? this.store.provider(provider) : undefined
-    if (record === undefined) return this.buildState()
+    if (record === undefined) {
+      // A released provider keeps no snapshots: nothing would ever read them
+      // again, and a re-adoption must start from a clean slate.
+      this.quotaCaches.get(provider)?.retain(provider, undefined)
+      this.quotaCaches.delete(provider)
+      return this.buildState()
+    }
     const cache = this.quotaCache(provider)
+    // Rows deleted since the last refresh must not linger in the cache either.
+    cache.retain(provider, new Set(record.keys.map(key => key.id)))
     // The cache classifies probe failures; allSettled is the second line of
     // defence so one rejected row can never reject the RPC.
-    await Promise.allSettled(record.keys.map(key => this.refreshQuotaRow(provider, cache, key)))
+    // At most QUOTA_PROBE_CONCURRENCY rows run at once (`I-000296`): a wide
+    // pool must not open a dozen vendor connections in one gesture.
+    const queue = [...record.keys]
+    const workers = Array.from(
+      { length: Math.min(QUOTA_PROBE_CONCURRENCY, queue.length) },
+      async () => {
+        for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+          await this.refreshQuotaRow(provider, cache, next)
+        }
+      },
+    )
+    await Promise.allSettled(workers)
     return this.buildState()
   }
 
@@ -6851,13 +6872,14 @@ export class KeysManagerService {
   }
 
   /**
-   * Refresh one row, resolving its credential first. TTL, backoff and
-   * single-flight live in the cache, so two concurrent refreshes of the same
-   * row share one probe.
+   * Refresh one row. The credential is resolved INSIDE the cache loader, so a
+   * fresh entry (TTL hit or in-flight fellow) performs no credential read at
+   * all (`I-000296`); TTL, backoff and single-flight live in the cache, so two
+   * concurrent refreshes of the same row share one read and one probe.
    */
   private async refreshQuotaRow(provider: string, cache: QuotaCache, key: KeyRecord): Promise<void> {
-    const credential = await this.quotaCredential(provider, key)
     await cache.get(provider, key.id, async () => {
+      const credential = await this.quotaCredential(provider, key)
       if (credential.kind === 'transient') {
         // A store that kept failing is "could not read usage now", never an
         // auth fact: `error` keeps the last-good numbers on display.

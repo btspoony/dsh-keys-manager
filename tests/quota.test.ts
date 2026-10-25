@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import type { QuotaSnapshot, QuotaStatus, QuotaWindow } from '../src/quota/model'
+import type { QuotaSnapshot, QuotaStatus, QuotaWindow, QuotaWindowId } from '../src/quota/model'
 import {
   fractionFromRemaining,
   fractionFromUsed,
@@ -9,8 +9,9 @@ import {
   resetFromMs,
   resetFromSeconds,
 } from '../src/quota/model'
+import { QUOTA_WINDOW_LABEL } from '../src/client/format'
 import { QuotaCache } from '../src/quota/cache'
-import type { QuotaFetch } from '../src/quota/fetch'
+import type { QuotaFetch, QuotaReadFailure } from '../src/quota/fetch'
 import {
   claudeQuotaProbe,
   clineQuotaProbe,
@@ -1124,4 +1125,108 @@ test('cache turns a throwing loader into an error snapshot', async () => {
   })
   assert.equal(served.status, 'error')
   assert.equal(served.reason, 'boom')
+})
+
+test('the probe read type cannot name the host-only status', () => {
+  // `I-000315`: `natively-managed` is synthesized by the host, never by a
+  // probe. This assignment fails to compile if `QuotaReadFailure` is widened
+  // back to `Exclude<QuotaStatus, 'ok'>`.
+  const probeFailure: QuotaReadFailure = 'unauthorized'
+  assert.equal(probeFailure, 'unauthorized')
+  // Exhaustive switch: a new probe-level failure class without a branch here
+  // (or a status leaking in that a probe cannot return) fails the typecheck.
+  const describe = (status: QuotaReadFailure): string => {
+    switch (status) {
+      case 'absent': return 'no endpoint'
+      case 'unauthorized': return 'refused'
+      case 'error': return 'failed'
+    }
+  }
+  assert.equal(describe('absent'), 'no endpoint')
+  assert.equal(describe('error'), 'failed')
+
+  // The window-label map stays exhaustive over the single-source id union.
+  const labels: Record<QuotaWindowId, string> = QUOTA_WINDOW_LABEL
+  assert.deepEqual(Object.keys(labels).sort(), ['session', 'week'])
+})
+
+test('cache eviction drops removed keys and whole released providers', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  const load = async (): Promise<QuotaSnapshot> => okSnapshot([WEEK])
+  await cache.get('claude', 'a', load)
+  await cache.get('claude', 'b', load)
+  await cache.get('codex', 'a', load)
+
+  // `a` was removed from the provider record: its snapshot goes, `b` stays.
+  cache.retain('claude', new Set(['b']))
+  assert.equal(cache.peek('claude', 'a'), undefined)
+  assert.notEqual(cache.peek('claude', 'b'), undefined)
+  // Another provider is untouched by one provider's retention pass.
+  assert.notEqual(cache.peek('codex', 'a'), undefined)
+
+  // A released provider drops everything it held.
+  cache.retain('codex', undefined)
+  assert.equal(cache.peek('codex', 'a'), undefined)
+})
+
+test('peek returns a copy: mutating the served windows cannot corrupt the cache', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  await cache.get('claude', 'k', async () => okSnapshot([WEEK]))
+  const first = cache.peek('claude', 'k')!
+  first.windows.push({ id: 'session', usedFraction: 0.1, resetsAt: 0 })
+  first.windows[0]!.usedFraction = 0.99
+
+  const second = cache.peek('claude', 'k')!
+  assert.deepEqual(second.windows, [WEEK])
+})
+
+test('a loader that settles after eviction cannot resurrect its entry', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const pending = cache.get('claude', 'gone', async () => {
+    await gate
+    return okSnapshot([WEEK])
+  })
+  // The row is removed while its probe is still in flight.
+  cache.retain('claude', new Set(['kept']))
+  release()
+  const served = await pending
+  // The caller still gets the answer it waited for…
+  assert.equal(served.status, 'ok')
+  assert.deepEqual(served.windows, [WEEK])
+  // …but nothing was written back.
+  assert.equal(cache.peek('claude', 'gone'), undefined)
+})
+
+test('a released provider leaves neither entries nor in-flight work', async () => {
+  const cache = new QuotaCache({ now: () => 0 })
+  let release: () => void = () => {}
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  let firstLoads = 0
+  const pending = cache.get('claude', 'a', async () => {
+    firstLoads += 1
+    await gate
+    return okSnapshot([WEEK])
+  })
+  cache.retain('claude', undefined)
+
+  // The released provider's in-flight entry was fenced, so a new read starts a
+  // fresh loader instead of sharing the abandoned one.
+  let secondLoads = 0
+  const fresh = cache.get('claude', 'a', async () => {
+    secondLoads += 1
+    return okSnapshot([WEEK])
+  })
+  release()
+  await pending
+  await fresh
+  assert.equal(firstLoads, 1)
+  assert.equal(secondLoads, 1)
+  // Everything the released provider held is gone, including the fresh answer.
+  assert.equal(cache.peek('claude', 'a'), undefined)
 })
