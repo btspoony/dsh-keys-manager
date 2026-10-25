@@ -10,7 +10,7 @@ import {
   resetFromSeconds,
 } from '../src/quota/model'
 import { QuotaCache } from '../src/quota/cache'
-import type { QuotaFetch } from '../src/quota/fetch'
+import type { QuotaFetch, QuotaReadFailure } from '../src/quota/fetch'
 import {
   claudeQuotaProbe,
   clineQuotaProbe,
@@ -1124,4 +1124,23 @@ test('cache turns a throwing loader into an error snapshot', async () => {
   })
   assert.equal(served.status, 'error')
   assert.equal(served.reason, 'boom')
+})
+
+test('the probe read type cannot name the host-only status', () => {
+  // `I-000315`: `natively-managed` is synthesized by the host, never by a
+  // probe. This assignment fails to compile if `QuotaReadFailure` is widened
+  // back to `Exclude<QuotaStatus, 'ok'>`.
+  const probeFailure: QuotaReadFailure = 'unauthorized'
+  assert.equal(probeFailure, 'unauthorized')
+  // Exhaustive switch: a new probe-level failure class without a branch here
+  // (or a status leaking in that a probe cannot return) fails the typecheck.
+  const describe = (status: QuotaReadFailure): string => {
+    switch (status) {
+      case 'absent': return 'no endpoint'
+      case 'unauthorized': return 'refused'
+      case 'error': return 'failed'
+    }
+  }
+  assert.equal(describe('absent'), 'no endpoint')
+  assert.equal(describe('error'), 'failed')
 })
