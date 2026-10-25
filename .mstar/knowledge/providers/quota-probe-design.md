@@ -78,3 +78,30 @@ Cline's `X-CLIENT-VERSION` is a hard-coded desktop release (`3.5.54`, copied fro
 ## Display-only first, ranking second
 
 Quota visibility (this work) and quota-aware routing are separable: the snapshot API is useful on its own, and ranking changes `doSelectKey` semantics (tiers by soonest reset, session-only accounts last once ≥90% used, cooling accounts last) — a change that deserves its own plan. Note that while an OAuth projection exists, the host skips key selection entirely, so ranking only affects key-pool routes unless the projection switch itself is changed.
+
+## Live-probe lessons: expired credentials, stale states, uninterpretable payloads
+
+Measured on a real installation (credential store + direct vendor calls, 2026-10-25), after the first release of the quota surface. Three rules came out of it that no amount of source reading had produced.
+
+### 1. An expired stored credential is not a sign-in prompt
+
+The pool row and the pi-ai projection for one route carried the **same** access token, twelve hours past its `expires`. The vendor answered `401 invalid_authentication_error`. The card said "sign in again" — advice the user could not act on, because:
+
+- re-running the pool sign-in does not refresh the *projection* credential, and
+- pi-ai only refreshes lazily **on model traffic**, and this plugin has no refresh API (`ctx.authorization` exposes `list`/`describe`/`begin`; pi-ai is not an importable dependency).
+
+So a `401/403` on a credential whose `expiresAt` is in the past means "a model request will fix this", not "your credential is wrong". Label it as a natively-managed/unavailable state; keep the actionable "sign in again" for an *unexpired* credential that is still refused.
+
+### 2. A non-`ok` snapshot must have its own retry cadence
+
+Gating freshness on `status === 'ok'` alone makes every failure permanent: the client is the only thing that triggers a refresh, so a transient 5xx, a rate-limited probe, or a token that later gets refreshed by model traffic all stick on screen until the card is remounted. Give non-`ok` states a slower cadence (ten minutes was chosen) and keep the per-signature retry budget and the rejected-RPC one-shot lock — those exist to stop loops, not to make failures permanent.
+
+### 3. `error` from a probe is not always a credential problem
+
+The same payload can be valid and uninterpretable: an xAI account on unified billing returns `200` with a weekly period and a monthly quota at once, so a weekly percentage cannot be trusted. The probe returns `error` on purpose, and the UI must not promote that to an auth failure. Distinguish three outcomes explicitly — *credential refused*, *payload not usable*, *no usage API for this route* — because each deserves a different label.
+
+Two smaller findings worth keeping: the fetch layer folds `401` and `403` into one `unauthorized` status (so a scoped/revoked grant looks like an expired one), and the cache's last-good `ok` snapshot (24 h) outranks any newer non-ok state — a row that once showed numbers keeps them after the credential expires.
+
+### How to reproduce the measurement
+
+Read the grant from the DSH credential store (`~/.dsh/.credentials.yaml`, records keyed `keys-manager/<provider>-<hash>` and `llm-pi-ai/<provider>`), take `payload.access`, and call the vendor endpoint directly with the same headers the probe uses. Never print the token; report only status, timing and the response body. The plugin's own `resolveQuota` can be exercised the same way against a build, which is how the xAI "unified billing" reason was confirmed as by-design rather than a bug.
