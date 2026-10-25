@@ -5,6 +5,7 @@ import type { ClientStore, KeyStatus, ProviderStatus, KeyView, ProviderView, Sta
 import type { ManagerSettings } from '../domain'
 import { useLocaleId, useNow, useRuntime, useStore, useT } from './runtime'
 import {
+  QUOTA_RETRY_MS,
   QUOTA_WINDOW_LABEL,
   cooldownMinutes,
   cooldownMs,
@@ -1151,49 +1152,37 @@ function quotaSignature(provider: ProviderView): string {
  */
 function QuotaRefresh({ provider, now }: { provider: ProviderView; now: number }): null {
   const runtime = useRuntime()
-  // A rejected refresh leaves the rows unchanged, so the signature cannot
-  // move on its own; remembering the attempted signature keeps a failed read
-  // from retrying on every minute tick. A successful answer clears it.
+  // A rejected refresh leaves the rows unchanged, so the signature cannot move
+  // on its own; remembering the attempted signature keeps a failed read from
+  // retrying on every minute tick. A successful answer clears it.
   const attempted = React.useRef<string | null>(null)
-  // A successful answer that left the rows unchanged earns exactly one later
-  // retry: `retryBudget` marks the state that has one available, and `retried`
-  // records it once that request is ISSUED (never pre-consumed in the previous
-  // answer), so the retry really fires and can never fire twice.
-  const retryBudget = React.useRef<string | null>(null)
-  const retried = React.useRef<string | null>(null)
+  // At most one read per cadence window. A row the host keeps answering with
+  // the same snapshot — in particular a stale last-good `ok` — is re-checked
+  // every QUOTA_RETRY_MS: never once per minute, and never "once for the
+  // lifetime of this mount".
+  const lastAttemptAt = React.useRef<number | null>(null)
   const quotas = provider.keys.map(key => key.quota)
   const needsRefresh = quotaNeedsRefresh(quotas, now)
-  // Re-evaluated once a minute so a TTL expiry refreshes an already-open card
-  // without a timer of its own (the page tick supplies `now`).
+  // Re-evaluated once a minute so a TTL/cadence expiry refreshes an already
+  // open card without a timer of its own (the page tick supplies `now`).
   const minute = Math.floor(now / 60_000)
   const signature = quotaSignature(provider)
 
   React.useEffect(() => {
     if (!needsRefresh) {
       attempted.current = null
-      retried.current = null
-      retryBudget.current = null
+      lastAttemptAt.current = null
       return undefined
     }
     if (attempted.current === signature) return undefined
-    if (retried.current === signature) return undefined
+    if (lastAttemptAt.current !== null && now - lastAttemptAt.current < QUOTA_RETRY_MS) return undefined
     attempted.current = signature
-    // Spend the retry when this request is issued, not when the previous
-    // answer arrived, so the following run actually performs it.
-    if (retryBudget.current === signature) {
-      retried.current = signature
-      retryBudget.current = null
-    }
+    lastAttemptAt.current = now
     void runtime.store.refreshQuota(provider.provider).then(outcome => {
-      if (!outcome.ok) return
-      // A successful answer that moved the rows is fresh data; one that did
-      // not is still stale by this client's contract, so it is not terminal —
-      // it earns one later retry. A rejection keeps the one-shot lock, so a
-      // failing RPC cannot loop.
-      const latest = runtime.store.getSnapshot().state?.providers.find(row => row.provider === provider.provider)
-      const moved = latest === undefined || quotaSignature(latest) !== signature
-      attempted.current = null
-      retryBudget.current = moved ? null : signature
+      // A rejected read keeps the one-shot lock; a successful answer frees the
+      // row for the next cadence window. The row keeps rendering whatever
+      // snapshot it already held while the read is in flight.
+      if (outcome.ok) attempted.current = null
     })
     return undefined
   }, [provider.provider, signature, minute, needsRefresh])
