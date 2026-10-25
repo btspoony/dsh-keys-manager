@@ -19378,8 +19378,24 @@ test('a transport route with no row keeps the clearing early return', async () =
       called += 1
       return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
     }) as typeof fetch
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+
+    // Seed a snapshot for a route id that has neither a pi-ai record nor a
+    // transport row: the early return must delete it, not leave a ghost cache.
+    const ghost = new (await import('../src/quota/cache')).QuotaCache({ now: () => 0 })
+    await ghost.get('not-a-route', 'not-a-route', async () => ({
+      status: 'ok',
+      fetchedAt: 0,
+      windows: [{ id: 'week', usedFraction: 0.5, resetsAt: 60_000 }],
+    }))
+    caches.set('not-a-route', ghost)
+
     const state = await h.service.quotaRefresh('not-a-route')
     assert.equal(called, 0)
+    assert.equal(caches.has('not-a-route'), false)
+    assert.equal(ghost.peek('not-a-route', 'not-a-route'), undefined)
     assert.equal(state.providers.some(provider => provider.provider === 'not-a-route'), false)
   } finally {
     await h.close()
@@ -19432,6 +19448,46 @@ test('a transport usage read never writes: 401 degrades, missing grant is native
       'natively-managed',
     )
     assert.deepEqual(writeCalls, [])
+    touch.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('an expired transport grant is natively managed on 401, with one read and no writes', async () => {
+  const h = await factoryHarness()
+  try {
+    h.credentials.records.set(FACTORY_SCOPE, {
+      kind: 'grant',
+      payload: factoryGrant({ expires: Date.now() - 60_000 }),
+    })
+    let probes = 0
+    h.service.quotaFetch = (async () => {
+      probes += 1
+      return new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+
+    let modifyCalls = 0
+    const realModify = h.credentials.raw.modifyRecord.bind(h.credentials.raw)
+    type ModifyArgs = Parameters<typeof realModify>
+    h.credentials.raw.modifyRecord = async (...args: ModifyArgs) => {
+      modifyCalls += 1
+      return realModify(...args)
+    }
+    const touch = vi.spyOn(h.store, 'touch')
+
+    await h.service.quotaRefresh('factory-droid')
+    const caches = (h.service as unknown as {
+      quotaCaches: Map<string, import('../src/quota/cache').QuotaCache>
+    }).quotaCaches
+    const row = caches.get(FACTORY_SCOPE)?.peek(FACTORY_SCOPE, FACTORY_SCOPE)
+    // The stored credential is past its expiry, so a 401 means "a model
+    // request will refresh it", not "sign in again".
+    assert.equal(row?.status, 'natively-managed')
+    assert.deepEqual(row?.windows, [])
+    assert.equal(probes, 1)
+    assert.equal(modifyCalls, 0)
+    assert.equal(touch.mock.calls.length, 0)
     touch.mockRestore()
   } finally {
     await h.close()
