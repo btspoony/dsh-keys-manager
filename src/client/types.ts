@@ -1,5 +1,6 @@
 /** Browser-half domain and service contracts for the Keys Manager. */
 import type * as React from 'react'
+import type { QuotaWindowId } from '../domain'
 import type { AccountAttemptNotice, AccountAttemptPrompt, AccountAttemptView, KeyStatus, KeyTestResult, KeyView, ManagerSettings, OAuthAccountView, ProviderStatus, ProviderView, QuotaView, QuotaWindowView, StateView, TransportAccountStatus, TransportAccountView, TransportModelsView } from '../domain'
 
 export type {
@@ -22,7 +23,7 @@ export type {
 }
 
 /** The plan windows a card renders; the host's view type carries the same union. */
-export type QuotaWindowId = 'session' | 'week'
+export type { QuotaWindowId }
 
 /** Locale dictionaries registered under the plugin namespace. */
 export interface LocaleDicts {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'vitest'
-import type { QuotaSnapshot, QuotaStatus, QuotaWindow } from '../src/quota/model'
+import type { QuotaSnapshot, QuotaStatus, QuotaWindow, QuotaWindowId } from '../src/quota/model'
 import {
   fractionFromRemaining,
   fractionFromUsed,
@@ -9,6 +9,7 @@ import {
   resetFromMs,
   resetFromSeconds,
 } from '../src/quota/model'
+import { QUOTA_WINDOW_LABEL } from '../src/client/format'
 import { QuotaCache } from '../src/quota/cache'
 import type { QuotaFetch, QuotaReadFailure } from '../src/quota/fetch'
 import {
@@ -1143,4 +1144,8 @@ test('the probe read type cannot name the host-only status', () => {
   }
   assert.equal(describe('absent'), 'no endpoint')
   assert.equal(describe('error'), 'failed')
+
+  // The window-label map stays exhaustive over the single-source id union.
+  const labels: Record<QuotaWindowId, string> = QUOTA_WINDOW_LABEL
+  assert.deepEqual(Object.keys(labels).sort(), ['session', 'week'])
 })
