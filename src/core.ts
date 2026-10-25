@@ -15,6 +15,7 @@ import type {
   ProviderStatus,
 } from './domain.js'
 import type { LlmFailureLike } from './host-types.js'
+import type { QuotaWindow } from './quota/model.js'
 
 /** Defaults also exposed in the manager's policy card. */
 export const DEFAULT_SETTINGS: ManagerSettings = {
@@ -135,6 +136,92 @@ export function pickHealthyExcluding(provider: ProviderRecord, excludeKeyId: str
     }
   }
   return undefined
+}
+
+/** Quota ranking tier of one candidate; lower is preferred. */
+export type QuotaRankTier = 0 | 1 | 2 | 3
+
+/** One candidate's ranking verdict: its tier and the reset time that orders it. */
+export interface QuotaRank {
+  tier: QuotaRankTier
+  /** Reset time used inside a tier; `Infinity` when no snapshot is usable. */
+  resetsAt: number
+}
+
+const NO_QUOTA_RANK: QuotaRank = { tier: 2, resetsAt: Number.POSITIVE_INFINITY }
+
+/** The window with `id`, or `undefined` when the snapshot does not carry it. */
+function quotaWindowOf(windows: readonly QuotaWindow[] | undefined, id: QuotaWindow['id']): QuotaWindow | undefined {
+  if (windows === undefined) return undefined
+  for (const window of windows) {
+    if (window.id === id) return window
+  }
+  return undefined
+}
+
+/**
+ * Classify one candidate for quota-aware ranking (issue #22).
+ *
+ * Tier 0 is a live weekly window with quota left, ordered by the soonest reset
+ * (leftover quota that resets soonest is the first to waste). Tier 1 is the
+ * session-only fallback below 90% used. Tier 3 is exhausted usage; tier 2 is
+ * "no usable snapshot", which keeps plain cursor rotation.
+ *
+ * A window whose reset instant is already `<= now` describes the window that
+ * just ended: its numbers say nothing about the next one, so a weekly window in
+ * that state is treated as absent (session fallback) rather than as healthy.
+ */
+export function quotaRank(windows: readonly QuotaWindow[] | undefined, now: number): QuotaRank {
+  const week = quotaWindowOf(windows, 'week')
+  const session = quotaWindowOf(windows, 'session')
+  if (week !== undefined && week.usedFraction < 1 && week.resetsAt > now) {
+    return { tier: 0, resetsAt: week.resetsAt }
+  }
+  if (week !== undefined && week.usedFraction >= 1) {
+    return { tier: 3, resetsAt: week.resetsAt }
+  }
+  if (session !== undefined && session.usedFraction < 0.9 && session.resetsAt > now) {
+    return { tier: 1, resetsAt: session.resetsAt }
+  }
+  if (session !== undefined && session.usedFraction >= 0.9) {
+    return { tier: 3, resetsAt: session.resetsAt }
+  }
+  return NO_QUOTA_RANK
+}
+
+/**
+ * Every selectable key of a provider in quota-tier order (issue #22).
+ *
+ * Pure: it never probes, never mutates `provider.cursor`, and never re-admits a
+ * key `isSelectable` rejected (cooldown stays a hard exclusion). Inside a tier
+ * the cursor decides the starting point, so equally-ranked keys still rotate;
+ * the caller advances the cursor past whatever it selects.
+ */
+export function rankCandidates(
+  provider: ProviderRecord,
+  now: number,
+  quotaOf: (keyId: string) => readonly QuotaWindow[] | undefined,
+): KeyRecord[] {
+  const keys = Array.isArray(provider.keys) ? provider.keys : []
+  if (keys.length === 0) return []
+  const start = normalizeCursor(provider.cursor, keys.length)
+  const ranked = keys
+    .map((key, index) => ({ key, index }))
+    .filter(entry => isSelectable(entry.key, now))
+    .map(entry => {
+      const rank = quotaRank(quotaOf(entry.key.id), now)
+      return { ...entry, tier: rank.tier, resetsAt: rank.resetsAt }
+    })
+  ranked.sort((left, right) => {
+    if (left.tier !== right.tier) return left.tier - right.tier
+    if (left.tier !== 2 && left.resetsAt !== right.resetsAt) return left.resetsAt - right.resetsAt
+    // Cursor-relative order is the tie-break, so a stable "best" ordering can
+    // never pin one account.
+    const leftOffset = (left.index - start + keys.length) % keys.length
+    const rightOffset = (right.index - start + keys.length) % keys.length
+    return leftOffset - rightOffset
+  })
+  return ranked.map(entry => entry.key)
 }
 
 /** Coerce a persisted cursor into range without mutating it. */

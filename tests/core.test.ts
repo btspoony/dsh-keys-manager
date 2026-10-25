@@ -15,6 +15,7 @@ import {
   patchSettings,
   pickHealthyExcluding,
   pickRoundRobin,
+  rankCandidates,
   shouldFailover,
   statusOfKey,
   statusOfProvider,
@@ -518,4 +519,135 @@ test('isOAuthCapable reads the provider route native OAuth flag', () => {
   assert.equal(isOAuthCapable({ nativeAuth: null }), false)
   assert.equal(isOAuthCapable({}), false)
   assert.equal(isOAuthCapable(undefined), false)
+})
+
+/** A weekly/session window pair for the ranking tests. */
+function quotaWindows(
+  input: { week?: { usedFraction: number; resetsAt: number }; session?: { usedFraction: number; resetsAt: number } },
+) {
+  const windows: Array<{ id: 'week' | 'session'; usedFraction: number; resetsAt: number }> = []
+  if (input.week !== undefined) windows.push({ id: 'week', ...input.week })
+  if (input.session !== undefined) windows.push({ id: 'session', ...input.session })
+  return windows
+}
+
+test('rankCandidates orders a live weekly window by its soonest reset', () => {
+  const a = key('a')
+  const b = key('b')
+  const c = key('c')
+  const p = provider([a, b, c])
+  const quotas: Record<string, ReturnType<typeof quotaWindows> | undefined> = {
+    a: quotaWindows({ week: { usedFraction: 0.5, resetsAt: now + 3 * DAY } }),
+    b: quotaWindows({ week: { usedFraction: 0.5, resetsAt: now + DAY } }),
+    c: quotaWindows({ week: { usedFraction: 0.5, resetsAt: now + 2 * DAY } }),
+  }
+  // Soonest reset first: the quota that expires first is the one to spend.
+  assert.deepEqual(rankCandidates(p, now, id => quotas[id]).map(k => k.id), ['b', 'c', 'a'])
+})
+
+test('rankCandidates falls back to a live session window below 90%', () => {
+  const a = key('a')
+  const b = key('b')
+  const c = key('c')
+  const p = provider([a, b, c])
+  const quotas: Record<string, ReturnType<typeof quotaWindows> | undefined> = {
+    a: quotaWindows({ session: { usedFraction: 0.2, resetsAt: now + 2 * MIN } }),
+    b: quotaWindows({ session: { usedFraction: 0.2, resetsAt: now + MIN } }),
+    c: quotaWindows({ week: { usedFraction: 0.1, resetsAt: now + DAY } }),
+  }
+  // A live weekly window outranks every session-only candidate.
+  assert.deepEqual(rankCandidates(p, now, id => quotas[id]).map(k => k.id), ['c', 'b', 'a'])
+})
+
+test('rankCandidates treats exactly 90% session and exactly 100% weekly as exhausted', () => {
+  const sessionEdge = key('session-edge')
+  const weekEdge = key('week-edge')
+  const healthy = key('healthy')
+  const p = provider([sessionEdge, weekEdge, healthy])
+  const quotas: Record<string, ReturnType<typeof quotaWindows> | undefined> = {
+    'session-edge': quotaWindows({ session: { usedFraction: 0.9, resetsAt: now + MIN } }),
+    'week-edge': quotaWindows({ week: { usedFraction: 1, resetsAt: now + DAY } }),
+    healthy: quotaWindows({ week: { usedFraction: 0.99, resetsAt: now + 2 * DAY } }),
+  }
+  // Exhausted rows sort last, by reset time; the healthy weekly row leads.
+  assert.deepEqual(rankCandidates(p, now, id => quotas[id]).map(k => k.id), ['healthy', 'session-edge', 'week-edge'])
+})
+
+test('rankCandidates treats a window whose reset instant has passed as absent', () => {
+  const justReset = key('just-reset')
+  const session = key('session')
+  const unknown = key('unknown')
+  const p = provider([justReset, session, unknown])
+  const quotas: Record<string, ReturnType<typeof quotaWindows> | undefined> = {
+    // `resetsAt === now` is the boundary: the weekly window is over, so this
+    // row falls to the session window instead of tier 0.
+    'just-reset': quotaWindows({ week: { usedFraction: 0.5, resetsAt: now } }),
+    session: quotaWindows({ session: { usedFraction: 0.1, resetsAt: now + MIN } }),
+  }
+  const order = rankCandidates(p, now, id => quotas[id]).map(k => k.id)
+  // The session-only row (tier 1) leads; the reset weekly falls to tier 2 with
+  // the snapshot-less row, in cursor order.
+  assert.deepEqual(order, ['session', 'just-reset', 'unknown'])
+})
+
+test('rankCandidates keeps cursor order for rows without usable snapshots', () => {
+  const a = key('a')
+  const b = key('b')
+  const c = key('c')
+  const p = provider([a, b, c])
+  p.cursor = 1
+  const quotas: Record<string, ReturnType<typeof quotaWindows> | undefined> = {
+    a: undefined,
+    b: [],
+    c: quotaWindows({ session: { usedFraction: 0.95, resetsAt: now + MIN } }),
+  }
+  // Tier 2 starts at the cursor (b) and wraps to a; the exhausted row is last.
+  assert.deepEqual(rankCandidates(p, now, id => quotas[id]).map(k => k.id), ['b', 'a', 'c'])
+})
+
+test('rankCandidates uses the cursor as the in-tier tie-break and never mutates it', () => {
+  const a = key('a')
+  const b = key('b')
+  const c = key('c')
+  const p = provider([a, b, c])
+  const sameReset = now + DAY
+  const quotas: Record<string, ReturnType<typeof quotaWindows> | undefined> = {
+    a: quotaWindows({ week: { usedFraction: 0.2, resetsAt: sameReset } }),
+    b: quotaWindows({ week: { usedFraction: 0.2, resetsAt: sameReset } }),
+    c: quotaWindows({ week: { usedFraction: 0.2, resetsAt: sameReset } }),
+  }
+  p.cursor = 0
+  assert.deepEqual(rankCandidates(p, now, id => quotas[id]).map(k => k.id), ['a', 'b', 'c'])
+  p.cursor = 1
+  assert.deepEqual(rankCandidates(p, now, id => quotas[id]).map(k => k.id), ['b', 'c', 'a'])
+  p.cursor = 2
+  assert.deepEqual(rankCandidates(p, now, id => quotas[id]).map(k => k.id), ['c', 'a', 'b'])
+  assert.equal(p.cursor, 2, 'ranking must not advance the cursor')
+})
+
+test('rankCandidates excludes cooling, disabled and missing-value keys', () => {
+  const healthy = key('healthy')
+  const cooling = key('cooling', { cooldownUntil: now + MIN })
+  const disabled = key('disabled', { enabled: false })
+  const missing = key('missing', { valueMissing: true })
+  const p = provider([healthy, cooling, disabled, missing])
+  assert.deepEqual(rankCandidates(p, now, () => undefined).map(k => k.id), ['healthy'])
+})
+
+test('rankCandidates returns nothing for an empty key list', () => {
+  const p = provider([])
+  assert.deepEqual(rankCandidates(p, now, () => undefined), [])
+})
+
+test('rankCandidates without snapshots matches pickRoundRobin order', () => {
+  const a = key('a')
+  const b = key('b')
+  const c = key('c')
+  const ranked = provider([a, b, c])
+  const roundRobin = provider([key('a'), key('b'), key('c')])
+  assert.deepEqual(rankCandidates(ranked, now, () => undefined).map(k => k.id), ['a', 'b', 'c'])
+  assert.equal(pickRoundRobin(roundRobin, now)?.id, 'a')
+  assert.equal(pickRoundRobin(roundRobin, now)?.id, 'b')
+  assert.equal(pickRoundRobin(roundRobin, now)?.id, 'c')
+  assert.equal(ranked.cursor, 0, 'ranking leaves the cursor alone')
 })
