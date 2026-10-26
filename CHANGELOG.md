@@ -2,6 +2,25 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.10] - 2026-10-26
+
+### Added
+
+- Key-pool routes now prefer the account whose plan quota resets soonest (weekly window first, then a session window below 90% used), so leftover quota is spent before it expires; routes without usage data and equally-ranked accounts keep the existing cursor rotation.
+- Plan usage can now be read for the Factory Droid transport route: the host resolves the route's read-only `llm-omp-transports/factory-droid` grant and probes its billing limits, so the five-hour and weekly windows become visible without ever rotating or writing the credential.
+
+### Fixed
+
+- A plan-usage read that never answers now gives up after a bounded wait and reports "not reported" (retrying on the slow cadence), and an answer that arrives later is discarded instead of overwriting a newer reading.
+- Plan-usage reads now probe at most four accounts at once and skip the credential lookup entirely for a cached account, so a wide key pool no longer opens one vendor request per key on every refresh.
+- Dead cache entries are evicted when a key is removed or a provider is released, and a displayed snapshot can no longer be mutated by a caller.
+- The plan-usage label now trusts the expiry of the credential actually used, so a stale account-row timestamp can neither mask a real refusal nor fake an expired account.
+- A stale usage reading is re-checked on the slow (ten-minute) cadence instead of sticking until the card is remounted.
+- A rejected plan-usage refresh now shows a localized "not reported" state and retries on the slow ten-minute cadence, instead of leaving the account row pending for the rest of the card session.
+- A credential-store read that fails transiently is retried once and then reported as a temporary failure, so a momentary blip no longer looks like a refused or expired credential (the last known numbers stay visible and no sign-in is prompted).
+- An expired stored OAuth credential no longer asks the user to sign in again for plan usage: the card says the account is managed by DSH instead, because only a model request refreshes that token.
+- Plan-usage states that are not reported now refresh on a ten-minute cadence (and keep their last known label while doing so), instead of sticking until the card is remounted.
+
 ## [0.2.9] - 2026-10-25
 
 ### Fixed
