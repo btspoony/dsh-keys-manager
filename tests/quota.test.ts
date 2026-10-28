@@ -1310,6 +1310,11 @@ test('factory-droid probe degrades instead of guessing', async () => {
   assert.equal(eu.status, 'ok')
 
   assert.equal((await resolveQuota('factory-droid', { token: 't', fetch: answer(401, {}) })).status, 'unauthorized')
+  // A 404 reached the vendor: the probe ran, so the read is "reported nothing"
+  // — never "this route has no probe" (issue #62 F1).
+  const notFound = await resolveQuota('factory-droid', { token: 't', fetch: answer(404, {}) })
+  assert.equal(notFound.status, 'absent')
+  assert.equal(notFound.absentCause, 'reported-nothing')
   assert.equal(
     (await resolveQuota('factory-droid', { token: 't', fetch: answer(200, { usesTokenRateLimitsBilling: false }) })).status,
     'absent',

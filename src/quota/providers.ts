@@ -86,6 +86,21 @@ function toNumber(value: unknown): number | undefined {
 }
 
 /**
+ * A classified read failure as a snapshot. Shared so every probe that returns
+ * a failed read early carries the same `absentCause`: a 404 is the vendor
+ * answering "nothing here", i.e. the probe ran.
+ */
+function failureSnapshot(read: Extract<QuotaRead, { ok: false }>, fetchedAt: number): QuotaSnapshot {
+  return {
+    status: read.status,
+    fetchedAt,
+    windows: [],
+    reason: read.reason,
+    ...(read.status === 'absent' ? { absentCause: 'reported-nothing' as const } : {}),
+  }
+}
+
+/**
  * Build the snapshot from a classified read. An extraction returns either the
  * windows or a reason string; an empty result is a parse failure, never an
  * "ok" with zero windows.
@@ -95,16 +110,7 @@ function snapshotFromRead(
   extract: (body: Record<string, unknown>) => QuotaWindow[] | string,
 ): QuotaSnapshot {
   const fetchedAt = Date.now()
-  if (!read.ok) {
-    return {
-      status: read.status,
-      fetchedAt,
-      windows: [],
-      reason: read.reason,
-      // A 404 is the vendor answering "nothing here": the probe ran.
-      ...(read.status === 'absent' ? { absentCause: 'reported-nothing' as const } : {}),
-    }
-  }
+  if (!read.ok) return failureSnapshot(read, fetchedAt)
   const extracted = extract(read.body)
   if (typeof extracted === 'string') {
     return { status: 'error', fetchedAt, windows: [], reason: extracted }
@@ -595,7 +601,7 @@ export const factoryDroidQuotaProbe: QuotaProbe = async ({ token, orgId, region,
     },
     { fetch, signal },
   )
-  if (!read.ok) return { status: read.status, fetchedAt: Date.now(), windows: [], reason: read.reason }
+  if (!read.ok) return failureSnapshot(read, Date.now())
   const body = read.body
   const fetchedAt = Date.now()
   if (body.usesTokenRateLimitsBilling === false) {

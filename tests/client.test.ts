@@ -250,7 +250,7 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     // probe-reported absent state has no copy by design; `natively-managed` and
     // the no-probe route (issue #62) do have one.
     quotaNativelyManaged: '由 DSH 原生管理',
-    quotaNoProbe: '该路由不提供用量接口',
+    quotaNoProbe: '该路由暂不显示用量',
     quotaNotReported: '未报告',
     quotaResetDue: '已到重置时间',
     quotaSignInAgain: '请重新登录',
@@ -4208,10 +4208,13 @@ describe('quota surface', () => {
     const { view } = await mountExpanded(quotaState(quota))
     try {
       // It owns one line, and it is neither the failure copy nor a blank row:
-      // "this route has no usage endpoint" is a provider fact (#62).
+      // the card says it does not show usage for this route (#62). The copy
+      // stays about display, because some of these routes DO have an endpoint
+      // this window model cannot carry (DeepSeek balance, OpenRouter key limits,
+      // Copilot monthly quota).
       const lines = findByClass(view.nodes, 'km-quota-inline')
       expect(lines).toHaveLength(1)
-      expect(lines[0]!.text).toBe('该路由不提供用量接口')
+      expect(lines[0]!.text).toBe('该路由暂不显示用量')
       expect(lines[0]!.text).not.toBe('未报告')
       // No windows, so the collapsed pill contributes nothing.
       expect(findByClass(view.nodes, 'km-quota-compact')).toHaveLength(0)

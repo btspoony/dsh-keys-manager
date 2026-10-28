@@ -195,10 +195,12 @@ const zh = {
       // entries; a pending, `error` or probe-reported `absent` snapshot needs no
       // copy at all. `natively-managed` does: it is the host saying a DSH
       // projection serves the route while its usage stays unreadable, which is
-      // its own verdict. `quotaNoProbe` is the route with no usage endpoint at
-      // all (issue #62) — a property of the provider, not a failed read.
+      // its own verdict. `quotaNoProbe` says only that this card does not show
+      // usage for the route (issue #62): some of those routes DO have an
+      // endpoint whose payload this window model cannot carry, so the copy must
+      // not claim there is none.
       quotaNativelyManaged: '由 DSH 原生管理',
-      quotaNoProbe: '该路由不提供用量接口',
+      quotaNoProbe: '该路由暂不显示用量',
       quotaNotReported: '未报告',
       quotaResetDue: '已到重置时间',
       quotaSignInAgain: '请重新登录',
@@ -395,7 +397,7 @@ const en = {
       transportModelsMissingCatalog: 'The installed transport build ships no model catalog for this route; the list stays empty until dsh-llm-omp-transports is rebuilt or upgraded.',
       // Plan usage on a key row (issue #22).
       quotaNativelyManaged: 'Managed by DSH',
-      quotaNoProbe: 'No usage endpoint for this route',
+      quotaNoProbe: 'Usage is not shown for this route',
       quotaNotReported: 'Not reported',
       quotaResetDue: 'Reset due',
       quotaSignInAgain: 'Sign in again',
