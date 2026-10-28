@@ -95,7 +95,16 @@ function snapshotFromRead(
   extract: (body: Record<string, unknown>) => QuotaWindow[] | string,
 ): QuotaSnapshot {
   const fetchedAt = Date.now()
-  if (!read.ok) return { status: read.status, fetchedAt, windows: [], reason: read.reason }
+  if (!read.ok) {
+    return {
+      status: read.status,
+      fetchedAt,
+      windows: [],
+      reason: read.reason,
+      // A 404 is the vendor answering "nothing here": the probe ran.
+      ...(read.status === 'absent' ? { absentCause: 'reported-nothing' as const } : {}),
+    }
+  }
   const extracted = extract(read.body)
   if (typeof extracted === 'string') {
     return { status: 'error', fetchedAt, windows: [], reason: extracted }
@@ -595,6 +604,7 @@ export const factoryDroidQuotaProbe: QuotaProbe = async ({ token, orgId, region,
       fetchedAt,
       windows: [],
       reason: 'this account does not use token-rate-limit billing',
+      absentCause: 'reported-nothing',
     }
   }
   const limits = asRecord(body.limits)
@@ -649,7 +659,13 @@ export function quotaProbe(provider: string): QuotaProbe | undefined {
 export async function resolveQuota(provider: string, input: QuotaProbeInput): Promise<QuotaSnapshot> {
   const probe = quotaProbe(provider)
   if (probe === undefined) {
-    return { status: 'absent', fetchedAt: Date.now(), windows: [], reason: `no quota profile for ${provider}` }
+    return {
+      status: 'absent',
+      fetchedAt: Date.now(),
+      windows: [],
+      reason: `no quota profile for ${provider}`,
+      absentCause: 'no-probe',
+    }
   }
   try {
     return await probe(input)

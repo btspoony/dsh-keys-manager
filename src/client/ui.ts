@@ -1123,13 +1123,16 @@ function TransportModels({ route }: TransportModelsProps): React.ReactElement {
 /**
  * One account's plan usage as a single muted line under its key row: every
  * window that exists plus the reset countdown of the tightest one. Only a
- * reported state renders — a pending (`undefined`), `absent` or `error`
- * snapshot stays silent so a route without usage occupies no space at all.
- * `natively-managed` is the host telling us a DSH projection serves the route
- * but its usage cannot be read: that is neither "no usage API" nor "your
- * credential is invalid", so it gets its own line. `unauthorized` is actionable
- * only on an OAuth row (it has a sign-in to offer); an API key has none, so
- * that row stays silent too. `stale` keeps the numbers with a marker.
+ * reported state renders — a pending (`undefined`) or `error` snapshot stays
+ * silent so a route without usage occupies no space at all, and so does an
+ * `absent` read that reached a probe and got nothing back. `natively-managed`
+ * is the host telling us a DSH projection serves the route but its usage
+ * cannot be read: that is neither "no usage API" nor "your credential is
+ * invalid", so it gets its own line. A route the host has no probe for is a
+ * fact about the provider, not a failure, so it explains itself instead of
+ * reading as "not reported". `unauthorized` is actionable only on an OAuth row
+ * (it has a sign-in to offer); an API key has none, so that row stays silent
+ * too. `stale` keeps the numbers with a marker.
  */
 function quotaInline(
   row: { quota?: KeyView['quota']; kind?: KeyView['kind'] },
@@ -1144,6 +1147,10 @@ function quotaInline(
     }
     if (row.quota?.status === 'unauthorized' && row.kind === 'oauth') {
       return h('div', { className: 'km-quota-inline' }, t('quotaSignInAgain'))
+    }
+    // No probe for this route: nothing to fetch, nothing wrong (issue #62).
+    if (row.quota?.status === 'absent' && row.quota.absentCause === 'no-probe') {
+      return h('div', { className: 'km-quota-inline' }, t('quotaNoProbe'))
     }
     // A rejected read is a fact about this card session, not a plan state: say
     // so instead of leaving the row blank until the next cadence window.

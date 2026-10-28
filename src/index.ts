@@ -7219,6 +7219,9 @@ export class KeysManagerService {
       status: snapshot.status,
       fetchedAt: snapshot.fetchedAt,
       ...(snapshot.stale === true ? { stale: true } : {}),
+      // Why an `absent` read is empty travels with it: the card must not read
+      // "this route has no usage endpoint" as "the read failed" (#62).
+      ...(snapshot.absentCause === undefined ? {} : { absentCause: snapshot.absentCause }),
       windows: snapshot.windows.map(window => ({
         id: window.id,
         usedFraction: window.usedFraction,

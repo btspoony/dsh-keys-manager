@@ -18,14 +18,16 @@ tags:
 
 # Reading subscription plan usage from coding-plan vendors
 
-Proven in issue22-quota-visibility (2026-10-24) and extended in issue22-quota-ui-probes (2026-10-25): the Keys Manager shows per-account plan usage as one muted line on the key/account row, and nothing at all for a route that cannot report usage. Reference facts came from reading `yetone/magpie`, `junhoyeo/tokscale` and the local `oh-my-pi` checkout; **no live request was made**, so treat every field name as "as implemented by those three" until a real account proves it.
+Proven in issue22-quota-visibility (2026-10-24) and extended in issue22-quota-ui-probes (2026-10-25) and issue62-quota-absent-semantics (2026-10-28): the Keys Manager shows per-account plan usage as one muted line on the key/account row, and nothing at all for a route that cannot report usage. Reference facts came from reading `yetone/magpie`, `junhoyeo/tokscale` and the local `oh-my-pi` checkout; **no live request was made**, so treat every field name as "as implemented by those three" until a real account proves it.
 
 ## Shape that works: one GET per account, normalized to windows
 
 ```
 QuotaWindow { id: 'session' | 'week'; usedFraction: 0..1; resetsAt: epochMs }
-QuotaSnapshot { status: 'ok' | 'absent' | 'unauthorized' | 'error'; fetchedAt; windows[]; stale? }
+QuotaSnapshot { status: 'ok' | 'absent' | 'unauthorized' | 'error'; fetchedAt; windows[]; stale?; absentCause? }
 ```
+
+`absent` is two facts, not one, and `absentCause` keeps them apart on the wire: `'no-probe'` (no probe is registered for the route — nothing was ever asked, so the card explains the route) versus `'reported-nothing'` (a probe ran and the vendor had nothing usable). The field is unset when the read never reached a probe at all (no readable credential).
 
 Three reset-time encodings coexist and every parser must accept all of them: ISO string (Claude, OpenCode Go), epoch seconds/ms (Codex `reset_at`, Z.ai `nextResetTime`), and relative seconds (Codex `reset_after_seconds`). Normalize once, at the boundary.
 
@@ -75,6 +77,20 @@ Three reset-time encodings coexist and every parser must accept all of them: ISO
 
 Cline's `X-CLIENT-VERSION` is a hard-coded desktop release (`3.5.54`, copied from magpie) — a maintenance risk if Cline starts version-gating the usage endpoint.
 
+### Three endpoints that exist but cannot map to a usage window (issue #62)
+
+These routes have a reachable usage endpoint; they stay `absent` because their
+number is not a `session`/`week` window. Recording it here keeps the decision
+from being re-litigated as "someone forgot a probe" (`I-000312`, `I-000318`).
+
+| Route | Endpoint | Evidence source | Why it stays `absent` |
+|---|---|---|---|
+| `deepseek` | `GET https://api.deepseek.com/user/balance` (Bearer) | Vendor API docs: "Get User Balance" — <https://api-docs.deepseek.com/api/get-user-balance> | The answer is `balance_infos[].{currency, total_balance, granted_balance, topped_up_balance}`: **money, no period**. A balance has no reset instant and no denominator, so any `usedFraction` would be invented. |
+| `openrouter` | `GET https://openrouter.ai/api/v1/key` | Vendor API docs: "Limits" / `GetKeyResponse` — <https://openrouter.ai/docs/api-reference/limits>. No reference implementation reads a usage endpoint either (tokscale has pricing only, magpie the chat base, oh-my-pi no openrouter usage provider — `I-000318`). | `data.{usage, limit, limit_remaining, limit_reset}` is a **key budget**, not a plan window: `limit` may be a lifetime cap, and `limit_reset` is a period *name* (`daily`/`weekly`/`monthly`) or null — never a reset timestamp, so no `resetsAt` exists. |
+| `github-copilot` | `GET {github-api}/copilot_internal/user` | Local reference `oh-my-pi/packages/ai/src/usage/github-copilot.ts:187` (fetch) and `:86-95` (`buildWindow`: `quota_reset_date` → `{ id: 'monthly', label: 'Monthly', resetsAt }`). | Copilot's `quota_snapshots.*` quota resets **monthly**. The window model has only `session`/`week`, and a monthly period is dropped, never relabelled — same rule as Cline's `monthly` limit and Cursor's monthly billing bucket. |
+
+Both vendor-doc rows are recorded from the published API reference, not from a live account: a real capture is still what `I-000301` asks for. Reopen any of the three only if the window model gains a `month`/balance window that can carry the vendor's own period.
+
 ## Display-only first, ranking second
 
 Quota visibility (this work) and quota-aware routing are separable: the snapshot API is useful on its own, and ranking changes `doSelectKey` semantics (tiers by soonest reset, session-only accounts last once ≥90% used, cooling accounts last) — a change that deserves its own plan. Note that while an OAuth projection exists, the host skips key selection entirely, so ranking only affects key-pool routes unless the projection switch itself is changed.
@@ -98,7 +114,7 @@ Gating freshness on `status === 'ok'` alone makes every failure permanent: the c
 
 ### 3. `error` from a probe is not always a credential problem
 
-The same payload can be valid and uninterpretable: an xAI account on unified billing returns `200` with a weekly period and a monthly quota at once, so a weekly percentage cannot be trusted. The probe returns `error` on purpose, and the UI must not promote that to an auth failure. Distinguish three outcomes explicitly — *credential refused*, *payload not usable*, *no usage API for this route* — because each deserves a different label.
+The same payload can be valid and uninterpretable: an xAI account on unified billing returns `200` with a weekly period and a monthly quota at once, so a weekly percentage cannot be trusted. The probe returns `error` on purpose, and the UI must not promote that to an auth failure. Distinguish three outcomes explicitly — *credential refused*, *payload not usable*, *no usage API for this route* — because each deserves a different label; `absentCause` makes the third machine-readable instead of a `reason` string to match on.
 
 Two smaller findings worth keeping: the fetch layer folds `401` and `403` into one `unauthorized` status (so a scoped/revoked grant looks like an expired one), and the cache's last-good `ok` snapshot (24 h) outranks any newer non-ok state — a row that once showed numbers keeps them after the credential expires.
 

@@ -246,9 +246,11 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     deleteConfirm: '确认删除',
     deleting: '删除中…',
     // Plan usage (issue #22): the row line resolves its own copy, and the reset
-    // countdown resolves the duration keys it formats. A pending, absent or
-    // error state has no copy by design; `natively-managed` does have one.
+    // countdown resolves the duration keys it formats. A pending, error or
+    // probe-reported absent state has no copy by design; `natively-managed` and
+    // the no-probe route (issue #62) do have one.
     quotaNativelyManaged: '由 DSH 原生管理',
+    quotaNoProbe: '该路由不提供用量接口',
     quotaNotReported: '未报告',
     quotaResetDue: '已到重置时间',
     quotaSignInAgain: '请重新登录',
@@ -4178,9 +4180,17 @@ describe('quota surface', () => {
     }
   })
 
-  test('absent and error snapshots render no quota surface at all', async () => {
+  test('a probe-reported absent and an error snapshot render no quota surface at all', async () => {
     for (const status of ['absent', 'error'] as const) {
-      const { view } = await mountExpanded(quotaState({ status, fetchedAt: Date.now(), windows: [] }))
+      // The absent fixture carries a probe that ran and reported nothing: that
+      // read reached the vendor, so it stays silent (issue #62).
+      const quota: QuotaView = {
+        status,
+        fetchedAt: Date.now(),
+        windows: [],
+        ...(status === 'absent' ? { absentCause: 'reported-nothing' as const } : {}),
+      }
+      const { view } = await mountExpanded(quotaState(quota))
       try {
         // No line, no placeholder, no pill: the card looks as it did before
         // the feature (D2). The key row itself still renders.
@@ -4190,6 +4200,24 @@ describe('quota surface', () => {
         view.unmount()
         setRuntimeContext(null)
       }
+    }
+  })
+
+  test('a route with no probe explains itself instead of reading as a failure', async () => {
+    const quota: QuotaView = { status: 'absent', fetchedAt: Date.now(), windows: [], absentCause: 'no-probe' }
+    const { view } = await mountExpanded(quotaState(quota))
+    try {
+      // It owns one line, and it is neither the failure copy nor a blank row:
+      // "this route has no usage endpoint" is a provider fact (#62).
+      const lines = findByClass(view.nodes, 'km-quota-inline')
+      expect(lines).toHaveLength(1)
+      expect(lines[0]!.text).toBe('该路由不提供用量接口')
+      expect(lines[0]!.text).not.toBe('未报告')
+      // No windows, so the collapsed pill contributes nothing.
+      expect(findByClass(view.nodes, 'km-quota-compact')).toHaveLength(0)
+    } finally {
+      view.unmount()
+      setRuntimeContext(null)
     }
   })
 

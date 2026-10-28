@@ -152,6 +152,11 @@ export interface QuotaView {
   fetchedAt: number
   /** True when the windows are last-good data served behind a failed probe. */
   stale?: boolean
+  /**
+   * Set on `absent`: `no-probe` = this route has no usage endpoint at all,
+   * `reported-nothing` = a probe ran and the vendor reported no usage.
+   */
+  absentCause?: 'no-probe' | 'reported-nothing'
   windows: QuotaWindowView[]
 }
 
