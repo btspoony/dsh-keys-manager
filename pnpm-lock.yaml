@@ -5,9 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@oh-my-pi/pi-ai@18.12.6':
-    hash: f82497f2ead8283848346f4d2f5ef8636e6bbc3e0a617f0930637c76c6d7f174
-    path: patches/@oh-my-pi__pi-ai@18.12.6.patch
+  '@oh-my-pi/pi-ai@18.12.6': f82497f2ead8283848346f4d2f5ef8636e6bbc3e0a617f0930637c76c6d7f174
 
 importers:
 

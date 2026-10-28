@@ -2,6 +2,12 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.2.11] - 2026-10-28
+
+### Changed
+
+- A route without a usage probe now says "usage is not shown for this route" instead of leaving the plan-usage line looking like a failed read.
+
 ## [0.2.10] - 2026-10-26
 
 ### Added
