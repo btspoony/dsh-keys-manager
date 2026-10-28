@@ -36,10 +36,14 @@ jobs:
 
       # The install/load proof runs the real CLI, and its focused step below
       # (`INSTALL_PROOF=required`) fails rather than skips when `dsh` is missing
-      # on PATH. Pin the CLI explicitly so the proof is versioned with the change
-      # that adds it.
-      - name: Install a pinned dsh CLI
-        run: npm install --global @deepseek-ai/dsh@0.2.1-rc.3
+      # on PATH. Install the CLI range the repository declares as its peer
+      # instead of a second pinned literal, so a peer bump needs no CI edit.
+      - name: Install the dsh CLI matching the declared peer range
+        run: |
+          set -euo pipefail
+          range=$(node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).peerDependencies['@deepseek-ai/dsh-llm']")
+          npm install --global "@deepseek-ai/dsh@${range}"
+          dsh --version
 
       - name: Typecheck
         run: pnpm run typecheck
@@ -104,7 +108,7 @@ jobs:
       # Install/load proof: packs both packages, installs the root tarball into
       # a fresh DSH profile, and asserts the composed loader tree carries BOTH
       # components. It needs both builds above (each package's own `prepack`
-      # also rebuilds) and the pinned `dsh` installed before the suite.
+      # also rebuilds) and the declared-range `dsh` installed before the suite.
       # INSTALL_PROOF=required is what makes a missing `dsh`/`pnpm` fail here
       # instead of skip; the release workflows run the plain suite without it,
       # install no CLI, and so skip this proof rather than fail before publish.
