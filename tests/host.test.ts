@@ -18354,6 +18354,34 @@ test('the projected quota carries no host-side reason', async () => {
   }
 })
 
+test('a missing probe and a probe-reported empty read project distinct absent causes', async () => {
+  // deepinfra is a plugin extra route with no usage probe at all: the card must
+  // read "no usage endpoint", not "the read failed" (#62).
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('deepinfra', 'main', 'sk-deepinfra')
+    const state = await h.service.quotaRefresh('deepinfra')
+    const row = keyRows(state, 'deepinfra')[0]!
+    assert.equal(row.quota?.status, 'absent')
+    assert.equal(row.quota?.absentCause, 'no-probe')
+  } finally {
+    await h.close()
+  }
+
+  // The same status from a probe that ran and got a 404 keeps its own cause.
+  const probed = await harnessWithManagedAnthropic()
+  try {
+    await probed.service.addKey('anthropic', 'Primary', 'sk-ant-api')
+    probed.service.quotaFetch = quotaFetchStub({ message: 'not found' }, { status: 404 })
+    const state = await probed.service.quotaRefresh('anthropic')
+    const row = keyRows(state, 'anthropic').find(candidate => candidate.alias === 'Primary')!
+    assert.equal(row.quota?.status, 'absent')
+    assert.equal(row.quota?.absentCause, 'reported-nothing')
+  } finally {
+    await probed.close()
+  }
+})
+
 test('a directory without cursor still yields the cursor transport view', async () => {
   // The transports plugin withdraws a route with no credential record from
   // the configurable-provider directory; `buildState` unions the package's

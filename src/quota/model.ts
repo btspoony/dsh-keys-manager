@@ -31,6 +31,13 @@ export interface QuotaWindow {
   resetsAt: number
 }
 
+/**
+ * Why a read is `absent`, so "this route has no usage endpoint" never reads as
+ * a failed read: `no-probe` means no probe is registered for the route, and
+ * `reported-nothing` means a probe ran and the vendor had nothing usable.
+ */
+export type QuotaAbsentCause = 'no-probe' | 'reported-nothing'
+
 /** Normalized, cacheable result of one probe. */
 export interface QuotaSnapshot {
   status: QuotaStatus
@@ -39,6 +46,8 @@ export interface QuotaSnapshot {
   windows: QuotaWindow[]
   /** Diagnostic detail for non-`ok` states; never rendered verbatim. */
   reason?: string
+  /** Set on `absent` reads; unset when the read never reached a probe. */
+  absentCause?: QuotaAbsentCause
 }
 
 function clampFraction(value: number): number {

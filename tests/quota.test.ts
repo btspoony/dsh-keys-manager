@@ -841,6 +841,7 @@ test('batch A and B route ids resolve, the non-portable ones stay absent', async
     const snapshot = await resolveQuota(route, { token: 'tok' })
     assert.equal(snapshot.status, 'absent', route)
     assert.deepEqual(snapshot.windows, [], route)
+    assert.equal(snapshot.absentCause, 'no-probe', route)
   }
 })
 
@@ -949,6 +950,26 @@ test('unknown route ids have no probe and resolve to absent', async () => {
   const snapshot = await resolveQuota('no-such-provider', { token: 'tok' })
   assert.equal(snapshot.status, 'absent')
   assert.deepEqual(snapshot.windows, [])
+  assert.equal(snapshot.absentCause, 'no-probe')
+})
+
+test('a missing probe and a probe that reported nothing carry distinct absent causes', async () => {
+  // No probe registered: the card must explain the route, not the read (#62).
+  const unprobed = await resolveQuota('openrouter', { token: 'tok' })
+  assert.equal(unprobed.status, 'absent')
+  assert.equal(unprobed.absentCause, 'no-probe')
+
+  // A probe that ran and got a 404 reached the vendor: nothing to report.
+  const reportedNothing = await claudeQuotaProbe({ token: 'tok', fetch: fakeFetch(jsonResponse(404, {})) })
+  assert.equal(reportedNothing.status, 'absent')
+  assert.equal(reportedNothing.absentCause, 'reported-nothing')
+
+  // A refusal and a failure are not absent at all, so they carry no cause.
+  for (const [status, expected] of [[401, 'unauthorized'], [500, 'error']] as const) {
+    const read = await claudeQuotaProbe({ token: 'tok', fetch: fakeFetch(jsonResponse(status, {})) })
+    assert.equal(read.status, expected, `http ${status}`)
+    assert.equal(read.absentCause, undefined, `http ${status}`)
+  }
 })
 
 test('prototype keys never resolve to a probe', () => {
@@ -1289,6 +1310,11 @@ test('factory-droid probe degrades instead of guessing', async () => {
   assert.equal(eu.status, 'ok')
 
   assert.equal((await resolveQuota('factory-droid', { token: 't', fetch: answer(401, {}) })).status, 'unauthorized')
+  // A 404 reached the vendor: the probe ran, so the read is "reported nothing"
+  // — never "this route has no probe" (issue #62 F1).
+  const notFound = await resolveQuota('factory-droid', { token: 't', fetch: answer(404, {}) })
+  assert.equal(notFound.status, 'absent')
+  assert.equal(notFound.absentCause, 'reported-nothing')
   assert.equal(
     (await resolveQuota('factory-droid', { token: 't', fetch: answer(200, { usesTokenRateLimitsBilling: false }) })).status,
     'absent',
