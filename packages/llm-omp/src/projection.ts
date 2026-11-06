@@ -351,7 +351,7 @@ export interface ProjectedDevinRequest {
  */
 export function projectRequest(
   row: CursorModelRow,
-  options: GenerateOptions,
+  options: GenerateOptions<string>,
   accessToken?: string,
 ): ProjectedRequest {
   const wireModelId = resolveWireModelId(row, options.reasoningEffort)
@@ -399,7 +399,7 @@ export function projectRequest(
  */
 export function projectDevinRequest(
   row: DevinModelRow,
-  options: GenerateOptions,
+  options: GenerateOptions<string>,
   accessToken?: string,
 ): ProjectedDevinRequest {
   if (options.reasoningEffort !== undefined) {
@@ -467,7 +467,7 @@ export interface ProjectedFactoryDroidRequest {
  */
 export function projectFactoryDroidRequest(
   row: FactoryDroidModelRow,
-  options: GenerateOptions,
+  options: GenerateOptions<string>,
   accessToken?: string,
 ): ProjectedFactoryDroidRequest {
   if (options.reasoningEffort !== undefined) {
@@ -532,7 +532,7 @@ export interface ProjectedGitLabDuoRequest {
  */
 export function projectGitLabDuoRequest(
   row: GitLabDuoModelRow,
-  options: GenerateOptions,
+  options: GenerateOptions<string>,
   accessToken?: string,
 ): ProjectedGitLabDuoRequest {
   const context = projectContext(GITLAB_DUO_PROFILE, options)
@@ -598,7 +598,7 @@ export interface ProjectedGitLabDuoAgentRequest {
  */
 export function projectGitLabDuoAgentRequest(
   row: GitLabDuoAgentModelRow,
-  options: GenerateOptions,
+  options: GenerateOptions<string>,
   accessToken?: string,
 ): ProjectedGitLabDuoAgentRequest {
   if (options.reasoningEffort !== undefined) {
@@ -697,7 +697,7 @@ interface GoogleWireRoute {
 export function projectGoogleRequest(
   row: GoogleModelRow,
   profile: GoogleRouteProfile,
-  options: GenerateOptions,
+  options: GenerateOptions<string>,
   accessToken?: string,
 ): ProjectedGoogleRequest {
   const wire = googleWireRoute(row, options)
@@ -735,7 +735,7 @@ export function projectGoogleRequest(
  * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for an unadvertised
  *   effort, and for no effort on a row that requires one.
  */
-function googleWireRoute(row: GoogleModelRow, options: GenerateOptions): GoogleWireRoute {
+function googleWireRoute(row: GoogleModelRow, options: GenerateOptions<string>): GoogleWireRoute {
   const effort = options.reasoningEffort
   const thinking = row.thinking
   if (effort !== undefined && (thinking === undefined || !thinking.efforts.includes(effort))) {
@@ -841,7 +841,7 @@ function googleWireModelId(row: GoogleModelRow, effort: string | undefined): str
  * @param options - the assembled DSH request.
  * @returns the context for the transport's second positional argument.
  */
-function projectContext(profile: RouteProfile, options: GenerateOptions): OmpContext {
+function projectContext(profile: RouteProfile, options: GenerateOptions<string>): OmpContext {
   const tools = projectTools(options, profile)
   const systemPrompt: string[] = []
   if (options.system !== undefined && options.system.length > 0) systemPrompt.push(options.system)
@@ -900,7 +900,7 @@ function projectContext(profile: RouteProfile, options: GenerateOptions): OmpCon
  * @throws LlmError with {@link TOOL_ALIAS_COLLISION} when a declared name is
  *   already reserved for an alias.
  */
-function projectTools(options: GenerateOptions, profile: RouteProfile): readonly OmpTool[] | undefined {
+function projectTools(options: GenerateOptions<string>, profile: RouteProfile): readonly OmpTool[] | undefined {
   if (options.tools === undefined || options.tools.length === 0) return undefined
   const byName = new Map<string, OmpTool>()
   for (const tool of options.tools) {

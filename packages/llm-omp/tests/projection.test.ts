@@ -67,7 +67,10 @@ function usage(overrides: Partial<OmpUsage> = {}): OmpUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, ...overrides }
 }
 
-function request(messages: GenerateOptions['messages'], extra: Partial<GenerateOptions> = {}): GenerateOptions {
+function request(
+  messages: GenerateOptions['messages'],
+  extra: Partial<GenerateOptions<string>> = {},
+): GenerateOptions<string> {
   return { provider: 'cursor', model: 'claude-4.5-sonnet', messages, ...extra }
 }
 
@@ -535,7 +538,7 @@ describe('projectRequest', () => {
   })
 
   it('refuses historical tool arguments that are not a JSON object', () => {
-    const call = (argumentsText: string): GenerateOptions =>
+    const call = (argumentsText: string): GenerateOptions<string> =>
       request([
         createAssistantMessage({
           content: [{ type: 'tool-call', id: ToolCallId('call-1'), name: 'lookup_doc', arguments: argumentsText }],
