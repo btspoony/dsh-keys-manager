@@ -58,8 +58,8 @@ importers:
         specifier: ^0.2.2-rc.1
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/schemastery':
-        specifier: ~3.18.5
-        version: 3.18.5
+        specifier: ~3.19.0
+        version: 3.19.0
       '@oh-my-pi/pi-ai':
         specifier: 18.12.6
         version: 18.12.6(patch_hash=f82497f2ead8283848346f4d2f5ef8636e6bbc3e0a617f0930637c76c6d7f174)
@@ -122,9 +122,6 @@ packages:
     resolution: {integrity: sha512-UN4B/Fa9zAunYN3UuXDQ3QknxF/lMKNwTu2WxXKKEC+Ejz745po7I/JmsVFVa7+socfuwwTmVrfSsddRVU+lew==}
     peerDependencies:
       '@deepseek-ai/cordis': ~4.1.0
-
-  '@deepseek-ai/schemastery@3.18.5':
-    resolution: {integrity: sha512-Mnobvqf9rHsZYv4g5edj5ddxS1oF1kIdSlz0DunUgnY3LWG5F26MqvH3YOOsSaodCgyzJ16OMN9O99/s5Crtdw==}
 
   '@deepseek-ai/schemastery@3.19.0':
     resolution: {integrity: sha512-bDXoYQa7ghAhmdYD5VPlzKxEzJV/aKkz5l4V5h1u06z8GAPN1ROewSjvR9WiXhpa52E9fng8lpH5QdCRIQgnyQ==}
@@ -839,11 +836,6 @@ snapshots:
   '@deepseek-ai/dsh-util-values@0.2.2-rc.1(@deepseek-ai/cordis@4.0.5)':
     dependencies:
       '@deepseek-ai/cordis': 4.0.5
-
-  '@deepseek-ai/schemastery@3.18.5':
-    dependencies:
-      '@deepseek-ai/cosmokit': 1.8.6
-      '@standard-schema/spec': 1.1.0
 
   '@deepseek-ai/schemastery@3.19.0':
     dependencies:
