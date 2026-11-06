@@ -16,7 +16,7 @@ importers:
         version: link:packages/llm-omp
     devDependencies:
       '@deepseek-ai/cordis':
-        specifier: ^4.1.0
+        specifier: ~4.1.0
         version: 4.1.0
       '@oh-my-pi/pi-ai':
         specifier: 18.12.6
@@ -52,7 +52,7 @@ importers:
   packages/llm-omp:
     devDependencies:
       '@deepseek-ai/cordis':
-        specifier: ^4.1.0
+        specifier: ~4.1.0
         version: 4.1.0
       '@deepseek-ai/dsh-llm':
         specifier: ^0.2.2-rc.1
