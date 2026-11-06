@@ -17,15 +17,16 @@ tags: [dsh, peers, cordis, schemastery, cosmokit, declaration-emit, ts2742]
 1. Bump every `@deepseek-ai/dsh-*` peer in the root `package.json` and in
    `packages/llm-omp/package.json` to the new cohort range, plus the transport's
    `devDependencies` copy of `@deepseek-ai/dsh-llm`.
-2. Move the two adjacent pins in the same commit to the ranges that cohort's `dsh-llm`
-   requires: `@deepseek-ai/cordis` (`~4.1.0` for the `0.2.2-rc.1` cohort; use the tilde range
-   in both `peerDependencies` and `devDependencies`, because with `autoInstallPeers: false` the
-   dev resolution is what typecheck/build/tests run against, so a caret there lets a lockfile
-   refresh install a cordis line the peer forbids) and, in the
-   transport package, `@deepseek-ai/schemastery` (`~3.19.0`).
-3. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
+2. In the same commit, move the two adjacent pins to the ranges that cohort's `dsh-llm`
+   declares: `@deepseek-ai/cordis` `~4.1.0` and, in the transport package,
+   `@deepseek-ai/schemastery` `~3.19.0` — as the peer range **and** the devDependency range
+   (rationale below).
+3. Update `pnpm-workspace.yaml`: the six `@deepseek-ai/dsh-*` entries under
+   `minimumReleaseAgeExclude` must name the new cohort's exact versions, or a frozen install
+   refuses it as too fresh. Update both README DSH badges to the declared peer range.
+4. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
    `pnpm ls -r --depth 99 @deepseek-ai/cordis @deepseek-ai/schemastery @deepseek-ai/cosmokit`.
-4. Run both packages' typecheck, build and tests. The transport build is the real gate for
+5. Run both packages' typecheck, build and tests. The transport build is the real gate for
    declaration emit; typecheck alone does not exercise it.
 
 ## Why cordis and schemastery move with the cohort
@@ -43,6 +44,19 @@ without a reference to '@deepseek-ai/schemastery/node_modules/@deepseek-ai/cosmo
 
 `cordis@4.1.0` depends on `cosmokit@~1.9.0`, so aligning cordis dedupes cosmokit and removes
 the error at its root.
+
+Two separate reasons keep both the peer and the devDependency at the tilde range:
+
+- **Peer range** — a consumer resolving cordis 4.2+ would satisfy this plugin while violating
+  `dsh-llm`'s own `~4.1.0` peer, so the declaration must state the same ceiling the cohort
+  enforces.
+- **DevDependency range** — `pnpm-workspace.yaml` sets `autoInstallPeers: false`, so the dev
+  resolution is the only cordis the workspace installs and the one typecheck/build/tests run
+  against. A caret there lets a lockfile refresh pull a cordis line the published peer
+  forbids, and CI would go green against an unsupported version.
+
+The same applies to `schemastery` in the transport package: peer and devDependency both move
+to the cohort's range.
 
 ## What does not work
 
