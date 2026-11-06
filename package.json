@@ -69,7 +69,7 @@
     "node": "^22.19 || >=24"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.1.0",
+    "@deepseek-ai/cordis": "~4.1.0",
     "@deepseek-ai/dsh-client-connection": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-client-locale": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-plugin-manager": "^0.2.2-rc.1",
