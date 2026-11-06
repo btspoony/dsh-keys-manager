@@ -2,6 +2,15 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.3.0] - 2026-11-06
+
+### Changed
+
+- Narrow the `@deepseek-ai/cordis` peer to `~4.1.0`, the range `dsh-llm@0.2.2-rc.1` declares, so cordis 4.2 and later no longer satisfy this plugin.
+- Align the transport's `@deepseek-ai/schemastery` peer to `~3.19.0`, the range `dsh-llm@0.2.2-rc.1` depends on.
+- Move the `@deepseek-ai/dsh-*` peer corridor from `dsh-v0.2.1-rc.4` to `dsh-v0.2.2-rc.1`.
+- No session or storage format changed for this plugin; existing keys, settings, and transport configuration keep working as before.
+
 ## [0.2.11] - 2026-10-28
 
 ### Changed
