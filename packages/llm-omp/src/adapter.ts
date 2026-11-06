@@ -164,7 +164,7 @@ export interface TransportRoute<Row extends TransportRow, Model, Options extends
   /** The generated catalog. */
   readonly models: readonly Row[]
   /** Project one DSH request onto this route's transport arguments. */
-  readonly project: (row: Row, options: GenerateOptions) => ProjectedTransportRequest<Model, Options>
+  readonly project: (row: Row, options: GenerateOptions<string>) => ProjectedTransportRequest<Model, Options>
   /**
    * The row's advertised reasoning efforts.
    *
@@ -417,7 +417,7 @@ abstract class OmpTransportAdapter<
     return this.modelInfo(provider, this.rowFor(model))
   }
 
-  override stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+  override stream(options: GenerateOptions<string>): AsyncIterable<StreamChunk> {
     return this.call(options)
   }
 
@@ -431,7 +431,7 @@ abstract class OmpTransportAdapter<
     }
   }
 
-  private async *call(options: GenerateOptions): AsyncGenerator<StreamChunk> {
+  private async *call(options: GenerateOptions<string>): AsyncGenerator<StreamChunk> {
     // Read the live signal each time: it can abort while the credential is read.
     const aborted = (): boolean => options.signal?.aborted === true
     // An already-cancelled turn must not pay a credential read (nor, once Cursor

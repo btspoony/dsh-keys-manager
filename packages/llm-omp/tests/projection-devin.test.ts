@@ -57,7 +57,10 @@ function usage(overrides: Partial<OmpUsage> = {}): OmpUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, ...overrides }
 }
 
-function request(messages: GenerateOptions['messages'], extra: Partial<GenerateOptions> = {}): GenerateOptions {
+function request(
+  messages: GenerateOptions['messages'],
+  extra: Partial<GenerateOptions<string>> = {},
+): GenerateOptions<string> {
   return { provider: 'devin', model: 'swe-1-6', messages, ...extra }
 }
 
