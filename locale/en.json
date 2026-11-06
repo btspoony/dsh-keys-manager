@@ -1,7 +1,8 @@
 {
   "meta": {
     "title": "Keys Manager",
-    "description": "Multiple API keys per provider with sticky sessions, round-robin selection, retry failover, cooldown recovery, and searchable extra providers."
+    "description": "Multiple API keys per provider with sticky sessions, round-robin selection, retry failover, cooldown recovery, and searchable extra providers.",
+    "detail": "docs/DETAIL.md"
   },
   "filterAll": "All",
   "filterBuiltin": "Built-in",
