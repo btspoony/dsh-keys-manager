@@ -18,7 +18,9 @@ tags: [dsh, peers, cordis, schemastery, cosmokit, declaration-emit, ts2742]
    `packages/llm-omp/package.json` to the new cohort range, plus the transport's
    `devDependencies` copy of `@deepseek-ai/dsh-llm`.
 2. Move the two adjacent pins in the same commit to the ranges that cohort's `dsh-llm`
-   requires: `@deepseek-ai/cordis` (`^4.1.0` for the `0.2.2-rc.1` cohort) and, in the
+   requires: `@deepseek-ai/cordis` (`~4.1.0` for the `0.2.2-rc.1` cohort; keep the peer at
+   that tilde range so a consumer on cordis 4.2 does not satisfy this plugin while violating
+   the cohort's peer, and leave the devDependency at `^4.1.0` as an install constraint) and, in the
    transport package, `@deepseek-ai/schemastery` (`~3.19.0`).
 3. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
    `pnpm ls -r --depth 99 @deepseek-ai/cordis @deepseek-ai/schemastery @deepseek-ai/cosmokit`.
