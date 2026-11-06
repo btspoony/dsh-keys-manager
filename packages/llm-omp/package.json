@@ -54,7 +54,7 @@
     "node": "^22.19 || >=24"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/cordis": "^4.1.0",
     "@deepseek-ai/dsh-authorization": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-credentials": "^0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
@@ -62,7 +62,7 @@
     "@deepseek-ai/schemastery": "~3.19.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/cordis": "^4.1.0",
     "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
     "@deepseek-ai/schemastery": "~3.19.0",
     "@oh-my-pi/pi-ai": "18.12.6",

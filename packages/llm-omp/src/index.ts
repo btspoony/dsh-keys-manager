@@ -102,7 +102,7 @@ export type TransportModelProfile = TransportCatalogModel
 
 /** The configured profile of one transport route. */
 export interface TransportProviderProfile {
-  models: readonly TransportModelProfile[]
+  models: TransportModelProfile[]
 }
 
 /** The route ids this plugin registers, in registration order. */
@@ -148,7 +148,7 @@ export interface Config {
 }
 
 /** Runtime schema for {@link Config}. */
-export const Config: z<Config> = z.object({
+export const Config = z.object({
   providers: z
     .object({
       cursor: z.object({
