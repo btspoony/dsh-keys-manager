@@ -2,6 +2,12 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.3.1] - 2026-11-07
+
+### Changed
+
+- Add bilingual preview posters to the plugin detail page (`meta.detail` → `docs/DETAIL*.md`) and to the top of both READMEs.
+
 ## [0.3.0] - 2026-11-06
 
 ### Changed
