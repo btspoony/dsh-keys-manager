@@ -1,3 +1,5 @@
+![preview](https://raw.githubusercontent.com/btspoony/dsh-keys-manager/main/docs/preview.png)
+
 # DSH Keys Manager
 
 [![npm downloads](https://img.shields.io/npm/dm/dsh-keys-manager)](https://www.npmjs.com/package/dsh-keys-manager)
