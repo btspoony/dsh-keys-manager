@@ -2,6 +2,12 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.3.2] - 2026-11-10
+
+### Fixed
+
+- Extra-provider models that accept images are installed and repaired with `input: ["text", "image"]` from the pinned omp catalog instead of looking text-only.
+
 ## [0.3.1] - 2026-11-07
 
 ### Changed
