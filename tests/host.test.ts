@@ -1689,11 +1689,14 @@ test('a refused capability repair warns and leaves state consistent', async () =
 })
 
 /**
- * Shutdown landing while a repair write is in flight must stop the loop: the
+ * Shutdown requested while a repair write is in flight must stop the loop: the
  * held write still commits, and the next profile is left for the next start
- * instead of persisting into a closed manager (F1).
+ * instead of persisting into a stopping manager (F1). The close is kept from
+ * completing — its borrowed-window restoration is held open — so
+ * `shutdownRequested` is up while `closing` is still false, which is the
+ * window a repair that checks only `closing` would still write in.
  */
-test('a capability repair starts no further write after shutdown began', async () => {
+test('a capability repair starts no further write once shutdown has been requested', async () => {
   const h = await harness()
   try {
     const legacy: Record<string, Array<{ id: string; name: string }>> = {
@@ -1719,11 +1722,22 @@ test('a capability repair starts no further write after shutdown began', async (
     }
     const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
     await eventually(() => assert.equal(started.length, 1))
-    // Shutdown begins while the first profile's write is still held open.
-    await restarted.close()
+    // Begin the close, but hold its pre-close restoration open so the window
+    // between the shutdown request and the `closing` flag stays observable.
+    let releaseRestore: (() => void) | undefined
+    const restoring = new Promise<void>(resolve => { releaseRestore = resolve })
+    ;(restarted as unknown as { restoreBorrowedWindows: () => Promise<void> }).restoreBorrowedWindows = () => restoring
+    const closed = restarted.close()
+    const shutdown = restarted as unknown as { shutdownRequested: boolean; closing: boolean }
+    assert.equal(shutdown.shutdownRequested, true)
+    assert.equal(shutdown.closing, false)
+    // The first profile's write settles inside that window: it must not start
+    // the second profile's write.
     release!()
     await new Promise(resolve => setTimeout(resolve, 20))
     assert.equal(started.length, 1)
+    releaseRestore!()
+    await closed
     const first = started[0]
     const second = first === 'ollama-cloud' ? 'commandcode' : 'ollama-cloud'
     // The held write committed; the profile the loop never reached keeps its

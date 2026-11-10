@@ -7580,13 +7580,18 @@ export class KeysManagerService {
    * live `models` equal exactly `repairImageModalities(record.models)`, so only
    * the record is synced and the settings are left alone. Any other mismatch
    * is a user list and stays untouched.
+   *
+   * Every write below gates on {@link persistenceRefused}, not on `closing`
+   * alone: `close()` raises `shutdownRequested` before it awaits the borrowed
+   * windows and sets `closing` only afterwards, and this repair is not part of
+   * that pre-close restoration, so it carries no capability to claim.
    */
   private async repairModelCapabilities(): Promise<void> {
     for (const record of Object.values(this.store.providers)) {
       // Every write below crosses an await, so shutdown is re-checked per
-      // profile instead of once at entry: a close landing during the previous
-      // write must not let this one start (F1).
-      if (this.closing) return
+      // profile instead of once at entry: a close requested during the
+      // previous write must not let this one start (F1).
+      if (this.persistenceRefused()) return
       const extraId = record.extraId
       if (extraId === null) continue
       const live = this.profileAt(record.settingsNs, record.settingsPath)
@@ -7609,7 +7614,7 @@ export class KeysManagerService {
           record.settingsNs,
           [{ op: 'set', path: [...record.settingsPath, 'models'], value: models }],
           () => {
-            if (this.closing) return false
+            if (this.persistenceRefused()) return false
             const current = this.profileAt(record.settingsNs, record.settingsPath)
             return current !== undefined && JSON.stringify(current.models) === JSON.stringify(record.models)
           },
@@ -7618,7 +7623,7 @@ export class KeysManagerService {
         // The write settles across an await: a close or a store remount since
         // then leaves the record half to the recovery branch above instead of
         // persisting into a manager that moved on.
-        if (this.closing || this.store.provider(record.provider) !== record) return
+        if (this.persistenceRefused() || this.store.provider(record.provider) !== record) return
         record.models = models
         this.store.touch()
       } catch (error) {
