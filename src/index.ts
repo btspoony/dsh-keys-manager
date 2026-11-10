@@ -18,6 +18,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { CURSOR_ROUTE, cursorCatalogModels } from 'dsh-llm-omp-transports'
 import * as transportModule from 'dsh-llm-omp-transports'
 import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
+import { mergeModelCapabilities, repairImageModalities } from './capabilities.js'
 import {
   KEY_LIMIT,
   TEST_SUCCESS_FINISH_KINDS,
@@ -559,9 +560,10 @@ function discoveredModel(model: DiscoveredModel): ModelRecord | undefined {
 
 /**
  * Normalize one discovery answer for a profile write: unusable and duplicate
- * rows dropped, capped at the same limit discovery itself applies.
+ * rows dropped, capped at the same limit discovery itself applies, and the
+ * modalities the remote listing never reports filled from the capability index.
  */
-function discoveredModels(discovered: readonly DiscoveredModel[]): ModelRecord[] {
+function discoveredModels(provider: string, discovered: readonly DiscoveredModel[]): ModelRecord[] {
   const models: ModelRecord[] = []
   const seen = new Set<string>()
   for (const model of discovered) {
@@ -571,7 +573,7 @@ function discoveredModels(discovered: readonly DiscoveredModel[]): ModelRecord[]
     models.push(normalized)
     if (models.length >= 60) break
   }
-  return models
+  return mergeModelCapabilities(provider, models)
 }
 
 /** Credential-bearing header names the carrier must never persist as plain settings. */
@@ -1585,6 +1587,9 @@ export class KeysManagerService {
     void this.repairBrokerBindings().catch(error => {
       this.warn(`startup broker binding repair failed: ${error instanceof Error ? error.message : String(error)}`)
     })
+    void this.repairModelCapabilities().catch(error => {
+      this.warn(`startup model capability repair failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
     this.settledDisposer = this.watchAuthorizationSettled()
     this.recordUpdatedDisposer = this.watchGrantRecordUpdated()
     this.refreshTransportAccountsIfIdle()
@@ -2207,6 +2212,9 @@ export class KeysManagerService {
     // can hold forever (PR review round 3).
     void this.repairBrokerBindings().catch(error => {
       this.warn(`broker binding repair after the settings mount failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    void this.repairModelCapabilities().catch(error => {
+      this.warn(`model capability repair after the settings mount failed: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
 
@@ -7559,6 +7567,74 @@ export class KeysManagerService {
   }
 
   /**
+   * Startup repair for an extra route installed before the capability index
+   * existed: its profile carries model rows with no `input` at all, so DSH
+   * treats an image model as text-only. Only the rows the pinned catalog marks
+   * image are filled, and only on a profile whose `models` still equal our own
+   * record — a list the user edited in Models is theirs. A second pass finds
+   * every row filled and writes nothing, and a refused write only warns: the
+   * route keeps working exactly as it did.
+   *
+   * A repair whose settings write landed but whose record never did (the store
+   * flush was lost with the process) is healed from the profile itself: the
+   * live `models` equal exactly `repairImageModalities(record.models)`, so only
+   * the record is synced and the settings are left alone. Any other mismatch
+   * is a user list and stays untouched.
+   *
+   * Every write below gates on {@link persistenceRefused}, not on `closing`
+   * alone: `close()` raises `shutdownRequested` before it awaits the borrowed
+   * windows and sets `closing` only afterwards, and this repair is not part of
+   * that pre-close restoration, so it carries no capability to claim.
+   */
+  private async repairModelCapabilities(): Promise<void> {
+    for (const record of Object.values(this.store.providers)) {
+      // Every write below crosses an await, so shutdown is re-checked per
+      // profile instead of once at entry: a close requested during the
+      // previous write must not let this one start (F1).
+      if (this.persistenceRefused()) return
+      const extraId = record.extraId
+      if (extraId === null) continue
+      const live = this.profileAt(record.settingsNs, record.settingsPath)
+      if (live === undefined) continue
+      const models = repairImageModalities(extraId, record.models)
+      if (models === undefined) continue
+      if (JSON.stringify(live.models) !== JSON.stringify(record.models)) {
+        // The settings half of an earlier run landed, its record half did not
+        // (F2): sync the record only, never the profile.
+        if (JSON.stringify(live.models) !== JSON.stringify(models)) continue
+        record.models = models
+        this.store.touch()
+        continue
+      }
+      try {
+        // The guard re-reads the profile right before the write: a user save
+        // landing while the read above was in flight keeps its own list, and
+        // shutdown refuses the write at its last point, exactly as binding does.
+        const written = await this.mutateSettings(
+          record.settingsNs,
+          [{ op: 'set', path: [...record.settingsPath, 'models'], value: models }],
+          () => {
+            if (this.persistenceRefused()) return false
+            const current = this.profileAt(record.settingsNs, record.settingsPath)
+            return current !== undefined && JSON.stringify(current.models) === JSON.stringify(record.models)
+          },
+        )
+        if (!written) continue
+        // The write settles across an await: a close or a store remount since
+        // then leaves the record half to the recovery branch above instead of
+        // persisting into a manager that moved on.
+        if (this.persistenceRefused() || this.store.provider(record.provider) !== record) return
+        record.models = models
+        this.store.touch()
+      } catch (error) {
+        this.pushWarning(
+          `Did not store the catalog image capability on the ${record.provider} profile: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      }
+    }
+  }
+
+  /**
    * Re-derive a managed route's binding after its projection changed outside
    * this manager's account pool: a removal, a committed harvest that handed
    * the route back to its API-key pool (PR review round 2), or a foreign
@@ -7670,6 +7746,7 @@ export class KeysManagerService {
   private async catalogModelsFor(settingsNs: string, provider: string): Promise<ModelRecord[] | undefined> {
     try {
       return discoveredModels(
+        provider,
         await this.ctx.llm.discoverModels(settingsNs, { provider }, AbortSignal.timeout(5_000)),
       )
     } catch (error) {
@@ -8029,7 +8106,7 @@ export class KeysManagerService {
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error)
     }
-    const models = discoveredModels(discovered)
+    const models = discoveredModels(extra.id, discovered)
     if (models.length > 0) return { models, failure }
     return { models: normalizeModels(extra.models), failure }
   }
