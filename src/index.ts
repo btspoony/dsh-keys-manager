@@ -7574,28 +7574,51 @@ export class KeysManagerService {
    * record — a list the user edited in Models is theirs. A second pass finds
    * every row filled and writes nothing, and a refused write only warns: the
    * route keeps working exactly as it did.
+   *
+   * A repair whose settings write landed but whose record never did (the store
+   * flush was lost with the process) is healed from the profile itself: the
+   * live `models` equal exactly `repairImageModalities(record.models)`, so only
+   * the record is synced and the settings are left alone. Any other mismatch
+   * is a user list and stays untouched.
    */
   private async repairModelCapabilities(): Promise<void> {
-    if (this.closing) return
     for (const record of Object.values(this.store.providers)) {
+      // Every write below crosses an await, so shutdown is re-checked per
+      // profile instead of once at entry: a close landing during the previous
+      // write must not let this one start (F1).
+      if (this.closing) return
       const extraId = record.extraId
       if (extraId === null) continue
       const live = this.profileAt(record.settingsNs, record.settingsPath)
-      if (live === undefined || JSON.stringify(live.models) !== JSON.stringify(record.models)) continue
+      if (live === undefined) continue
       const models = repairImageModalities(extraId, record.models)
       if (models === undefined) continue
+      if (JSON.stringify(live.models) !== JSON.stringify(record.models)) {
+        // The settings half of an earlier run landed, its record half did not
+        // (F2): sync the record only, never the profile.
+        if (JSON.stringify(live.models) !== JSON.stringify(models)) continue
+        record.models = models
+        this.store.touch()
+        continue
+      }
       try {
         // The guard re-reads the profile right before the write: a user save
-        // landing while the read above was in flight keeps its own list.
+        // landing while the read above was in flight keeps its own list, and
+        // shutdown refuses the write at its last point, exactly as binding does.
         const written = await this.mutateSettings(
           record.settingsNs,
           [{ op: 'set', path: [...record.settingsPath, 'models'], value: models }],
           () => {
+            if (this.closing) return false
             const current = this.profileAt(record.settingsNs, record.settingsPath)
             return current !== undefined && JSON.stringify(current.models) === JSON.stringify(record.models)
           },
         )
         if (!written) continue
+        // The write settles across an await: a close or a store remount since
+        // then leaves the record half to the recovery branch above instead of
+        // persisting into a manager that moved on.
+        if (this.closing || this.store.provider(record.provider) !== record) return
         record.models = models
         this.store.touch()
       } catch (error) {

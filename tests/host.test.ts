@@ -1688,6 +1688,85 @@ test('a refused capability repair warns and leaves state consistent', async () =
   }
 })
 
+/**
+ * Shutdown landing while a repair write is in flight must stop the loop: the
+ * held write still commits, and the next profile is left for the next start
+ * instead of persisting into a closed manager (F1).
+ */
+test('a capability repair starts no further write after shutdown began', async () => {
+  const h = await harness()
+  try {
+    const legacy: Record<string, Array<{ id: string; name: string }>> = {
+      'ollama-cloud': [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }],
+      commandcode: [{ id: 'deepseek/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }],
+    }
+    for (const provider of ['ollama-cloud', 'commandcode']) {
+      await h.service.addExtraProvider(provider, 'main', `sk-${provider}`)
+      h.store.provider(provider)!.models = structuredClone(legacy[provider])
+      h.settings.valueOf('llm-pi-ai').providers[provider].models = structuredClone(legacy[provider])
+    }
+    // The stock fake commits synchronously, so holding the first write open is
+    // the only way to observe the shutdown that lands while it is in flight.
+    const originalMutate = h.settings.mutate.bind(h.settings)
+    const started: string[] = []
+    let release: (() => void) | undefined
+    h.settings.mutate = async (ns: string, ops: Array<{ path: string[] }>, revision?: number) => {
+      if (ops.some(op => op.path.includes('models'))) {
+        started.push(ops[0].path[1])
+        await new Promise<void>(resolve => { release = resolve })
+      }
+      return originalMutate(ns, ops, revision)
+    }
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await eventually(() => assert.equal(started.length, 1))
+    // Shutdown begins while the first profile's write is still held open.
+    await restarted.close()
+    release!()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(started.length, 1)
+    const first = started[0]
+    const second = first === 'ollama-cloud' ? 'commandcode' : 'ollama-cloud'
+    // The held write committed; the profile the loop never reached keeps its
+    // pre-repair shape in both places.
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers[first].models, [
+      { ...legacy[first][0], input: ['text', 'image'] },
+    ])
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers[second].models, legacy[second])
+    assert.deepEqual(h.store.provider(second)!.models, legacy[second])
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * A settings write whose record half never reached disk (the process ended
+ * before the flush) heals on the next start by syncing the record only: the
+ * profile already carries exactly the repair, so nothing is written again (F2).
+ */
+test('a repair whose record never persisted heals the record only', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('ollama-cloud', 'main', 'sk-ollama')
+    const record = h.store.provider('ollama-cloud')!
+    const legacy = [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }]
+    const repaired = [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', input: ['text', 'image'] }]
+    record.models = structuredClone(legacy)
+    h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models = structuredClone(repaired)
+    h.settings.mutateCalls.length = 0
+    new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await eventually(() => assert.deepEqual(record.models, repaired))
+    assert.deepEqual(h.settings.mutateCalls, [])
+    // The record now matches the profile, so a second start has nothing to do.
+    new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(h.settings.mutateCalls, [])
+    assert.deepEqual(record.models, repaired)
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models, repaired)
+  } finally {
+    await h.close()
+  }
+})
+
 test('adopting a stored coreweave profile fills only the declared headers it lacks', async () => {
   const scenarios = [
     { seed: {}, expected: { 'OpenAI-Project': 'team/project' } },
