@@ -1597,6 +1597,97 @@ test('an extra provider without headerEnv writes no headers key', async () => {
   }
 })
 
+/**
+ * A pre-fix install: the remote listing reported no modalities, so the profile
+ * the plugin wrote and the record beside it carry rows without `input`. The
+ * index knows the route, so startup fills only the image rows.
+ */
+test('startup repair fills the catalog image capability into a profile the plugin wrote', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('ollama-cloud', 'main', 'sk-ollama')
+    const record = h.store.provider('ollama-cloud')!
+    const legacy = [
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' },
+      { id: 'beam', name: 'Beam' },
+    ]
+    record.models = structuredClone(legacy)
+    h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models = structuredClone(legacy)
+    const repaired = [
+      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', input: ['text', 'image'] },
+      { id: 'beam', name: 'Beam' },
+    ]
+    new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    // The record follows the profile, so the next process starts from the same
+    // shape; the rest of the profile is untouched.
+    await eventually(() => {
+      assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models, repaired)
+      assert.deepEqual(record.models, repaired)
+    })
+    assert.match(h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].apiKeyEnv, /^KEYSMGR_OLLAMA_CLOUD_/)
+
+    // Idempotent: a second process finds every image row filled and writes nothing.
+    h.settings.mutateCalls.length = 0
+    new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models, repaired)
+    assert.deepEqual(h.settings.mutateCalls.filter((call: { ops: any[] }) => call.ops.some((op: any) => op.path.includes('models'))), [])
+  } finally {
+    await h.close()
+  }
+})
+
+/**
+ * The repair owns only the list the plugin itself recorded. A user who edited
+ * the route's models in Models keeps their list, even where an indexed id is
+ * missing its modality.
+ */
+test('startup repair never rewrites a model list the user edited', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('ollama-cloud', 'main', 'sk-ollama')
+    const record = h.store.provider('ollama-cloud')!
+    const legacy = [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }]
+    record.models = structuredClone(legacy)
+    const userList = [
+      { id: 'deepseek-v4.1-flash', name: 'My Flash' },
+      { id: 'my-own-model' },
+    ]
+    h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models = structuredClone(userList)
+    h.settings.mutateCalls.length = 0
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models, userList)
+    assert.equal(record.models[0].input, undefined)
+    assert.deepEqual(record.models, legacy)
+    assert.deepEqual(h.settings.mutateCalls.filter((call: { ops: any[] }) => call.ops.some((op: any) => op.path.includes('models'))), [])
+  } finally {
+    await h.close()
+  }
+})
+
+test('a refused capability repair warns and leaves state consistent', async () => {
+  const h = await harness()
+  try {
+    await h.service.addExtraProvider('ollama-cloud', 'main', 'sk-ollama')
+    const record = h.store.provider('ollama-cloud')!
+    const legacy = [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }]
+    record.models = structuredClone(legacy)
+    h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models = structuredClone(legacy)
+    h.settings.writable = false
+    const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
+    await eventually(() => assert.match(
+      restarted.getState().warnings.join('\n'),
+      /Did not store the catalog image capability on the ollama-cloud profile: .*read-only/,
+    ))
+    assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models, legacy)
+    assert.deepEqual(record.models, legacy)
+    h.settings.writable = true
+  } finally {
+    await h.close()
+  }
+})
+
 test('adopting a stored coreweave profile fills only the declared headers it lacks', async () => {
   const scenarios = [
     { seed: {}, expected: { 'OpenAI-Project': 'team/project' } },

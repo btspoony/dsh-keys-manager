@@ -65,6 +65,7 @@
     "build": "node scripts/omp-oauth/build-oauth.mjs && tsc -p tsconfig.build.json && tsc -p tsconfig.client.json && node scripts/build-client.mjs && node scripts/verify-dist.mjs",
     "build:client": "tsc -p tsconfig.client.json && node scripts/build-client.mjs",
     "test": "vitest run",
+    "generate:capabilities": "node scripts/generate-extra-capabilities.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
     "prepare": "pnpm run build",
     "prepack": "pnpm run build"
