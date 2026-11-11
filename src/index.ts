@@ -995,6 +995,8 @@ function accountSupportOf(entry: DirectoryEntry | undefined, oauthFlow: boolean,
 
 /** Request-local credential context established by the stream listener. */
 interface StreamAttempt {
+  /** The real provider that served the inner request (the payload may name a virtual route). */
+  providerId?: string
   keyId: string | undefined
   usedManagedKey: boolean
   at: number
@@ -9386,6 +9388,7 @@ export class KeysManagerService {
   ): void {
     if (sessionId === undefined) return
     const entry: StreamAttempt = {
+      providerId,
       keyId,
       usedManagedKey,
       at: Date.now(),
@@ -9469,6 +9472,27 @@ export class KeysManagerService {
     }
     const record = this.store.provider(providerId)
     if (record === undefined || this.bindingState(record) === 'mismatch') {
+      // A virtual route (FallbacksChain) has no provider row of its own, so the
+      // payload's provider cannot attribute the failure. The linked attempt
+      // names the real provider that served the inner request: cool that key so
+      // the next turn stops reusing it, and keep the binding as it is. The
+      // delegated action may be a retry, so the branch settles any projection
+      // demotion the cooling queued before it hands the request on.
+      const realProvider = linked?.providerId
+      if (
+        linked?.usedManagedKey === true &&
+        realProvider !== undefined &&
+        linked.keyId !== undefined &&
+        this.store.settings.autoSwitch &&
+        shouldFailover(payload.failure?.code) &&
+        this.store.provider(realProvider) !== undefined
+      ) {
+        this.markFailure(realProvider, linked.keyId, payload.failure)
+        // markFailure may have queued an OAuth projection demotion. A delegated
+        // retry re-derives the projection, so waiting keeps the retry from
+        // serving the grant that just failed — the managed path waits too.
+        await this.settleProjectionDemotion(realProvider)
+      }
       dropPin()
       return next()
     }
