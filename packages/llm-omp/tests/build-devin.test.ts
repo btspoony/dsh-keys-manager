@@ -26,6 +26,7 @@ import { describe, expect, it } from 'vitest'
 
 import { DEVIN_CATALOG_SOURCE, DEVIN_MODELS } from '../src/catalog/devin.js'
 import { devinCatalogModels } from '../src/index.js'
+import { openPinnedCatalog, pinnedRows } from './pinned-catalog'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -114,7 +115,7 @@ describe('devin drift gate', () => {
     const wire = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/wire/devin.ts'), 'utf8')
     expect(wire).toContain('ideName: "devin-cli"')
     expect(wire).toContain('ideType: "chisel"')
-    expect(wire).toContain('ideVersion: "3000.11.3"')
+    expect(wire).toContain('ideVersion: "3000.11.205"')
     expect(wire).toContain('devin-session-token$')
     const rule = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl'), 'utf8')
     expect(rule).toContain('authorize-url "https://app.devin.ai/auth/cli/continue"')
@@ -131,9 +132,10 @@ describe('generated devin table freshness', () => {
     const modelsPath = installedSourcePath('@oh-my-pi/pi-catalog/src/models.json')
     expect(DEVIN_CATALOG_SOURCE.sourceHash).toBe(manifest.sourceHashes['@oh-my-pi/pi-catalog/src/models.json'])
     expect(DEVIN_CATALOG_SOURCE.sourceHash).toBe(sha256(modelsPath))
-    const devinRows = (JSON.parse(readFileSync(modelsPath, 'utf8')) as { devin?: Record<string, unknown> }).devin
+    // Decoded through the pin's own opener: `models.json` is a compact catalog.
+    const devinRows = pinnedRows(openPinnedCatalog(modelsPath), 'devin')
     expect(devinRows).toBeDefined()
-    expect(DEVIN_CATALOG_SOURCE.rowCount).toBe(Object.keys(devinRows ?? {}).length)
+    expect(DEVIN_CATALOG_SOURCE.rowCount).toBe(Object.keys(devinRows).length)
     expect(DEVIN_MODELS).toHaveLength(DEVIN_CATALOG_SOURCE.rowCount)
   })
 

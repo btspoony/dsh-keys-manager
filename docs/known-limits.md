@@ -75,7 +75,7 @@ Current design boundaries of the Keys Manager plugin:
 ## In-process sign-in (Kilo, Z.AI Coding Plan)
 
 - Both flows are unofficial clients extracted from
-  `@oh-my-pi/pi-ai@18.12.3` at build time. The provider can change its login
+  `@oh-my-pi/pi-ai@18.18.8` at build time. The provider can change its login
   endpoints, scopes or responses at any time; a break shows up as the
   provider's own error text in the sign-in dialog, not as a crash.
 - Kilo's credential is a one-year bearer token with no refresh token

@@ -30,9 +30,15 @@
  * @module dsh-llm-omp-transports/generate-catalog
  */
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+// The pin's catalog is a compact encoded JSON, readable only through its opener.
+// `scripts/model-catalog-format.mjs` is a line-for-line port of the pin's own
+// implementation (see its header); this script is build tooling, never shipped,
+// so the repo-relative import stays honest instead of vendoring a second copy.
+import { getCatalogProvider, openModelCatalog } from '../../../scripts/model-catalog-format.mjs'
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(scriptsDir)
@@ -54,13 +60,20 @@ function packageRootOf(name) {
 const catalogRoot = packageRootOf('@oh-my-pi/pi-catalog')
 const catalogVersion = JSON.parse(readFileSync(join(catalogRoot, 'package.json'), 'utf8')).version
 
-/** One pinned source file: parsed data plus the hash the generated provenance records. */
+/**
+ * One pinned source file: parsed data plus the hash the generated provenance
+ * records. `catalog` is the opened model catalog — `models.json` rows are only
+ * reachable through it, since the pin encodes them — and `undefined` for the
+ * plain-JSON registry (`rules.json`).
+ */
 const sources = new Map()
 function source(file) {
   if (!sources.has(file)) {
     const bytes = readFileSync(join(catalogRoot, file))
+    const data = JSON.parse(bytes.toString('utf8'))
     sources.set(file, {
-      data: JSON.parse(bytes.toString('utf8')),
+      data,
+      catalog: file === 'src/models.json' ? openModelCatalog(data) : undefined,
       hash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
     })
   }
@@ -209,7 +222,7 @@ function reduceGoogle(row) {
  * @returns the generated row.
  */
 function reduceFactoryDroid(row) {
-  return {
+  const out = {
     id: row.id,
     name: row.name,
     api: row.api,
@@ -217,12 +230,17 @@ function reduceFactoryDroid(row) {
     // No `baseUrl`: the transport derives the per-wire proxy path (and the
     // residency host) from the wire it resolved; a host-only seed URL would send
     // every wire to the bare host, a divergence from the pinned full build.
-    contextWindow: row.contextWindow,
-    maxTokens: row.maxTokens,
     input: [...row.input],
     cost: reduceCost(row.cost),
     reasoning: row.reasoning === true,
   }
+  // The pin's image rows declare `null` for both limits, and the transport
+  // resolves that itself (`model.contextWindow ?? limits.contextWindow`,
+  // `limits.maxTokens == null ? model.maxTokens : Math.min(...)`). Omitting the
+  // key keeps the absence instead of inventing a number the seed never gave.
+  if (typeof row.contextWindow === 'number') out.contextWindow = row.contextWindow
+  if (typeof row.maxTokens === 'number') out.maxTokens = row.maxTokens
+  return out
 }
 
 /**
@@ -342,7 +360,7 @@ const PROVIDERS = [
     sourceConst: 'CURSOR_CATALOG_SOURCE',
     rowType: 'CursorModelRow',
     sourceFile: 'src/models.json',
-    select: (data, key) => data[key],
+    select: (_data, key, catalog) => getCatalogProvider(catalog, key),
     summary: 'Every Cursor model the pinned catalog serves, sorted by id.',
     reduce: reduceCursor,
     doc: ({ version, rowCount, sourceHash }) => `/**
@@ -370,7 +388,7 @@ const PROVIDERS = [
     sourceConst: 'DEVIN_CATALOG_SOURCE',
     rowType: 'DevinModelRow',
     sourceFile: 'src/models.json',
-    select: (data, key) => data[key],
+    select: (_data, key, catalog) => getCatalogProvider(catalog, key),
     summary: 'Every Devin model the pinned catalog serves, sorted by id.',
     reduce: reduceDevin,
     doc: ({ version, rowCount, sourceHash }) => `/**
@@ -396,7 +414,7 @@ const PROVIDERS = [
     sourceConst: 'GOOGLE_GEMINI_CLI_CATALOG_SOURCE',
     rowType: 'GoogleModelRow',
     sourceFile: 'src/models.json',
-    select: (data, key) => data[key],
+    select: (_data, key, catalog) => getCatalogProvider(catalog, key),
     summary: 'Every Gemini CLI model the pinned catalog serves, sorted by id.',
     reduce: reduceGoogle,
     doc: ({ version, rowCount, sourceHash }) => `/**
@@ -423,7 +441,7 @@ const PROVIDERS = [
     sourceConst: 'GITLAB_DUO_CATALOG_SOURCE',
     rowType: 'GitLabDuoModelRow',
     sourceFile: 'src/models.json',
-    select: (data, key) => data[key],
+    select: (_data, key, catalog) => getCatalogProvider(catalog, key),
     summary: 'Every GitLab Duo proxy row the pinned catalog serves, sorted by id.',
     reduce: (row, provider) => reduceGitLabDuo(row, provider?.aliases ?? gitlabDuoAliases()),
     doc: ({ version, rowCount, sourceHash }) => `/**
@@ -454,7 +472,7 @@ const PROVIDERS = [
     sourceConst: 'GITLAB_DUO_AGENT_CATALOG_SOURCE',
     rowType: 'GitLabDuoAgentModelRow',
     sourceFile: 'src/models.json',
-    select: (data, key) => data[key],
+    select: (_data, key, catalog) => getCatalogProvider(catalog, key),
     summary: 'The one static GitLab Duo agent model the pinned catalog declares.',
     reduce: reduceGitLabDuoAgent,
     doc: ({ version, rowCount, sourceHash }) => `/**
@@ -510,7 +528,7 @@ const PROVIDERS = [
     sourceConst: 'GOOGLE_ANTIGRAVITY_CATALOG_SOURCE',
     rowType: 'GoogleModelRow',
     sourceFile: 'src/models.json',
-    select: (data, key) => data[key],
+    select: (_data, key, catalog) => getCatalogProvider(catalog, key),
     summary: 'Every Antigravity model the pinned catalog serves, sorted by id.',
     reduce: reduceGoogle,
     doc: ({ version, rowCount, sourceHash }) => `/**
@@ -546,10 +564,15 @@ function render(value, indent) {
  * @returns the number of rows written.
  */
 function generate(provider) {
-  const { data, hash } = source(provider.sourceFile)
-  const rows = provider.select(data, provider.key)
+  const { data, hash, catalog } = source(provider.sourceFile)
+  const rows = provider.select(data, provider.key, catalog)
   if (rows === undefined || rows === null) {
-    throw new Error(`llm-omp: \`${provider.sourceFile}\` has no \`${provider.key}\` models`)
+    throw new Error(
+      `llm-omp: \`${provider.sourceFile}\` has no \`${provider.key}\` models; the installed ` +
+        `@oh-my-pi/pi-catalog@${catalogVersion} pin does not describe that provider. Check the pin's ` +
+        `provider ids (\`node -e "import('./scripts/model-catalog-format.mjs').then(...)"\`) before ` +
+        `renaming the table's \`key\`.`,
+    )
   }
 
   // The Duo proxy table also needs the pin's alias map; every other reducer
@@ -586,7 +609,19 @@ ${body}
 `
 
   mkdirSync(dirname(provider.out), { recursive: true })
-  writeFileSync(provider.out, file)
+  // Write beside the target and rename over it: every invocation rewrites all
+  // tables, the drift gates spawn this script from several test files in
+  // parallel, and a plain write lets a concurrent reader observe a half-written
+  // file. A same-directory rename is atomic, so a reader sees either the old
+  // bytes or the new ones — and because the output is a pure function of the pin,
+  // both are the same bytes.
+  const temporary = `${provider.out}.${process.pid}.tmp`
+  try {
+    writeFileSync(temporary, file)
+    renameSync(temporary, provider.out)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
   console.log(
     `llm-omp: wrote ${reduced.length} ${provider.key} models from @oh-my-pi/pi-catalog@${catalogVersion} (${hash})`,
   )

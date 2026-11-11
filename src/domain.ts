@@ -86,7 +86,11 @@ export interface ModelRecord {
   contextWindow?: number
   maxTokens?: number
   input?: Array<'text' | 'image'>
-  reasoningEfforts?: Record<string, unknown>
+  /**
+   * DSH thinking levels → wire value. `null` is "supported, send nothing" and is
+   * only legal for `off`; every other level names a non-empty wire string.
+   */
+  reasoningEfforts?: Record<string, string | null>
   compat?: Record<string, unknown>
 }
 

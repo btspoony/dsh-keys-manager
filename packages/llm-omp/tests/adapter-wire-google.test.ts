@@ -250,9 +250,12 @@ describe('bundled Google transport over Cloud Code Assist SSE', () => {
     expect(call.url).toBe(`${DAILY}${PATH}`)
     const headers = new Headers(call.init?.headers)
     expect(headers.get('authorization')).toBe('Bearer access-token')
-    // D11: the pinned client identity, discovered from the version manifest.
-    expect(headers.get('user-agent')).toBe(
-      'antigravity/hub/2.19.1 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)',
+    // D11: the pinned client identity, discovered from the version manifest. The
+    // route owns the template, the version and the changelist; `os_type`/`arch`
+    // describe the host the artifact happens to run on, so they are matched
+    // rather than pinned — a literal here only asserts which machine ran the test.
+    expect(headers.get('user-agent')).toMatch(
+      /^antigravity\/hub\/2\.19\.1 \(aidev_client; os_type=\w+; arch=\w+; cl=1005016104\)$/,
     )
     // D10: the vendor identity is not overwritten by DSH attribution.
     expect(headers.get('user-agent')).not.toBe(attributionHeaders()['user-agent'])
@@ -272,10 +275,15 @@ describe('bundled Google transport over Cloud Code Assist SSE', () => {
       model_enum: 'MODEL_PLACEHOLDER_M16',
       used_claude: 'false',
       used_claude_conservative: 'false',
-      last_step_index: '1',
+      // 18.18.8 trails the step counter by one
+      // (`pi-ai/src/providers/google-gemini-cli.ts:1282`), so a first-turn
+      // request labels step 0 where 18.12.6 labelled 1.
+      last_step_index: '0',
       trajectory_id: expect.any(String),
     })
-    expect(body.requestId).toMatch(/^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/2$/)
+    // 18.18.8 numbers a first turn `1` (`pi-ai/src/providers/google-gemini-cli.ts:1276`);
+    // 18.12.6 numbered it 2, and the `last_step_index` label trails this by one.
+    expect(body.requestId).toMatch(/^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/1$/)
   })
 
   it('hands a server function call to DSH as a tool-calls finish', async () => {
@@ -386,8 +394,9 @@ describe('bundled Google transport over Cloud Code Assist SSE', () => {
     expect(manifest).toBeDefined()
     expect(new Headers(manifest?.init?.headers).get('user-agent')).toBe('electron-builder')
     const stream = calls.find(call => call.url.startsWith(DAILY))
-    expect(new Headers(stream?.init?.headers).get('user-agent')).toBe(
-      'antigravity/hub/2.30.0 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)',
+    // Same template, with the version the manifest discovery produced.
+    expect(new Headers(stream?.init?.headers).get('user-agent')).toMatch(
+      /^antigravity\/hub\/2\.30\.0 \(aidev_client; os_type=\w+; arch=\w+; cl=1005016104\)$/,
     )
   })
 })

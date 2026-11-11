@@ -107,6 +107,18 @@ const PI_UTILS_SHIM = join(scriptsDir, 'omp-shim', 'pi-utils.ts')
 const SHIM_DIR = join(scriptsDir, 'omp-shim')
 const BUN_SHIM = join(scriptsDir, 'omp-shim', 'bun-modules.ts')
 const BUN_GLOBAL_SHIM = join(scriptsDir, 'omp-shim', 'bun-global.ts')
+/** `ws` stand-in: omp's Bun-targeted sources require it for the WebSocket path. */
+const WS_SHIM = join(scriptsDir, 'omp-shim', 'ws.cjs')
+/**
+ * The empty model catalog every entry's `pi-catalog/src/models.ts` is built
+ * against. 18.18.8 opens the catalog at module scope (`openModelCatalog`), and
+ * that opener rejects anything whose `version` is not 1, so the stand-in is a
+ * well-formed catalog with no rows rather than `{}`: the functions stay real,
+ * `getBundledModel` → `undefined`, `getBundledModels` → `[]`,
+ * `isGeneratedProvider` → `false` — the documented "not in the bundled catalog"
+ * semantics — while the 1.3 MB of rows stay out of the artifact.
+ */
+const EMPTY_MODEL_CATALOG = `export default { version: 1, compat: [], keys: [], nodes: [], booleanShapes: [], providers: [] }\n`
 /** S2's substitute for `providers/register-builtins` (the Factory and Duo entries). */
 const LEAN_REGISTER_BUILTINS = join(scriptsDir, 'omp-shim', 'register-builtins-lean.ts')
 /**
@@ -234,6 +246,20 @@ const ompShims = piUtils => ({
       return { path: piUtils }
     })
     build_.onResolve({ filter: /^bun(:.*)?$/ }, () => ({ path: BUN_SHIM }))
+    // omp reaches Node's `ws` through a bare require in a Bun-targeted module;
+    // the stand-in keeps that edge resolvable and fails only if a route really
+    // asks for the socket transport. See the shim's own header.
+    build_.onResolve({ filter: /^ws$/ }, () => ({ path: WS_SHIM }))
+    // S1, catalog data (see the substitution note below): only the catalog's own
+    // default import becomes the empty catalog; any other JSON stays as it is.
+    build_.onResolve({ filter: /\/models\.json$/ }, args => {
+      if (!toPosix(args.importer).endsWith('/pi-catalog/src/models.ts')) return undefined
+      return { path: 'empty-catalog', namespace: 'omp-empty-catalog' }
+    })
+    build_.onLoad({ filter: /^empty-catalog$/, namespace: 'omp-empty-catalog' }, () => ({
+      contents: EMPTY_MODEL_CATALOG,
+      loader: 'js',
+    }))
   },
 })
 
@@ -253,16 +279,6 @@ function toPosix(path) {
  *
  * None is a shim: no runtime API is faked and no behaviour is reimplemented.
  *
- * - **S1, catalog data.** `pi-catalog/src/models.ts` default-imports the 12.4 MB
- *   `models.json`, which is the whole reason the graph measured 17 MB. Replacing
- *   *that data* with `{}` leaves every function in `models.ts` real:
- *   `getBundledModel` → `undefined`, `getBundledModels` → `[]`,
- *   `isGeneratedProvider` → `false` — the documented "not in the bundled
- *   catalog" semantics. The route never reads it: all 58 Factory rows come from
- *   `compat/rules.json` and are zero-cost credits, the Anthropic fallback-pricing
- *   lookup is gated on `provider === "anthropic"` (Factory models carry
- *   `provider: 'factory-droid'`), and canonical id aliasing over an empty catalog
- *   is the identity.
  * - **S2, registry pruning.** `providers/factory-droid.ts` imports three wire
  *   streams from `./register-builtins`, whose thirteen star imports and
  *   top-level `createProviderStream` calls keep ten unused providers (and their
@@ -275,19 +291,16 @@ function toPosix(path) {
  * substitution depends on, the lean module's copied region is asserted to be a
  * verbatim substring of the pin, and the metafile must show no `models.json` and
  * no real `register-builtins.ts` input.
+ *
+ * The catalog stand-in (S1) is not entry-scoped any more: 18.18.8 opens the
+ * catalog at module scope, so every entry that reaches `pi-catalog/src/models` —
+ * all six, through `calculateCost` — would otherwise carry the rows. Nothing in
+ * any graph reads them: every route takes its model rows from the caller, and
+ * `calculateCost` prices the model it is handed. See `EMPTY_MODEL_CATALOG`.
  */
 const ompFactoryDroidSubstitutions = (entry = {}) => ({
   name: 'omp-factory-droid-substitutions',
   setup(build_) {
-    build_.onResolve({ filter: /\/models\.json$/ }, args => {
-      // Only the catalog's own default import; any other JSON stays as it is.
-      if (!toPosix(args.importer).endsWith('/pi-catalog/src/models.ts')) return undefined
-      return { path: 'empty-catalog', namespace: 'omp-empty-catalog' }
-    })
-    build_.onLoad({ filter: /^empty-catalog$/, namespace: 'omp-empty-catalog' }, () => ({
-      contents: 'export default {}\n',
-      loader: 'js',
-    }))
     build_.onResolve({ filter: /^\.\/register-builtins$/ }, args => {
       const importer = toPosix(args.importer)
       const importers = ['/pi-ai/src/providers/factory-droid.ts', ...(entry.registryImporters ?? [])]
@@ -443,6 +456,12 @@ async function main() {
     '@oh-my-pi/pi-ai/src/providers/anthropic.ts': join(piAiRoot, 'src/providers/anthropic.ts'),
     '@oh-my-pi/pi-ai/src/providers/openai-completions.ts': join(piAiRoot, 'src/providers/openai-completions.ts'),
     '@oh-my-pi/pi-ai/src/providers/openai-responses.ts': join(piAiRoot, 'src/providers/openai-responses.ts'),
+    // The module whose `require("ws")` the stand-in answers: hashed so a change to
+    // that dependency changes the manifest instead of silently hitting the shim.
+    '@oh-my-pi/pi-ai/src/providers/responses-websocket-connection.ts': join(
+      piAiRoot,
+      'src/providers/responses-websocket-connection.ts',
+    ),
     '@oh-my-pi/pi-ai/src/auth-retry.ts': join(piAiRoot, 'src/auth-retry.ts'),
     '@oh-my-pi/pi-ai/src/utils/deterministic-id.ts': join(piAiRoot, 'src/utils/deterministic-id.ts'),
     // The route's wire constants and its registry seed (the catalog source).

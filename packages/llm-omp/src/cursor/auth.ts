@@ -1,10 +1,10 @@
 /**
  * Cursor sign-in, token refresh and account-identity lookup.
  *
- * A dependency-free port of `@oh-my-pi/pi-ai@18.12.3`'s
+ * A dependency-free port of `@oh-my-pi/pi-ai@18.18.8`'s
  * `src/registry/oauth/cursor.ts`: the browser-completed login page (PKCE +
  * uuid, no loopback callback), the poll where `404` still means "not yet", the
- * refresh exchange, and the cursor.com profile read that names the account.
+ * refresh exchange, and the account-profile read that names the account.
  * The published plugin may not import `@oh-my-pi/*` at runtime, so this small
  * protocol lives here; every caller takes its `fetch` and its wait as options,
  * which is what keeps the tests offline.
@@ -19,13 +19,18 @@ import { jwtExpiry, readJwtPayload } from '../jwt.js'
  * The vendor identity this client presents, copied from the pinned omp
  * sources because the published package may not import them:
  *
- * - `clientId` from `@oh-my-pi/pi-ai@18.12.3` `src/registry/oauth/cursor.ts`
+ * - `clientId` from `@oh-my-pi/pi-ai@18.18.8` `src/registry/oauth/cursor.ts`
  *   (`CURSOR_CLIENT_ID`, the client the Cursor IDE renews its login with);
- * - `clientVersion` from `@oh-my-pi/pi-catalog@18.12.3` `src/wire/cursor.ts`
+ * - `profileUrl` from the same module (`CURSOR_GET_ME_URL`): Cursor's Connect
+ *   RPC account profile, not the `cursor.com/api/auth/me` web probe it used to
+ *   be — that endpoint resolves only WorkOS user ids and 404s for GitHub/Google
+ *   logins;
+ * - `clientVersion` from `@oh-my-pi/pi-catalog@18.18.8` `src/wire/cursor.ts`
  *   (`CURSOR_CLIENT_VERSION`, the released CLI build whose protocol surface
  *   the bundled transport mirrors — it gates server features).
  *
- * `tests/build.test.ts` fails when either copy drifts from the installed pin.
+ * `tests/build.test.ts` fails when any of these three copies drifts from the
+ * installed pin.
  *
  * shortcut: reusing Cursor's vendor-internal OAuth client id and announcing a
  * released CLI build is not a sanctioned third-party client. The MIT licence
@@ -37,7 +42,7 @@ export const CURSOR_AUTH = {
   loginUrl: 'https://cursor.com/loginDeepControl',
   pollUrl: 'https://api2.cursor.sh/auth/poll',
   refreshUrl: 'https://api2.cursor.sh/oauth/token',
-  profileUrl: 'https://cursor.com/api/auth/me',
+  profileUrl: 'https://api2.cursor.sh/aiserver.v1.DashboardService/GetMe',
   clientId: 'KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB',
   clientVersion: 'cli-2026.09.02-c22c1a3',
 } as const
@@ -301,22 +306,30 @@ export interface CursorProfileOptions {
  * Email of the Cursor account that owns `accessToken`.
  *
  * @remarks
- * cursor.com names the user in the JWT `sub`; the profile is read with the
- * access token presented as that user's web session. Undefined when the token
- * names no user, or the profile names a different one.
+ * Cursor names the user in the JWT `sub` (`github|1245379`, `auth0|user_…`);
+ * the profile is read with a unary Connect RPC call on
+ * `aiserver.v1.DashboardService/GetMe`, authenticated by the access token as a
+ * bearer token, and the reply identifies the same account in `authId`.
+ * Undefined when the token names no subject, or the profile names a different
+ * one.
  */
 export async function fetchCursorAccountEmail(
   accessToken: string,
   options: CursorProfileOptions = {},
 ): Promise<string | undefined> {
-  const accountId = cursorAccountId(accessToken)
-  if (accountId === undefined) return undefined
+  const subject = cursorAccessTokenSubject(accessToken)
+  if (subject === undefined) return undefined
   const fetchImpl = options.fetch ?? fetch
   const response = await fetchImpl(CURSOR_AUTH.profileUrl, {
+    method: 'POST',
     headers: {
       Accept: 'application/json',
-      Cookie: `WorkosCursorSessionToken=${encodeURIComponent(`${accountId}::${accessToken}`)}`,
+      Authorization: `Bearer ${accessToken}`,
+      'Connect-Protocol-Version': '1',
+      'Content-Type': 'application/json',
     },
+    // A unary Connect call carries an empty message.
+    body: '{}',
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   })
   if (!response.ok) {
@@ -324,8 +337,8 @@ export async function fetchCursorAccountEmail(
   }
   const payload = (await response.json()) as unknown
   if (typeof payload !== 'object' || payload === null) return undefined
-  const { sub, email } = payload as { sub?: unknown; email?: unknown }
-  if (sub !== accountId || typeof email !== 'string') return undefined
+  const { authId, email } = payload as { authId?: unknown; email?: unknown }
+  if (authId !== subject || typeof email !== 'string') return undefined
   return email.trim() || undefined
 }
 
@@ -368,12 +381,19 @@ export async function loginCursor(options: CursorLoginOptions = {}): Promise<Cur
   }
 }
 
-/** The account user id: the JWT `sub` after its `|`, as omp reads it. */
-function cursorAccountId(accessToken: string): string | undefined {
+/** Full `sub` claim of a Cursor access token, such as `github|1245379` or `auth0|user_…`. */
+function cursorAccessTokenSubject(accessToken: string): string | undefined {
   const sub = readJwtPayload(accessToken)?.sub
   if (typeof sub !== 'string') return undefined
-  const parts = sub.split('|')
-  const accountId = (parts.length > 1 ? parts[1] : sub).trim()
+  return sub.trim() || undefined
+}
+
+/** The account user id: the JWT `sub` after its `|`, as omp reads it. */
+function cursorAccountId(accessToken: string): string | undefined {
+  const subject = cursorAccessTokenSubject(accessToken)
+  if (subject === undefined) return undefined
+  const parts = subject.split('|')
+  const accountId = (parts.length > 1 ? parts[1] : subject).trim()
   return accountId === '' ? undefined : accountId
 }
 

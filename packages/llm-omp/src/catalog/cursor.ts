@@ -1,8 +1,8 @@
 /**
  * Generated Cursor model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.12.6` `src/models.json` key `cursor`
- * (123 rows, sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
+ * Source: `@oh-my-pi/pi-catalog@18.18.8` `src/models.json` key `cursor`
+ * (123 rows, sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
  *
  * The drift gate in `tests/build.test.ts` pins the same package version and
  * source hash, so an omp bump fails there before this table can describe the
@@ -20,10 +20,10 @@ import type { CursorModelRow } from '../omp.js'
 /** Provenance of {@link CURSOR_MODELS}. */
 export const CURSOR_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.12.6',
+  version: '18.18.8',
   file: 'src/models.json',
   key: 'cursor',
-  sourceHash: 'sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152',
+  sourceHash: 'sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612',
   rowCount: 123,
 } as const
 
@@ -58,11 +58,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-4-sonnet",
-        "minimal": "claude-4-sonnet-thinking",
+        "high": "claude-4-sonnet-thinking",
         "low": "claude-4-sonnet-thinking",
         "medium": "claude-4-sonnet-thinking",
-        "high": "claude-4-sonnet-thinking"
+        "minimal": "claude-4-sonnet-thinking",
+        "off": "claude-4-sonnet"
       }
     },
     "requiresGlyphTokenization": true
@@ -96,11 +96,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-4.5-opus-high",
-        "minimal": "claude-4.5-opus-high-thinking",
+        "high": "claude-4.5-opus-high-thinking",
         "low": "claude-4.5-opus-high-thinking",
         "medium": "claude-4.5-opus-high-thinking",
-        "high": "claude-4.5-opus-high-thinking"
+        "minimal": "claude-4.5-opus-high-thinking",
+        "off": "claude-4.5-opus-high"
       }
     },
     "requiresGlyphTokenization": true
@@ -134,11 +134,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-4.5-sonnet",
-        "minimal": "claude-4.5-sonnet-thinking",
+        "high": "claude-4.5-sonnet-thinking",
         "low": "claude-4.5-sonnet-thinking",
         "medium": "claude-4.5-sonnet-thinking",
-        "high": "claude-4.5-sonnet-thinking"
+        "minimal": "claude-4.5-sonnet-thinking",
+        "off": "claude-4.5-sonnet"
       }
     },
     "requiresGlyphTokenization": true
@@ -171,11 +171,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-4.6-opus-high",
-        "minimal": "claude-4.6-opus-high-thinking",
+        "high": "claude-4.6-opus-high-thinking",
         "low": "claude-4.6-opus-high-thinking",
         "medium": "claude-4.6-opus-high-thinking",
-        "high": "claude-4.6-opus-high-thinking"
+        "minimal": "claude-4.6-opus-high-thinking",
+        "off": "claude-4.6-opus-high"
       }
     },
     "requiresGlyphTokenization": true
@@ -209,11 +209,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-4.6-opus-max",
-        "minimal": "claude-4.6-opus-max-thinking",
+        "high": "claude-4.6-opus-max-thinking",
         "low": "claude-4.6-opus-max-thinking",
         "medium": "claude-4.6-opus-max-thinking",
-        "high": "claude-4.6-opus-max-thinking"
+        "minimal": "claude-4.6-opus-max-thinking",
+        "off": "claude-4.6-opus-max"
       }
     },
     "requiresGlyphTokenization": true
@@ -246,11 +246,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-4.6-sonnet-medium",
-        "minimal": "claude-4.6-sonnet-medium-thinking",
+        "high": "claude-4.6-sonnet-medium-thinking",
         "low": "claude-4.6-sonnet-medium-thinking",
         "medium": "claude-4.6-sonnet-medium-thinking",
-        "high": "claude-4.6-sonnet-medium-thinking"
+        "minimal": "claude-4.6-sonnet-medium-thinking",
+        "off": "claude-4.6-sonnet-medium"
       }
     },
     "requiresGlyphTokenization": true
@@ -284,11 +284,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-1-high",
-        "minimal": "claude-fable-5-1-thinking-high",
+        "high": "claude-fable-5-1-thinking-high",
         "low": "claude-fable-5-1-thinking-high",
         "medium": "claude-fable-5-1-thinking-high",
-        "high": "claude-fable-5-1-thinking-high"
+        "minimal": "claude-fable-5-1-thinking-high",
+        "off": "claude-fable-5-1-high"
       }
     },
     "requiresGlyphTokenization": true,
@@ -323,11 +323,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-1-low",
-        "minimal": "claude-fable-5-1-thinking-low",
+        "high": "claude-fable-5-1-thinking-low",
         "low": "claude-fable-5-1-thinking-low",
         "medium": "claude-fable-5-1-thinking-low",
-        "high": "claude-fable-5-1-thinking-low"
+        "minimal": "claude-fable-5-1-thinking-low",
+        "off": "claude-fable-5-1-low"
       }
     },
     "requiresGlyphTokenization": true,
@@ -362,11 +362,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-1-max",
-        "minimal": "claude-fable-5-1-thinking-max",
+        "high": "claude-fable-5-1-thinking-max",
         "low": "claude-fable-5-1-thinking-max",
         "medium": "claude-fable-5-1-thinking-max",
-        "high": "claude-fable-5-1-thinking-max"
+        "minimal": "claude-fable-5-1-thinking-max",
+        "off": "claude-fable-5-1-max"
       }
     },
     "requiresGlyphTokenization": true,
@@ -401,11 +401,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-1-medium",
-        "minimal": "claude-fable-5-1-thinking-medium",
+        "high": "claude-fable-5-1-thinking-medium",
         "low": "claude-fable-5-1-thinking-medium",
         "medium": "claude-fable-5-1-thinking-medium",
-        "high": "claude-fable-5-1-thinking-medium"
+        "minimal": "claude-fable-5-1-thinking-medium",
+        "off": "claude-fable-5-1-medium"
       }
     },
     "requiresGlyphTokenization": true,
@@ -440,11 +440,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-1-xhigh",
-        "minimal": "claude-fable-5-1-thinking-xhigh",
+        "high": "claude-fable-5-1-thinking-xhigh",
         "low": "claude-fable-5-1-thinking-xhigh",
         "medium": "claude-fable-5-1-thinking-xhigh",
-        "high": "claude-fable-5-1-thinking-xhigh"
+        "minimal": "claude-fable-5-1-thinking-xhigh",
+        "off": "claude-fable-5-1-xhigh"
       }
     },
     "requiresGlyphTokenization": true,
@@ -479,11 +479,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-high",
-        "minimal": "claude-fable-5-thinking-high",
+        "high": "claude-fable-5-thinking-high",
         "low": "claude-fable-5-thinking-high",
         "medium": "claude-fable-5-thinking-high",
-        "high": "claude-fable-5-thinking-high"
+        "minimal": "claude-fable-5-thinking-high",
+        "off": "claude-fable-5-high"
       }
     },
     "requiresGlyphTokenization": true,
@@ -518,11 +518,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-low",
-        "minimal": "claude-fable-5-thinking-low",
+        "high": "claude-fable-5-thinking-low",
         "low": "claude-fable-5-thinking-low",
         "medium": "claude-fable-5-thinking-low",
-        "high": "claude-fable-5-thinking-low"
+        "minimal": "claude-fable-5-thinking-low",
+        "off": "claude-fable-5-low"
       }
     },
     "requiresGlyphTokenization": true,
@@ -557,11 +557,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-max",
-        "minimal": "claude-fable-5-thinking-max",
+        "high": "claude-fable-5-thinking-max",
         "low": "claude-fable-5-thinking-max",
         "medium": "claude-fable-5-thinking-max",
-        "high": "claude-fable-5-thinking-max"
+        "minimal": "claude-fable-5-thinking-max",
+        "off": "claude-fable-5-max"
       }
     },
     "requiresGlyphTokenization": true,
@@ -596,11 +596,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-medium",
-        "minimal": "claude-fable-5-thinking-medium",
+        "high": "claude-fable-5-thinking-medium",
         "low": "claude-fable-5-thinking-medium",
         "medium": "claude-fable-5-thinking-medium",
-        "high": "claude-fable-5-thinking-medium"
+        "minimal": "claude-fable-5-thinking-medium",
+        "off": "claude-fable-5-medium"
       }
     },
     "requiresGlyphTokenization": true,
@@ -635,11 +635,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-fable-5-xhigh",
-        "minimal": "claude-fable-5-thinking-xhigh",
+        "high": "claude-fable-5-thinking-xhigh",
         "low": "claude-fable-5-thinking-xhigh",
         "medium": "claude-fable-5-thinking-xhigh",
-        "high": "claude-fable-5-thinking-xhigh"
+        "minimal": "claude-fable-5-thinking-xhigh",
+        "off": "claude-fable-5-xhigh"
       }
     },
     "requiresGlyphTokenization": true,
@@ -674,11 +674,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-high",
-        "minimal": "claude-opus-4-7-thinking-high",
+        "high": "claude-opus-4-7-thinking-high",
         "low": "claude-opus-4-7-thinking-high",
         "medium": "claude-opus-4-7-thinking-high",
-        "high": "claude-opus-4-7-thinking-high"
+        "minimal": "claude-opus-4-7-thinking-high",
+        "off": "claude-opus-4-7-high"
       }
     },
     "requiresGlyphTokenization": true
@@ -712,11 +712,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-high-fast",
-        "minimal": "claude-opus-4-7-thinking-high-fast",
+        "high": "claude-opus-4-7-thinking-high-fast",
         "low": "claude-opus-4-7-thinking-high-fast",
         "medium": "claude-opus-4-7-thinking-high-fast",
-        "high": "claude-opus-4-7-thinking-high-fast"
+        "minimal": "claude-opus-4-7-thinking-high-fast",
+        "off": "claude-opus-4-7-high-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -750,11 +750,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-low",
-        "minimal": "claude-opus-4-7-thinking-low",
+        "high": "claude-opus-4-7-thinking-low",
         "low": "claude-opus-4-7-thinking-low",
         "medium": "claude-opus-4-7-thinking-low",
-        "high": "claude-opus-4-7-thinking-low"
+        "minimal": "claude-opus-4-7-thinking-low",
+        "off": "claude-opus-4-7-low"
       }
     },
     "requiresGlyphTokenization": true
@@ -788,11 +788,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-low-fast",
-        "minimal": "claude-opus-4-7-thinking-low-fast",
+        "high": "claude-opus-4-7-thinking-low-fast",
         "low": "claude-opus-4-7-thinking-low-fast",
         "medium": "claude-opus-4-7-thinking-low-fast",
-        "high": "claude-opus-4-7-thinking-low-fast"
+        "minimal": "claude-opus-4-7-thinking-low-fast",
+        "off": "claude-opus-4-7-low-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -826,11 +826,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-max",
-        "minimal": "claude-opus-4-7-thinking-max",
+        "high": "claude-opus-4-7-thinking-max",
         "low": "claude-opus-4-7-thinking-max",
         "medium": "claude-opus-4-7-thinking-max",
-        "high": "claude-opus-4-7-thinking-max"
+        "minimal": "claude-opus-4-7-thinking-max",
+        "off": "claude-opus-4-7-max"
       }
     },
     "requiresGlyphTokenization": true
@@ -864,11 +864,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-max-fast",
-        "minimal": "claude-opus-4-7-thinking-max-fast",
+        "high": "claude-opus-4-7-thinking-max-fast",
         "low": "claude-opus-4-7-thinking-max-fast",
         "medium": "claude-opus-4-7-thinking-max-fast",
-        "high": "claude-opus-4-7-thinking-max-fast"
+        "minimal": "claude-opus-4-7-thinking-max-fast",
+        "off": "claude-opus-4-7-max-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -902,11 +902,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-medium",
-        "minimal": "claude-opus-4-7-thinking-medium",
+        "high": "claude-opus-4-7-thinking-medium",
         "low": "claude-opus-4-7-thinking-medium",
         "medium": "claude-opus-4-7-thinking-medium",
-        "high": "claude-opus-4-7-thinking-medium"
+        "minimal": "claude-opus-4-7-thinking-medium",
+        "off": "claude-opus-4-7-medium"
       }
     },
     "requiresGlyphTokenization": true
@@ -940,11 +940,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-medium-fast",
-        "minimal": "claude-opus-4-7-thinking-medium-fast",
+        "high": "claude-opus-4-7-thinking-medium-fast",
         "low": "claude-opus-4-7-thinking-medium-fast",
         "medium": "claude-opus-4-7-thinking-medium-fast",
-        "high": "claude-opus-4-7-thinking-medium-fast"
+        "minimal": "claude-opus-4-7-thinking-medium-fast",
+        "off": "claude-opus-4-7-medium-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -978,11 +978,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-xhigh",
-        "minimal": "claude-opus-4-7-thinking-xhigh",
+        "high": "claude-opus-4-7-thinking-xhigh",
         "low": "claude-opus-4-7-thinking-xhigh",
         "medium": "claude-opus-4-7-thinking-xhigh",
-        "high": "claude-opus-4-7-thinking-xhigh"
+        "minimal": "claude-opus-4-7-thinking-xhigh",
+        "off": "claude-opus-4-7-xhigh"
       }
     },
     "requiresGlyphTokenization": true
@@ -1016,11 +1016,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-7-xhigh-fast",
-        "minimal": "claude-opus-4-7-thinking-xhigh-fast",
+        "high": "claude-opus-4-7-thinking-xhigh-fast",
         "low": "claude-opus-4-7-thinking-xhigh-fast",
         "medium": "claude-opus-4-7-thinking-xhigh-fast",
-        "high": "claude-opus-4-7-thinking-xhigh-fast"
+        "minimal": "claude-opus-4-7-thinking-xhigh-fast",
+        "off": "claude-opus-4-7-xhigh-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1054,11 +1054,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-high",
-        "minimal": "claude-opus-4-8-thinking-high",
+        "high": "claude-opus-4-8-thinking-high",
         "low": "claude-opus-4-8-thinking-high",
         "medium": "claude-opus-4-8-thinking-high",
-        "high": "claude-opus-4-8-thinking-high"
+        "minimal": "claude-opus-4-8-thinking-high",
+        "off": "claude-opus-4-8-high"
       }
     },
     "requiresGlyphTokenization": true
@@ -1092,11 +1092,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-high-fast",
-        "minimal": "claude-opus-4-8-thinking-high-fast",
+        "high": "claude-opus-4-8-thinking-high-fast",
         "low": "claude-opus-4-8-thinking-high-fast",
         "medium": "claude-opus-4-8-thinking-high-fast",
-        "high": "claude-opus-4-8-thinking-high-fast"
+        "minimal": "claude-opus-4-8-thinking-high-fast",
+        "off": "claude-opus-4-8-high-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1130,11 +1130,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-low",
-        "minimal": "claude-opus-4-8-thinking-low",
+        "high": "claude-opus-4-8-thinking-low",
         "low": "claude-opus-4-8-thinking-low",
         "medium": "claude-opus-4-8-thinking-low",
-        "high": "claude-opus-4-8-thinking-low"
+        "minimal": "claude-opus-4-8-thinking-low",
+        "off": "claude-opus-4-8-low"
       }
     },
     "requiresGlyphTokenization": true
@@ -1168,11 +1168,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-low-fast",
-        "minimal": "claude-opus-4-8-thinking-low-fast",
+        "high": "claude-opus-4-8-thinking-low-fast",
         "low": "claude-opus-4-8-thinking-low-fast",
         "medium": "claude-opus-4-8-thinking-low-fast",
-        "high": "claude-opus-4-8-thinking-low-fast"
+        "minimal": "claude-opus-4-8-thinking-low-fast",
+        "off": "claude-opus-4-8-low-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1206,11 +1206,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-max",
-        "minimal": "claude-opus-4-8-thinking-max",
+        "high": "claude-opus-4-8-thinking-max",
         "low": "claude-opus-4-8-thinking-max",
         "medium": "claude-opus-4-8-thinking-max",
-        "high": "claude-opus-4-8-thinking-max"
+        "minimal": "claude-opus-4-8-thinking-max",
+        "off": "claude-opus-4-8-max"
       }
     },
     "requiresGlyphTokenization": true
@@ -1244,11 +1244,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-max-fast",
-        "minimal": "claude-opus-4-8-thinking-max-fast",
+        "high": "claude-opus-4-8-thinking-max-fast",
         "low": "claude-opus-4-8-thinking-max-fast",
         "medium": "claude-opus-4-8-thinking-max-fast",
-        "high": "claude-opus-4-8-thinking-max-fast"
+        "minimal": "claude-opus-4-8-thinking-max-fast",
+        "off": "claude-opus-4-8-max-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1282,11 +1282,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-medium",
-        "minimal": "claude-opus-4-8-thinking-medium",
+        "high": "claude-opus-4-8-thinking-medium",
         "low": "claude-opus-4-8-thinking-medium",
         "medium": "claude-opus-4-8-thinking-medium",
-        "high": "claude-opus-4-8-thinking-medium"
+        "minimal": "claude-opus-4-8-thinking-medium",
+        "off": "claude-opus-4-8-medium"
       }
     },
     "requiresGlyphTokenization": true
@@ -1320,11 +1320,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-medium-fast",
-        "minimal": "claude-opus-4-8-thinking-medium-fast",
+        "high": "claude-opus-4-8-thinking-medium-fast",
         "low": "claude-opus-4-8-thinking-medium-fast",
         "medium": "claude-opus-4-8-thinking-medium-fast",
-        "high": "claude-opus-4-8-thinking-medium-fast"
+        "minimal": "claude-opus-4-8-thinking-medium-fast",
+        "off": "claude-opus-4-8-medium-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1358,11 +1358,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-xhigh",
-        "minimal": "claude-opus-4-8-thinking-xhigh",
+        "high": "claude-opus-4-8-thinking-xhigh",
         "low": "claude-opus-4-8-thinking-xhigh",
         "medium": "claude-opus-4-8-thinking-xhigh",
-        "high": "claude-opus-4-8-thinking-xhigh"
+        "minimal": "claude-opus-4-8-thinking-xhigh",
+        "off": "claude-opus-4-8-xhigh"
       }
     },
     "requiresGlyphTokenization": true
@@ -1396,11 +1396,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-4-8-xhigh-fast",
-        "minimal": "claude-opus-4-8-thinking-xhigh-fast",
+        "high": "claude-opus-4-8-thinking-xhigh-fast",
         "low": "claude-opus-4-8-thinking-xhigh-fast",
         "medium": "claude-opus-4-8-thinking-xhigh-fast",
-        "high": "claude-opus-4-8-thinking-xhigh-fast"
+        "minimal": "claude-opus-4-8-thinking-xhigh-fast",
+        "off": "claude-opus-4-8-xhigh-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1423,11 +1423,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "claude-opus-5-5-low": false,
-      "claude-opus-5-5-medium": false,
       "claude-opus-5-5-high": false,
-      "claude-opus-5-5-xhigh": false,
-      "claude-opus-5-5-max": false
+      "claude-opus-5-5-low": false,
+      "claude-opus-5-5-max": false,
+      "claude-opus-5-5-medium": false,
+      "claude-opus-5-5-xhigh": false
     },
     "thinking": {
       "mode": "effort",
@@ -1439,11 +1439,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "low": "claude-opus-5-5-low",
-        "medium": "claude-opus-5-5-medium",
         "high": "claude-opus-5-5-high",
-        "xhigh": "claude-opus-5-5-xhigh",
-        "max": "claude-opus-5-5-max"
+        "low": "claude-opus-5-5-low",
+        "max": "claude-opus-5-5-max",
+        "medium": "claude-opus-5-5-medium",
+        "xhigh": "claude-opus-5-5-xhigh"
       }
     },
     "requestModelId": "claude-opus-5-5-low",
@@ -1467,11 +1467,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
-      "claude-opus-5-5-low-fast": true,
-      "claude-opus-5-5-medium-fast": true,
       "claude-opus-5-5-high-fast": true,
-      "claude-opus-5-5-xhigh-fast": true,
-      "claude-opus-5-5-max-fast": true
+      "claude-opus-5-5-low-fast": true,
+      "claude-opus-5-5-max-fast": true,
+      "claude-opus-5-5-medium-fast": true,
+      "claude-opus-5-5-xhigh-fast": true
     },
     "thinking": {
       "mode": "effort",
@@ -1483,11 +1483,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "low": "claude-opus-5-5-low-fast",
-        "medium": "claude-opus-5-5-medium-fast",
         "high": "claude-opus-5-5-high-fast",
-        "xhigh": "claude-opus-5-5-xhigh-fast",
-        "max": "claude-opus-5-5-max-fast"
+        "low": "claude-opus-5-5-low-fast",
+        "max": "claude-opus-5-5-max-fast",
+        "medium": "claude-opus-5-5-medium-fast",
+        "xhigh": "claude-opus-5-5-xhigh-fast"
       }
     },
     "requestModelId": "claude-opus-5-5-low-fast",
@@ -1522,11 +1522,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-5-high",
-        "minimal": "claude-opus-5-thinking-high",
+        "high": "claude-opus-5-thinking-high",
         "low": "claude-opus-5-thinking-high",
         "medium": "claude-opus-5-thinking-high",
-        "high": "claude-opus-5-thinking-high"
+        "minimal": "claude-opus-5-thinking-high",
+        "off": "claude-opus-5-high"
       }
     },
     "requiresGlyphTokenization": true
@@ -1560,11 +1560,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-5-high-fast",
-        "minimal": "claude-opus-5-thinking-high-fast",
+        "high": "claude-opus-5-thinking-high-fast",
         "low": "claude-opus-5-thinking-high-fast",
         "medium": "claude-opus-5-thinking-high-fast",
-        "high": "claude-opus-5-thinking-high-fast"
+        "minimal": "claude-opus-5-thinking-high-fast",
+        "off": "claude-opus-5-high-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1598,11 +1598,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-5-low",
-        "minimal": "claude-opus-5-thinking-low",
+        "high": "claude-opus-5-thinking-low",
         "low": "claude-opus-5-thinking-low",
         "medium": "claude-opus-5-thinking-low",
-        "high": "claude-opus-5-thinking-low"
+        "minimal": "claude-opus-5-thinking-low",
+        "off": "claude-opus-5-low"
       }
     },
     "requiresGlyphTokenization": true
@@ -1636,11 +1636,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-5-low-fast",
-        "minimal": "claude-opus-5-thinking-low-fast",
+        "high": "claude-opus-5-thinking-low-fast",
         "low": "claude-opus-5-thinking-low-fast",
         "medium": "claude-opus-5-thinking-low-fast",
-        "high": "claude-opus-5-thinking-low-fast"
+        "minimal": "claude-opus-5-thinking-low-fast",
+        "off": "claude-opus-5-low-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1674,11 +1674,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-5-medium",
-        "minimal": "claude-opus-5-thinking-medium",
+        "high": "claude-opus-5-thinking-medium",
         "low": "claude-opus-5-thinking-medium",
         "medium": "claude-opus-5-thinking-medium",
-        "high": "claude-opus-5-thinking-medium"
+        "minimal": "claude-opus-5-thinking-medium",
+        "off": "claude-opus-5-medium"
       }
     },
     "requiresGlyphTokenization": true
@@ -1712,11 +1712,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-opus-5-medium-fast",
-        "minimal": "claude-opus-5-thinking-medium-fast",
+        "high": "claude-opus-5-thinking-medium-fast",
         "low": "claude-opus-5-thinking-medium-fast",
         "medium": "claude-opus-5-thinking-medium-fast",
-        "high": "claude-opus-5-thinking-medium-fast"
+        "minimal": "claude-opus-5-thinking-medium-fast",
+        "off": "claude-opus-5-medium-fast"
       }
     },
     "requiresGlyphTokenization": true
@@ -1826,11 +1826,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-sonnet-5-high",
-        "minimal": "claude-sonnet-5-thinking-high",
+        "high": "claude-sonnet-5-thinking-high",
         "low": "claude-sonnet-5-thinking-high",
         "medium": "claude-sonnet-5-thinking-high",
-        "high": "claude-sonnet-5-thinking-high"
+        "minimal": "claude-sonnet-5-thinking-high",
+        "off": "claude-sonnet-5-high"
       }
     },
     "requiresGlyphTokenization": true
@@ -1864,11 +1864,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-sonnet-5-low",
-        "minimal": "claude-sonnet-5-thinking-low",
+        "high": "claude-sonnet-5-thinking-low",
         "low": "claude-sonnet-5-thinking-low",
         "medium": "claude-sonnet-5-thinking-low",
-        "high": "claude-sonnet-5-thinking-low"
+        "minimal": "claude-sonnet-5-thinking-low",
+        "off": "claude-sonnet-5-low"
       }
     },
     "requiresGlyphTokenization": true
@@ -1902,11 +1902,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-sonnet-5-max",
-        "minimal": "claude-sonnet-5-thinking-max",
+        "high": "claude-sonnet-5-thinking-max",
         "low": "claude-sonnet-5-thinking-max",
         "medium": "claude-sonnet-5-thinking-max",
-        "high": "claude-sonnet-5-thinking-max"
+        "minimal": "claude-sonnet-5-thinking-max",
+        "off": "claude-sonnet-5-max"
       }
     },
     "requiresGlyphTokenization": true
@@ -1940,11 +1940,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-sonnet-5-medium",
-        "minimal": "claude-sonnet-5-thinking-medium",
+        "high": "claude-sonnet-5-thinking-medium",
         "low": "claude-sonnet-5-thinking-medium",
         "medium": "claude-sonnet-5-thinking-medium",
-        "high": "claude-sonnet-5-thinking-medium"
+        "minimal": "claude-sonnet-5-thinking-medium",
+        "off": "claude-sonnet-5-medium"
       }
     },
     "requiresGlyphTokenization": true
@@ -1978,11 +1978,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "claude-sonnet-5-xhigh",
-        "minimal": "claude-sonnet-5-thinking-xhigh",
+        "high": "claude-sonnet-5-thinking-xhigh",
         "low": "claude-sonnet-5-thinking-xhigh",
         "medium": "claude-sonnet-5-thinking-xhigh",
-        "high": "claude-sonnet-5-thinking-xhigh"
+        "minimal": "claude-sonnet-5-thinking-xhigh",
+        "off": "claude-sonnet-5-xhigh"
       }
     },
     "requiresGlyphTokenization": true
@@ -2077,9 +2077,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
+      "cursor-grok-4.5-high": false,
       "cursor-grok-4.5-low": false,
-      "cursor-grok-4.5-medium": false,
-      "cursor-grok-4.5-high": false
+      "cursor-grok-4.5-medium": false
     },
     "thinking": {
       "mode": "effort",
@@ -2089,9 +2089,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
+        "high": "cursor-grok-4.5-high",
         "low": "cursor-grok-4.5-low",
-        "medium": "cursor-grok-4.5-medium",
-        "high": "cursor-grok-4.5-high"
+        "medium": "cursor-grok-4.5-medium"
       }
     },
     "requestModelId": "cursor-grok-4.5-medium",
@@ -2115,9 +2115,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
+      "cursor-grok-4.5-high-fast": false,
       "cursor-grok-4.5-low-fast": false,
-      "cursor-grok-4.5-medium-fast": false,
-      "cursor-grok-4.5-high-fast": false
+      "cursor-grok-4.5-medium-fast": false
     },
     "thinking": {
       "mode": "effort",
@@ -2127,9 +2127,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
+        "high": "cursor-grok-4.5-high-fast",
         "low": "cursor-grok-4.5-low-fast",
-        "medium": "cursor-grok-4.5-medium-fast",
-        "high": "cursor-grok-4.5-high-fast"
+        "medium": "cursor-grok-4.5-medium-fast"
       }
     },
     "requestModelId": "cursor-grok-4.5-medium-fast",
@@ -2153,9 +2153,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
+      "cursor-grok-4.6-high": false,
       "cursor-grok-4.6-low": false,
       "cursor-grok-4.6-medium": false,
-      "cursor-grok-4.6-high": false,
       "cursor-grok-4.6-xhigh": false
     },
     "thinking": {
@@ -2167,9 +2167,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
+        "high": "cursor-grok-4.6-high",
         "low": "cursor-grok-4.6-low",
         "medium": "cursor-grok-4.6-medium",
-        "high": "cursor-grok-4.6-high",
         "xhigh": "cursor-grok-4.6-xhigh"
       }
     },
@@ -2194,9 +2194,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
+      "cursor-grok-4.6-high-fast": false,
       "cursor-grok-4.6-low-fast": false,
       "cursor-grok-4.6-medium-fast": false,
-      "cursor-grok-4.6-high-fast": false,
       "cursor-grok-4.6-xhigh-fast": false
     },
     "thinking": {
@@ -2208,9 +2208,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
+        "high": "cursor-grok-4.6-high-fast",
         "low": "cursor-grok-4.6-low-fast",
         "medium": "cursor-grok-4.6-medium-fast",
-        "high": "cursor-grok-4.6-high-fast",
         "xhigh": "cursor-grok-4.6-xhigh-fast"
       }
     },
@@ -2361,10 +2361,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "gemini-3.6-flash-minimal": false,
+      "gemini-3.6-flash-high": false,
       "gemini-3.6-flash-low": false,
       "gemini-3.6-flash-medium": false,
-      "gemini-3.6-flash-high": false
+      "gemini-3.6-flash-minimal": false
     },
     "thinking": {
       "mode": "effort",
@@ -2375,10 +2375,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "minimal": "gemini-3.6-flash-minimal",
+        "high": "gemini-3.6-flash-high",
         "low": "gemini-3.6-flash-low",
         "medium": "gemini-3.6-flash-medium",
-        "high": "gemini-3.6-flash-high"
+        "minimal": "gemini-3.6-flash-minimal"
       }
     },
     "requestModelId": "gemini-3.6-flash-minimal",
@@ -2402,9 +2402,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
+      "gemini-3.7-flash-high": false,
       "gemini-3.7-flash-low": false,
-      "gemini-3.7-flash-medium": false,
-      "gemini-3.7-flash-high": false
+      "gemini-3.7-flash-medium": false
     },
     "thinking": {
       "mode": "effort",
@@ -2414,9 +2414,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
+        "high": "gemini-3.7-flash-high",
         "low": "gemini-3.7-flash-low",
-        "medium": "gemini-3.7-flash-medium",
-        "high": "gemini-3.7-flash-high"
+        "medium": "gemini-3.7-flash-medium"
       }
     },
     "requestModelId": "gemini-3.7-flash-low",
@@ -2440,9 +2440,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
+      "gemini-3.8-flash-high": false,
       "gemini-3.8-flash-low": false,
-      "gemini-3.8-flash-medium": false,
-      "gemini-3.8-flash-high": false
+      "gemini-3.8-flash-medium": false
     },
     "thinking": {
       "mode": "effort",
@@ -2452,9 +2452,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "high"
       ],
       "effortRouting": {
+        "high": "gemini-3.8-flash-high",
         "low": "gemini-3.8-flash-low",
-        "medium": "gemini-3.8-flash-medium",
-        "high": "gemini-3.8-flash-high"
+        "medium": "gemini-3.8-flash-medium"
       }
     },
     "requestModelId": "gemini-3.8-flash-low",
@@ -3171,9 +3171,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
+      "gpt-5.4-high": false,
       "gpt-5.4-low": false,
       "gpt-5.4-medium": false,
-      "gpt-5.4-high": false,
       "gpt-5.4-xhigh": false
     },
     "thinking": {
@@ -3185,9 +3185,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
+        "high": "gpt-5.4-high",
         "low": "gpt-5.4-low",
         "medium": "gpt-5.4-medium",
-        "high": "gpt-5.4-high",
         "xhigh": "gpt-5.4-xhigh"
       }
     },
@@ -3211,8 +3211,8 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "gpt-5.4-medium-fast": false,
       "gpt-5.4-high-fast": false,
+      "gpt-5.4-medium-fast": false,
       "gpt-5.4-xhigh-fast": false
     },
     "thinking": {
@@ -3223,8 +3223,8 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
-        "medium": "gpt-5.4-medium-fast",
         "high": "gpt-5.4-high-fast",
+        "medium": "gpt-5.4-medium-fast",
         "xhigh": "gpt-5.4-xhigh-fast"
       }
     },
@@ -3249,10 +3249,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "gpt-5.4-mini-none": false,
+      "gpt-5.4-mini-high": false,
       "gpt-5.4-mini-low": false,
       "gpt-5.4-mini-medium": false,
-      "gpt-5.4-mini-high": false,
+      "gpt-5.4-mini-none": false,
       "gpt-5.4-mini-xhigh": false
     },
     "thinking": {
@@ -3264,10 +3264,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
-        "off": "gpt-5.4-mini-none",
+        "high": "gpt-5.4-mini-high",
         "low": "gpt-5.4-mini-low",
         "medium": "gpt-5.4-mini-medium",
-        "high": "gpt-5.4-mini-high",
+        "off": "gpt-5.4-mini-none",
         "xhigh": "gpt-5.4-mini-xhigh"
       }
     },
@@ -3292,10 +3292,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "gpt-5.4-nano-none": false,
+      "gpt-5.4-nano-high": false,
       "gpt-5.4-nano-low": false,
       "gpt-5.4-nano-medium": false,
-      "gpt-5.4-nano-high": false,
+      "gpt-5.4-nano-none": false,
       "gpt-5.4-nano-xhigh": false
     },
     "thinking": {
@@ -3307,10 +3307,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
-        "off": "gpt-5.4-nano-none",
+        "high": "gpt-5.4-nano-high",
         "low": "gpt-5.4-nano-low",
         "medium": "gpt-5.4-nano-medium",
-        "high": "gpt-5.4-nano-high",
+        "off": "gpt-5.4-nano-none",
         "xhigh": "gpt-5.4-nano-xhigh"
       }
     },
@@ -3335,11 +3335,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "gpt-5.5-none": false,
+      "gpt-5.5-extra-high": false,
+      "gpt-5.5-high": false,
       "gpt-5.5-low": false,
       "gpt-5.5-medium": false,
-      "gpt-5.5-high": false,
-      "gpt-5.5-extra-high": false
+      "gpt-5.5-none": false
     },
     "thinking": {
       "mode": "effort",
@@ -3350,10 +3350,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
-        "off": "gpt-5.5-none",
+        "high": "gpt-5.5-high",
         "low": "gpt-5.5-low",
         "medium": "gpt-5.5-medium",
-        "high": "gpt-5.5-high",
+        "off": "gpt-5.5-none",
         "xhigh": "gpt-5.5-extra-high"
       }
     },
@@ -3378,11 +3378,11 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "gpt-5.5-none-fast": false,
+      "gpt-5.5-extra-high-fast": false,
+      "gpt-5.5-high-fast": false,
       "gpt-5.5-low-fast": false,
       "gpt-5.5-medium-fast": false,
-      "gpt-5.5-high-fast": false,
-      "gpt-5.5-extra-high-fast": false
+      "gpt-5.5-none-fast": false
     },
     "thinking": {
       "mode": "effort",
@@ -3393,10 +3393,10 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
-        "off": "gpt-5.5-none-fast",
+        "high": "gpt-5.5-high-fast",
         "low": "gpt-5.5-low-fast",
         "medium": "gpt-5.5-medium-fast",
-        "high": "gpt-5.5-high-fast",
+        "off": "gpt-5.5-none-fast",
         "xhigh": "gpt-5.5-extra-high-fast"
       }
     },
@@ -3421,12 +3421,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
-      "gpt-5.6-luna-none": false,
-      "gpt-5.6-luna-low": false,
-      "gpt-5.6-luna-medium": false,
       "gpt-5.6-luna-high": false,
-      "gpt-5.6-luna-xhigh": false,
-      "gpt-5.6-luna-max": false
+      "gpt-5.6-luna-low": false,
+      "gpt-5.6-luna-max": false,
+      "gpt-5.6-luna-medium": false,
+      "gpt-5.6-luna-none": false,
+      "gpt-5.6-luna-xhigh": false
     },
     "thinking": {
       "mode": "effort",
@@ -3438,12 +3438,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "off": "gpt-5.6-luna-none",
-        "low": "gpt-5.6-luna-low",
-        "medium": "gpt-5.6-luna-medium",
         "high": "gpt-5.6-luna-high",
-        "xhigh": "gpt-5.6-luna-xhigh",
-        "max": "gpt-5.6-luna-max"
+        "low": "gpt-5.6-luna-low",
+        "max": "gpt-5.6-luna-max",
+        "medium": "gpt-5.6-luna-medium",
+        "off": "gpt-5.6-luna-none",
+        "xhigh": "gpt-5.6-luna-xhigh"
       }
     },
     "requestModelId": "gpt-5.6-luna-none",
@@ -3467,12 +3467,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
-      "gpt-5.6-luna-none-fast": false,
-      "gpt-5.6-luna-low-fast": false,
-      "gpt-5.6-luna-medium-fast": false,
       "gpt-5.6-luna-high-fast": false,
-      "gpt-5.6-luna-xhigh-fast": false,
-      "gpt-5.6-luna-max-fast": false
+      "gpt-5.6-luna-low-fast": false,
+      "gpt-5.6-luna-max-fast": false,
+      "gpt-5.6-luna-medium-fast": false,
+      "gpt-5.6-luna-none-fast": false,
+      "gpt-5.6-luna-xhigh-fast": false
     },
     "thinking": {
       "mode": "effort",
@@ -3484,12 +3484,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "off": "gpt-5.6-luna-none-fast",
-        "low": "gpt-5.6-luna-low-fast",
-        "medium": "gpt-5.6-luna-medium-fast",
         "high": "gpt-5.6-luna-high-fast",
-        "xhigh": "gpt-5.6-luna-xhigh-fast",
-        "max": "gpt-5.6-luna-max-fast"
+        "low": "gpt-5.6-luna-low-fast",
+        "max": "gpt-5.6-luna-max-fast",
+        "medium": "gpt-5.6-luna-medium-fast",
+        "off": "gpt-5.6-luna-none-fast",
+        "xhigh": "gpt-5.6-luna-xhigh-fast"
       }
     },
     "requestModelId": "gpt-5.6-luna-none-fast",
@@ -3513,12 +3513,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
-      "gpt-5.6-sol-none": false,
-      "gpt-5.6-sol-low": false,
-      "gpt-5.6-sol-medium": false,
       "gpt-5.6-sol-high": false,
-      "gpt-5.6-sol-xhigh": false,
-      "gpt-5.6-sol-max": false
+      "gpt-5.6-sol-low": false,
+      "gpt-5.6-sol-max": false,
+      "gpt-5.6-sol-medium": false,
+      "gpt-5.6-sol-none": false,
+      "gpt-5.6-sol-xhigh": false
     },
     "thinking": {
       "mode": "effort",
@@ -3530,12 +3530,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "off": "gpt-5.6-sol-none",
-        "low": "gpt-5.6-sol-low",
-        "medium": "gpt-5.6-sol-medium",
         "high": "gpt-5.6-sol-high",
-        "xhigh": "gpt-5.6-sol-xhigh",
-        "max": "gpt-5.6-sol-max"
+        "low": "gpt-5.6-sol-low",
+        "max": "gpt-5.6-sol-max",
+        "medium": "gpt-5.6-sol-medium",
+        "off": "gpt-5.6-sol-none",
+        "xhigh": "gpt-5.6-sol-xhigh"
       }
     },
     "requestModelId": "gpt-5.6-sol-none",
@@ -3559,12 +3559,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
-      "gpt-5.6-sol-none-fast": false,
-      "gpt-5.6-sol-low-fast": false,
-      "gpt-5.6-sol-medium-fast": false,
       "gpt-5.6-sol-high-fast": false,
-      "gpt-5.6-sol-xhigh-fast": false,
-      "gpt-5.6-sol-max-fast": false
+      "gpt-5.6-sol-low-fast": false,
+      "gpt-5.6-sol-max-fast": false,
+      "gpt-5.6-sol-medium-fast": false,
+      "gpt-5.6-sol-none-fast": false,
+      "gpt-5.6-sol-xhigh-fast": false
     },
     "thinking": {
       "mode": "effort",
@@ -3576,12 +3576,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "off": "gpt-5.6-sol-none-fast",
-        "low": "gpt-5.6-sol-low-fast",
-        "medium": "gpt-5.6-sol-medium-fast",
         "high": "gpt-5.6-sol-high-fast",
-        "xhigh": "gpt-5.6-sol-xhigh-fast",
-        "max": "gpt-5.6-sol-max-fast"
+        "low": "gpt-5.6-sol-low-fast",
+        "max": "gpt-5.6-sol-max-fast",
+        "medium": "gpt-5.6-sol-medium-fast",
+        "off": "gpt-5.6-sol-none-fast",
+        "xhigh": "gpt-5.6-sol-xhigh-fast"
       }
     },
     "requestModelId": "gpt-5.6-sol-none-fast",
@@ -3605,12 +3605,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
-      "gpt-5.6-terra-none": false,
-      "gpt-5.6-terra-low": false,
-      "gpt-5.6-terra-medium": false,
       "gpt-5.6-terra-high": false,
-      "gpt-5.6-terra-xhigh": false,
-      "gpt-5.6-terra-max": false
+      "gpt-5.6-terra-low": false,
+      "gpt-5.6-terra-max": false,
+      "gpt-5.6-terra-medium": false,
+      "gpt-5.6-terra-none": false,
+      "gpt-5.6-terra-xhigh": false
     },
     "thinking": {
       "mode": "effort",
@@ -3622,12 +3622,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "off": "gpt-5.6-terra-none",
-        "low": "gpt-5.6-terra-low",
-        "medium": "gpt-5.6-terra-medium",
         "high": "gpt-5.6-terra-high",
-        "xhigh": "gpt-5.6-terra-xhigh",
-        "max": "gpt-5.6-terra-max"
+        "low": "gpt-5.6-terra-low",
+        "max": "gpt-5.6-terra-max",
+        "medium": "gpt-5.6-terra-medium",
+        "off": "gpt-5.6-terra-none",
+        "xhigh": "gpt-5.6-terra-xhigh"
       }
     },
     "requestModelId": "gpt-5.6-terra-none",
@@ -3651,12 +3651,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
-      "gpt-5.6-terra-none-fast": false,
-      "gpt-5.6-terra-low-fast": false,
-      "gpt-5.6-terra-medium-fast": false,
       "gpt-5.6-terra-high-fast": false,
-      "gpt-5.6-terra-xhigh-fast": false,
-      "gpt-5.6-terra-max-fast": false
+      "gpt-5.6-terra-low-fast": false,
+      "gpt-5.6-terra-max-fast": false,
+      "gpt-5.6-terra-medium-fast": false,
+      "gpt-5.6-terra-none-fast": false,
+      "gpt-5.6-terra-xhigh-fast": false
     },
     "thinking": {
       "mode": "effort",
@@ -3668,12 +3668,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "off": "gpt-5.6-terra-none-fast",
-        "low": "gpt-5.6-terra-low-fast",
-        "medium": "gpt-5.6-terra-medium-fast",
         "high": "gpt-5.6-terra-high-fast",
-        "xhigh": "gpt-5.6-terra-xhigh-fast",
-        "max": "gpt-5.6-terra-max-fast"
+        "low": "gpt-5.6-terra-low-fast",
+        "max": "gpt-5.6-terra-max-fast",
+        "medium": "gpt-5.6-terra-medium-fast",
+        "off": "gpt-5.6-terra-none-fast",
+        "xhigh": "gpt-5.6-terra-xhigh-fast"
       }
     },
     "requestModelId": "gpt-5.6-terra-none-fast",
@@ -3697,9 +3697,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
+      "grok-4.7-high": false,
       "grok-4.7-low": false,
       "grok-4.7-medium": false,
-      "grok-4.7-high": false,
       "grok-4.7-xhigh": false
     },
     "thinking": {
@@ -3711,9 +3711,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
+        "high": "grok-4.7-high",
         "low": "grok-4.7-low",
         "medium": "grok-4.7-medium",
-        "high": "grok-4.7-high",
         "xhigh": "grok-4.7-xhigh"
       }
     },
@@ -3738,9 +3738,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": true,
     "cursorMaxModeRoutes": {
+      "grok-4.7-high-fast": false,
       "grok-4.7-low-fast": false,
       "grok-4.7-medium-fast": false,
-      "grok-4.7-high-fast": false,
       "grok-4.7-xhigh-fast": false
     },
     "thinking": {
@@ -3752,9 +3752,9 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "xhigh"
       ],
       "effortRouting": {
+        "high": "grok-4.7-high-fast",
         "low": "grok-4.7-low-fast",
         "medium": "grok-4.7-medium-fast",
-        "high": "grok-4.7-high-fast",
         "xhigh": "grok-4.7-xhigh-fast"
       }
     },
@@ -3941,12 +3941,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
     },
     "cursorMaxMode": false,
     "cursorMaxModeRoutes": {
-      "muse-spark-1.3-minimal": false,
-      "muse-spark-1.3-low": false,
-      "muse-spark-1.3-medium": false,
       "muse-spark-1.3-high": false,
-      "muse-spark-1.3-xhigh": false,
-      "muse-spark-1.3-max": false
+      "muse-spark-1.3-low": false,
+      "muse-spark-1.3-max": false,
+      "muse-spark-1.3-medium": false,
+      "muse-spark-1.3-minimal": false,
+      "muse-spark-1.3-xhigh": false
     },
     "thinking": {
       "mode": "effort",
@@ -3959,12 +3959,12 @@ export const CURSOR_MODELS: readonly CursorModelRow[] = [
         "max"
       ],
       "effortRouting": {
-        "minimal": "muse-spark-1.3-minimal",
-        "low": "muse-spark-1.3-low",
-        "medium": "muse-spark-1.3-medium",
         "high": "muse-spark-1.3-high",
-        "xhigh": "muse-spark-1.3-xhigh",
-        "max": "muse-spark-1.3-max"
+        "low": "muse-spark-1.3-low",
+        "max": "muse-spark-1.3-max",
+        "medium": "muse-spark-1.3-medium",
+        "minimal": "muse-spark-1.3-minimal",
+        "xhigh": "muse-spark-1.3-xhigh"
       }
     },
     "requestModelId": "muse-spark-1.3-minimal",

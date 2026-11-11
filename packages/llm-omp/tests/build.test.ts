@@ -39,6 +39,7 @@ import {
 } from '../scripts/omp-shim/pi-utils'
 import { CURSOR_CATALOG_SOURCE, CURSOR_MODELS } from '../src/catalog/cursor.js'
 import { CURSOR_AUTH } from '../src/cursor/auth.js'
+import { openPinnedCatalog, pinnedRows } from './pinned-catalog'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -386,9 +387,11 @@ describe('generated cursor table freshness', () => {
     const modelsPath = installedSourcePath('@oh-my-pi/pi-catalog/src/models.json')
     expect(CURSOR_CATALOG_SOURCE.sourceHash).toBe(manifest.sourceHashes['@oh-my-pi/pi-catalog/src/models.json'])
     expect(CURSOR_CATALOG_SOURCE.sourceHash).toBe(sha256(modelsPath))
-    const cursorRows = (JSON.parse(readFileSync(modelsPath, 'utf8')) as { cursor?: Record<string, unknown> }).cursor
+    // The rows are decoded through the pin's own opener: `models.json` is a
+    // compact encoded catalog, not a provider map.
+    const cursorRows = pinnedRows(openPinnedCatalog(modelsPath), 'cursor')
     expect(cursorRows).toBeDefined()
-    expect(CURSOR_CATALOG_SOURCE.rowCount).toBe(Object.keys(cursorRows ?? {}).length)
+    expect(CURSOR_CATALOG_SOURCE.rowCount).toBe(Object.keys(cursorRows).length)
     expect(CURSOR_MODELS).toHaveLength(CURSOR_CATALOG_SOURCE.rowCount)
   })
 })

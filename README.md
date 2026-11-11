@@ -126,7 +126,7 @@ Providers the vendored pi-ai cannot speak are served by the companion
 - One grant per route, at `llm-omp-transports/<route>` — no key pool and no
   per-account rotation. Sign-in happens in the **Transport accounts** section of
   the Keys Manager page.
-- Models are generated from the pinned `@oh-my-pi/pi-catalog@18.12.3` table when
+- Models are generated from the pinned `@oh-my-pi/pi-catalog@18.18.8` table when
   the transport is built, and the clients are unofficial: read the
   [transports package docs](packages/llm-omp/README.md) and its
   [known limits](packages/llm-omp/docs/known-limits.md) before relying on them.
@@ -137,7 +137,7 @@ Providers the vendored pi-ai cannot speak are served by the companion
 | `devin` | paste the landed callback URL | none — sign in again | 2 |
 | `google-gemini-cli` | loopback `8085` + paste fallback | on the credential seam | 7 |
 | `google-antigravity` | loopback `51121` + paste fallback | on the credential seam | 22 |
-| `factory-droid` | WorkOS device code (URL + user code) | one refresh in a 60 s window, keeps `orgId`/`region` | 62 |
+| `factory-droid` | WorkOS device code (URL + user code) | one refresh in a 60 s window, keeps `orgId`/`region` | 77 |
 | `gitlab-duo` | PKCE loopback `localhost:8080/callback`, no port fallback, paste fallback | one refresh in a 60 s window | 16 |
 | `gitlab-duo-agent` | paste the `vscode://` URL | one refresh, echoes the `vscode` redirect | 1 |
 

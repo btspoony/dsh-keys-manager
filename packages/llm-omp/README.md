@@ -41,7 +41,7 @@ package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
   grant under the credential store's per-key lock. The Keys Manager Web page's
   **Transport accounts** section is the surface that starts the flow.
 - **Models** — from the pinned catalog: the Cursor slice of
-  `@oh-my-pi/pi-catalog@18.12.3` (123 rows) is generated into
+  `@oh-my-pi/pi-catalog@18.18.8` (123 rows) is generated into
   `src/catalog/cursor.ts` and served without a network call.
 - **Route** — `cursor`, declared configurable so the Models page has a profile
   entry for it.
@@ -66,7 +66,7 @@ package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
   There is **no refresh** (`refresh "none"`): an expired grant demands a new
   sign-in.
 - **Models** — from the pinned catalog: the Devin slice of
-  `@oh-my-pi/pi-catalog@18.12.3` (2 rows: `swe-1-6`, `swe-1-6-fast`) is
+  `@oh-my-pi/pi-catalog@18.18.8` (2 rows: `swe-1-6`, `swe-1-6-fast`) is
   generated into `src/catalog/devin.ts` and served without a network call.
 - **Route** — `devin`, declared configurable so the Models page has a
   `providers.devin` profile with an allow-list.
@@ -114,7 +114,7 @@ records — not a second code path.
   `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT_ID` variable for a
   `legacy-tier`/paid account). Antigravity additionally checks free-tier
   eligibility and bounds onboarding at 30 s.
-- **Models** — generated from the pinned `@oh-my-pi/pi-catalog@18.12.3`: 7 rows
+- **Models** — generated from the pinned `@oh-my-pi/pi-catalog@18.18.8`: 7 rows
   for `google-gemini-cli`, 22 for `google-antigravity`, served without a network
   call.
 - **Routes** — both declared configurable, so the Models page has
@@ -138,7 +138,7 @@ records — not a second code path.
 - **Refresh** — yes: one refresh inside a 60 s window under the credential store's per-key
   lock, keeping the account scope (`orgId`/`region`/`inferenceRegion`), which the adapter
   forwards to the transport as `oauthIdentity` so a EU account gets its own host.
-- **Catalog** — 62 rows from the KDL registry seed (`models.json` has no factory-droid key),
+- **Catalog** — 77 rows from the KDL registry seed (`models.json` has no factory-droid key),
   zero-cost Factory credits.
 - **Build** — the graph needs three **entry-scoped build substitutions** (empty catalog data,
   a lean provider registry, a lean env-key map) to fit its ceiling; see the limits below.
@@ -176,7 +176,7 @@ next turn replays the result through the goal transcript.
 ## Hard constraints
 
 - **Pinned, build-time-only omp.** `@oh-my-pi/pi-ai` and `@oh-my-pi/pi-catalog`
-  are pinned to `18.12.3` and declared as devDependencies. No runtime package
+  are pinned to `18.18.8` and declared as devDependencies. No runtime package
   may import them: `tests/build.test.ts` checks that every static import of the
   shipped artifact is a Node builtin.
 - **Node 24 load.** The artifact is imported through a plain Node ESM loader
@@ -240,7 +240,7 @@ next turn replays the result through the goal transcript.
   the wire, and Cursor applies the catalog output limit server-side.
 - **Unofficial Devin client.** The transport presents the released Devin CLI
   identity (`ideName: "devin-cli"`, `ideType: "chisel"`, `ideVersion:
-  "3000.11.3"`) and a `connect-go` client header the omp sources copy from the
+  "3000.11.205"`) and a `connect-go` client header the omp sources copy from the
   CLI. Same posture as Cursor's S4: a first live turn rejected with `401`/`403`
   stops the route until a product decision, never a retry under another
   identity.
@@ -275,7 +275,7 @@ next turn replays the result through the goal transcript.
 - **Antigravity version lookup.** Before the first Antigravity request the
   artifact reads the client version from the public update manifest (D11),
   because the backend gates newer models on that version. A failed lookup is
-  silent and falls back to the pinned `2.19.1` for ten minutes; an explicit
+  silent and falls back to the pinned `2.26.0` for ten minutes; an explicit
   `PI_AI_ANTIGRAVITY_VERSION` skips the lookup. That is the only outbound
   request the routes make besides the vendor API itself.
 - **Google sign-in waits at most five minutes.** The loopback listener is

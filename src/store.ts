@@ -14,6 +14,7 @@ import { chmod, mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import type { KeyRecord, ModelRecord, OAuthAccount, ProviderRecord, StateDocument } from './domain.js'
+import { sanitizeReasoningEfforts } from './capabilities.js'
 import { normalizeCursor, normalizeSettings } from './core.js'
 
 export const STATE_VERSION = 1 as const
@@ -123,9 +124,8 @@ function sanitizeModels(raw: unknown): ModelRecord[] {
     if (Array.isArray(source.input)) {
       model.input = source.input.filter((value): value is 'text' | 'image' => value === 'text' || value === 'image')
     }
-    if (source.reasoningEfforts !== null && typeof source.reasoningEfforts === 'object') {
-      model.reasoningEfforts = source.reasoningEfforts as Record<string, unknown>
-    }
+    const reasoningEfforts = sanitizeReasoningEfforts(source.reasoningEfforts)
+    if (reasoningEfforts !== undefined) model.reasoningEfforts = reasoningEfforts
     if (source.compat !== null && typeof source.compat === 'object') {
       model.compat = source.compat as Record<string, unknown>
     }

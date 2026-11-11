@@ -410,7 +410,11 @@ describe('bundled streamCursor over a Connect frame stream', () => {
       contentIndex: 0,
       toolCall: { type: 'toolCall', id: 'call-wire-1', name: 'lookup_doc', arguments: { query: 'hello' } },
     })
-    expect(events.at(-1)).toMatchObject({ type: 'done', reason: 'stop' })
+    // 18.18.8 ends a turn that leaves a call to the external loop with
+    // `toolUse`; 18.12.6 left it at `stop`. DSH sees the same finish either way —
+    // `doneFinish` maps `toolUse` to `tool-calls`, and `stop` reaches it only
+    // through the unresolved block below.
+    expect(events.at(-1)).toMatchObject({ type: 'done', reason: 'toolUse' })
 
     // Frame 0 is the Run request; frames 1 and 2 are the two exec replies.
     expect(decodeClientFrame(wire.written[0]).message.case).toBe('runRequest')

@@ -17,6 +17,11 @@
  * streams are omp's own. The only thing dropped is the dispatch table for
  * providers this entry never reaches.
  *
+ * The region covers the pin's watchdog and error helpers. 18.18.8 replaced the
+ * synchronous wrapper that followed them with `createLazyProviderStream` (a
+ * Bun.build constraint this esbuild bundle does not share), so the small adapter
+ * below the end marker is ours while everything above it stays a verbatim copy.
+ *
  * On an omp bump the region's source hash changes, the containment test fails,
  * and the fix is a mechanical re-copy — never an edit here.
  *
@@ -201,10 +206,21 @@ function createProviderStreamError<TApi extends Api>(
 	};
 }
 
+// --- END PINNED REGION ------------------------------------------------------
+
 // ---------------------------------------------------------------------------
 // Provider stream wrapper
 // ---------------------------------------------------------------------------
 
+/**
+ * Our adapter, not the pin's: 18.18.8 replaced the sync wrapper with
+ * `createLazyProviderStream`, which loads the provider module on first call
+ * because `Bun.build` bundles only literal `import` specifiers. This artifact is
+ * an esbuild bundle whose three provider modules are already inlined and
+ * evaluated, so lazy loading would buy nothing and would defer a provider's
+ * module scope past the first call for no reason. The watchdog, abort tracking
+ * and error folding above are the pin's, unchanged.
+ */
 function createProviderStream<TApi extends Api>(
 	stream: ProviderStream<TApi>,
 	limits?: StreamLimits,
@@ -227,8 +243,6 @@ function createProviderStream<TApi extends Api>(
 		return outer;
 	};
 }
-
-// --- END PINNED REGION ------------------------------------------------------
 
 /**
  * The three streams `providers/factory-droid` consumes — the same exports, in the

@@ -1,8 +1,8 @@
 /**
  * Generated Devin model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.12.6` `src/models.json` key `devin`
- * (2 rows, sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
+ * Source: `@oh-my-pi/pi-catalog@18.18.8` `src/models.json` key `devin`
+ * (2 rows, sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
  *
  * The drift gate in `tests/build-devin.test.ts` pins the same package version
  * and source hash, so an omp bump fails there before this table can describe
@@ -18,10 +18,10 @@ import type { DevinModelRow } from '../omp.js'
 /** Provenance of {@link DEVIN_MODELS}. */
 export const DEVIN_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.12.6',
+  version: '18.18.8',
   file: 'src/models.json',
   key: 'devin',
-  sourceHash: 'sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152',
+  sourceHash: 'sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612',
   rowCount: 2,
 } as const
 

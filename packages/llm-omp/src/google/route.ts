@@ -115,9 +115,11 @@ export const GOOGLE_ANTIGRAVITY_FACTS: GoogleRouteFacts = {
   discovery: {
     kind: 'antigravity',
     endpoint: ANTIGRAVITY_ENDPOINT,
-    // The backend gates newer models on this client version; the captured
-    // reference build is what the pinned rule was recorded from.
-    userAgent: 'antigravity/hub/2.19.1 (aidev_client; os_type=darwin; arch=arm64; cl=963137146)',
+    // The backend gates newer models on this client version; this is the
+    // captured reference build `@oh-my-pi/pi-catalog@18.18.8`
+    // `src/wire/gemini-headers.ts` announces (`DEFAULT_ANTIGRAVITY_VERSION`, and
+    // the `cl` changelist it ships with).
+    userAgent: 'antigravity/hub/2.26.0 (aidev_client; os_type=darwin; arch=arm64; cl=1005016104)',
   },
 }
 

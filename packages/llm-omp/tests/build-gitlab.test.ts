@@ -29,6 +29,7 @@ import { GITLAB_DUO_CATALOG_SOURCE, GITLAB_DUO_MODELS } from '../src/catalog/git
 import { GITLAB_DUO_AGENT_CATALOG_SOURCE, GITLAB_DUO_AGENT_MODELS } from '../src/catalog/gitlab-duo-agent.js'
 import { GITLAB_DUO_AGENT_AUTH, GITLAB_DUO_AUTH } from '../src/gitlab/auth.js'
 import { gitlabDuoAgentCatalogModels, gitlabDuoCatalogModels } from '../src/index.js'
+import { openPinnedCatalog, pinnedRows } from './pinned-catalog'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -86,9 +87,10 @@ describe('gitlab duo agent drift gate', () => {
     expect(entry.entry).toBe('lib/omp/gitlab-duo-agent.mjs')
     // The graph is the workflow transport plus its catalog helpers; the design
     // measured 118 modules / ~1 MB with the existing shims, and this entry adds
-    // nothing to them.
-    expect(entry.moduleCount).toBe(118)
-    // 1 001 890 bytes measured; the ceiling (`tests/build.test.ts`) is 1 500 000.
+    // nothing to them. 18.18.8 measures 125 modules / 1 058 950 bytes: the seven
+    // new modules are the pin's own response-session split, no new dependency.
+    expect(entry.moduleCount).toBe(125)
+    // 1 058 950 bytes measured; the ceiling (`tests/build.test.ts`) is 1 500 000.
     expect(entry.bytes).toBeLessThanOrEqual(1_500_000)
     expect(entry.shimImports['bun-modules']).toEqual([])
     expect(entry.shimImports['bun-global']).toEqual(['Bun'])
@@ -127,11 +129,10 @@ describe('gitlab duo agent drift gate', () => {
     const modelsPath = installedSourcePath('@oh-my-pi/pi-catalog/src/models.json')
     expect(GITLAB_DUO_AGENT_CATALOG_SOURCE.sourceHash).toBe(manifest.sourceHashes['@oh-my-pi/pi-catalog/src/models.json'])
     expect(GITLAB_DUO_AGENT_CATALOG_SOURCE.sourceHash).toBe(sha256(modelsPath))
-    const rows = (JSON.parse(readFileSync(modelsPath, 'utf8')) as { 'gitlab-duo-agent'?: Record<string, unknown> })[
-      'gitlab-duo-agent'
-    ]
+    // Decoded through the pin's own opener: `models.json` is a compact catalog.
+    const rows = pinnedRows(openPinnedCatalog(modelsPath), 'gitlab-duo-agent')
     expect(rows).toBeDefined()
-    expect(GITLAB_DUO_AGENT_CATALOG_SOURCE.rowCount).toBe(Object.keys(rows ?? {}).length)
+    expect(GITLAB_DUO_AGENT_CATALOG_SOURCE.rowCount).toBe(Object.keys(rows).length)
     expect(GITLAB_DUO_AGENT_MODELS).toHaveLength(GITLAB_DUO_AGENT_CATALOG_SOURCE.rowCount)
   })
 
@@ -169,9 +170,12 @@ describe('gitlab duo proxy drift gate', () => {
   const inputs = Object.keys(metafile.inputs).map(path => path.replace(/.*node_modules\//, ''))
 
   it('builds under the 4 MB bound from the entry-scoped substitutions', () => {
-    // 2 654 940 bytes measured; the ceiling is 3 980 000 (plan D12: ≤4 MB).
+    // 2 823 639 bytes / 260 modules measured on 18.18.8 (18.12.6: 2 654 940 /
+    // 232); the ceiling is 3 980 000 (plan D12: ≤4 MB). The delta is the pin's
+    // new provider modules, not a substitution that stopped firing — the three
+    // assertions below still hold.
     expect(duo!.bytes).toBeLessThanOrEqual(4_000_000)
-    expect(duo!.moduleCount).toBe(232)
+    expect(duo!.moduleCount).toBe(260)
     // The alias fired: the lean registry substitute is an input and the real
     // dispatch table is not, so the builtin provider registry never enters.
     expect(inputs).toContain('scripts/omp-shim/register-builtins-lean.ts')

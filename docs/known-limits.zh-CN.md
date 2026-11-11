@@ -22,7 +22,7 @@ Keys Manager 插件当前的设计边界：
 
 ## 内置登录（Kilo、Z.AI Coding Plan）
 
-- 两个流程都是构建时从 `@oh-my-pi/pi-ai@18.12.3` 抽取的非官方客户端。提供商随时可能改动登录端点、scope 或响应；失效会以提供商自己的错误文本出现在登录对话框中，而不会导致崩溃。
+- 两个流程都是构建时从 `@oh-my-pi/pi-ai@18.18.8` 抽取的非官方客户端。提供商随时可能改动登录端点、scope 或响应；失效会以提供商自己的错误文本出现在登录对话框中，而不会导致崩溃。
 - Kilo 的凭据是有效期一年的 bearer token，没有刷新令牌（`refresh: ''`）。它无法在后台续期：过期后从该行重新登录。
 - Z.AI Coding Plan 流程最终签发一把 API key（`<id>.<secret>`），不是登录授权。该 key 会以 `oh-my-pi` 为名出现在 Z.AI 控制台中；在控制台删除或轮换它会使对应行失效，之后像普通 key 一样进入冷却。同一流程不覆盖 `zai-coding-cn`（中国区端点），那是独立路由。
 - 这些登录只能从 Keys Manager 页面发起。DSH CLI 与 Models 页面都不会触发它们，也不会写入 `llm-pi-ai/<provider>` 授权记录。

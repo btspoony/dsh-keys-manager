@@ -35,7 +35,9 @@ import * as baseShim from '../scripts/omp-shim/pi-utils'
 import * as googleShim from '../scripts/omp-shim/pi-utils-google'
 import { GOOGLE_ANTIGRAVITY_CATALOG_SOURCE, GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_CATALOG_SOURCE, GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
+import { GOOGLE_ANTIGRAVITY_FACTS } from '../src/google/route.js'
 import { googleAntigravityCatalogModels, googleGeminiCliCatalogModels } from '../src/index.js'
+import { openPinnedCatalog, pinnedRows } from './pinned-catalog'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -133,6 +135,25 @@ describe('google drift gate', () => {
     }
   })
 
+  it('pins the Antigravity discovery identity to the one the pin announces', () => {
+    // The route copies the vendor client identity for its own discovery probe
+    // (`GOOGLE_ANTIGRAVITY_FACTS.discovery.userAgent`); the artifact builds its wire
+    // UA from the same tokens. Both halves are read off the pinned source here, so
+    // a pin that moves either one fails this gate instead of leaving the copy
+    // announcing a build the pin no longer models.
+    const headers = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/wire/gemini-headers.ts'), 'utf8')
+    const version = /DEFAULT_ANTIGRAVITY_VERSION = "([^"]+)"/.exec(headers)?.[1]
+    const changelist = /PI_AI_ANTIGRAVITY_CL \|\| "([^"]+)"/.exec(headers)?.[1]
+    expect(version, 'pin default version').toBeDefined()
+    expect(changelist, 'pin changelist').toBeDefined()
+
+    const userAgent = GOOGLE_ANTIGRAVITY_FACTS.discovery.userAgent
+    expect(userAgent).toContain(`antigravity/hub/${version} `)
+    expect(userAgent).toContain(`cl=${changelist})`)
+    // The wire UA the artifact actually sends is asserted literally in
+    // `adapter-wire-google.test.ts`, including the discovered-version case.
+  })
+
   it('resolves the shim to its Google extension and reaches the real SSE/retry helpers', () => {
     // The two helpers are the reason the extension exists: an entry that does
     // not read them (cursor, devin) keeps the base shim, so its artifact stays
@@ -181,7 +202,8 @@ describe('google shim extension contract', () => {
 describe('generated google tables freshness', () => {
   it('describes the installed catalog and the pin the manifest records', () => {
     const modelsPath = installedSourcePath('@oh-my-pi/pi-catalog/src/models.json')
-    const models = JSON.parse(readFileSync(modelsPath, 'utf8')) as Record<string, Record<string, unknown>>
+    // Decoded through the pin's own opener: `models.json` is a compact catalog.
+    const catalog = openPinnedCatalog(modelsPath)
     for (const [key, source, rows] of [
       ['google-gemini-cli', GOOGLE_GEMINI_CLI_CATALOG_SOURCE, GOOGLE_GEMINI_CLI_MODELS],
       ['google-antigravity', GOOGLE_ANTIGRAVITY_CATALOG_SOURCE, GOOGLE_ANTIGRAVITY_MODELS],
@@ -190,7 +212,7 @@ describe('generated google tables freshness', () => {
       expect(source.key, key).toBe(key)
       expect(source.sourceHash, key).toBe(manifest.sourceHashes['@oh-my-pi/pi-catalog/src/models.json'])
       expect(source.sourceHash, key).toBe(sha256(modelsPath))
-      expect(source.rowCount, key).toBe(Object.keys(models[key] ?? {}).length)
+      expect(source.rowCount, key).toBe(Object.keys(pinnedRows(catalog, key)).length)
       expect(rows, key).toHaveLength(source.rowCount)
     }
   })

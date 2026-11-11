@@ -159,12 +159,12 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
   return chunks
 }
 
-function request(): Parameters<OmpDevinAdapter['stream']>[0] {
+function request(text = 'Hello'): Parameters<OmpDevinAdapter['stream']>[0] {
   return {
     provider: 'devin',
     model: 'swe-1-6',
     system: 'You are terse.',
-    messages: [createUserMessage({ content: [{ type: 'text', text: 'Hello' }], source: { kind: 'user' } })],
+    messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })],
     maxTokens: 512,
     temperature: 0.2,
     stop: ['END'],
@@ -199,24 +199,26 @@ describe('bundled devin transport over Connect frames', () => {
       apiKey: 'session-token',
       ideName: 'devin-cli',
       ideType: 'chisel',
-      ideVersion: '3000.11.3',
+      ideVersion: '3000.11.205',
       extensionName: 'chisel',
     })
 
-    // 2. The chat call: one gzip-compressed Connect frame, the transport's own
-    //    client identity untouched, and the projected request inside.
+    // 2. The chat call: a plain Connect frame — this body is under the pin's
+    //    `MIN_COMPRESSED_BODY_BYTES` (1 KiB) floor, so 18.18.8 sends it
+    //    uncompressed and declares no encoding — with the transport's own client
+    //    identity untouched and the projected request inside.
     const chat = calls[1]!
     expect(chat.url).toBe('https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage')
     const chatHeaders = new Headers(chat.init?.headers)
     expect(chatHeaders.get('content-type')).toBe('application/connect+proto')
-    expect(chatHeaders.get('connect-content-encoding')).toBe('gzip')
+    expect(chatHeaders.get('connect-content-encoding')).toBeNull()
     expect(chatHeaders.get('user-agent')).toBe('connect-go/1.18.1 (go1.26.3)')
 
     const body = Buffer.from(chat.init?.body as Buffer)
-    expect(body[0]).toBe(CONNECT_COMPRESSED_FLAG)
+    expect(body[0]).toBe(0)
     const declared = body.readUInt32BE(1)
     expect(declared).toBe(body.byteLength - 5)
-    const chatRequest = fromBinary(GetChatMessageRequestSchema, new Uint8Array(gunzipSync(body.subarray(5))))
+    const chatRequest = fromBinary(GetChatMessageRequestSchema, new Uint8Array(body.subarray(5)))
     expect(chatRequest.prompt).toBe('You are terse.')
     expect(chatRequest.chatModelUid).toBe('swe-1-6')
     expect(chatRequest.metadata?.userJwt).toBe('user-jwt-1')
@@ -238,6 +240,25 @@ describe('bundled devin transport over Connect frames', () => {
       { type: 'usage', usage: { inputTokens: 100, outputTokens: 5, totalTokens: 115, cacheReadTokens: 10 } },
       { type: 'finish', reason: { kind: 'stop' } },
     ])
+  })
+
+  it('gzips a chat body at or above the pin compression floor', async () => {
+    const { adapter, calls } = adapterFor(call =>
+      call.url.endsWith('/exa.auth_pb.AuthService/GetUserJwt') ? authResponse() : textStream(),
+    )
+    // 18.18.8 compresses from `MIN_COMPRESSED_BODY_BYTES` (1024) up and declares
+    // `connect-content-encoding` only then, so this case keeps the compressed
+    // path — and the transport's gzip decoder — covered.
+    const long = 'x'.repeat(4_096)
+
+    await collect(adapter.stream(request(long)))
+
+    const chat = calls[1]!
+    expect(new Headers(chat.init?.headers).get('connect-content-encoding')).toBe('gzip')
+    const body = Buffer.from(chat.init?.body as Buffer)
+    expect(body[0]).toBe(CONNECT_COMPRESSED_FLAG)
+    const chatRequest = fromBinary(GetChatMessageRequestSchema, new Uint8Array(gunzipSync(body.subarray(5))))
+    expect(chatRequest.chatMessagePrompts.map(prompt => prompt.prompt)).toEqual([long])
   })
 
   it('streams a tool call and finishes the turn as tool-calls', async () => {

@@ -176,10 +176,15 @@ export interface FactoryDroidModelRow {
    * at the bare host (`/v1/messages` instead of `/api/llm/a/v1/messages`), which
    * is the one place a static catalog must not out-guess the pinned registry.
    */
-  /** Combined request and response context window in tokens. */
-  readonly contextWindow: number
-  /** Per-response output cap the catalog advertises. */
-  readonly maxTokens: number
+  /**
+   * Combined request and response context window in tokens, when the registry
+   * seed declares one: its three image rows declare `null`, and the transport
+   * fills the account's regional limit at request time. Absent means "the pin
+   * states no number", not zero.
+   */
+  readonly contextWindow?: number
+  /** Per-response output cap the catalog advertises; absent on the same rows. */
+  readonly maxTokens?: number
   readonly input: ('text' | 'image')[]
   readonly cost: ModelCost
   readonly reasoning: boolean
@@ -459,9 +464,11 @@ export interface OmpFactoryDroidModel extends FactoryDroidModelRow {}
  * Request options handed to the omp Factory Droid transport (`streamFactoryDroid`).
  *
  * No `headers`: the transport merges caller headers last
- * (`factory-droid.ts:600`), which would overwrite the vendor identity headers
- * (`User-Agent: factory-cli/…`, `X-Factory-Client: cli`). Attribution travels
- * through the fill-absent `fetch` wrapper instead. No `reasoning`/
+ * (`factory-droid.ts:782` in the 18.18.8 pin), which would overwrite the vendor
+ * identity headers (`User-Agent: factory-cli/1.1.0`, `X-Client-Version: 1.1.0`,
+ * `X-Factory-Client: cli`). Attribution travels through the fill-absent `fetch`
+ * wrapper instead; the pin also names the SDK telemetry headers
+ * (`X-Stainless-*`) it deliberately does not send. No `reasoning`/
  * `disableReasoning`: this pin exposes no effort ladder for the route, so the
  * projection refuses a selected effort rather than guessing one.
  */
