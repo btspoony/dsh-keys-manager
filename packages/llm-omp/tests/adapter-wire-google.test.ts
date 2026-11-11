@@ -250,9 +250,12 @@ describe('bundled Google transport over Cloud Code Assist SSE', () => {
     expect(call.url).toBe(`${DAILY}${PATH}`)
     const headers = new Headers(call.init?.headers)
     expect(headers.get('authorization')).toBe('Bearer access-token')
-    // D11: the pinned client identity, discovered from the version manifest.
-    expect(headers.get('user-agent')).toBe(
-      'antigravity/hub/2.19.1 (aidev_client; os_type=darwin; arch=arm64; cl=1005016104)',
+    // D11: the pinned client identity, discovered from the version manifest. The
+    // route owns the template, the version and the changelist; `os_type`/`arch`
+    // describe the host the artifact happens to run on, so they are matched
+    // rather than pinned — a literal here only asserts which machine ran the test.
+    expect(headers.get('user-agent')).toMatch(
+      /^antigravity\/hub\/2\.19\.1 \(aidev_client; os_type=\w+; arch=\w+; cl=1005016104\)$/,
     )
     // D10: the vendor identity is not overwritten by DSH attribution.
     expect(headers.get('user-agent')).not.toBe(attributionHeaders()['user-agent'])
@@ -391,8 +394,9 @@ describe('bundled Google transport over Cloud Code Assist SSE', () => {
     expect(manifest).toBeDefined()
     expect(new Headers(manifest?.init?.headers).get('user-agent')).toBe('electron-builder')
     const stream = calls.find(call => call.url.startsWith(DAILY))
-    expect(new Headers(stream?.init?.headers).get('user-agent')).toBe(
-      'antigravity/hub/2.30.0 (aidev_client; os_type=darwin; arch=arm64; cl=1005016104)',
+    // Same template, with the version the manifest discovery produced.
+    expect(new Headers(stream?.init?.headers).get('user-agent')).toMatch(
+      /^antigravity\/hub\/2\.30\.0 \(aidev_client; os_type=\w+; arch=\w+; cl=1005016104\)$/,
     )
   })
 })
