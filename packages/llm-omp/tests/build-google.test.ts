@@ -36,6 +36,7 @@ import * as googleShim from '../scripts/omp-shim/pi-utils-google'
 import { GOOGLE_ANTIGRAVITY_CATALOG_SOURCE, GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_CATALOG_SOURCE, GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 import { googleAntigravityCatalogModels, googleGeminiCliCatalogModels } from '../src/index.js'
+import { openPinnedCatalog, pinnedRows } from './pinned-catalog'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
@@ -181,7 +182,8 @@ describe('google shim extension contract', () => {
 describe('generated google tables freshness', () => {
   it('describes the installed catalog and the pin the manifest records', () => {
     const modelsPath = installedSourcePath('@oh-my-pi/pi-catalog/src/models.json')
-    const models = JSON.parse(readFileSync(modelsPath, 'utf8')) as Record<string, Record<string, unknown>>
+    // Decoded through the pin's own opener: `models.json` is a compact catalog.
+    const catalog = openPinnedCatalog(modelsPath)
     for (const [key, source, rows] of [
       ['google-gemini-cli', GOOGLE_GEMINI_CLI_CATALOG_SOURCE, GOOGLE_GEMINI_CLI_MODELS],
       ['google-antigravity', GOOGLE_ANTIGRAVITY_CATALOG_SOURCE, GOOGLE_ANTIGRAVITY_MODELS],
@@ -190,7 +192,7 @@ describe('generated google tables freshness', () => {
       expect(source.key, key).toBe(key)
       expect(source.sourceHash, key).toBe(manifest.sourceHashes['@oh-my-pi/pi-catalog/src/models.json'])
       expect(source.sourceHash, key).toBe(sha256(modelsPath))
-      expect(source.rowCount, key).toBe(Object.keys(models[key] ?? {}).length)
+      expect(source.rowCount, key).toBe(Object.keys(pinnedRows(catalog, key)).length)
       expect(rows, key).toHaveLength(source.rowCount)
     }
   })

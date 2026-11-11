@@ -190,7 +190,8 @@ describe('catalog projections', () => {
     expect(models.map(row => row.id)).toEqual(FACTORY_DROID_MODELS.map(row => row.id))
     expect(Object.keys(models[0]!)).toEqual(['id', 'name'])
     // The rows do not come from `models.json`; the seed is the KDL registry.
-    expect(FACTORY_DROID_MODELS).toHaveLength(62)
+    // 18.18.8's `rules.json` seed carries 77 rows (18.12.6: 62).
+    expect(FACTORY_DROID_MODELS).toHaveLength(77)
   })
 
   it('projects every devin row as an id/name pair, in catalog order', () => {

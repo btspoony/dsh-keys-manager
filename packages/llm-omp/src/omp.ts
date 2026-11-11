@@ -176,10 +176,15 @@ export interface FactoryDroidModelRow {
    * at the bare host (`/v1/messages` instead of `/api/llm/a/v1/messages`), which
    * is the one place a static catalog must not out-guess the pinned registry.
    */
-  /** Combined request and response context window in tokens. */
-  readonly contextWindow: number
-  /** Per-response output cap the catalog advertises. */
-  readonly maxTokens: number
+  /**
+   * Combined request and response context window in tokens, when the registry
+   * seed declares one: its three image rows declare `null`, and the transport
+   * fills the account's regional limit at request time. Absent means "the pin
+   * states no number", not zero.
+   */
+  readonly contextWindow?: number
+  /** Per-response output cap the catalog advertises; absent on the same rows. */
+  readonly maxTokens?: number
   readonly input: ('text' | 'image')[]
   readonly cost: ModelCost
   readonly reasoning: boolean

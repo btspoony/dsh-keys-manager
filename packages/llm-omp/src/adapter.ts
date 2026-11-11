@@ -120,7 +120,8 @@ const EFFORT_NAMES: Readonly<Record<string, string>> = {
 interface TransportRow {
   readonly id: string
   readonly name: string
-  readonly contextWindow: number
+  /** Absent when the pin states no number for the row (the seam's field is optional). */
+  readonly contextWindow?: number
 }
 
 /** The transport options both routes accept at their shared surface. */
@@ -481,7 +482,9 @@ abstract class OmpTransportAdapter<
       id: row.id,
       name: row.name,
       inputModalities: [...INPUT_MODALITIES],
-      context: { contextWindow: row.contextWindow },
+      // A row the pin gives no window for advertises none: the seam reads an
+      // absent `context` as "capacity not stated", which is the truth here.
+      ...(row.contextWindow === undefined ? {} : { context: { contextWindow: row.contextWindow } }),
       // No `defaultMaxTokens`. The seam materializes that number into
       // `maxTokens` on every request that omits one; Cursor's wire has no
       // per-request output-cap field, and Devin's projection forwards an

@@ -210,7 +210,8 @@ describe('OmpFactoryDroidAdapter catalog', () => {
     expect(adapter.providerInfo('factory-droid')).toEqual({ id: 'factory-droid', name: 'Factory Droid' })
     const models = await adapter.listModels('factory-droid')
     expect(models.map(row => row.id)).toEqual(FACTORY_DROID_MODELS.map(row => row.id))
-    expect(models).toHaveLength(62)
+    // 18.18.8's `rules.json` seed carries 77 rows (18.12.6: 62).
+    expect(models).toHaveLength(77)
     for (const row of models) expect(row.inputModalities).toEqual(['text'])
   })
 

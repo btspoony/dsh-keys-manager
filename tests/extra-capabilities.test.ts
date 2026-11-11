@@ -13,16 +13,25 @@ import { EXTRA_IMAGE_MODELS } from '../src/extra-capabilities.generated'
 import { EXTRA_PROVIDERS } from '../src/providers'
 // @ts-ignore — scripts/generate-extra-capabilities.mjs is plain Node ESM without type declarations.
 import { generateCapabilitiesSource, packageRootOf, readProviderIds } from '../scripts/generate-extra-capabilities.mjs'
+// @ts-ignore — scripts/model-catalog-format.mjs is plain Node ESM without type declarations.
+import { encodeModelCatalog, getCatalogProviders, getCatalogProvider, openModelCatalog } from '../scripts/model-catalog-format.mjs'
 
 interface CatalogRow {
   id: string
   input?: string[]
+  thinking?: { mode: string; efforts?: string[] }
 }
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const catalogRoot = packageRootOf('@oh-my-pi/pi-catalog')
-/** The pinned catalog rows, keyed by route then model id. */
-const catalog = JSON.parse(readFileSync(join(catalogRoot, 'src/models.json'), 'utf8')) as Record<string, Record<string, CatalogRow>>
+const modelsBytes = readFileSync(join(catalogRoot, 'src/models.json'))
+/** The installed pin's catalog, opened through the ported opener. */
+const catalog = openModelCatalog(JSON.parse(modelsBytes.toString('utf8')))
+
+/** One route's decoded rows; `{}` for a provider the pin does not describe. */
+function rowsOf(providerId: string): Record<string, CatalogRow> {
+  return (getCatalogProvider(catalog, providerId) ?? {}) as Record<string, CatalogRow>
+}
 
 describe('mergeModelCapabilities', () => {
   it('marks a discovered id the catalog knows as image-capable', () => {
@@ -104,14 +113,14 @@ describe('generated capability index', () => {
   it('lists only ids the pin marks image, sorted', () => {
     for (const [providerId, ids] of Object.entries(EXTRA_IMAGE_MODELS)) {
       expect(ids).toEqual([...ids].sort())
-      for (const id of ids) expect(catalog[providerId]?.[id]?.input).toContain('image')
+      for (const id of ids) expect(rowsOf(providerId)[id]?.input).toContain('image')
     }
   })
 
   it('agrees with every seed row the pin describes', () => {
     for (const provider of EXTRA_PROVIDERS) {
       const index = EXTRA_IMAGE_MODELS[provider.id] ?? []
-      const pinned = catalog[provider.id] ?? {}
+      const pinned = rowsOf(provider.id)
       for (const model of provider.models) {
         // A row the pin does not describe keeps its curated modality: the
         // index cannot speak for an id the catalog has never seen.
@@ -121,5 +130,63 @@ describe('generated capability index', () => {
         expect(index.includes(model.id), `${provider.id}/${model.id}`).toBe(catalogImage)
       }
     }
+  })
+})
+describe('compact catalog codec', () => {
+  it('decodes an encoded catalog back to the rows it was given', () => {
+    // One shape per encoding feature: a boolean (carried in a shape mask), a
+    // nested object and array (interned and shared), and a second row whose
+    // `compat` differs from the api's common one by a delta.
+    const models = {
+      demo: {
+        'model-a': {
+          id: 'model-a',
+          name: 'Demo A',
+          contextWindow: 128000,
+          input: ['text', 'image'],
+          reasoning: true,
+          streaming: false,
+          compat: { supportsParallelToolCalls: true, trustExplicitThinkingOnly: false },
+          nested: { efforts: ['low', 'high'], routing: { low: 'a' } },
+        },
+        'model-b': {
+          id: 'model-b',
+          name: 'Demo A',
+          contextWindow: 128000,
+          input: ['text'],
+          reasoning: false,
+          streaming: false,
+          compat: { supportsParallelToolCalls: false },
+          nested: { efforts: ['low'], routing: { low: 'a' } },
+        },
+      },
+    }
+
+    const reopened = openModelCatalog(JSON.parse(encodeModelCatalog(models)))
+
+    expect(getCatalogProviders(reopened)).toEqual(['demo'])
+    expect(getCatalogProvider(reopened, 'demo')).toEqual(models.demo)
+    expect(getCatalogProvider(reopened, 'absent')).toBeUndefined()
+  })
+
+  it('is deterministic and refuses a catalog that is not version 1', () => {
+    const models = { demo: { 'model-a': { id: 'model-a', name: 'A', input: ['text'] } } }
+
+    expect(encodeModelCatalog(models)).toBe(encodeModelCatalog(models))
+    expect(() => openModelCatalog({ version: 2 })).toThrow(/Unsupported model catalog version/)
+  })
+
+  it('decodes the installed pin into the rows the index is built from', () => {
+    // A row whose thinking ladder Task 2 indexes, and one image row: both are
+    // only reachable through the opener, so a decode regression fails here
+    // instead of silently emptying the generated index.
+    expect(rowsOf('minimax-code-cn')['MiniMax-M2.7']?.thinking).toMatchObject({
+      mode: 'anthropic-adaptive',
+      efforts: ['low', 'medium', 'high'],
+    })
+    expect(rowsOf('openrouter')['alibaba/happyhorse-1.0']?.input).toEqual(['text', 'image'])
+    // And the committed index agrees with those same decoded rows.
+    expect(EXTRA_IMAGE_MODELS.aiand).toContain('moonshotai/kimi-k2.6')
+    expect(rowsOf('aiand')['moonshotai/kimi-k2.6']?.input).toContain('image')
   })
 })

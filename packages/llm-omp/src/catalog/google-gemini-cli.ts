@@ -1,8 +1,8 @@
 /**
  * Generated Gemini CLI model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.12.6` `src/models.json` key `google-gemini-cli`
- * (7 rows, sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
+ * Source: `@oh-my-pi/pi-catalog@18.18.8` `src/models.json` key `google-gemini-cli`
+ * (7 rows, sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
  *
  * The drift gate in `tests/build-google.test.ts` pins the same package version
  * and source hash, so an omp bump fails there before this table can describe
@@ -19,10 +19,10 @@ import type { GoogleModelRow } from '../omp.js'
 /** Provenance of {@link GOOGLE_GEMINI_CLI_MODELS}. */
 export const GOOGLE_GEMINI_CLI_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.12.6',
+  version: '18.18.8',
   file: 'src/models.json',
   key: 'google-gemini-cli',
-  sourceHash: 'sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152',
+  sourceHash: 'sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612',
   rowCount: 7,
 } as const
 
@@ -51,18 +51,17 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
       "revision": "2.0.0"
     },
     "compat": {
-      "supportsFunctionPartId": false,
+      "antigravityClaudeToolMode": false,
+      "ccaLegacyParametersSchema": false,
+      "claudeThinkingBetaHeader": false,
+      "dropUnsignedThinking": false,
+      "flashStreamLeakWorkaround": true,
+      "multimodalFunctionResponse": false,
       "requiresSkipThoughtSignature": false,
       "requiresSkipThoughtSignatureOnFirstFunctionCall": false,
-      "dropUnsignedThinking": false,
-      "ccaLegacyParametersSchema": false,
-      "multimodalFunctionResponse": false,
-      "flashStreamLeakWorkaround": true,
-      "claudeThinkingBetaHeader": false,
-      "antigravityClaudeToolMode": false,
       "stripImageInput": false,
-      "streamFirstEventTimeoutMs": 60000,
-      "thinkingLoopGuard": "gemini"
+      "supportsFunctionPartId": false,
+      "streamFirstEventTimeoutMs": 60000
     }
   },
   {
@@ -88,18 +87,17 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
       "revision": "2.5.0"
     },
     "compat": {
-      "supportsFunctionPartId": false,
+      "antigravityClaudeToolMode": false,
+      "ccaLegacyParametersSchema": false,
+      "claudeThinkingBetaHeader": false,
+      "dropUnsignedThinking": false,
+      "flashStreamLeakWorkaround": true,
+      "multimodalFunctionResponse": false,
       "requiresSkipThoughtSignature": false,
       "requiresSkipThoughtSignatureOnFirstFunctionCall": false,
-      "dropUnsignedThinking": false,
-      "ccaLegacyParametersSchema": false,
-      "multimodalFunctionResponse": false,
-      "flashStreamLeakWorkaround": true,
-      "claudeThinkingBetaHeader": false,
-      "antigravityClaudeToolMode": false,
       "stripImageInput": false,
-      "streamFirstEventTimeoutMs": 60000,
-      "thinkingLoopGuard": "gemini"
+      "supportsFunctionPartId": false,
+      "streamFirstEventTimeoutMs": 60000
     },
     "thinking": {
       "mode": "budget",
@@ -110,11 +108,11 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
         "high"
       ],
       "effortRouting": {
-        "off": "gemini-2.5-flash",
-        "minimal": "gemini-2.5-flash-thinking",
+        "high": "gemini-2.5-flash-thinking",
         "low": "gemini-2.5-flash-thinking",
         "medium": "gemini-2.5-flash-thinking",
-        "high": "gemini-2.5-flash-thinking"
+        "minimal": "gemini-2.5-flash-thinking",
+        "off": "gemini-2.5-flash"
       }
     }
   },
@@ -141,17 +139,16 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
       "revision": "2.5.0"
     },
     "compat": {
-      "supportsFunctionPartId": false,
+      "antigravityClaudeToolMode": false,
+      "ccaLegacyParametersSchema": false,
+      "claudeThinkingBetaHeader": false,
+      "dropUnsignedThinking": false,
+      "flashStreamLeakWorkaround": false,
+      "multimodalFunctionResponse": false,
       "requiresSkipThoughtSignature": false,
       "requiresSkipThoughtSignatureOnFirstFunctionCall": false,
-      "dropUnsignedThinking": false,
-      "ccaLegacyParametersSchema": false,
-      "multimodalFunctionResponse": false,
-      "flashStreamLeakWorkaround": false,
-      "claudeThinkingBetaHeader": false,
-      "antigravityClaudeToolMode": false,
       "stripImageInput": false,
-      "thinkingLoopGuard": "gemini"
+      "supportsFunctionPartId": false
     },
     "thinking": {
       "mode": "budget",
@@ -187,18 +184,17 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
       "revision": "3.0.0"
     },
     "compat": {
-      "supportsFunctionPartId": false,
+      "antigravityClaudeToolMode": false,
+      "ccaLegacyParametersSchema": false,
+      "claudeThinkingBetaHeader": false,
+      "dropUnsignedThinking": false,
+      "flashStreamLeakWorkaround": true,
+      "multimodalFunctionResponse": true,
       "requiresSkipThoughtSignature": false,
       "requiresSkipThoughtSignatureOnFirstFunctionCall": true,
-      "dropUnsignedThinking": false,
-      "ccaLegacyParametersSchema": false,
-      "multimodalFunctionResponse": true,
-      "flashStreamLeakWorkaround": true,
-      "claudeThinkingBetaHeader": false,
-      "antigravityClaudeToolMode": false,
       "stripImageInput": false,
-      "streamFirstEventTimeoutMs": 60000,
-      "thinkingLoopGuard": "gemini"
+      "supportsFunctionPartId": false,
+      "streamFirstEventTimeoutMs": 60000
     },
     "thinking": {
       "mode": "google-level",
@@ -234,17 +230,16 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
       "revision": "3.0.0"
     },
     "compat": {
-      "supportsFunctionPartId": false,
+      "antigravityClaudeToolMode": false,
+      "ccaLegacyParametersSchema": false,
+      "claudeThinkingBetaHeader": false,
+      "dropUnsignedThinking": false,
+      "flashStreamLeakWorkaround": false,
+      "multimodalFunctionResponse": true,
       "requiresSkipThoughtSignature": false,
       "requiresSkipThoughtSignatureOnFirstFunctionCall": true,
-      "dropUnsignedThinking": false,
-      "ccaLegacyParametersSchema": false,
-      "multimodalFunctionResponse": true,
-      "flashStreamLeakWorkaround": false,
-      "claudeThinkingBetaHeader": false,
-      "antigravityClaudeToolMode": false,
       "stripImageInput": false,
-      "thinkingLoopGuard": "gemini"
+      "supportsFunctionPartId": false
     },
     "thinking": {
       "mode": "google-level",
@@ -278,17 +273,16 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
       "revision": "3.1.0"
     },
     "compat": {
-      "supportsFunctionPartId": false,
+      "antigravityClaudeToolMode": false,
+      "ccaLegacyParametersSchema": false,
+      "claudeThinkingBetaHeader": false,
+      "dropUnsignedThinking": false,
+      "flashStreamLeakWorkaround": false,
+      "multimodalFunctionResponse": true,
       "requiresSkipThoughtSignature": false,
       "requiresSkipThoughtSignatureOnFirstFunctionCall": true,
-      "dropUnsignedThinking": false,
-      "ccaLegacyParametersSchema": false,
-      "multimodalFunctionResponse": true,
-      "flashStreamLeakWorkaround": false,
-      "claudeThinkingBetaHeader": false,
-      "antigravityClaudeToolMode": false,
       "stripImageInput": false,
-      "thinkingLoopGuard": "gemini"
+      "supportsFunctionPartId": false
     },
     "thinking": {
       "mode": "google-level",
@@ -324,17 +318,16 @@ export const GOOGLE_GEMINI_CLI_MODELS: readonly GoogleModelRow[] = [
       "revision": "3.1.0"
     },
     "compat": {
-      "supportsFunctionPartId": false,
+      "antigravityClaudeToolMode": false,
+      "ccaLegacyParametersSchema": false,
+      "claudeThinkingBetaHeader": false,
+      "dropUnsignedThinking": false,
+      "flashStreamLeakWorkaround": false,
+      "multimodalFunctionResponse": true,
       "requiresSkipThoughtSignature": false,
       "requiresSkipThoughtSignatureOnFirstFunctionCall": true,
-      "dropUnsignedThinking": false,
-      "ccaLegacyParametersSchema": false,
-      "multimodalFunctionResponse": true,
-      "flashStreamLeakWorkaround": false,
-      "claudeThinkingBetaHeader": false,
-      "antigravityClaudeToolMode": false,
       "stripImageInput": false,
-      "thinkingLoopGuard": "gemini"
+      "supportsFunctionPartId": false
     },
     "thinking": {
       "mode": "google-level",

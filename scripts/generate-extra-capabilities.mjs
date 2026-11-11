@@ -22,6 +22,10 @@ import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+// The pin ships its catalog compact-encoded, so rows are only reachable through
+// its opener. The port keeps this generator independent of the pin's TS sources.
+import { getCatalogProvider, openModelCatalog } from './model-catalog-format.mjs'
+
 const scriptsDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = dirname(scriptsDir)
 
@@ -53,11 +57,15 @@ export function readProviderIds(root = repoRoot) {
   return providers.map(provider => provider.id)
 }
 
-/** Per route, the catalog model ids whose entry accepts image input. */
+/**
+ * Per route, the catalog model ids whose entry accepts image input.
+ * @param {object} catalog - the opened pinned catalog (`openModelCatalog`).
+ * @param {readonly string[]} providerIds - the extra-provider route ids.
+ */
 export function buildImageIndex(catalog, providerIds) {
   const index = {}
   for (const providerId of [...providerIds].sort()) {
-    const rows = catalog[providerId]
+    const rows = getCatalogProvider(catalog, providerId)
     if (rows === null || typeof rows !== 'object') continue
     index[providerId] = Object.values(rows)
       .filter(row => Array.isArray(row.input) && row.input.includes('image'))
@@ -95,7 +103,7 @@ export function renderCapabilitiesSource(index, provenance) {
 export function generateCapabilitiesSource(catalogRoot, providerIds) {
   const manifest = JSON.parse(readFileSync(join(catalogRoot, 'package.json'), 'utf8'))
   const bytes = readFileSync(join(catalogRoot, 'src/models.json'))
-  const catalog = JSON.parse(bytes.toString('utf8'))
+  const catalog = openModelCatalog(JSON.parse(bytes.toString('utf8')))
   return renderCapabilitiesSource(
     buildImageIndex(catalog, providerIds),
     { version: manifest.version, hash: createHash('sha256').update(bytes).digest('hex') },
