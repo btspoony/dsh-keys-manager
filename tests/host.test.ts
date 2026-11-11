@@ -9,6 +9,7 @@ import type { ExtraProvider, KeyRecord, KeyTestResult, KeyView, ProviderRecord, 
 import { accountRef, applyFailureCooldown, DEFAULT_SETTINGS, KEY_LIMIT, statusOfKey, TEST_SUCCESS_FINISH_KINDS } from '../src/core'
 import { apply, FLUSH_ROLLBACK_COMPENSATION_FAILED, isFlushRollbackCompensationFailure, KeysManagerService } from '../src/index'
 import type { OmpOAuthAdapter } from '../src/oauth/adapter'
+import { EXTRA_IMAGE_MODELS, EXTRA_REASONING_EFFORTS } from '../src/extra-capabilities.generated'
 import { EXTRA_PROVIDER_MAP } from '../src/providers'
 import { QuotaCache } from '../src/quota/cache'
 import type { QuotaWindow } from '../src/quota/model'
@@ -2068,6 +2069,17 @@ test('adding coreweave installs the seed catalog without running model discovery
     const seed = EXTRA_PROVIDER_MAP.get('coreweave')!
     assert.deepEqual(profile.models.map((row: { id: string }) => row.id), seed.models.map(row => row.id))
     assert.deepEqual(profile.models.map((row: { name?: string }) => row.name), seed.models.map(row => row.name))
+    // A seed install carries the same capabilities a discovered one does: the
+    // committed indexes, not the merge function, are the expectation here.
+    const image = new Set(EXTRA_IMAGE_MODELS.coreweave ?? [])
+    const reasoning = EXTRA_REASONING_EFFORTS.coreweave ?? {}
+    assert.ok(Object.keys(reasoning).length > 0)
+    for (const row of profile.models as Array<{ id: string; input?: string[]; reasoningEfforts?: unknown }>) {
+      assert.deepEqual(row.input, image.has(row.id) ? ['text', 'image'] : ['text'], row.id)
+      const declared = reasoning[row.id]
+      if (declared === undefined) assert.equal(row.reasoningEfforts, undefined, row.id)
+      else assert.deepEqual(row.reasoningEfforts, declared.efforts, row.id)
+    }
     assert.doesNotMatch(state.warnings.join('\n'), /Model discovery failed/)
   } finally {
     await h.close()

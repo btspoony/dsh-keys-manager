@@ -58,25 +58,42 @@ function withCapabilities(
     next = { ...next, input: imageSet.has(next.id) ? [...TEXT_IMAGE_INPUT] : [...TEXT_INPUT] }
   }
   const declared = reasoning[next.id]
-  if (declared !== undefined && next.reasoningEfforts === undefined) {
-    next = { ...next, reasoningEfforts: { ...declared.efforts } }
-    if (declared.adaptive === true) next = { ...next, compat: { ...next.compat, forceAdaptiveThinking: true } }
+  if (declared !== undefined) {
+    // A ladder the row already carries always wins.
+    if (next.reasoningEfforts === undefined) next = { ...next, reasoningEfforts: { ...declared.efforts } }
+    // The adaptive flag is a fact about the route, not about the ladder, so it is
+    // merged even into a row that declares its own levels — otherwise those levels
+    // would dispatch on DSH's budget path. A compat field the row sets is kept.
+    if (declared.adaptive === true && next.compat?.forceAdaptiveThinking === undefined) {
+      next = { ...next, compat: { ...next.compat, forceAdaptiveThinking: true } }
+    }
   }
   return next
 }
 
+/** DSH's thinking levels; a declaration keyed by anything else is not one it reads. */
+const DSH_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
 /**
- * Read a persisted `reasoningEfforts` declaration, keeping only the shapes DSH
- * accepts: a string wire value, or `null` for "supported, send nothing". Both a
- * settings file and the store are hand-editable, so this is the one gate for the
- * field. `undefined` means the row declares nothing.
+ * Read a persisted `reasoningEfforts` declaration, keeping only what DSH accepts:
+ * one of its own thinking levels as the key, a non-empty wire string as the value,
+ * and `null` only on `off` ("supported, send nothing"). A declaration that offers
+ * no level beyond `off` is dropped whole — DSH refuses one ("no level beyond
+ * off"). Both a settings file and the store are hand-editable, so this is the one
+ * gate for the field. `undefined` means the row declares nothing.
  */
 export function sanitizeReasoningEfforts(raw: unknown): Record<string, string | null> | undefined {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
-  const declared = Object.entries(raw as Record<string, unknown>).filter(
-    (entry): entry is [string, string | null] => typeof entry[1] === 'string' || entry[1] === null,
+  const accepted = (level: string, value: unknown): value is string | null =>
+    DSH_THINKING_LEVELS.has(level) &&
+    (level === 'off'
+      ? value === null || (typeof value === 'string' && value !== '')
+      : typeof value === 'string' && value !== '')
+  const declared = Object.entries(raw as Record<string, unknown>).filter((entry): entry is [string, string | null] =>
+    accepted(entry[0], entry[1]),
   )
-  return declared.length === 0 ? undefined : Object.fromEntries(declared)
+  if (!declared.some(([level]) => level !== 'off')) return undefined
+  return Object.fromEntries(declared)
 }
 
 /**

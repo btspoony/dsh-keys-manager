@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { mergeModelCapabilities, repairModelCapabilities } from '../src/capabilities'
+import { mergeModelCapabilities, repairModelCapabilities, sanitizeReasoningEfforts } from '../src/capabilities'
 import type { ModelRecord } from '../src/domain'
 import { EXTRA_IMAGE_MODELS, EXTRA_REASONING_EFFORTS } from '../src/extra-capabilities.generated'
 import { EXTRA_PROVIDERS } from '../src/providers'
@@ -68,6 +68,24 @@ describe('mergeModelCapabilities', () => {
 
     expect(row.reasoningEfforts).toEqual({ low: 'low', medium: 'medium', high: 'high' })
     expect(row.compat).toEqual({ forceAdaptiveThinking: true })
+  })
+
+  it('adds the adaptive flag to a row that declares its own ladder', () => {
+    // The flag is a route fact, not a property of the ladder: a row that brought
+    // its own levels still dispatches on DSH's budget path without it.
+    const declared = { low: 'low' }
+    const [row] = mergeModelCapabilities('minimax-code-cn', [{ id: 'MiniMax-M2.7', reasoningEfforts: declared }])
+
+    expect(row.reasoningEfforts).toBe(declared)
+    expect(row.compat).toEqual({ forceAdaptiveThinking: true })
+  })
+
+  it('never overrides a compat field the row already sets', () => {
+    const [row] = mergeModelCapabilities('minimax-code-cn', [
+      { id: 'MiniMax-M2.7', compat: { forceAdaptiveThinking: false } },
+    ])
+
+    expect(row.compat).toEqual({ forceAdaptiveThinking: false })
   })
 
   it('merges the adaptive flag into a compat the row already carries', () => {
@@ -301,5 +319,26 @@ describe('compact catalog codec', () => {
     // And the committed index agrees with those same decoded rows.
     expect(EXTRA_IMAGE_MODELS.aiand).toContain('moonshotai/kimi-k2.6')
     expect(rowsOf('aiand')['moonshotai/kimi-k2.6']?.input).toContain('image')
+  })
+})
+
+describe('sanitizeReasoningEfforts', () => {
+  it('keeps the levels and wire values DSH accepts', () => {
+    expect(sanitizeReasoningEfforts({ off: null, low: 'low', high: 'high' })).toEqual({ off: null, low: 'low', high: 'high' })
+  })
+
+  it('drops keys DSH does not read and values it refuses', () => {
+    // A level outside DSH's seven, a non-string value, a null on a level other
+    // than `off`, and an empty wire string are all refused by the seam.
+    expect(sanitizeReasoningEfforts({ low: 'low', turbo: 'turbo', medium: 3, high: null, xhigh: '' })).toEqual({ low: 'low' })
+  })
+
+  it('drops a declaration that offers no level beyond off', () => {
+    // DSH refuses a dict whose only level is `off`, so the gate drops it whole
+    // instead of writing a field the seam would reject.
+    expect(sanitizeReasoningEfforts({ off: null })).toBeUndefined()
+    expect(sanitizeReasoningEfforts({})).toBeUndefined()
+    expect(sanitizeReasoningEfforts(null)).toBeUndefined()
+    expect(sanitizeReasoningEfforts(['low'])).toBeUndefined()
   })
 })

@@ -8168,10 +8168,11 @@ export class KeysManagerService {
           extraId,
           api: (existing.api as string | undefined) ?? extra.api,
           baseURL: (existing.baseURL as string | undefined) ?? extra.baseURL,
-          models: mergeModelCapabilities(
-            extraId,
-            normalizeModels(existing.models).length > 0 ? normalizeModels(existing.models) : normalizeModels(extra.models),
-          ),
+          // No capability merge here: this branch writes only `apiKeyEnv`/`headers`
+          // and adopts the profile's own rows, so a merged record would disagree
+          // with the profile it adopted and the startup repair — which only acts on
+          // a record that still matches its profile — could never heal it.
+          models: normalizeModels(existing.models).length > 0 ? normalizeModels(existing.models) : normalizeModels(extra.models),
           adoptedAt: Date.now(),
           cursor: 0,
           keys: [],
