@@ -102,7 +102,7 @@ repository root docs.
 
 - The route **ships**: the graph that once measured 327 modules / 16 991 893 B
   (issue `I-000253`) is built through the accepted entry-scoped substitutions, at
-  200 modules / 2 008 434 B.
+  228 modules / 2 178 824 B.
 - The transport is an **unofficial Factory client**: it presents `factory-cli/1.1.0` plus
   the vendor identity headers the backend gates on.
 - **Three entry-scoped build substitutions** keep the artifact at ~2 MB: the model catalog is
@@ -119,7 +119,7 @@ repository root docs.
   global host, so a EU account whose record lost its region talks to the global endpoint.
 - No reasoning-effort selector: the pin declares no effort ladder for this provider, so a
   selected effort is refused rather than guessed.
-- Images are refused even though 54 of the 62 rows advertise image input.
+- Images are refused even though 66 of the 77 rows advertise image input.
 - The catalog is the KDL registry seed and can be wider than an account's entitlements; a
   401/403 on the first live turn is a product decision, never a retry under another identity.
 
@@ -160,7 +160,7 @@ repository root docs.
 
 ## Model coverage
 
-- Models come only from the pinned `@oh-my-pi/pi-catalog@18.12.3` Cursor
+- Models come only from the pinned `@oh-my-pi/pi-catalog@18.18.8` Cursor
   slice (123 rows). A model that Cursor adds later is unknown
   (`UNKNOWN_MODEL`) until the pin and the generated table are refreshed.
 - 19 of the 123 rows advertise reasoning efforts without routing them; on
@@ -260,7 +260,7 @@ repository root docs.
 
 - The published artifact depends on **no** `@oh-my-pi/*` package and loads
   under Node 24 with Node builtins only. `@oh-my-pi/pi-ai` and
-  `@oh-my-pi/pi-catalog` remain pinned at `18.12.3` and are build-time
+  `@oh-my-pi/pi-catalog` remain pinned at `18.18.8` and are build-time
   dependencies.
 - The build output is drift-gated by `scripts/omp-manifest.json`,
   `tests/build.test.ts` and a CI manifest diff. A pin bump without a rebuild,

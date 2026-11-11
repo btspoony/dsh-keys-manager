@@ -85,7 +85,7 @@ dsh plugin --profile web link .
 随附 pi-ai 无法支持的提供商由配套的 `dsh-llm-omp-transports` 组件提供：
 
 - 每条路由只有一条授权，位于 `llm-omp-transports/<route>`——没有 key 池，也没有按账户轮换。登录在 Keys Manager 页面的 **传输账户**（`Transport accounts`）区块完成。
-- 模型在构建传输包时由固定的 `@oh-my-pi/pi-catalog@18.12.3` 表生成，客户端均为非官方实现。依赖前请阅读[传输包文档](packages/llm-omp/README.md)与其[已知限制](packages/llm-omp/docs/known-limits.md)。
+- 模型在构建传输包时由固定的 `@oh-my-pi/pi-catalog@18.18.8` 表生成，客户端均为非官方实现。依赖前请阅读[传输包文档](packages/llm-omp/README.md)与其[已知限制](packages/llm-omp/docs/known-limits.md)。
 
 | 路由 | 登录 | 刷新 | 模型行数 |
 |---|---|---|---|
@@ -93,7 +93,7 @@ dsh plugin --profile web link .
 | `devin` | 粘贴浏览器最终落到的地址 | 无 —— 需重新登录 | 2 |
 | `google-gemini-cli` | 回环 `8085` + 粘贴兜底 | 在凭据 seam 上 | 7 |
 | `google-antigravity` | 回环 `51121` + 粘贴兜底 | 在凭据 seam 上 | 22 |
-| `factory-droid` | WorkOS 设备码（网址 + 用户码） | 60 秒窗口内刷新一次，保留 `orgId`/`region` | 62 |
+| `factory-droid` | WorkOS 设备码（网址 + 用户码） | 60 秒窗口内刷新一次，保留 `orgId`/`region` | 77 |
 | `gitlab-duo` | PKCE 回环 `localhost:8080/callback`，无端口回落，可粘贴兜底 | 60 秒窗口内刷新一次 | 16 |
 | `gitlab-duo-agent` | 粘贴 `vscode://` 链接 | 刷新一次，回显 `vscode` 重定向 | 1 |
 
