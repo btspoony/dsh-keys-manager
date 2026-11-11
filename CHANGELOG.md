@@ -2,6 +2,12 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.3.4] - 2026-11-11
+
+### Fixed
+
+- Cool the managed key behind a fallback chain after a quota or rate failure, so the next turn switches to another key instead of reusing the one that just failed.
+
 ## [0.3.3] - 2026-11-11
 
 ### Changed
