@@ -2,6 +2,17 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.3.3] - 2026-11-11
+
+### Changed
+
+- Move the pinned @oh-my-pi toolchain to 18.18.8 and re-port the Cursor exec-frame handoff patch onto it.
+
+### Added
+
+- Install the pinned catalog's thinking levels on extra-provider models, so DSH offers the reasoning-effort selector for them.
+- Repair already-installed extra-provider profiles the same way, without touching a user-edited model list.
+
 ## [0.3.2] - 2026-11-10
 
 ### Fixed
