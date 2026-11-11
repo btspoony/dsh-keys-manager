@@ -1470,7 +1470,7 @@ test('a virtual fallback provider ignores an external-credential attempt', async
     const key = provider.keys[0]
     const failure = { code: 'QUOTA', message: 'usage limit reached' }
     await h.service.selectKey('zai-coding-cn', 'session-chain-external')
-    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain-external', undefined, false, failure)
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain-external', key.id, false, failure)
     const next = vi.fn(async () => undefined)
     const result = await h.service.requestErrorListener({
       provider: 'FallbacksChain',

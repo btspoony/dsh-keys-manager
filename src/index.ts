@@ -9486,7 +9486,6 @@ export class KeysManagerService {
         this.store.provider(realProvider) !== undefined
       ) {
         this.markFailure(realProvider, linked.keyId, payload.failure)
-        this.store.touch()
       }
       dropPin()
       return next()
