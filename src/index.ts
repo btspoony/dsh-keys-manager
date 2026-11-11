@@ -9476,9 +9476,8 @@ export class KeysManagerService {
       // payload's provider cannot attribute the failure. The linked attempt
       // names the real provider that served the inner request: cool that key so
       // the next turn stops reusing it, and keep the binding as it is. The
-      // branch returns next() and never re-enters the stream, so it deliberately
-      // does not await settleProjectionDemotion: a demotion started here only
-      // serves later requests.
+      // delegated action may be a retry, so the branch settles any projection
+      // demotion the cooling queued before it hands the request on.
       const realProvider = linked?.providerId
       if (
         linked?.usedManagedKey === true &&
@@ -9489,6 +9488,10 @@ export class KeysManagerService {
         this.store.provider(realProvider) !== undefined
       ) {
         this.markFailure(realProvider, linked.keyId, payload.failure)
+        // markFailure may have queued an OAuth projection demotion. A delegated
+        // retry re-derives the projection, so waiting keeps the retry from
+        // serving the grant that just failed — the managed path waits too.
+        await this.settleProjectionDemotion(realProvider)
       }
       dropPin()
       return next()
