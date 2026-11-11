@@ -4,10 +4,27 @@
  *
  * Source: @oh-my-pi/pi-catalog@18.18.8 src/models.json (sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612).
  *
- * The model ids the pinned catalog marks image-capable, per extra-provider
- * route. A route the catalog does not describe is absent: the pin has no
- * answer for it, so its rows keep the modality the seed catalog gives them.
+ * Two indexes over the same pin, both keyed by extra-provider route.
+ *
+ * {@link EXTRA_IMAGE_MODELS}: the model ids the pinned catalog marks
+ * image-capable. A route the catalog does not describe is absent: the pin has
+ * no answer for it, so its rows keep the modality the seed catalog gives them.
+ *
+ * {@link EXTRA_REASONING_EFFORTS}: the thinking ladder to declare on a row,
+ * with the wire value of each DSH level. Only the rows a catalog rule models
+ * are listed; every other row stays non-reasoning rather than guessed at.
  */
+
+/**
+ * One row's reasoning declaration.
+ */
+export interface ExtraReasoningRow {
+  /** Wire value per offered DSH thinking level; only `off` may be null. */
+  efforts: Readonly<Record<string, string | null>>
+  /** The route needs `compat.forceAdaptiveThinking` for these efforts to dispatch. */
+  adaptive?: true
+}
+
 export const EXTRA_IMAGE_MODELS: Readonly<Record<string, readonly string[]>> = {
   "abliteration": [
     "abliterated-model",
@@ -1366,4 +1383,5485 @@ export const EXTRA_IMAGE_MODELS: Readonly<Record<string, readonly string[]>> = {
     "glm-5.3-flashx",
     "glm-5v-turbo",
   ],
+}
+
+export const EXTRA_REASONING_EFFORTS: Readonly<
+  Record<string, Readonly<Record<string, ExtraReasoningRow>>>
+> = {
+  "abliteration": {
+    "abliterated-model": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "abliterated-model-large": {
+      efforts: { "off": null, "high": "high", "xhigh": "max", "max": "max" },
+    },
+    "abliterated-model-large-v2": {
+      efforts: { "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" },
+    },
+  },
+  "aiand": {
+    "deepseek-ai/deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "google/gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "motif-technologies/motif-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "zai-org/glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+  },
+  "aimlapi": {
+    "baidu/ernie-4-5-21b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-haiku-4-5-20251001": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-5-20251101": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-5-20250929": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-chat-v3.1": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-r1": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "gemini-2.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-lite-preview-09-2025": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-3-flash-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-3.1-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-3.1-flash-lite-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-3.1-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "gemini-3.5-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "glm-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "glm-4.5-air": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gpt-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5-nano": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5.1-chat-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5.1-codex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5.1-codex-mini": {
+      efforts: { "off": null, "medium": "medium", "high": "high" },
+    },
+    "gpt-5.2-chat-latest": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gpt-5.2-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gpt-5.3-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "o1": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "o3-mini": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "o3-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "o4-mini": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "qwen3-235b-a22b-thinking-2507": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.6-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "stepfun/step-3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-code-fast-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "xiaomi/mimo-v2-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+  },
+  "alibaba-coding-plan": {
+    "MiniMax-M2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "kimi-k2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.6-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+  },
+  "alibaba-token-plan": {
+    "deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "qwen3.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.8-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.8-max": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "xhigh": "xhigh" },
+    },
+    "qwen3.8-max-preview": {
+      efforts: { "low": "low", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "cline-pass": {
+    "deepseek-v4-pro": {
+      efforts: { "off": null, "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "glm-5.3": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "kimi-k3": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "qwen3.7-max": {
+      efforts: { "off": null, "high": "high", "xhigh": "xhigh" },
+    },
+    "qwen3.8-max": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "commandcode": {
+    "MiniMaxAI/MiniMax-M3": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.8-27B": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "xhigh": "xhigh" },
+    },
+    "Qwen/Qwen3.8-Flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "xhigh": "xhigh" },
+    },
+    "Qwen/Qwen3.8-Max": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "xhigh": "xhigh" },
+    },
+    "Qwen/Qwen3.8-Max-0902": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "xhigh": "xhigh" },
+    },
+    "Qwen/Qwen3.8-Omni-Flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "xhigh": "xhigh" },
+    },
+    "deepseek/deepseek-v4-flash": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-fast": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-vision-exp": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash-fast": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "google/gemini-3.1-flash-lite": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.5-flash": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.5-flash-lite": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.6-flash": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.7-flash": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.8-flash": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5.3-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gpt-5.4": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gpt-5.4-mini": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-5.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gpt-5.6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "gpt-5.6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "gpt-5.6-terra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "gpt-6-astra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "gpt-6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "gpt-6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "meituan/LongCat-2.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "meta/muse-spark-1.1": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.2": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.2-contributor": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.3": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "meta/muse-spark-1.3-contributor": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/Kimi-K3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "poolside/laguna-s-2.1-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "sakana/fugu-ultra": {
+      efforts: { "off": null, "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/glyph-cluster:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "stepfun/Step-5-Preview": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "tencent/hy3-paid": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "tencent/hy4-preview": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "thinkingmachines/inkling": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "thinkingmachines/inkling-small": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xai/grok-4.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xai/grok-4.6": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "xai/grok-4.7": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-flashx": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/GLM-5.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "zai-org/GLM-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+  },
+  "coralbricks": {
+    "deepseek-v4.1-flash-fast": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5.3-fast": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+  },
+  "coreweave": {
+    "MiniMaxAI/MiniMax-M2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "MiniMaxAI/MiniMax-M3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.5-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.5-35B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.6-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.6-35B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.8-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "deepseek-ai/DeepSeek-V4-Flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Flash-0731": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Pro-0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "google/gemma-4-26B-A4B-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31B-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ibm-granite/granite-4.2-8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/Kimi-K2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/Kimi-K2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/Kimi-K2.7-Code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/Kimi-K3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-oss-20b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "reflection/Beam-1.0-501B-A23B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "zai-org/GLM-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/GLM-5.3-Flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+  },
+  "deepinfra": {
+    "ByteDance/Seed-1.8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ByteDance/Seed-2.0-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ByteDance/Seed-2.0-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ByteDance/Seed-2.0-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gryphe/MythoMax-L2-13b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "MiniMaxAI/MiniMax-M3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Qwen/Qwen3-14B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3-30B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3-32B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.5-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.5-35B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.5-397B-A17B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.5-9B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.6-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.6-35B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.7-Max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.8-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.8-Flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.8-Max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Sao10K/L3-8B-Lunaris-v1-Turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Sao10K/L3.1-70B-Euryale-v2.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "XiaomiMiMo/MiMo-V2.6-Flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "XiaomiMiMo/MiMo-V2.6-Pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "anthropic/claude-fable-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-haiku-4-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4-7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4-8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-5-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-5-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek-ai/DeepSeek-R1-0528": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V3.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Flash-0731": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4-Pro-0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "google/gemini-2.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-pro": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.5-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.7-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemma-4-26B-A4B-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31B-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31B-it-Ultra": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31B-it-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ibm-granite/granite-4.2-8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionAI/Ling-3.0-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionAI/Ling-3.0-flash-VL": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionAI/Ling-3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta-models/Muse-Glimmer-30B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "microsoft/phi-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/Kimi-K2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/Kimi-K3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/NVIDIA-Nemotron-3.5-Super-VL": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/Nemotron-Content-Safety-3.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-oss-120b-Ultra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-oss-20b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "stepfun-ai/Step-5-Preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/Hy4-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thinkingmachines/Inkling-Small": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "zai-org/GLM-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/GLM-5.3-Flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+  },
+  "firepass": {
+    "glm-5.2-fast": {
+      efforts: { "off": null, "minimal": "none", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "kimi-k3-fast": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+  },
+  "gmi-cloud": {
+    "deepseek-ai/DeepSeek-V4-Flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+  },
+  "helmcode": {
+    "deepseek-v4-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "gemma4": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "glm5.3": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "qwen3.6": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+  },
+  "kilo": {
+    "aion-labs/aion-2.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.0-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "amazon/nova-2-lite-v1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthracite-org/magnum-v4-72b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-3.7-sonnet": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-fable-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-fable-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-haiku-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-haiku-5.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.6-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.7-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.8-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-5-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-5.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-5.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "apodex/apodex-1.1-mini:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "arcee-ai/trinity-large-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "arcee-ai/trinity-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baidu/cobuddy:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baidu/ernie-4.5-vl-28b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-1.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-1.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-2-1-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-2.0-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-2.0-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-2.0-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/ui-tars-1.5-7b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "cohere/command-a-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "cohere/north-mini-code:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek/deepseek-chat-v3.1": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-r1": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-r1-0528": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v3.1-terminus": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v3.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v3.2-exp": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731:free": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-vision-exp": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash:discounted": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro:discounted": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash-1017": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "dots-studio/dots-3-note-preview:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "elorian/glimpse": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "fireworks/ember-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "giga-potato": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemini-2.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-flash-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-flash-lite-preview-09-2025": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-pro-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-pro-preview-05-06": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3-flash-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3-pro-image": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3-pro-image-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.1-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-flash-lite-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.1-pro-preview-customtools": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.5-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.5-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.6-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.7-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.8-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-4-argon": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemini-nano-banana-2.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/lyria-3-clip-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/lyria-3-pro-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gryphe/mythomax-l2-13b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ibm-granite/granite-4.0-h-micro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ibm-granite/granite-4.2-8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inception/mercury-2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inception/mercury-2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inception/mercury-2.5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inception/mercury-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-fin": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-fin:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-sante": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-sante:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-vl:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-tiny:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ring-2.6-1t": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inference-net/schematron-v2-small": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inference-net/schematron-v2-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kilo-auto/balanced": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kilo-auto/efficient": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kilo-auto/free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kilo-auto/frontier": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kilo-auto/small": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "liquid/lfm-2.5-2.6b:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "liquid/lfm-2.5-24b-a2b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mancer/weaver": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meituan/longcat-2.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meituan/longcat-2.0-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-glimmer-30b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.2-contributor": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.3-contributor": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-open": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-wonder": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "microsoft/phi-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "microsoft/wizardlm-2-8x22b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m2": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.1": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7:free": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m3.1-flash:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m3:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-large-4-0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-medium-3-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-small-2603": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "morph/morph-v3-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "morph/morph-v3-large": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2.5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2.5-mini:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2.5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2.5-pro:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nousresearch/hermes-3-llama-3.1-405b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nousresearch/hermes-3-llama-3.1-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nousresearch/hermes-4-405b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/llama-3.3-nemotron-super-49b-v1.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-nano-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-super-120b-a12b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-super-120b-a12b:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-content-safety": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-content-safety:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-lightning": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-lightning:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-super-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-super-vl:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-nano-12b-v2-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-nano-9b-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/switchyard": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-codex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-image": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-image-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-nano": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex-mini": {
+      efforts: { "off": null, "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.2": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.2-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.2-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.3-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-mini": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-nano": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.5-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-luna-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-sol-discounted": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-sol-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-terra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-terra-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-astra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-astra-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-luna-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-sol-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6.1-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6.1-sol-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-oss-20b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-oss-safeguard-20b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/o1": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o1-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-deep-research": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-mini": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-mini-high": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o4-mini": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o4-mini-deep-research": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o4-mini-high": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openrouter/auto": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openrouter/auto-beta": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openrouter/bodybuilder": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openrouter/free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openrouter/fusion": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openrouter/owl-alpha": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openrouter/pareto-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perceptron/perceptron-mk1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perceptron/perceptron-mk1.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perplexity/sonar": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perplexity/sonar-deep-research": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perplexity/sonar-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perplexity/sonar-pro-search": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-m.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-m.1:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-s-2.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-s-2.1:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-xs-2.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-xs-2.1:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-xs.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-xs.2:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "prime-intellect/intellect-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "prism-ml/ternary-bonsai-2-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen-plus-2025-07-28:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-14b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-235b-a22b-thinking-2507": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-30b-a3b-thinking-2507": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-32b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-max-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-next-80b-a3b-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-vl-235b-a22b-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-vl-30b-a3b-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-vl-8b-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-122b-a10b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-397b-a17b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-9b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-flash-02-23": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-plus-02-15": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-plus-20260420": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-max-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-2.4t-a95b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-max-0902": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-max-prime": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-omni-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "recursive/flint-v1.0:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "reflection/beam-1.0-501b-a23b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "reflection/beam-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "rekaai/reka-flash-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "relace/relace-apply-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sakana/fugu-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sakana/fugu-ultra": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sakana/fugu-ultra-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sakana/sakana-namazu": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sao10k/l3-lunaris-8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sao10k/l3.1-euryale-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sao10k/l3.3-euryale-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/claude-opus-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/claude-opus-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/claude-opus-4.8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/claude-sonnet-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/glyph-cluster": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/gpt-5.6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "stealth/ox-alpha": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/qwen3.6-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "stealth/space-bunny-alpha": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.7-flash:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-5-preview-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hunyuan-a13b-instruct": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy-mt2-1.8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy-mt2-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy-mt2-7b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy4-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thedrummer/cydonia-24b-v4.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thedrummer/skyfall-36b-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thedrummer/unslopnemo-12b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thinkingmachines/inkling": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thinkingmachines/inkling-small": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thinkingmachines/inkling-small:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thinkingmachines/inkling:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "typesafe/jev-router": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "undi95/remm-slerp-l2-13b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "upstage/solar-mini4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "upstage/solar-pro-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "upstage/solar-pro4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "writer/palmyra-x5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.1-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.20": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.20-multi-agent": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-build-0.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-code-fast-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "xiaomi/mimo-v2-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-omni": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-pro-ultraspeed": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xingchen-agi/xing4.0-29b-a4b:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.5-air": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.5v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-flashx": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-prime": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5v-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~anthropic/claude-fable-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~anthropic/claude-haiku-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~anthropic/claude-opus-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~anthropic/claude-sonnet-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~deepseek/deepseek-flash-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~deepseek/deepseek-pro-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~deepseek/deepseek-v4-flash-latest": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "~google/gemini-flash-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~google/gemini-pro-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~moonshotai/kimi-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~openai/gpt-astra-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~openai/gpt-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~openai/gpt-luna-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~openai/gpt-mini-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~openai/gpt-sol-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~openai/gpt-terra-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~x-ai/grok-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~z-ai/glm-flash-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "~z-ai/glm-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "minimax-code": {
+    "MiniMax-M2": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.1": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.5-highspeed": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.7": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.7-highspeed": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M3": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M3.1-Flash": {
+      efforts: { "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+      adaptive: true,
+    },
+    "MiniMax-M3.1-Flash-Preview": {
+      efforts: { "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+      adaptive: true,
+    },
+  },
+  "minimax-code-cn": {
+    "MiniMax-M2": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.1": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.5-highspeed": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.7": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M2.7-highspeed": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M3": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+      adaptive: true,
+    },
+    "MiniMax-M3.1-Flash": {
+      efforts: { "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+      adaptive: true,
+    },
+    "MiniMax-M3.1-Flash-Preview": {
+      efforts: { "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+      adaptive: true,
+    },
+  },
+  "nanogpt": {
+    "Doctor-Shotgun/MS3.2-24B-Magnum-Diamond": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "EVA-UNIT-01/EVA-LLaMA-3.33-70B-v0.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "EVA-UNIT-01/EVA-LLaMA-3.33-70B-v0.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "GLM-4.6-Derestricted-v5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "GalrionSoftworks/MN-LooseCannon-12B-v1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-26B-A4B-MeroMero": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-26B-A4B-MeroMero:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-31B-Claude-4.6-Opus-Reasoning-Distilled": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-31B-Cognitive-Unshackled": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-31B-DarkIdol": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-31B-GarnetV2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-31B-MeroMero-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-31B-MeroMero-v2:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gemma-4-31B-Queen": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Gryphe/MythoMax-L2-13b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "LLM360/K2-Think": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "LatitudeGames/Wayfarer-Large-70B-Llama-3.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "MarinaraSpaghetti/NemoMix-Unleashed-12B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Meta-Llama-3-1-8B-Instruct-FP8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "MiniMax-M2": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "MiniMaxAI/MiniMax-M1-80k": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "NeverSleep/Lumimaid-v0.2-70B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Qwen/Qwen3-235B-A22B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3-235B-A22B-Thinking-2507": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3-8B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen/Qwen3.6-35B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen3.5-27B-BlueStar-v3-Derestricted": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen3.5-27B-Queen-Derestricted": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "ReadyArt/MS3.2-The-Omega-Directive-24B-Unslop-v2.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Sao10K/L3-8B-Stheno-v3.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Sao10K/L3.1-70B-Euryale-v2.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Sao10K/L3.1-70B-Hanami-x1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Sao10K/L3.3-70B-Euryale-v2.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Steelskull/L3.3-Cu-Mai-R1-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Steelskull/L3.3-Electra-R1-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Steelskull/L3.3-MS-Nevoria-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Steelskull/L3.3-Nevoria-R1-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/deepseek-v4-pro-0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/deepseek-v4-pro-0813:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/deepseek-v4-pro:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/gemma4-31b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/glm-5-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "TEE/glm-5.2:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "TEE/glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/kimi-k2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/kimi-k2.7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "TEE/minimax-m2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "TEE/muse-glimmer-30b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/nemotron-3.5-lightning": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TEE/qwen3.5-122b-a10b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "TEE/qwen3.6-35b-a3b-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "TEE/qwen3.8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "TEE/qwen3.8-27b-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "TheDrummer/Anubis-70B-v1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Anubis-70B-v1.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Artemis-v1.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Cydonia-24B-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Cydonia-24B-v4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Cydonia-24B-v4.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Magidonia-24B-v4.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Rocinante-12B-v1.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/Skyfall-31B-v4.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "TheDrummer/UnslopNemo-12B-v4.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "VongolaChouko/Starcannon-Unleashed-12B-v1.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "abacusai/Dracarys-72B-Instruct": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "abliteration-ai/abliterated-model": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "abliteration-ai/abliterated-model-large": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "abliteration-ai/abliterated-model-large-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "agnes-3.0-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.0-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs/aion-3.5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "alibaba/qwen3.6-27b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "alibaba/qwen3.8-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "alibaba/qwen3.8-max-0902": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "amazon/nova-2-lite-v1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthracite-org/magnum-v2-72b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthracite-org/magnum-v4-72b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-fable-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-fable-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-fable-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-haiku-4.5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-haiku-5.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-haiku-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.1:thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.1:thinking:1024": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.1:thinking:32768": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.1:thinking:8192": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.6:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.6:thinking:low": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.6:thinking:max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.6:thinking:medium": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.7:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4.8:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4:thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4:thinking:1024": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4:thinking:32768": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-4:thinking:8192": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-5.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-opus-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4.5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4.6:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4:thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4:thinking:1024": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4:thinking:32768": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4:thinking:64000": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-4:thinking:8192": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-5.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-5.5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "anthropic/claude-sonnet-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "arcee-ai/trinity-large": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "arcee-ai/trinity-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "asi1-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baidu/ernie-4.5-vl-28b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-2-1-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-2.0-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance-seed/seed-2.0-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-character": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "celeris-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-haiku-4-5-20251001": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-1-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-1-thinking:1024": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-1-thinking:32000": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-1-thinking:32768": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-1-thinking:8192": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-5-20251101": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-5-20251101:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-thinking:1024": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-thinking:32000": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-thinking:32768": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-thinking:8192": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-5-20250929": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-thinking:1024": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-thinking:32768": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-thinking:64000": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-thinking:8192": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claw-high": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claw-low": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claw-medium": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "cloudflare/clef": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "cloudflare/clef-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "cloudflare/clef-omni": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek-ai/DeepSeek-R1-0528": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek-ai/deepseek-v3.2-exp": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek-r1": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-latest": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v3.2:thinking": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0423": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0423:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731-cheaper": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731-cheaper:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-latest": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-0813:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-cheaper": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-cheaper:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash-1017": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash-1017:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash:thinking": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "dots-studio/dots-3-note-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "dots-studio/dots-3-note-preview:free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "doubao-seed-1-6-250615": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "elorian/glimpse": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ernie-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "failspy/Meta-Llama-3-70B-Instruct-abliterated-v3.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "fastgpt": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "featherless-ai/Qwerky-72B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "fireworks/ember-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemini-2.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-lite-preview-06-17": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-lite-preview-09-2025": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-preview-04-17": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-preview-05-20": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-flash-preview-09-2025": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-pro-preview-05-06": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-2.5-pro-preview-06-05": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-3-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "gemma-4-12b-it-semancer": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-12b-it-station-keeper": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-it-chimerax": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-it-chimeraxheretic": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-it-darksoul": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-it-moonlight": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-it-musica": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-it-opusdistill": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-it-shadowsiren": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-26b-a4b-uncensored:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-darkidol": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-fabled": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-garnet": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-gembrain": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-gemsicle": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-isometry": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-novelist": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemma-4-31b-it-scarlet": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/diffusiongemma": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemini-3-flash-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-flash-lite-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.1-pro-preview-customtools": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.1-pro-preview-high": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.1-pro-preview-low": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.5-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.5-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.6-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.7-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.8-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-4-argon": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemini-flash-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemini-flash-lite-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemini-pro-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it-chimerax": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it-cybersecurity": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it-darksoul": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it-moonlight": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it-musica": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it-opusdistill": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it-shadowsiren": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-uncensored:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it-darkidol": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it-fabled": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it-garnet": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it-gembrain": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it-isometry": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it-novelist": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "heabsy/cyberheabsy": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "heabsy/qwen3.8-27b-uncensored-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "hermes-high": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hermes-low": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hermes-medium": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "holo3-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "holo3-35b-a3b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ibm-granite/granite-4.2-8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inception/mercury-2.5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inception/mercury-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-tiny:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ring-2.6-1t": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inference-net/schematron-v2-small": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inference-net/schematron-v2-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inflatebot/MN-12B-Mag-Mell-R1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "jaredpalmer/kev-4b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kitani/clover-1-150b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "liquid/d1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "liquid/lfm-2.5-2.6b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "liquid/lfm-2.5-24b-a2b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "llmtech/decider-0.8b-fp8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "llmtech/decider-2b-fp8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "llmtech/decider-4b-nvfp4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "longcat-2.0:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "longcat-2.5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meganova-ai/manta-flash-1.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meganova-ai/manta-mini-1.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meganova-ai/manta-pro-1.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mercury-2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mercury-coder-small": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-glimmer-30b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.2-contributor": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.3-contributor": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-open": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-wonder": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "microsoft/wizardlm-2-8x22b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m2": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.1": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7-turbo": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m3:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistral/mistral-medium-3.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistral/mistral-medium-3.5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/devstral-2-123b-instruct-2512": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/devstral-small-2505": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-large-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-medium-3.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-medium-3.5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-small-4-119b-2603": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-small-4-119b-2603:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mlabonne/NeuralDaredevil-8B-abliterated": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.6:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code-highspeed": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "moonshotai/kimi-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nano-gpt-help": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nanogpt/coding-router": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nanogpt/coding-router:high": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nanogpt/coding-router:low": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nanogpt/coding-router:max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nanogpt/coding-router:medium": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2.5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nex-agi/nex-n2.5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nothingiisreal/L3.1-70B-Celeste-V0.1-BF16": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nousresearch/hermes-3-llama-3.1-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nousresearch/hermes-4-405b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nousresearch/hermes-4-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-nano-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-super-120b-a12b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-super-120b-a12b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-ultra-550b-a55b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-content-safety": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-lightning": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-lightning:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3.5-super-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nvidia-nemotron-nano-9b-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-codex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-nano": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-2025-11-13": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex-mini": {
+      efforts: { "off": null, "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.2": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.2-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.2-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.3-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-mini": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-nano": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-luna-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-sol-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-terra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-terra-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-astra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-astra-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-luna-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-sol-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6.1-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6.1-sol-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-astra-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-chat-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-luna-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-oss-20b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-oss-safeguard-20b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-sol-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-terra-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o1": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o1-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-deep-research": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-mini": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-mini-high": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-mini-low": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o3-pro-2025-06-10": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o4-mini": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o4-mini-deep-research": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/o4-mini-high": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ornith-ai/ornith-1.5-122b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ornith-ai/ornith-1.5-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ornith-ai/ornith-1.5-35b-a3b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ornith-ai/ornith-1.5-397b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ornith-ai/ornith-1.5-397b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ornith-ai/ornith-1.5-9b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "ornith-ai/ornith-1.5-9b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "pamanseau/OpenReasoning-Nemotron-32B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perceptron/perceptron-mk1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perceptron/perceptron-mk1.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "perplexity/pplx-decider-v1.1-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "phi-4-mini-instruct": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "phi-4-multimodal-instruct": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "pokee-isaac": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-m.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-s-2.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-s-2.1:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "poolside/laguna-xs.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "prism-ml/ternary-bonsai-2-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qvq-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "qwen/Qwen3.6-35B-A3B:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-next-80b-a3b-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-vl-235b-a22b-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-0.8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-122b-a10b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-27b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-2b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-35b-a3b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-397b-a17b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-4b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-9b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-27b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-35b-a3b-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-35b-a3b-uncensored:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-35b-a3b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-max-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-flash:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-max:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-plus:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-2.4t-a95b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-antislop": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-cybersecurity": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-darkidol": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-fable": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-fimi": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-hemmingway": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-kimiko": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-kiwen": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-novelist": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-obliterated": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-obliterated:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-queen": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-swift": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b-uncensored:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-max-0902": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-max-prime": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-max:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-omni-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-0.8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-122b-a10b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-27b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-2b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-35b-a3b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-4b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-flash:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-max:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.7-plus:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.8-27b:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.8-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.8-max-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.8-max:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "reflection/beam-1.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sakana/fugu-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sakana/fugu-ultra": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sakana/fugu-ultra-v1.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sarvam-105b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sarvam-30b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "shisa-ai/shisa-v2-llama3.3-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "shisa-ai/shisa-v2.1-llama3.3-70b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sonar-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "soob3123/Veiled-Calla-12B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "soob3123/amoral-gemma3-27B-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/ox-alpha": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth/space-bunny-alpha": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun-ai/step-3.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.7-flash:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "synth-2.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "synth-2.5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy4-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thedrummer/skyfall-36b-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thinkingmachines/Inkling-Small:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "thinkingmachines/inkling:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tngtech/tng-r1t-chimera": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "typesafe/jev-1.13": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "typesafe/jev-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "undi95/remm-slerp-l2-13b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "universal-summarizer": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "upstage/solar-mini4:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "upstage/solar-pro-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "upstage/solar-pro4:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "venice-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.1-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.20": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.20-multi-agent": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-build-0.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-code-fast-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "xiaomi/mimo-v2-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-flash-original": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-omni": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5-pro-crof": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5-pro-crof:thinking": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5-pro:thinking": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5:thinking": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-flash-abliterated": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-flash-uncensored": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-flash-uncensored:thinking": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-pro-ultraspeed": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "z-ai/GLM-4.5-Air:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/GLM-4.6-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.5v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-flash-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-flash-original:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-flash:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-original:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5-original:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.1:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.2:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-flash-apex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.3-flash-apex-abliterated": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.3-flash-cybersecurity": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.3-flash-uncensored": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-uncensored": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.3:thinking": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5v-turbo:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-4.5-Air": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-4.5-Air:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/GLM-4.6-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.6-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-flash-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-flash-original:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-flash:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-original:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5-original": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5-original:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5.1:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.2:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.3:thinking": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5:thinking": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "novita": {
+    "Sao10K/L3-8B-Stheno-v3.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "apodex/apodex-1.1-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baichuan/baichuan-m2-32b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baidu/cobuddy": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bunny": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek/deepseek-r1-0528": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-r1-turbo": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-r1/community": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-0731-p": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-0813-p": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash-1017": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash-dst": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash-p": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "google/gemma-4-26b-a4b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gryphe/mythomax-l2-13b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-fin": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-sante": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "microsoft/wizardlm-2-8x22b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mindai/macaron-v1-tall": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mindai/macaron-v1-venti": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7-highspeed": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimaxai/minimax-m1-80k": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "moonshotai/kimi-k3-p": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "nousresearch/hermes-2-pro-llama-3-8b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia/nemotron-3-nano-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "paddlepaddle/paddleocr-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "qwen/qwen3-omni-30b-a3b-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-122b-a10b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-397b-a17b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-2.4t-a95b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "sao10k/l3-70b-euryale-v2.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy4-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "xiaomimimo/mimo-v2.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomimimo/mimo-v2.5-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomimimo/mimo-v2.6-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomimimo/mimo-v2.6-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "zai-org/autoglm-phone-9b-multilingual": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.5-air": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.5v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.6v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-4.7-h": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org/glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "zai-org/glm-5.3-p": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "ollama-cloud": {
+    "beam": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "cogito-2.1:671b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "deepseek-v3.1:671b": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek-v3.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-flash:0731": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-flash:preview": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-pro:0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-pro:preview": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4.1-flash:1017": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "gemini-3-flash-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemma4:31b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "gpt-oss:120b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gpt-oss:20b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "kimi-k2-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "kimi-k2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "kimi-k2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "kimi-k2.7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "minimax-m2": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m2.1": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m2.5": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m2.7": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "mistral-large-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "muse-spark-open": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "nemotron-3-nano:30b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "nemotron-3-super": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "nemotron-3-ultra": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-next:80b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-vl:235b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3.5:397b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+  },
+  "qianfan": {
+    "deepseek-v3.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+  },
+  "sakana": {
+    "fugu": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "fugu-ultra": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "fugu-ultra-20260615": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+  },
+  "sambanova": {
+    "gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+  },
+  "stepfun": {
+    "step-3.5-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "step-3.5-flash-2603": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "step-3.7-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "step-5-preview": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+  },
+  "synthetic": {
+    "hf:MiniMaxAI/MiniMax-M3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hf:Qwen/Qwen3.6-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "hf:Qwen/Qwen3.8-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "hf:deepseek-ai/DeepSeek-V4.1-Flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "hf:moonshotai/Kimi-K2.7-Code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hf:moonshotai/Kimi-K3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hf:openai/gpt-oss-120b": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "hf:zai-org/GLM-4.7-Flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hf:zai-org/GLM-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "hf:zai-org/GLM-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "hf:zai-org/GLM-5.3-Flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "infinite:small:vision": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "syn:large:text": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "syn:large:vision": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "syn:small:text": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "syn:small:vision": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "venice": {
+    "abliteration-abliterated-model-large-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs-aion-3-0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs-aion-3-0-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs-aion-3-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "aion-labs-aion-3-5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "arcee-trinity-large-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-fable-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-fable-5-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-haiku-5-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-6-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-7-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-4-8-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-45": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-5-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-5-5-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-opus-5-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-4-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-45": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "claude-sonnet-5-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek-v3.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek-v4-1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-1-flash-1017": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-flash-0731": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-flash-0731-fast": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-pro-0813": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "e2ee-gemma-4-26b-a4b-uncensored-p": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "e2ee-glm-5-2-p": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "e2ee-glm-5-3-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "e2ee-glm-5-3-p": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "e2ee-kimi-k2-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "e2ee-kimi-k3-p": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "e2ee-qwen3-8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemini-3-1-pro-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemini-3-5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemini-3-5-flash-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemini-3-6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemini-3-7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "gemini-3-8-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-3-flash-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "gemini-3-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "gemini-4-argon": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google-gemma-4-26b-a4b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google-gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-4-20": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-4-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-4-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-4-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-4-7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-41-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-build-0-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "grok-code-fast-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hermes-3-llama-3.1-405b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "hy4-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inkling": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kimi-k2-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kimi-k2-6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kimi-k2-7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kimi-k2-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "kimi-k3-fast-api": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "mercury-2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mercury-2-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mercury-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax-m21": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m25": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m27": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax-m3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax-m3-1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax-m3-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistral-small-2603": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "muse-spark-open": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "muse-wonder": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia-nemotron-3-5-lightning-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia-nemotron-3-5-super-vl-120b-a12b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia-nemotron-3-ultra-550b-a55b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "nvidia-nemotron-cascade-2-30b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "olafangensan-glm-4.7-flash-heretic": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai-gpt-52": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-52-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-53-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-54": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-54-mini": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-54-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-55": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-55-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-56-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-56-luna-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-56-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-56-sol-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-56-terra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-56-terra-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-6-astra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-6-astra-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-61-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-61-sol-ultrafast": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai-gpt-oss-120b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "qwen-3-6-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen-3-7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen-3-7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen-3-8-2-4t-a95b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen-3-8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen-3-8-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen-3-8-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-235b-a22b-thinking-2507": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-4b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-5-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-5-397b-a17b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-5-9b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-6-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen3-6-35b-a3b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "seed-2-1-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stealth-ox-alpha": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent-hy3-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "xiaomi-mimo-v2-5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi-mimo-v2-6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai-glm-5-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai-glm-5-3-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai-glm-5-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai-glm-5v-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org-glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org-glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org-glm-4.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org-glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org-glm-5-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "zai-org-glm-5-2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "wafer-serverless": {
+    "DeepSeek-V4-Flash-0423": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "DeepSeek-V4-Flash-0731-Fast": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "DeepSeek-V4-Pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "DeepSeek-V4.1-Flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "GLM-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "GLM-5.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "GLM-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "GLM-5.3-Flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "GLM5.2-Turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Kimi-K2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Kimi-K2.7-Code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Kimi-K3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "MiniMax-M3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Nemotron-3.5-Lightning": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "Qwen3.6-35B-A3B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "Qwen3.8-27B": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "glm5.2-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "kimi-k3-fast": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+  },
+  "yolo-auto": {
+    "qwen3.8-27b": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "yolo": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "zenmux": {
+    "alibaba/wan3.0-video": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "alibaba/wan3.0-video-prime": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "atria-asi/atria-dawn-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baidu/ernie-5.0-thinking-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baidu/ernie-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "baidu/ernie-x1.1-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bfl/flux-3-video": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-1.8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-2.0-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-2.0-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-2.0-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-2.0-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-2.1-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-2.1-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-character": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "bytedance/doubao-seed-evolving": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "deepseek/deepseek-chat-v3.1": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-r1-0528": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-reasoner": {
+      efforts: { "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v3.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v3.2-exp": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-free": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-vision-exp": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-flash-vision-exp-free": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4-pro-free": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      efforts: { "off": null, "low": "low", "high": "high", "max": "max" },
+    },
+    "dots-studio/dots3-note-prev": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemini-2.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-flash-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-2.5-pro": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3-flash-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3-pro-image-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.1-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-flash-lite-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.1-pro-preview": {
+      efforts: { "low": "low", "high": "high" },
+    },
+    "google/gemini-3.5-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.5-flash-free": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.5-flash-lite": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.6-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.7-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-3.8-flash": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "google/gemini-4-argon": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-26b-a4b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "google/gemma-4-31b-it": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-2.6-1t": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-2.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-fin": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-sante": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-flash-vl": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.0-tiny": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ling-3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/llada-image-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/llada2.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ming-image-0.1-design": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ming-image-0.1-design-layer": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ring-1t": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ring-2.6-1t": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ring-flash-2.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "inclusionai/ring-mini-2.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "klingai/kling-3.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "klingai/kling-3.0-omni": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "klingai/kling-3.0-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meituan/longcat-2.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meituan/longcat-2.5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-image-1.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-spark-1.3-contributor": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "meta/muse-wonder-1.0": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mindai/macaron-v1-tall": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mindai/macaron-v1-venti": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m2": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.1": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.5": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.5-lightning": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m2.7-highspeed": {
+      efforts: { "low": "low", "medium": "medium", "high": "high" },
+    },
+    "minimax/minimax-m3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "minimax/minimax-m3.1-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "mistralai/mistral-large-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2-thinking-turbo": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.7-code-highspeed": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k2.8-preview": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "moonshotai/kimi-k3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "moonshotai/kimi-k3-free": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "nex-agi/nex-n2-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/chat-latest": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-codex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-nano": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.1-codex-mini": {
+      efforts: { "off": null, "medium": "medium", "high": "high" },
+    },
+    "openai/gpt-5.2": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.2-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.2-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.3-codex": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-mini": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-nano": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.4-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.5-instant": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.5-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "openai/gpt-5.6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-5.6-terra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-astra": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-luna": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/gpt-6.1-sol": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max" },
+    },
+    "openai/o4-mini": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "pixverse/c1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "pixverse/v6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "qwen/qwen3-asr-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-max-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3-vl-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.5-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-max-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.6-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-max": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.7-plus": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-2.4t-a95b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-27b": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-max-0902": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "qwen/qwen3.8-omni-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "sakana/fugu-ultra-v2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sapiens-ai/agnes-1.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sapiens-ai/agnes-1.5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sapiens-ai/agnes-2.0-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sapiens-ai/agnes-2.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "sapiens-ai/agnes-2.5-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.5-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.5-flash-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.7-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-3.7-flash-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "stepfun/step-5-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hunyuan-2.0-thinking": {
+      efforts: { "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy3-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "tencent/hy4-preview": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "volcengine/doubao-seed-1-6-vision": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "volcengine/doubao-seed-1.8": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "volcengine/doubao-seed-2.0-lite": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "volcengine/doubao-seed-2.0-mini": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "volcengine/doubao-seed-2.0-pro": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "volcengine/doubao-seed-code": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.1-fast": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.3": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.5-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "x-ai/grok-code-fast-1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "xiaomi/mimo-v2-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-flash-free": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-omni": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.5-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-flash": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-pro": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "xiaomi/mimo-v2.6-pro-ultraspeed": {
+      efforts: { "off": null, "low": "low", "medium": "medium", "high": "high" },
+    },
+    "z-ai/glm-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.5-air": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6v-flash": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.6v-flash-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-flash-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-4.7-flashx": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5.2": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.2-free": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-flashx": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-free": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "z-ai/glm-5.3-prime": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+    "z-ai/glm-5v-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh" },
+    },
+  },
+  "zhipu-coding-plan": {
+    "glm-4.5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-4.5-air": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-4.6": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-4.6v": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-4.7": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5.1": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+    "glm-5.2": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "glm-5.2-highspeed": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "glm-5.2-highspeed[1m]": {
+      efforts: { "off": null, "high": "high", "max": "max" },
+    },
+    "glm-5.3": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5.3-flash": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5.3-flashx": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5.3-highspeed": {
+      efforts: { "low": "low", "high": "high", "max": "max" },
+    },
+    "glm-5v-turbo": {
+      efforts: { "off": null, "minimal": "minimal", "low": "low", "medium": "medium", "high": "high" },
+    },
+  },
 }

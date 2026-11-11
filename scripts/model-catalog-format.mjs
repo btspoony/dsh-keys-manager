@@ -1,3 +1,33 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2025-2026 Can Bölük
+ * Copyright (c) 2026 Stencil Labs, Inc.
+ *
+ * This file carries code from the `@oh-my-pi/pi-catalog` package's
+ * `src/model-catalog-format.ts` (MIT), ported to plain JavaScript. The notice
+ * above and this permission text are reproduced as the licence requires; the
+ * port itself is described in the module note below.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
 /**
  * The compact model-catalog format the pinned `@oh-my-pi/pi-catalog` ships.
  *
@@ -10,8 +40,9 @@
  *
  * Why a copy: the pin's `exports` map points `import` at its `.ts` sources and
  * ships no JS `dist` entry, and both generators run under plain `node`, so they
- * cannot import the implementation. Nothing here is shipped: `scripts/` is build
- * tooling, and `@oh-my-pi/*` stays a build-time pin.
+ * cannot import the implementation. It is build tooling — no shipped module
+ * imports it at runtime and `@oh-my-pi/*` stays a build-time pin — but the root
+ * package publishes `scripts/`, so this file ships and carries the licence above.
  *
  * Shape (upstream's own encoding): a catalog is `{version: 1, keys,
  * booleanShapes, nodes, compat, providers}`. Nested objects and arrays are

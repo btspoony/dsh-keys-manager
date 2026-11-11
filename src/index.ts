@@ -18,7 +18,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { CURSOR_ROUTE, cursorCatalogModels } from 'dsh-llm-omp-transports'
 import * as transportModule from 'dsh-llm-omp-transports'
 import type { TransportCatalogModel } from 'dsh-llm-omp-transports'
-import { mergeModelCapabilities, repairImageModalities } from './capabilities.js'
+import { mergeModelCapabilities, repairModelCapabilities as repairModelRows, sanitizeReasoningEfforts } from './capabilities.js'
 import {
   KEY_LIMIT,
   TEST_SUCCESS_FINISH_KINDS,
@@ -532,9 +532,8 @@ function normalizeModel(model: unknown): ModelRecord | undefined {
       : []
   const modalities = input.filter((value): value is 'text' | 'image' => value === 'text' || value === 'image')
   if (modalities.length > 0) next.input = [...new Set(modalities)]
-  if (source.reasoningEfforts !== null && typeof source.reasoningEfforts === 'object') {
-    next.reasoningEfforts = source.reasoningEfforts as Record<string, unknown>
-  }
+  const reasoningEfforts = sanitizeReasoningEfforts(source.reasoningEfforts)
+  if (reasoningEfforts !== undefined) next.reasoningEfforts = reasoningEfforts
   if (source.compat !== null && typeof source.compat === 'object') {
     next.compat = source.compat as Record<string, unknown>
   }
@@ -7568,18 +7567,19 @@ export class KeysManagerService {
 
   /**
    * Startup repair for an extra route installed before the capability index
-   * existed: its profile carries model rows with no `input` at all, so DSH
-   * treats an image model as text-only. Only the rows the pinned catalog marks
-   * image are filled, and only on a profile whose `models` still equal our own
-   * record — a list the user edited in Models is theirs. A second pass finds
-   * every row filled and writes nothing, and a refused write only warns: the
+   * existed: its profile carries model rows with no `input` and no
+   * `reasoningEfforts`, so DSH treats an image model as text-only and a
+   * reasoning model as non-reasoning. Only the rows the pinned catalog describes
+   * are filled, and only on a profile whose `models` still equal our own record —
+   * a list the user edited in Models is theirs. A second pass finds every
+   * indexed row filled and writes nothing, and a refused write only warns: the
    * route keeps working exactly as it did.
    *
    * A repair whose settings write landed but whose record never did (the store
    * flush was lost with the process) is healed from the profile itself: the
-   * live `models` equal exactly `repairImageModalities(record.models)`, so only
-   * the record is synced and the settings are left alone. Any other mismatch
-   * is a user list and stays untouched.
+   * live `models` equal exactly the repaired rows, so only the record is synced
+   * and the settings are left alone. Any other mismatch is a user list and stays
+   * untouched.
    *
    * Every write below gates on {@link persistenceRefused}, not on `closing`
    * alone: `close()` raises `shutdownRequested` before it awaits the borrowed
@@ -7596,7 +7596,7 @@ export class KeysManagerService {
       if (extraId === null) continue
       const live = this.profileAt(record.settingsNs, record.settingsPath)
       if (live === undefined) continue
-      const models = repairImageModalities(extraId, record.models)
+      const models = repairModelRows(extraId, record.models)
       if (models === undefined) continue
       if (JSON.stringify(live.models) !== JSON.stringify(record.models)) {
         // The settings half of an earlier run landed, its record half did not
@@ -7628,7 +7628,7 @@ export class KeysManagerService {
         this.store.touch()
       } catch (error) {
         this.pushWarning(
-          `Did not store the catalog image capability on the ${record.provider} profile: ${error instanceof Error ? error.message : String(error)}`,
+          `Did not store the catalog capabilities on the ${record.provider} profile: ${error instanceof Error ? error.message : String(error)}`,
         )
       }
     }
@@ -8094,7 +8094,7 @@ export class KeysManagerService {
    * whole timeout).
    */
   private async discoverModels(extra: ExtraProvider, value: string): Promise<{ models: ModelRecord[]; failure?: string }> {
-    if (extra.headerEnv !== undefined) return { models: normalizeModels(extra.models) }
+    if (extra.headerEnv !== undefined) return { models: mergeModelCapabilities(extra.id, normalizeModels(extra.models)) }
     let discovered: DiscoveredModel[] = []
     let failure: string | undefined
     try {
@@ -8108,7 +8108,9 @@ export class KeysManagerService {
     }
     const models = discoveredModels(extra.id, discovered)
     if (models.length > 0) return { models, failure }
-    return { models: normalizeModels(extra.models), failure }
+    // A seed-installed route must behave like a discovered one, so the same index
+    // fills its modalities and thinking ladders before the profile is written.
+    return { models: mergeModelCapabilities(extra.id, normalizeModels(extra.models)), failure }
   }
 
   /**
@@ -8166,7 +8168,10 @@ export class KeysManagerService {
           extraId,
           api: (existing.api as string | undefined) ?? extra.api,
           baseURL: (existing.baseURL as string | undefined) ?? extra.baseURL,
-          models: normalizeModels(existing.models).length > 0 ? normalizeModels(existing.models) : normalizeModels(extra.models),
+          models: mergeModelCapabilities(
+            extraId,
+            normalizeModels(existing.models).length > 0 ? normalizeModels(existing.models) : normalizeModels(extra.models),
+          ),
           adoptedAt: Date.now(),
           cursor: 0,
           keys: [],
@@ -8210,7 +8215,7 @@ export class KeysManagerService {
       // mutation for its whole 20 s timeout before the row appears (F3).
       const found: { models: ModelRecord[]; failure?: string } = importedFrom === null
         ? await this.discoverModels(extra, input.value)
-        : { models: normalizeModels(extra.models) }
+        : { models: mergeModelCapabilities(extra.id, normalizeModels(extra.models)) }
       const { models, failure } = found
       // The sign-in branch never probed the endpoint, so it cannot report a
       // discovery result.

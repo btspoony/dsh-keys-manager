@@ -1602,7 +1602,7 @@ test('an extra provider without headerEnv writes no headers key', async () => {
  * the plugin wrote and the record beside it carry rows without `input`. The
  * index knows the route, so startup fills only the image rows.
  */
-test('startup repair fills the catalog image capability into a profile the plugin wrote', async () => {
+test('startup repair fills the catalog capabilities into a profile the plugin wrote', async () => {
   const h = await harness()
   try {
     await h.service.addExtraProvider('ollama-cloud', 'main', 'sk-ollama')
@@ -1614,8 +1614,13 @@ test('startup repair fills the catalog image capability into a profile the plugi
     record.models = structuredClone(legacy)
     h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models = structuredClone(legacy)
     const repaired = [
-      { id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', input: ['text', 'image'] },
-      { id: 'beam', name: 'Beam' },
+      {
+        id: 'deepseek-v4.1-flash',
+        name: 'DeepSeek V4.1 Flash',
+        input: ['text', 'image'],
+        reasoningEfforts: { off: null, low: 'low', high: 'high', max: 'max' },
+      },
+      { id: 'beam', name: 'Beam', reasoningEfforts: { off: null, minimal: 'minimal', low: 'low', medium: 'medium', high: 'high' } },
     ]
     new KeysManagerService(h.ctx as unknown as HostContext, h.store)
     // The record follows the profile, so the next process starts from the same
@@ -1678,7 +1683,7 @@ test('a refused capability repair warns and leaves state consistent', async () =
     const restarted = new KeysManagerService(h.ctx as unknown as HostContext, h.store)
     await eventually(() => assert.match(
       restarted.getState().warnings.join('\n'),
-      /Did not store the catalog image capability on the ollama-cloud profile: .*read-only/,
+      /Did not store the catalog capabilities on the ollama-cloud profile: .*read-only/,
     ))
     assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models, legacy)
     assert.deepEqual(record.models, legacy)
@@ -1743,7 +1748,11 @@ test('a capability repair starts no further write once shutdown has been request
     // The held write committed; the profile the loop never reached keeps its
     // pre-repair shape in both places.
     assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers[first].models, [
-      { ...legacy[first][0], input: ['text', 'image'] },
+      {
+        ...legacy[first][0],
+        input: ['text', 'image'],
+        reasoningEfforts: { off: null, low: 'low', high: 'high', max: 'max' },
+      },
     ])
     assert.deepEqual(h.settings.valueOf('llm-pi-ai').providers[second].models, legacy[second])
     assert.deepEqual(h.store.provider(second)!.models, legacy[second])
@@ -1763,7 +1772,14 @@ test('a repair whose record never persisted heals the record only', async () => 
     await h.service.addExtraProvider('ollama-cloud', 'main', 'sk-ollama')
     const record = h.store.provider('ollama-cloud')!
     const legacy = [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash' }]
-    const repaired = [{ id: 'deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', input: ['text', 'image'] }]
+    const repaired = [
+      {
+        id: 'deepseek-v4.1-flash',
+        name: 'DeepSeek V4.1 Flash',
+        input: ['text', 'image'],
+        reasoningEfforts: { off: null, low: 'low', high: 'high', max: 'max' },
+      },
+    ]
     record.models = structuredClone(legacy)
     h.settings.valueOf('llm-pi-ai').providers['ollama-cloud'].models = structuredClone(repaired)
     h.settings.mutateCalls.length = 0
