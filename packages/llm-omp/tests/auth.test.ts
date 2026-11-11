@@ -304,13 +304,20 @@ describe('cursor token refresh', () => {
 })
 
 describe('cursor account identity', () => {
-  it('reads the email from the profile of the account named by the token', async () => {
-    const { fetch, calls } = stubFetch(() => json({ sub: 'acct-9', email: ' dev@example.com ' }))
+  it('reads the email through the Connect RPC profile call for the token owner', async () => {
+    // 18.18.8 reads the profile over Connect RPC (`DashboardService/GetMe`),
+    // comparing the token's full `sub` with the reply's `authId`.
+    const { fetch, calls } = stubFetch(() => json({ authId: 'workos|acct-9', email: ' dev@example.com ' }))
 
     await expect(fetchCursorAccountEmail(AUTH_TOKEN, { fetch })).resolves.toBe('dev@example.com')
     expect(calls[0].url).toBe(CURSOR_AUTH.profileUrl)
+    expect(calls[0].init?.method).toBe('POST')
+    expect(calls[0].init?.body).toBe('{}')
     expect(calls[0].init?.headers).toMatchObject({
-      Cookie: `WorkosCursorSessionToken=${encodeURIComponent(`acct-9::${AUTH_TOKEN}`)}`,
+      Accept: 'application/json',
+      Authorization: `Bearer ${AUTH_TOKEN}`,
+      'Connect-Protocol-Version': '1',
+      'Content-Type': 'application/json',
     })
   })
 
@@ -319,7 +326,7 @@ describe('cursor account identity', () => {
     await expect(fetchCursorAccountEmail('not-a-jwt', { fetch: anonymous.fetch })).resolves.toBeUndefined()
     expect(anonymous.calls).toHaveLength(0)
 
-    const other = stubFetch(() => json({ sub: 'someone-else', email: 'x@example.com' }))
+    const other = stubFetch(() => json({ authId: 'workos|someone-else', email: 'x@example.com' }))
     await expect(fetchCursorAccountEmail(AUTH_TOKEN, { fetch: other.fetch })).resolves.toBeUndefined()
   })
 })
@@ -332,7 +339,7 @@ describe('cursor sign-in flow', () => {
         polls += 1
         return polls === 1 ? empty(404) : json({ accessToken: AUTH_TOKEN, refreshToken: 'refresh-1' })
       }
-      if (url === CURSOR_AUTH.profileUrl) return json({ sub: 'acct-9', email: 'dev@example.com' })
+      if (url === CURSOR_AUTH.profileUrl) return json({ authId: 'workos|acct-9', email: 'dev@example.com' })
       throw new Error(`unexpected request ${url}`)
     })
 

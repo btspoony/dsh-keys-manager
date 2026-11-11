@@ -121,14 +121,18 @@ describe('factory droid wire: model id picks the protocol', () => {
     expect(call.init?.method).toBe('POST')
     const headers = new Headers(call.init?.headers)
     // Factory's CLI identity, not DSH's: the backend gates on this tuple.
-    expect(headers.get('user-agent')).toBe('factory-cli/0.237.0')
-    expect(headers.get('x-client-version')).toBe('0.237.0')
+    expect(headers.get('user-agent')).toBe('factory-cli/1.1.0')
+    // 18.18.8: `X-Client-Version` carries the same `FACTORY_DROID_CLIENT_VERSION`
+    // as the user agent (`pi-catalog/src/wire/factory-droid.ts:13`).
+    expect(headers.get('x-client-version')).toBe('1.1.0')
     expect(headers.get('x-factory-client')).toBe('cli')
     expect(headers.get('authorization')).toBe('Bearer workos-token')
     expect(headers.get('x-api-provider')).toBeTruthy()
     expect(headers.get('x-session-id')).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(headers.get('x-assistant-message-id')).toBeTruthy()
-    expect(headers.get('x-stainless-lang')).toBe('js')
+    // 18.18.8 no longer announces the Stainless SDK identity on this route: the
+    // pin sets no `x-stainless-*` header anywhere in its factory-droid provider.
+    expect(headers.get('x-stainless-lang')).toBeNull()
 
     const body = JSON.parse(String(call.init?.body)) as { model: string; messages: unknown[] }
     // The row's own id is the upstream model here: the wire has no second alias.

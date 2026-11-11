@@ -115,7 +115,7 @@ describe('devin drift gate', () => {
     const wire = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/wire/devin.ts'), 'utf8')
     expect(wire).toContain('ideName: "devin-cli"')
     expect(wire).toContain('ideType: "chisel"')
-    expect(wire).toContain('ideVersion: "3000.11.3"')
+    expect(wire).toContain('ideVersion: "3000.11.205"')
     expect(wire).toContain('devin-session-token$')
     const rule = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl'), 'utf8')
     expect(rule).toContain('authorize-url "https://app.devin.ai/auth/cli/continue"')
