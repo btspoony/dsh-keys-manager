@@ -1436,6 +1436,84 @@ test('retry budget, key switch, cooldown, and success reset', async () => {
   }
 })
 
+test('a virtual fallback provider cools the managed key that served the inner request', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const key = provider.keys[0]
+    const failure = { code: 'QUOTA', message: 'usage limit reached' }
+    await h.service.selectKey('zai-coding-cn', 'session-chain')
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain', key.id, true, failure)
+    const result = await h.service.requestErrorListener({
+      provider: 'FallbacksChain',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-chain' } },
+    } as unknown as RequestErrorPayload, async () => undefined)
+    assert.equal(result, undefined)
+    assert.ok(key.cooldownUntil > Date.now())
+    assert.equal(key.lastFailureCode, 'QUOTA')
+    assert.equal(h.store.binding('session-chain', 'zai-coding-cn')!.keyId, key.id)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a virtual fallback provider ignores an external-credential attempt', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const key = provider.keys[0]
+    const failure = { code: 'QUOTA', message: 'usage limit reached' }
+    await h.service.selectKey('zai-coding-cn', 'session-chain-external')
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain-external', undefined, false, failure)
+    const next = vi.fn(async () => undefined)
+    const result = await h.service.requestErrorListener({
+      provider: 'FallbacksChain',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-chain-external' } },
+    } as unknown as RequestErrorPayload, next)
+    assert.equal(result, undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(key.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a virtual fallback provider does not cool a key for a request-shaped failure code', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const key = provider.keys[0]
+    const failure = { code: 'CONTEXT_WINDOW_EXCEEDED', message: 'prompt too large' }
+    await h.service.selectKey('zai-coding-cn', 'session-chain-context')
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain-context', key.id, true, failure)
+    const next = vi.fn(async () => undefined)
+    const result = await h.service.requestErrorListener({
+      provider: 'FallbacksChain',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-chain-context' } },
+    } as unknown as RequestErrorPayload, next)
+    assert.equal(result, undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(key.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
 test('request-shaped failures are delegated without cooling a key', async () => {
   const h = await harness()
   try {
