@@ -9475,7 +9475,10 @@ export class KeysManagerService {
       // A virtual route (FallbacksChain) has no provider row of its own, so the
       // payload's provider cannot attribute the failure. The linked attempt
       // names the real provider that served the inner request: cool that key so
-      // the next turn stops reusing it, and keep the binding as it is.
+      // the next turn stops reusing it, and keep the binding as it is. The
+      // branch returns next() and never re-enters the stream, so it deliberately
+      // does not await settleProjectionDemotion: a demotion started here only
+      // serves later requests.
       const realProvider = linked?.providerId
       if (
         linked?.usedManagedKey === true &&

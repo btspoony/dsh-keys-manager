@@ -1445,6 +1445,7 @@ test('a virtual fallback provider cools the managed key that served the inner re
     const failure = { code: 'QUOTA', message: 'usage limit reached' }
     await h.service.selectKey('zai-coding-cn', 'session-chain')
     ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain', key.id, true, failure)
+    const next = vi.fn(async () => undefined)
     const result = await h.service.requestErrorListener({
       provider: 'FallbacksChain',
       turn: 1,
@@ -1452,8 +1453,9 @@ test('a virtual fallback provider cools the managed key that served the inner re
       failure,
       signal: { aborted: false },
       agent: { session: { id: 'session-chain' } },
-    } as unknown as RequestErrorPayload, async () => undefined)
+    } as unknown as RequestErrorPayload, next)
     assert.equal(result, undefined)
+    assert.equal(next.mock.calls.length, 1)
     assert.ok(key.cooldownUntil > Date.now())
     assert.equal(key.lastFailureCode, 'QUOTA')
     assert.equal(h.store.binding('session-chain', 'zai-coding-cn')!.keyId, key.id)
@@ -1509,6 +1511,103 @@ test('a virtual fallback provider does not cool a key for a request-shaped failu
     assert.equal(result, undefined)
     assert.equal(next.mock.calls.length, 1)
     assert.equal(key.cooldownUntil, 0)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a virtual fallback provider cools a key on a mismatched managed route', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const provider = h.store.provider('zai-coding-cn')!
+    const key = provider.keys[0]
+    const failure = { code: 'QUOTA', message: 'usage limit reached' }
+    const selection = await h.service.selectKey('zai-coding-cn', 'session-chain-mismatch')
+    assert.equal(selection.key!.id, key.id)
+    // The user took the profile back: the managed provider now reports
+    // bindingState 'mismatch' while the manager still holds the key row.
+    h.settings.valueOf('llm-pi-ai').providers['zai-coding-cn'].apiKeyEnv = 'ZAI_CODING_CN_API_KEY'
+    assert.equal(h.service.getState().providers.find(entry => entry.provider === 'zai-coding-cn')!.bindingHealthy, false)
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain-mismatch', key.id, true, failure)
+    const bindingBefore = h.store.binding('session-chain-mismatch', 'zai-coding-cn')!
+    const next = vi.fn(async () => undefined)
+    const result = await h.service.requestErrorListener({
+      provider: 'zai-coding-cn',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-chain-mismatch' } },
+    } as unknown as RequestErrorPayload, next)
+    assert.equal(result, undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.ok(key.cooldownUntil > Date.now())
+    assert.equal(key.lastFailureCode, 'QUOTA')
+    assert.equal(h.store.binding('session-chain-mismatch', 'zai-coding-cn')!.keyId, bindingBefore.keyId)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a virtual fallback provider consumes the linked attempt once', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    const failure = { code: 'QUOTA', message: 'usage limit reached' }
+    await h.service.selectKey('zai-coding-cn', 'session-chain-once')
+    ;(h.service as any).recordStreamAttempt('zai-coding-cn', 'session-chain-once', key.id, true, failure)
+    const payload = {
+      provider: 'FallbacksChain',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-chain-once' } },
+    } as unknown as RequestErrorPayload
+    assert.equal(await h.service.requestErrorListener(payload, async () => undefined), undefined)
+    assert.ok(key.cooldownUntil > Date.now())
+    // Reset the markFailure dedupe window: only the consumed link can suppress
+    // a second cooling observation now.
+    key.cooldownUntil = 0
+    key.failureLevel = 0
+    key.lastFailureAt = 0
+    const markFailure = vi.spyOn(h.service as any, 'markFailure')
+    const next = vi.fn(async () => undefined)
+    assert.equal(await h.service.requestErrorListener(payload, next), undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(key.cooldownUntil, 0)
+    assert.equal(markFailure.mock.calls.length, 0)
+    markFailure.mockRestore()
+  } finally {
+    await h.close()
+  }
+})
+
+test('a virtual fallback provider ignores a linked attempt whose provider is unmanaged', async () => {
+  const h = await harness()
+  try {
+    await h.service.adoptProvider('zai-coding-cn')
+    const key = h.store.provider('zai-coding-cn')!.keys[0]
+    const failure = { code: 'QUOTA', message: 'usage limit reached' }
+    await h.service.selectKey('zai-coding-cn', 'session-chain-route')
+    ;(h.service as any).recordStreamAttempt('unmanaged-route', 'session-chain-route', key.id, true, failure)
+    const markFailure = vi.spyOn(h.service as any, 'markFailure')
+    const next = vi.fn(async () => undefined)
+    const result = await h.service.requestErrorListener({
+      provider: 'FallbacksChain',
+      turn: 1,
+      step: 1,
+      failure,
+      signal: { aborted: false },
+      agent: { session: { id: 'session-chain-route' } },
+    } as unknown as RequestErrorPayload, next)
+    assert.equal(result, undefined)
+    assert.equal(next.mock.calls.length, 1)
+    assert.equal(key.cooldownUntil, 0)
+    assert.equal(markFailure.mock.calls.length, 0)
+    markFailure.mockRestore()
   } finally {
     await h.close()
   }
