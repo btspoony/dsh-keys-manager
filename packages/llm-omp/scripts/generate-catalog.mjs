@@ -30,7 +30,7 @@
  * @module dsh-llm-omp-transports/generate-catalog
  */
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -609,7 +609,19 @@ ${body}
 `
 
   mkdirSync(dirname(provider.out), { recursive: true })
-  writeFileSync(provider.out, file)
+  // Write beside the target and rename over it: every invocation rewrites all
+  // tables, the drift gates spawn this script from several test files in
+  // parallel, and a plain write lets a concurrent reader observe a half-written
+  // file. A same-directory rename is atomic, so a reader sees either the old
+  // bytes or the new ones — and because the output is a pure function of the pin,
+  // both are the same bytes.
+  const temporary = `${provider.out}.${process.pid}.tmp`
+  try {
+    writeFileSync(temporary, file)
+    renameSync(temporary, provider.out)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
   console.log(
     `llm-omp: wrote ${reduced.length} ${provider.key} models from @oh-my-pi/pi-catalog@${catalogVersion} (${hash})`,
   )
