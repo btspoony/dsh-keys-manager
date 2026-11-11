@@ -342,3 +342,29 @@ describe('sanitizeReasoningEfforts', () => {
     expect(sanitizeReasoningEfforts(['low'])).toBeUndefined()
   })
 })
+
+describe('model ids that collide with Object.prototype', () => {
+  // Legal model ids the indexes never describe. A plain property lookup resolves
+  // an inherited member for them, which would write `reasoningEfforts: {}` — a
+  // declaration DSH refuses — and let the repair "heal" nothing.
+  for (const id of ['constructor', 'toString', '__proto__']) {
+    it(`leaves ${id} undescribed on an indexed extra route`, () => {
+      const [merged] = mergeModelCapabilities('ollama-cloud', [{ id }])
+
+      expect(merged.reasoningEfforts).toBeUndefined()
+      expect(merged.compat).toBeUndefined()
+      expect(repairModelCapabilities('ollama-cloud', [{ id }])).toBeUndefined()
+    })
+
+    it(`leaves ${id} undescribed on a route the pin does not describe`, () => {
+      // `litellm` is an extra route the pin has no rows for: the modality rule
+      // still gives it an explicit text input, the reasoning rule must not fire.
+      const [merged] = mergeModelCapabilities('litellm', [{ id }])
+
+      expect(merged.input).toEqual(['text'])
+      expect(merged.reasoningEfforts).toBeUndefined()
+      expect(merged.compat).toBeUndefined()
+      expect(repairModelCapabilities('litellm', [{ id }])).toBeUndefined()
+    })
+  }
+})

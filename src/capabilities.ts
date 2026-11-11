@@ -19,18 +19,31 @@ const TEXT_INPUT = ['text'] as const
 const TEXT_IMAGE_INPUT = ['text', 'image'] as const
 
 /**
+ * One own entry of a generated index.
+ *
+ * The indexes are plain object literals, and the keys looked up here come from
+ * outside: a route id or a model id a remote listing or a hand-edited profile
+ * supplied. A plain `index[key]` would resolve an inherited member for a legal
+ * id like `constructor`, `toString` or `__proto__` and turn it into a catalog
+ * fact — a prototype member is not an entry the pin wrote.
+ */
+function ownEntry<T>(index: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(index, key) ? index[key] : undefined
+}
+
+/**
  * The image-capable ids of one extra route: `[]` when the pin describes the
  * route with no image model, `undefined` when the route is not an extra one
  * (the installed DSH catalog answers for its own routes, not this index).
  */
 function imageIds(providerId: string): readonly string[] | undefined {
   if (!EXTRA_PROVIDER_MAP.has(providerId)) return undefined
-  return EXTRA_IMAGE_MODELS[providerId] ?? []
+  return ownEntry(EXTRA_IMAGE_MODELS, providerId) ?? []
 }
 
 /** The reasoning declarations of one extra route, keyed by model id. */
 function reasoningRows(providerId: string): Readonly<Record<string, ExtraReasoningRow>> {
-  return EXTRA_REASONING_EFFORTS[providerId] ?? {}
+  return ownEntry(EXTRA_REASONING_EFFORTS, providerId) ?? {}
 }
 
 /**
@@ -57,7 +70,9 @@ function withCapabilities(
   if (next.input === undefined && (declareText || imageSet.has(next.id))) {
     next = { ...next, input: imageSet.has(next.id) ? [...TEXT_IMAGE_INPUT] : [...TEXT_INPUT] }
   }
-  const declared = reasoning[next.id]
+  // Own keys only: `constructor`/`toString`/`__proto__` are legal model ids and
+  // must stay undescribed rows rather than resolve `Object.prototype`.
+  const declared = ownEntry(reasoning, next.id)
   if (declared !== undefined) {
     // A ladder the row already carries always wins.
     if (next.reasoningEfforts === undefined) next = { ...next, reasoningEfforts: { ...declared.efforts } }
@@ -112,10 +127,14 @@ export function mergeModelCapabilities(providerId: string, models: readonly Mode
 
 /**
  * Fill the capabilities the index knows into rows of a profile this manager
- * wrote before the index existed. Only a row that carries no `input` and no
- * `reasoningEfforts` changes; every other row is returned as it is, so a
- * repaired profile is byte-identical except for those rows. `undefined` means
- * there is nothing to repair and nothing to write.
+ * wrote before the index existed.
+ *
+ * A row changes when it carries no `input` and the pin marks it image, when it
+ * carries no `reasoningEfforts` and the pin describes its ladder, or — on an
+ * adaptive route — when the route's `compat.forceAdaptiveThinking` is missing
+ * even though the row brought its own ladder. Every other row is returned as it
+ * is, so a repaired profile is byte-identical except for those rows.
+ * `undefined` means there is nothing to repair and nothing to write.
  */
 export function repairModelCapabilities(providerId: string, models: readonly ModelRecord[]): ModelRecord[] | undefined {
   const image = imageIds(providerId)
