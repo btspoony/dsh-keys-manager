@@ -35,6 +35,7 @@ import * as baseShim from '../scripts/omp-shim/pi-utils'
 import * as googleShim from '../scripts/omp-shim/pi-utils-google'
 import { GOOGLE_ANTIGRAVITY_CATALOG_SOURCE, GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_CATALOG_SOURCE, GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
+import { GOOGLE_ANTIGRAVITY_FACTS } from '../src/google/route.js'
 import { googleAntigravityCatalogModels, googleGeminiCliCatalogModels } from '../src/index.js'
 import { openPinnedCatalog, pinnedRows } from './pinned-catalog'
 
@@ -132,6 +133,25 @@ describe('google drift gate', () => {
       expect(keys, key).toContain(key)
       expect(sha256(installedSourcePath(key)), key).toBe(manifest.sourceHashes[key])
     }
+  })
+
+  it('pins the Antigravity discovery identity to the one the pin announces', () => {
+    // The route copies the vendor client identity for its own discovery probe
+    // (`GOOGLE_ANTIGRAVITY_FACTS.discovery.userAgent`); the artifact builds its wire
+    // UA from the same tokens. Both halves are read off the pinned source here, so
+    // a pin that moves either one fails this gate instead of leaving the copy
+    // announcing a build the pin no longer models.
+    const headers = readFileSync(installedSourcePath('@oh-my-pi/pi-catalog/src/wire/gemini-headers.ts'), 'utf8')
+    const version = /DEFAULT_ANTIGRAVITY_VERSION = "([^"]+)"/.exec(headers)?.[1]
+    const changelist = /PI_AI_ANTIGRAVITY_CL \|\| "([^"]+)"/.exec(headers)?.[1]
+    expect(version, 'pin default version').toBeDefined()
+    expect(changelist, 'pin changelist').toBeDefined()
+
+    const userAgent = GOOGLE_ANTIGRAVITY_FACTS.discovery.userAgent
+    expect(userAgent).toContain(`antigravity/hub/${version} `)
+    expect(userAgent).toContain(`cl=${changelist})`)
+    // The wire UA the artifact actually sends is asserted literally in
+    // `adapter-wire-google.test.ts`, including the discovered-version case.
   })
 
   it('resolves the shim to its Google extension and reaches the real SSE/retry helpers', () => {

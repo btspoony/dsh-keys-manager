@@ -240,7 +240,7 @@ next turn replays the result through the goal transcript.
   the wire, and Cursor applies the catalog output limit server-side.
 - **Unofficial Devin client.** The transport presents the released Devin CLI
   identity (`ideName: "devin-cli"`, `ideType: "chisel"`, `ideVersion:
-  "3000.11.3"`) and a `connect-go` client header the omp sources copy from the
+  "3000.11.205"`) and a `connect-go` client header the omp sources copy from the
   CLI. Same posture as Cursor's S4: a first live turn rejected with `401`/`403`
   stops the route until a product decision, never a retry under another
   identity.
@@ -275,7 +275,7 @@ next turn replays the result through the goal transcript.
 - **Antigravity version lookup.** Before the first Antigravity request the
   artifact reads the client version from the public update manifest (D11),
   because the backend gates newer models on that version. A failed lookup is
-  silent and falls back to the pinned `2.19.1` for ten minutes; an explicit
+  silent and falls back to the pinned `2.26.0` for ten minutes; an explicit
   `PI_AI_ANTIGRAVITY_VERSION` skips the lookup. That is the only outbound
   request the routes make besides the vendor API itself.
 - **Google sign-in waits at most five minutes.** The loopback listener is

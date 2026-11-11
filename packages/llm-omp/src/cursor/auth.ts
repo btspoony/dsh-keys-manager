@@ -29,7 +29,8 @@ import { jwtExpiry, readJwtPayload } from '../jwt.js'
  *   (`CURSOR_CLIENT_VERSION`, the released CLI build whose protocol surface
  *   the bundled transport mirrors — it gates server features).
  *
- * `tests/build.test.ts` fails when either copy drifts from the installed pin.
+ * `tests/build.test.ts` fails when any of these three copies drifts from the
+ * installed pin.
  *
  * shortcut: reusing Cursor's vendor-internal OAuth client id and announcing a
  * released CLI build is not a sanctioned third-party client. The MIT licence

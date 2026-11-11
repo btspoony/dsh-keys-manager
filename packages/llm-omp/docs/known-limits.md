@@ -26,7 +26,7 @@ repository root docs.
 
 - The transport is an **unofficial Devin client**. It presents the released
   Devin CLI identity (`ideName: "devin-cli"`, `ideType: "chisel"`,
-  `ideVersion: "3000.11.3"`) and copies the CLI's `connect-go` client header;
+  `ideVersion: "3000.11.205"`) and copies the CLI's `connect-go` client header;
   the backend gates behavior on that tuple.
 - The MIT license covers the code, not the service. A first live turn rejected
   with `401`/`403` stops the route until the decision recorded as stop
@@ -57,7 +57,7 @@ repository root docs.
   rules capture: `GeminiCLI/0.46.0/<model> (platform; arch; terminal)` with
   `Client-Metadata` for `google-gemini-cli`, and
   `antigravity/hub/<version> (aidev_client; os_type=darwin; arch=arm64;
-  cl=963137146)` for `google-antigravity`.
+  cl=1005016104)` for `google-antigravity`.
 - Same posture as the other routes: the MIT license covers the code, not the
   service. A first live turn rejected with `401`/`403` on a valid token stops
   the route until the decision recorded as stop condition **S4** — never a
@@ -86,7 +86,7 @@ repository root docs.
   request left the header absent — the same wrapper the Devin handshake uses.
 - **The Antigravity version is discovered, not pinned.** The first request
   reads the public update manifest (D11) because the backend gates newer models
-  on the client version; a failed lookup is silent and falls back to `2.19.1`
+  on the client version; a failed lookup is silent and falls back to `2.26.0`
   for ten minutes, and `PI_AI_ANTIGRAVITY_VERSION` skips the lookup. This is
   the only outbound call besides the vendor API.
 - **Images are refused.** Both routes advertise text-only input and reject
@@ -103,7 +103,7 @@ repository root docs.
 - The route **ships**: the graph that once measured 327 modules / 16 991 893 B
   (issue `I-000253`) is built through the accepted entry-scoped substitutions, at
   200 modules / 2 008 434 B.
-- The transport is an **unofficial Factory client**: it presents `factory-cli/0.237.0` plus
+- The transport is an **unofficial Factory client**: it presents `factory-cli/1.1.0` plus
   the vendor identity headers the backend gates on.
 - **Three entry-scoped build substitutions** keep the artifact at ~2 MB: the model catalog is
   empty for this entry (data only; `models.ts` keeps its real code), `providers/register-builtins`
