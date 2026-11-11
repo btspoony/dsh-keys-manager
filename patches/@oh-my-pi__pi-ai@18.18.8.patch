@@ -1,8 +1,8 @@
 diff --git a/src/providers/cursor.ts b/src/providers/cursor.ts
-index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1c847ac3b 100644
+index 5c96ba498a8c9a613f45f9f91d2f7a7b3db748c9..60c9cd6f4329bab8b4108ade2beec41b0bbf8e43 100644
 --- a/src/providers/cursor.ts
 +++ b/src/providers/cursor.ts
-@@ -2162,6 +2162,7 @@ async function handleShellStreamArgs(
+@@ -2640,6 +2640,7 @@ async function handleShellStreamArgs(
  	runTransport: CursorMessageWriter,
  	execHandlers: CursorExecHandlers | undefined,
  	onToolResult: CursorToolResultHandler | undefined,
@@ -10,7 +10,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  ): Promise<void> {
  	const normalizedWorkingDirectory = args.workingDirectory || process.cwd();
  	const normalizedArgs: ShellArgs = { ...args, workingDirectory: normalizedWorkingDirectory };
-@@ -2173,10 +2174,31 @@ async function handleShellStreamArgs(
+@@ -2651,10 +2652,31 @@ async function handleShellStreamArgs(
  		hasExecHandlers: !!execHandlers,
  		hasShell: !!execHandlers?.shell,
  		hasShellStream: !!execHandlers?.shellStream,
@@ -42,7 +42,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  	// Buffer for incomplete ANSI sequences across chunks
  	let stdoutBuffer = "";
  	let stderrBuffer = "";
-@@ -2488,6 +2510,11 @@ async function handleExecServerMessage(
+@@ -3059,6 +3081,11 @@ async function runExecServerMessage(
  							offset: negativeOffset ? args.offset : undefined,
  							limit: negativeOffset ? args.limit : undefined,
  						};
@@ -54,7 +54,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			if (!editOwned) {
  				synthesizeCursorExecToolCall(
  					output,
-@@ -2495,9 +2522,12 @@ async function handleExecServerMessage(
+@@ -3066,9 +3093,12 @@ async function runExecServerMessage(
  					state,
  					args.toolCallId,
  					"read",
@@ -69,8 +69,8 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
 +					{ executed: !readHandoff },
  				);
  			}
- 			const { execResult: readResult, toolResult } = await resolveExecHandler(
-@@ -2510,9 +2540,9 @@ async function handleExecServerMessage(
+ 			const read = execHandlers?.read?.bind(execHandlers);
+@@ -3082,9 +3112,9 @@ async function runExecServerMessage(
  						result,
  						args.offset !== undefined || args.limit !== undefined || piReadPathHasRange(args.path),
  					),
@@ -82,7 +82,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			);
  			let execResult = readResult;
  			// StrReplace writes the returned bytes back. A truncated raw read would
-@@ -2595,22 +2625,35 @@ async function handleExecServerMessage(
+@@ -3167,22 +3197,35 @@ async function runExecServerMessage(
  			}
  			// Mirror the coding-agent bridge's arg mapping so live UI (from
  			// `tool_execution_start`) and rebuilt transcript (from this block)
@@ -127,7 +127,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			);
  			sendExecClientMessage(runTransport, execMsg, "grepResult", execResult);
  			return;
-@@ -2621,11 +2664,25 @@ async function handleExecServerMessage(
+@@ -3193,11 +3236,25 @@ async function runExecServerMessage(
  			const editOwned = isEditOwnedToolCallId(state, output, args.toolCallId);
  			// Match the bridge: prefer `fileText`, fall back to decoded `fileBytes`.
  			const content = args.fileText ?? new TextDecoder().decode(args.fileBytes ?? new Uint8Array());
@@ -157,7 +157,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			}
  			const write = execHandlers?.write?.bind(execHandlers);
  			const writeHandler = write
-@@ -2648,9 +2705,9 @@ async function handleExecServerMessage(
+@@ -3220,9 +3277,9 @@ async function runExecServerMessage(
  						},
  						toolResult,
  					),
@@ -169,7 +169,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			);
  			if (editOwned) markEditToolCallPaired(state, args.toolCallId);
  			sendExecClientMessage(runTransport, execMsg, "writeResult", execResult);
-@@ -2677,20 +2734,44 @@ async function handleExecServerMessage(
+@@ -3249,20 +3306,44 @@ async function runExecServerMessage(
  			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
  			const normalizedArgs: ShellArgs = { ...args, workingDirectory: args.workingDirectory || process.cwd() };
  			// Match the bridge (`CursorExecHandlers.shell`): map `workingDirectory`
@@ -222,7 +222,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			);
  			const sanitizedExecResult = sanitizeShellExecResult(execResult);
  			sendExecClientMessage(runTransport, execMsg, "shellResult", sanitizedExecResult);
-@@ -2699,12 +2780,31 @@ async function handleExecServerMessage(
+@@ -3271,12 +3352,31 @@ async function runExecServerMessage(
  		case "shellStreamArgs": {
  			const args = execMsg.message.value;
  			if (!args.toolCallId) args.toolCallId = crypto.randomUUID();
@@ -260,7 +260,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			return;
  		}
  		case "backgroundShellSpawnArgs": {
-@@ -3173,23 +3273,44 @@ async function handleExecServerMessage(
+@@ -3753,23 +3853,44 @@ async function runExecServerMessage(
  		}
  		case "miniSweAgentBashArgs": {
  			// Same `ShellArgs`/`ShellResult` pair as `shellArgs`, under its own frame
@@ -313,7 +313,7 @@ index 58c59fb46eeeea5faeeb89276bce9b0b10d6df42..ad7638754d0ed4ef514f2f446bfe40c1
  			);
  			sendExecClientMessage(runTransport, execMsg, "miniSweAgentBashResult", sanitizeShellExecResult(execResult));
  			return;
-@@ -4971,6 +5092,103 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
+@@ -5569,6 +5690,103 @@ function buildMcpResultFromToolResult(_mcpCall: CursorMcpCall, toolResult: ToolR
  
  const MCP_EXTERNAL_HANDOFF_MESSAGE = mcpExternalHandoffMessage.trim();
  

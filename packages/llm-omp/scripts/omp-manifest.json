@@ -1,14 +1,14 @@
 {
-  "ompVersion": "18.12.6",
-  "piCatalogVersion": "18.12.6",
-  "piUtilsVersion": "18.12.6",
+  "ompVersion": "18.18.8",
+  "piCatalogVersion": "18.18.8",
+  "piUtilsVersion": "18.18.8",
   "esbuildVersion": "0.28.2",
   "entries": {
     "cursor": {
       "entry": "lib/omp/cursor.mjs",
       "metafile": "lib/omp/cursor.metafile.json",
-      "moduleCount": 133,
-      "bytes": 1403948,
+      "moduleCount": 142,
+      "bytes": 1472573,
       "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
         "pi-utils": [
@@ -44,8 +44,8 @@
     "devin": {
       "entry": "lib/omp/devin.mjs",
       "metafile": "lib/omp/devin.metafile.json",
-      "moduleCount": 121,
-      "bytes": 1284549,
+      "moduleCount": 131,
+      "bytes": 1334952,
       "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
         "pi-utils": [
@@ -79,8 +79,8 @@
     "google": {
       "entry": "lib/omp/google.mjs",
       "metafile": "lib/omp/google.metafile.json",
-      "moduleCount": 131,
-      "bytes": 1309726,
+      "moduleCount": 144,
+      "bytes": 1367585,
       "piUtilsShim": "scripts/omp-shim/pi-utils-google.ts",
       "shimImports": {
         "pi-utils": [
@@ -114,13 +114,14 @@
     "factory-droid": {
       "entry": "lib/omp/factory-droid.mjs",
       "metafile": "lib/omp/factory-droid.metafile.json",
-      "moduleCount": 202,
-      "bytes": 2022010,
+      "moduleCount": 228,
+      "bytes": 2178824,
       "piUtilsShim": "scripts/omp-shim/pi-utils-factory-droid.ts",
       "shimImports": {
         "pi-utils": [
           "$env",
           "$flag",
+          "*",
           "APP_NAME",
           "APP_URL",
           "LRUCache",
@@ -161,8 +162,8 @@
     "gitlab-duo": {
       "entry": "lib/omp/gitlab-duo.mjs",
       "metafile": "lib/omp/gitlab-duo.metafile.json",
-      "moduleCount": 232,
-      "bytes": 2666975,
+      "moduleCount": 260,
+      "bytes": 2823639,
       "piUtilsShim": "scripts/omp-shim/pi-utils-gitlab-duo.ts",
       "shimImports": {
         "pi-utils": [
@@ -209,8 +210,8 @@
     "gitlab-duo-agent": {
       "entry": "lib/omp/gitlab-duo-agent.mjs",
       "metafile": "lib/omp/gitlab-duo-agent.metafile.json",
-      "moduleCount": 118,
-      "bytes": 1008502,
+      "moduleCount": 125,
+      "bytes": 1058950,
       "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
         "pi-utils": [
@@ -291,49 +292,50 @@
     ]
   },
   "sourceHashes": {
-    "@oh-my-pi/pi-ai/src/providers/cursor.ts": "sha256:959f700562fe03ce00f7b07d106eca3224cb78df4359cf463987476a339cbd1a",
-    "@oh-my-pi/pi-catalog/src/discovery/cursor-proto.ts": "sha256:fc98341073be49c4f1b81af94204444a0421ed98a6805de51cfc342cbd772e99",
-    "@oh-my-pi/pi-catalog/src/models.json": "sha256:b0d9516e8c6cb4254b720e1e2983635776f272057ea6624f753498a3ea883152",
+    "@oh-my-pi/pi-ai/src/providers/cursor.ts": "sha256:b33efa0c2e12e0b8630831b217e7b3ff35d43d1a2c2beaadfb779499fa8e1367",
+    "@oh-my-pi/pi-catalog/src/discovery/cursor-proto.ts": "sha256:1079721f5231dbaf94b944fe6b1342e86ad72eedd8af319ff6a4ee883c73f9ec",
+    "@oh-my-pi/pi-catalog/src/models.json": "sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612",
     "@oh-my-pi/pi-catalog/src/wire/cursor.ts": "sha256:1fead4198e3622d8d0b40ea83cb718f2927cf51a05b598ffd048212aa1a7e886",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/cursor.kdl": "sha256:91e418257bb11fa6d32c0eadcbe2f25947d39ef2fcc0577fcf17de1694febe4b",
     "@oh-my-pi/pi-utils/src/json-lexer.ts": "sha256:c3ccb7932cd36a39db5c6a2f0cd331c8f91dddb56e621aa29b1f61b4c35757ef",
-    "@oh-my-pi/pi-utils/src/json-parse.ts": "sha256:9f3388c00ee71ac7a0feddbd362fd7ac907ec7e67c28e30e745c38acff78a6bf",
+    "@oh-my-pi/pi-utils/src/json-parse.ts": "sha256:9a5dc5dd2a180fae6066ada73bde5cf3652c1853cf249ca862d60a6631538893",
     "@oh-my-pi/pi-ai/src/providers/cursor-external-tool-handoff.md": "sha256:620487ffda8ccfb39fa60700d9aae63a752c8f4359cf0939ddb125734d668b5d",
-    "@oh-my-pi/pi-ai/src/providers/devin.ts": "sha256:d2b8e340595aef93621424df07cbdb7e6fd0d67be3664f22343e009f4733791e",
+    "@oh-my-pi/pi-ai/src/providers/devin.ts": "sha256:ace2e245b3c1742bf27c7b35cdf7aec6259a7cc578b3e6c53d603c0b7066939f",
     "@oh-my-pi/pi-ai/src/providers/connect-frame.ts": "sha256:5811467269cf1e4d2309a723164da605b76cf135326a0b1e618d17af6e6b11ab",
-    "@oh-my-pi/pi-catalog/src/discovery/devin-proto.ts": "sha256:b2feb659ac17452c57b3ec16481cc738ae5ff9e77da42182a66bc3f875abed7d",
+    "@oh-my-pi/pi-catalog/src/discovery/devin-proto.ts": "sha256:801b7469300585eeb2b6c9ce6b2d95b94b64d89c0db5ce4cf370b8352da81062",
     "@oh-my-pi/pi-catalog/src/discovery/protobuf.ts": "sha256:aff266ce3d1375dcbedaca27cb2db35571e78f9d37424caaedc6ea46195383e5",
-    "@oh-my-pi/pi-catalog/src/wire/devin.ts": "sha256:8e10714315c8b096f1d12e408e077ab1cafd6f2afd94cac3df117a4c1140b652",
+    "@oh-my-pi/pi-catalog/src/wire/devin.ts": "sha256:a6a83f5a16ca01059b93c6dab37d691ea379b6869e51adfd736ee6b1f15dc1da",
     "@oh-my-pi/pi-catalog/src/wire/devin-proto.ts": "sha256:a4d0e43ba2f3a24df749ea61ed4180fee9c25e425d16b6f31f5fc6d2811bf88b",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/devin.kdl": "sha256:bb6de7869e3a6fce610ff517087fb8b64491a3b5a38df7ff91bea61e5ad7ba49",
-    "@oh-my-pi/pi-ai/src/providers/google-gemini-cli.ts": "sha256:6f65dc1870d83407ec02a5f38d92c48982c3f210a4c25e2a1ce9f397f6fd0913",
-    "@oh-my-pi/pi-ai/src/providers/google-shared.ts": "sha256:85145665024481bf4d8a439f2c3563db33a8e7b25bc0cd5d295c42ef8dd099ad",
-    "@oh-my-pi/pi-ai/src/providers/google-types.ts": "sha256:817303f60b6ae82a5cffcd31db3d422d647ba65cde3eeea458f1e9b20a42b9d3",
+    "@oh-my-pi/pi-ai/src/providers/google-gemini-cli.ts": "sha256:28a9da1d122df159d8881f039e997195b37f266960a8429534fe00ec848df2b8",
+    "@oh-my-pi/pi-ai/src/providers/google-shared.ts": "sha256:9f355cfcc3d561a3ca755fc7646d360b03c00c9a6f24350c49fd67c44ed6d0b1",
+    "@oh-my-pi/pi-ai/src/providers/google-types.ts": "sha256:95f502aa96786a8fc46a175b903b8366f8afa6df4ea15b23ec2941a36f9996bf",
     "@oh-my-pi/pi-ai/src/providers/anthropic-images.ts": "sha256:b4daf8e329a5abf49abe7b6d858c279b61073f2f4b0f1311cd9b637542430217",
-    "@oh-my-pi/pi-catalog/src/wire/gemini-headers.ts": "sha256:39f9533ee0021195b8c5bea2442a966fa947e0c2e0574be78598cce56e92550a",
+    "@oh-my-pi/pi-catalog/src/wire/gemini-headers.ts": "sha256:e87dcf484ba86b0467b4f413bb044bd8644967fffa17017b9dfa1a919fe3617b",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/google-gemini-cli.kdl": "sha256:a681b993a441a0db450e1c76f996fbf6024e1eaf8452eded3bfdf7fd117caa4c",
-    "@oh-my-pi/pi-catalog/src/compat/rules/auth/google-antigravity.kdl": "sha256:f5102c481a585403bf3a7611ebbb32a679fce9263d1793ebe53905ea15ba6c6d",
-    "@oh-my-pi/pi-ai/src/providers/factory-droid.ts": "sha256:c7dd831870251bafdc2d253b8220c0f422044ef166ba37dd052c326789a73143",
-    "@oh-my-pi/pi-ai/src/providers/factory-droid/gemini.ts": "sha256:b49d8288a07d6eb324ca730e1789fd401ac305cb88d32c5d33ac1545b8622dca",
-    "@oh-my-pi/pi-ai/src/providers/factory-droid/droid-identity.md": "sha256:637140c222d1d3d9c23d678815f7c10fe95cee074cefadbaef0d0db0cb489f1b",
-    "@oh-my-pi/pi-ai/src/providers/register-builtins.ts": "sha256:86411e55da816e2d5e52759e219c9b644d42128b38fcbff3497579bf5906d355",
-    "@oh-my-pi/pi-ai/src/stream.ts": "sha256:d2dd74a466cf770493e7ad2ce7e7e0b3b19e0cf40c11bf11da6a98829d289bbe",
-    "@oh-my-pi/pi-ai/src/env-api-key.ts": "sha256:06f6b5c234d70ed53b59411271cd947410ca24f0ac547895877c2d7877e331ac",
-    "@oh-my-pi/pi-ai/src/providers/anthropic.ts": "sha256:f797fb955391b7a29f5f506b2b2e658e7993eda00694d9c06629f6aa945d0053",
-    "@oh-my-pi/pi-ai/src/providers/openai-completions.ts": "sha256:106f6c7de0782b682b14140889a77361792d647a9d430d6a7b5918e8ee3d5652",
-    "@oh-my-pi/pi-ai/src/providers/openai-responses.ts": "sha256:d69cbc62ac06aca1bc9828610cff17cb199c8a7380dfa74110f60b26f5b8b9ce",
-    "@oh-my-pi/pi-ai/src/auth-retry.ts": "sha256:2fe9793344bf83b898531c1302ffb6eff7fe43d96aee0cc0286b3e96d7c6a98f",
+    "@oh-my-pi/pi-catalog/src/compat/rules/auth/google-antigravity.kdl": "sha256:0fcc1c6e650198d3306db3a23c06127968675c32c59c326468b88fdcf30616e0",
+    "@oh-my-pi/pi-ai/src/providers/factory-droid.ts": "sha256:58b7105226a860fc9926533c72a2e64563d88bf8b19e4a33cfd1a7e20ffdf96f",
+    "@oh-my-pi/pi-ai/src/providers/factory-droid/gemini.ts": "sha256:1ff93180b19661b47f147650791f80577b10b232bdeeb3e1bcf1ee6dd23634bf",
+    "@oh-my-pi/pi-ai/src/providers/factory-droid/droid-identity.md": "sha256:389b9faa6de5eb3dc9b288f349af41346f44ec60122504578cbe226f55803aff",
+    "@oh-my-pi/pi-ai/src/providers/register-builtins.ts": "sha256:e123d58caa7e1da16c91ace3ba3adde12557fbc4fe77a56f33119153b16f3f66",
+    "@oh-my-pi/pi-ai/src/stream.ts": "sha256:b784eee1a038c9c736430a8bea79813aa0f884952ae0d831a58a49939dad16bb",
+    "@oh-my-pi/pi-ai/src/env-api-key.ts": "sha256:10d9c356f020878dd469b93397d7622f7d813a996e245e8848b4f78eec308930",
+    "@oh-my-pi/pi-ai/src/providers/anthropic.ts": "sha256:f117a4876c0f117e9ebb737af1f3f03b4bc54ca8d50e96f3abe80622f16377d1",
+    "@oh-my-pi/pi-ai/src/providers/openai-completions.ts": "sha256:6ffe2a2275623052066216936f522d28007ee97cfc3b046ee72dac86ccd225aa",
+    "@oh-my-pi/pi-ai/src/providers/openai-responses.ts": "sha256:445e12623b711c3df3135716a13f1ed7bc1e46e1f87c6c0bbb03121e70d804da",
+    "@oh-my-pi/pi-ai/src/providers/responses-websocket-connection.ts": "sha256:89a244570e7697efaa9e1671f20f26e4989635cb5f62418c2e42b0849ae0a342",
+    "@oh-my-pi/pi-ai/src/auth-retry.ts": "sha256:b52feef6a3bbed199911d397ab2dd7f0de600880c9d3500cebc5dc150cea37f8",
     "@oh-my-pi/pi-ai/src/utils/deterministic-id.ts": "sha256:7704483833ecc515355ab5ea064042aff9228860bc97aa55e5a822f7708833b7",
-    "@oh-my-pi/pi-catalog/src/wire/factory-droid.ts": "sha256:c43cae345a4f418e64b216008cdeb81d426f7b9822109984b2c0a2ddef037035",
-    "@oh-my-pi/pi-catalog/src/compat/factory-droid.ts": "sha256:fe507dd59c32e6988b60569ed931445f763acf056e373a65e9b444d7e5e4bc8d",
-    "@oh-my-pi/pi-catalog/src/compat/rules.json": "sha256:1b63c611e04b497751acbbe7ec7c12e7f8aff9dd6a2ffcd936f9f719ac2077ba",
+    "@oh-my-pi/pi-catalog/src/wire/factory-droid.ts": "sha256:77dca421f7238f8211424283e2a52d8f81ad3bc93d0441902829bf235e9b5c86",
+    "@oh-my-pi/pi-catalog/src/compat/factory-droid.ts": "sha256:d7f606fd55014548ddfdecc433daf72e0769d9a9eaa27caaa08f2b5e48c5869f",
+    "@oh-my-pi/pi-catalog/src/compat/rules.json": "sha256:2411edf732aa8e4162b9c871578d8abdcdb4ff00679ca1a5edacf5ee4756dd8a",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/factory-droid.kdl": "sha256:da78b2ffafc1233de69829a1d20a6b3d82e3dbcbe4f3a774b2d2472151242988",
-    "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow.ts": "sha256:4423bf48c93c1d09e42b110c060d6fcd0c3a0554085f227d8a93b966eec314b1",
-    "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow-chatml-note.md": "sha256:9f737714289af4e2d5193c8e60216b9ca1978113bd438cd71b4c4cb6226c078b",
+    "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow.ts": "sha256:9810cf5d638c85d77e2f4c7a0e7b074ec984f37b39ac827b0c4612f0f7627fbc",
+    "@oh-my-pi/pi-ai/src/providers/gitlab-duo-workflow-chatml-note.md": "sha256:a7515461d078aefde75918f34dc4088f1b7100e4b4c25182d154186800adeafd",
     "@oh-my-pi/pi-catalog/src/discovery/gitlab-duo-workflow.ts": "sha256:74b884bd4b2a319e514fb15226772a262deec7402fd1f47099d4a2955e5f956e",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo-agent.kdl": "sha256:c02c7f89fcf52375cbb6f01491c5dec4f4b71f6fc5c99c22412271e9b7ed44c9",
-    "@oh-my-pi/pi-ai/src/providers/gitlab-duo.ts": "sha256:b1e6f18a16b071e3101a7d14c861e0a5529de5be64fcb147a226dba0828f7805",
-    "@oh-my-pi/pi-catalog/src/provider-models/special.ts": "sha256:a6ea8e2bbb5bd9fc92c72ef2b7738510b7ed0252d630c33416becb9876a39967",
+    "@oh-my-pi/pi-ai/src/providers/gitlab-duo.ts": "sha256:34cf0a7b9314cfa012f329540eb2d4ea8d2124cef8c69a234971132e81d0f65a",
+    "@oh-my-pi/pi-catalog/src/provider-models/special.ts": "sha256:a37424973f45e20150130a364c4964ff4796ce05083d1d9a54df3c1032c8e715",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/gitlab-duo.kdl": "sha256:9b96d43c8a00ef95ab34519779558b330b16244d93f604d1d9f70313e2781548"
   }
 }
