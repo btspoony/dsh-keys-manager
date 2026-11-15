@@ -113,9 +113,10 @@ async function withCredentialErrors<T>(write: () => Promise<T>): Promise<T> {
   } catch (cause) {
     if (cause instanceof LlmError) throw cause
     if (cause instanceof GitLabAuthError) {
-      throw new LlmError(`llm-omp-transports: the GitLab sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
-        cause,
-      })
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: the GitLab sign-in failed — ${cause.message}`,
+        code: 'AUTH_FAILED',
+      }, { cause })
     }
     throw cause
   }
@@ -171,10 +172,10 @@ function resolveWith(
         if (live === undefined) return undefined
         if (live.expires === undefined || live.expires - REFRESH_WINDOW_MS > now()) return undefined
         if (live.refresh === undefined) {
-          throw new LlmError(
-            `llm-omp-transports: the ${label} grant stored at ${key} has no refresh token; sign in again`,
-            'REAUTH_REQUIRED',
-          )
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: the ${label} grant stored at ${key} has no refresh token; sign in again`,
+            code: 'REAUTH_REQUIRED',
+          })
         }
         const refreshed = await refreshGitLabToken(live.refresh, {
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),

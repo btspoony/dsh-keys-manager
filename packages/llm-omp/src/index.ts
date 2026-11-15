@@ -538,7 +538,10 @@ export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAu
         // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
         if (session.signal.aborted) throw cause
         if (cause instanceof DevinAuthError) {
-          throw new LlmError(`llm-omp-transports: Devin sign-in failed — ${cause.message}`, 'AUTH_FAILED', { cause })
+          throw LlmError.fromFailure(
+            { message: `llm-omp-transports: Devin sign-in failed — ${cause.message}`, code: 'AUTH_FAILED' },
+            { cause },
+          )
         }
         throw cause
       }
@@ -608,9 +611,10 @@ function googleAuthorizationFlow(facts: GoogleRouteFacts, options: GoogleFlowOpt
         // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
         if (session.signal.aborted) throw cause
         if (cause instanceof GoogleAuthError) {
-          throw new LlmError(`llm-omp-transports: ${facts.label} sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
-            cause,
-          })
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: ${facts.label} sign-in failed — ${cause.message}`,
+            code: 'AUTH_FAILED',
+          }, { cause })
         }
         throw cause
       }
@@ -692,9 +696,10 @@ export function factoryDroidAuthorizationFlow(options: FactoryDroidFlowOptions =
         // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
         if (session.signal.aborted) throw cause
         if (cause instanceof FactoryDroidAuthError) {
-          throw new LlmError(`llm-omp-transports: Factory Droid sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
-            cause,
-          })
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: Factory Droid sign-in failed — ${cause.message}`,
+            code: 'AUTH_FAILED',
+          }, { cause })
         }
         throw cause
       }
@@ -769,9 +774,10 @@ export function gitlabDuoAuthorizationFlow(options: GitLabFlowOptions = {}): Cur
       } catch (cause) {
         if (session.signal.aborted) throw cause
         if (cause instanceof GitLabAuthError) {
-          throw new LlmError(`llm-omp-transports: GitLab Duo sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
-            cause,
-          })
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: GitLab Duo sign-in failed — ${cause.message}`,
+            code: 'AUTH_FAILED',
+          }, { cause })
         }
         throw cause
       }
@@ -833,9 +839,10 @@ export function gitlabDuoAgentAuthorizationFlow(options: GitLabFlowOptions = {})
         // An abort is the caller withdrawing; the seam turns it into a cancelled attempt.
         if (session.signal.aborted) throw cause
         if (cause instanceof GitLabAuthError) {
-          throw new LlmError(`llm-omp-transports: GitLab Duo Agent sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
-            cause,
-          })
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: GitLab Duo Agent sign-in failed — ${cause.message}`,
+            code: 'AUTH_FAILED',
+          }, { cause })
         }
         throw cause
       }
@@ -882,11 +889,10 @@ function bundledTransport<Model, Options>(
         if (typeof candidate !== 'function') throw new Error(`the artifact exports no ${exportName}`)
         stream = candidate as OmpTransportOf<Model, Options>
       } catch (cause) {
-        throw new LlmError(
-          `llm-omp-transports: the bundled ${label} transport is unavailable; run \`pnpm build\` in the transports package`,
-          TRANSPORT_UNAVAILABLE,
-          { cause },
-        )
+        throw LlmError.fromFailure({
+          message: `llm-omp-transports: the bundled ${label} transport is unavailable; run \`pnpm build\` in the transports package`,
+          code: TRANSPORT_UNAVAILABLE,
+        }, { cause })
       }
       yield* stream(model, context, options)
     })()

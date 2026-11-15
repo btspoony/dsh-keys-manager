@@ -123,10 +123,10 @@ export function createCursorAccess(
         // Another process refreshed it between the read and the lock.
         if (live.expires > now()) return undefined
         if (live.refresh === undefined) {
-          throw new LlmError(
-            `llm-omp-transports: the Cursor grant stored at ${CURSOR_CREDENTIAL_KEY} has no refresh token; sign in again`,
-            'REAUTH_REQUIRED',
-          )
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: the Cursor grant stored at ${CURSOR_CREDENTIAL_KEY} has no refresh token; sign in again`,
+            code: 'REAUTH_REQUIRED',
+          })
         }
         const refreshed = await refreshCursorToken(live.refresh, { fetch: options.fetch, signal })
         // A turn cancelled while the exchange ran must not commit the token it
@@ -158,11 +158,10 @@ async function withCredentialErrors<T>(write: () => Promise<T>): Promise<T> {
   } catch (cause) {
     if (cause instanceof LlmError) throw cause
     if (cause instanceof CursorAuthError) {
-      throw new LlmError(
-        `llm-omp-transports: Cursor sign-in failed — ${cause.message}`,
-        cause.failure === 'reauth' ? 'REAUTH_REQUIRED' : 'AUTH_FAILED',
-        { cause },
-      )
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: Cursor sign-in failed — ${cause.message}`,
+        code: cause.failure === 'reauth' ? 'REAUTH_REQUIRED' : 'AUTH_FAILED',
+      }, { cause })
     }
     throw cause
   }

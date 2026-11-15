@@ -123,10 +123,10 @@ export function createFactoryDroidAccess(
         // Another writer refreshed it between the read and the lock.
         if (live.expires === undefined || live.expires - REFRESH_WINDOW_MS > now()) return undefined
         if (live.refresh === undefined) {
-          throw new LlmError(
-            `llm-omp-transports: the Factory Droid grant stored at ${FACTORY_DROID_CREDENTIAL_KEY} has no refresh token; sign in again`,
-            'REAUTH_REQUIRED',
-          )
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: the Factory Droid grant stored at ${FACTORY_DROID_CREDENTIAL_KEY} has no refresh token; sign in again`,
+            code: 'REAUTH_REQUIRED',
+          })
         }
         const refreshed = await refreshFactoryDroidToken(live, { ...options, signal })
         return {
@@ -226,9 +226,10 @@ async function withCredentialErrors<T>(write: () => Promise<T>): Promise<T> {
   } catch (cause) {
     if (cause instanceof LlmError) throw cause
     if (cause instanceof FactoryDroidAuthError) {
-      throw new LlmError(`llm-omp-transports: Factory Droid sign-in failed — ${cause.message}`, 'AUTH_FAILED', {
-        cause,
-      })
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: Factory Droid sign-in failed — ${cause.message}`,
+        code: 'AUTH_FAILED',
+      }, { cause })
     }
     throw cause
   }
