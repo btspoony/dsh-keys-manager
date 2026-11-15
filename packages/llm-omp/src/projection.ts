@@ -906,10 +906,10 @@ function projectTools(options: GenerateOptions<string>, profile: RouteProfile): 
   for (const tool of options.tools) {
     const reservedFor = dshToolName(tool.name, profile)
     if (reservedFor !== tool.name) {
-      throw new LlmError(
-        `llm-omp-transports: the ${profile.provider} route reserves the tool name "${tool.name}" for the "${reservedFor}" tool; the DSH tool must be renamed`,
-        TOOL_ALIAS_COLLISION,
-      )
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: the ${profile.provider} route reserves the tool name "${tool.name}" for the "${reservedFor}" tool; the DSH tool must be renamed`,
+        code: TOOL_ALIAS_COLLISION,
+      })
     }
     const name = wireToolName(tool.name, profile)
     byName.set(name, { name, description: tool.description, parameters: tool.parameters })
@@ -968,10 +968,10 @@ function resolveWireModelId(row: CursorModelRow, effort: string | undefined): st
  * future producer; fail loudly rather than rewriting the history.
  */
 function misplacedSystem(profile: RouteProfile): LlmError {
-  return new LlmError(
-    `llm-omp-transports: a system message after a non-system message cannot be projected; the ${profile.provider} transport carries system text only ahead of the conversation`,
-    CONTENT_UNSUPPORTED,
-  )
+  return LlmError.fromFailure({
+    message: `llm-omp-transports: a system message after a non-system message cannot be projected; the ${profile.provider} transport carries system text only ahead of the conversation`,
+    code: CONTENT_UNSUPPORTED,
+  })
 }
 
 /** Collect a system-role message's text blocks; anything else is unsupported input. */
@@ -1090,14 +1090,14 @@ function toolArguments(block: ToolCallBlock): Readonly<Record<string, unknown>> 
 }
 
 function invalidToolArguments(detail: string): LlmError {
-  return new LlmError(`llm-omp-transports: ${detail}`, TOOL_ARGUMENTS_INVALID)
+  return LlmError.fromFailure({ message: `llm-omp-transports: ${detail}`, code: TOOL_ARGUMENTS_INVALID })
 }
 
 function unsupportedContent(kind: string, role: string, profile: RouteProfile): LlmError {
-  return new LlmError(
-    `llm-omp-transports: the ${profile.provider} route carries text, reasoning and tool calls only; ${role} message content block "${kind}" is not supported`,
-    CONTENT_UNSUPPORTED,
-  )
+  return LlmError.fromFailure({
+    message: `llm-omp-transports: the ${profile.provider} route carries text, reasoning and tool calls only; ${role} message content block "${kind}" is not supported`,
+    code: CONTENT_UNSUPPORTED,
+  })
 }
 
 /**
@@ -1196,7 +1196,10 @@ export async function* projectEvents(
         return
       default: {
         const kind = (event as { type?: unknown }).type
-        throw new LlmError(`llm-omp-transports: unrecognized ${profile.provider} event "${String(kind)}"`, UNKNOWN_EVENT)
+        throw LlmError.fromFailure({
+          message: `llm-omp-transports: unrecognized ${profile.provider} event "${String(kind)}"`,
+          code: UNKNOWN_EVENT,
+        })
       }
     }
   }
@@ -1228,10 +1231,10 @@ function toolCallOf(
 ): OmpToolCallBlock {
   const block = partial?.content[contentIndex]
   if (block?.type !== 'toolCall' || typeof block.id !== 'string' || typeof block.name !== 'string') {
-    throw new LlmError(
-      `llm-omp-transports: ${profile.provider} tool-call event at index ${contentIndex} carries no call block`,
-      MALFORMED_TOOL_CALL,
-    )
+    throw LlmError.fromFailure({
+      message: `llm-omp-transports: ${profile.provider} tool-call event at index ${contentIndex} carries no call block`,
+      code: MALFORMED_TOOL_CALL,
+    })
   }
   return block as OmpToolCallBlock
 }
@@ -1272,10 +1275,10 @@ function doneFinish(
     }
     return finishOf('stop')
   }
-  throw new LlmError(
-    `llm-omp-transports: unrecognized ${profile.provider} stop reason "${String(reason)}"`,
-    UNKNOWN_FINISH,
-  )
+  throw LlmError.fromFailure({
+    message: `llm-omp-transports: unrecognized ${profile.provider} stop reason "${String(reason)}"`,
+    code: UNKNOWN_FINISH,
+  })
 }
 
 /**

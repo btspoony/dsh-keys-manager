@@ -141,7 +141,7 @@ describe('OmpCursorAdapter text streaming', () => {
     const { transport, calls } = scriptedTransport('cursor-text.jsonl')
     const adapter = new OmpCursorAdapter({
       access: async () => {
-        throw new LlmError('llm-omp-transports: Cursor ended this session; sign in again', 'REAUTH_REQUIRED')
+        throw LlmError.fromFailure({ message: 'llm-omp-transports: Cursor ended this session; sign in again', code: 'REAUTH_REQUIRED' })
       },
       transport,
     })

@@ -425,10 +425,10 @@ abstract class OmpTransportAdapter<
   /** Refuse routes this adapter does not own instead of describing another provider's models. */
   private assertRoute(provider: string): void {
     if (provider !== this.config.route.id) {
-      throw new LlmError(
-        `llm-omp-transports: the ${this.config.route.id} adapter does not serve provider "${provider}"`,
-        UNKNOWN_PROVIDER,
-      )
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: the ${this.config.route.id} adapter does not serve provider "${provider}"`,
+        code: UNKNOWN_PROVIDER,
+      })
     }
   }
 

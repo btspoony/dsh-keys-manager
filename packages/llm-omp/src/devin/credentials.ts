@@ -78,16 +78,16 @@ export function createDevinAccess(
       )
     }
     if (grant.expiresInvalid === true) {
-      throw new LlmError(
-        `llm-omp-transports: the Devin sign-in stored at ${DEVIN_CREDENTIAL_KEY} has an unreadable expiry; sign in again`,
-        'REAUTH_REQUIRED',
-      )
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: the Devin sign-in stored at ${DEVIN_CREDENTIAL_KEY} has an unreadable expiry; sign in again`,
+        code: 'REAUTH_REQUIRED',
+      })
     }
     if (grant.expires !== undefined && grant.expires <= now()) {
-      throw new LlmError(
-        `llm-omp-transports: the Devin sign-in stored at ${DEVIN_CREDENTIAL_KEY} has expired; there is no refresh token, so sign in again`,
-        'REAUTH_REQUIRED',
-      )
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: the Devin sign-in stored at ${DEVIN_CREDENTIAL_KEY} has expired; there is no refresh token, so sign in again`,
+        code: 'REAUTH_REQUIRED',
+      })
     }
     return grant.access
   }

@@ -28,14 +28,16 @@ minimumReleaseAgeExclude:
   - '@oh-my-pi/pi-natives@18.18.8'
   - '@oh-my-pi/pi-utils@18.18.8'
   - '@oh-my-pi/pi-wire@18.18.8'
-  # Same reason for the 0.2.2-rc.1 DSH cohort: it is a devDependency (it types
-  # and builds both packages), so a frozen install resolves it and the
-  # release-age policy refuses it while fresh. Exact versions only; drop these
-  # when a later cohort bump has aged out.
-  - '@deepseek-ai/dsh-brand@0.2.2-rc.1'
-  - '@deepseek-ai/dsh-llm@0.2.2-rc.1'
-  - '@deepseek-ai/dsh-timeout@0.2.2-rc.1'
-  - '@deepseek-ai/dsh-typert-protocol@0.2.2-rc.1'
-  - '@deepseek-ai/dsh-util-crypto@0.2.2-rc.1'
-  - '@deepseek-ai/dsh-util-values@0.2.2-rc.1'
+  # Same reason for the 0.2.2-rc.3 DSH cohort: `dsh-llm` and `dsh-error` are
+  # devDependencies (they type and build both packages) and the rest are its
+  # transitive peers, so a frozen install resolves them and the release-age
+  # policy refuses them while fresh. Exact versions only; drop these when a
+  # later cohort bump has aged out.
+  - '@deepseek-ai/dsh-brand@0.2.2-rc.3'
+  - '@deepseek-ai/dsh-error@0.2.2-rc.3'
+  - '@deepseek-ai/dsh-llm@0.2.2-rc.3'
+  - '@deepseek-ai/dsh-timeout@0.2.2-rc.3'
+  - '@deepseek-ai/dsh-typert-protocol@0.2.2-rc.3'
+  - '@deepseek-ai/dsh-util-crypto@0.2.2-rc.3'
+  - '@deepseek-ai/dsh-util-values@0.2.2-rc.3'
 patchedDependencies: { '@oh-my-pi/pi-ai@18.18.8': patches/@oh-my-pi__pi-ai@18.18.8.patch }

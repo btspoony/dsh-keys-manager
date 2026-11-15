@@ -132,10 +132,10 @@ export function createGoogleAccess(
         // Another process refreshed it between the read and the lock.
         if (!needsRefresh(live, now())) return undefined
         if (live.refresh === undefined) {
-          throw new LlmError(
-            `llm-omp-transports: the ${facts.label} grant stored at ${key} has no refresh token; sign in again`,
-            'REAUTH_REQUIRED',
-          )
+          throw LlmError.fromFailure({
+            message: `llm-omp-transports: the ${facts.label} grant stored at ${key} has no refresh token; sign in again`,
+            code: 'REAUTH_REQUIRED',
+          })
         }
         const refreshed = await refreshGoogleToken(facts, live.refresh, {
           ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
@@ -198,9 +198,10 @@ async function withCredentialErrors<T>(facts: GoogleRouteFacts, write: () => Pro
     if (cause instanceof GoogleAuthError) {
       // A rejected refresh means the stored grant can never be renewed; the human
       // has to start the sign-in again.
-      throw new LlmError(`llm-omp-transports: ${facts.label} sign-in failed — ${cause.message}`, 'REAUTH_REQUIRED', {
-        cause,
-      })
+      throw LlmError.fromFailure({
+        message: `llm-omp-transports: ${facts.label} sign-in failed — ${cause.message}`,
+        code: 'REAUTH_REQUIRED',
+      }, { cause })
     }
     throw cause
   }
