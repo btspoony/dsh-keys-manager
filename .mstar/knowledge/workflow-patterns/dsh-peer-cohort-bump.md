@@ -17,7 +17,12 @@ tags: [dsh, peers, cordis, schemastery, cosmokit, declaration-emit, ts2742]
 1. Bump every `@deepseek-ai/dsh-*` peer in the root `package.json` and in
    `packages/llm-omp/package.json` to the new cohort range, plus the transport's
    `devDependencies` copy of `@deepseek-ai/dsh-llm`.
-2. In the same commit, move the two adjacent pins to the ranges that cohort's `dsh-llm`
+2. Declare every peer the cohort's `dsh-llm` newly requires. `0.2.2-rc.3` moved the
+   `HarnessError` base class into `@deepseek-ai/dsh-error` and declared it a peer of
+   `dsh-llm`, so the bump adds that package to both manifests' peers and to the transport's
+   `devDependencies`; with `autoInstallPeers: false` the declaration alone does not install
+   it, and `dsh-llm`'s declaration files import it.
+3. In the same commit, move the two adjacent pins to the ranges that cohort's `dsh-llm`
    declares: `@deepseek-ai/cordis` `~4.1.0` and, in the transport package,
    `@deepseek-ai/schemastery` `~3.19.0` — as the peer range **and** the devDependency range
    (rationale below).
@@ -75,3 +80,19 @@ to the cohort's range.
 `never`; the package documents that forwarding adapters may accept `string`. Widen the
 transport projection and adapter signatures plus request fixtures to
 `GenerateOptions<string>` instead of casting at call sites.
+
+## The `LlmError` code surface narrowed in rc.3
+
+`dsh-llm@0.2.2-rc.3` changed the constructor parameter from `code: string` to
+`code: BuiltinLlmFailureCode` (`keyof LLM_FAILURE_CODES | \`HTTP_${number}\``). A transport
+that raises its own provider-neutral codes (`AUTH_FAILED`, `REAUTH_REQUIRED`,
+`TOOL_ARGUMENTS_INVALID`, …) keeps them only through the documented
+`LlmError.fromFailure({ message, code }, options?)` path — the class comment names exactly that
+case ("a failure from another provider, whose code may be any string, is re-raised through
+`LlmError.fromFailure`"). Runtime validation is unchanged (non-empty strings), so emitted
+`code`/message/cause/provider facts stay identical and existing assertions pass unmodified.
+Keep genuinely built-in codes (`ABORTED`, `STREAM_CLOSED`, `UNKNOWN_MODEL`,
+`UNSUPPORTED_REASONING_EFFORT`, …) on `new LlmError(...)`; converting them is noise.
+
+A transport package whose `tsconfig.json` includes `tests` must adapt test fixtures that
+construct `LlmError` with a custom code too, or the package typecheck fails on the fixture.
