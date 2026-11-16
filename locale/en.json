@@ -42,7 +42,7 @@
   "transportSignIn": "Sign in",
   "transportExpires": "Expires {time}",
   "transportStatusActive": "Active",
-  "transportStatusExpired": "Token expired",
+  "transportStatusExpired": "Expired (auto-renews)",
   "transportStatusNeedsReauth": "Sign in again",
   "transportStatusSignedOut": "Not signed in",
   "transportRemoveTitle": "Remove the {name} transport account?",
