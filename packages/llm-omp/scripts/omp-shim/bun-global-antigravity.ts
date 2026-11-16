@@ -210,8 +210,14 @@ function prewarm(): void {
     warmed.push(server)
   })
   server.listen(0, '127.0.0.1')
+  // A listener the artifact keeps for a later bridge must not be what holds the
+  // process open; the bridge's own sockets keep it alive while it serves.
+  server.unref()
 }
 
+// Two warm listeners: the bridge takes one and immediately refills, so a second
+// bridge constructed before the refill lands still gets a bound port.
+prewarm()
 prewarm()
 
 function takeWarmServer(): Server {

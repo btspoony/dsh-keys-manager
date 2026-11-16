@@ -741,7 +741,12 @@ export function projectAntigravityCliRequest(
     context,
     options: {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
-      ...(options.reasoningEffort === undefined ? {} : { reasoning: String(options.reasoningEffort) }),
+      // Only an effort the row itself advertises is forwarded: the ACP route
+      // publishes no ladder of its own, so an unadvertised selection is dropped
+      // rather than sent as a wire value agy may not know.
+      ...(options.reasoningEffort === undefined || !(row.thinking?.efforts ?? []).includes(String(options.reasoningEffort))
+        ? {}
+        : { reasoning: String(options.reasoningEffort) }),
       providerSessionState: state,
       cwd,
     },

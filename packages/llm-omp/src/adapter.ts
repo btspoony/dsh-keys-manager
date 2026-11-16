@@ -254,7 +254,13 @@ export const ANTIGRAVITY_CLI_TRANSPORT_ROUTE: TransportRoute<
   const sessions = new Map<string, Map<string, unknown>>()
   const stateFor = (key: string): Map<string, unknown> => {
     const existing = sessions.get(key)
-    if (existing !== undefined) return existing
+    if (existing !== undefined) {
+      // Re-insert on every use so the eviction below is LRU, not FIFO: an active
+      // session's parked tool turn must never be the first one dropped.
+      sessions.delete(key)
+      sessions.set(key, existing)
+      return existing
+    }
     if (sessions.size >= 64) {
       const oldest = sessions.keys().next().value
       if (oldest !== undefined) sessions.delete(oldest)
