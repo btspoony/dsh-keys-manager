@@ -103,9 +103,14 @@ describe('antigravity credential resolver', () => {
       }, { now: () => NOW })(),
     ).rejects.toThrowError('refused')
 
-    const dropped = store(undefined)
-    await expect(
-      createAntigravityCliAccess(dropped.credentials, async () => grant(), { now: () => NOW })(),
-    ).rejects.toMatchObject({ code: 'MISSING_CREDENTIAL' })
+    // The record disappears while this turn waits for the lock: `modifyRecord`
+    // yields undefined and the resolver must report a reauth, not a credential.
+    const lost: CredentialRecordsLike = {
+      readRecord: async () => ({ kind: 'grant', payload: grant({ expires: NOW + 1 }) }),
+      modifyRecord: async () => undefined,
+    }
+    await expect(createAntigravityCliAccess(lost, async () => grant(), { now: () => NOW })()).rejects.toMatchObject({
+      code: 'REAUTH_REQUIRED',
+    })
   })
 })

@@ -741,6 +741,7 @@ export function projectAntigravityCliRequest(
     context,
     options: {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.reasoningEffort === undefined ? {} : { reasoning: String(options.reasoningEffort) }),
       providerSessionState: state,
       cwd,
     },

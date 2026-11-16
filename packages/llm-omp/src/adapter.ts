@@ -248,7 +248,21 @@ export const ANTIGRAVITY_CLI_TRANSPORT_ROUTE: TransportRoute<
   OmpAntigravityCliModel,
   OmpAntigravityCliOptions
 > = (() => {
-  const state = new Map<string, unknown>()
+  // agy's conversation state is per DSH session: keying it prevents one session's
+  // parked tool turn from resuming another's, and the small bound keeps a long-lived
+  // daemon from retaining every session it ever served.
+  const sessions = new Map<string, Map<string, unknown>>()
+  const stateFor = (key: string): Map<string, unknown> => {
+    const existing = sessions.get(key)
+    if (existing !== undefined) return existing
+    if (sessions.size >= 64) {
+      const oldest = sessions.keys().next().value
+      if (oldest !== undefined) sessions.delete(oldest)
+    }
+    const created = new Map<string, unknown>()
+    sessions.set(key, created)
+    return created
+  }
   return {
     id: ANTIGRAVITY_CLI_ROUTE,
     displayName: 'Antigravity (agy)',
@@ -256,7 +270,13 @@ export const ANTIGRAVITY_CLI_TRANSPORT_ROUTE: TransportRoute<
     profile: ANTIGRAVITY_CLI_PROFILE,
     models: ANTIGRAVITY_CLI_MODELS,
     project: (row, options) =>
-      projectAntigravityCliRequest(row, ANTIGRAVITY_CLI_PROFILE, options, state, process.cwd()),
+      projectAntigravityCliRequest(
+        row,
+        ANTIGRAVITY_CLI_PROFILE,
+        options,
+        stateFor(String(options.sessionId ?? 'default')),
+        process.cwd(),
+      ),
   }
 })()
 

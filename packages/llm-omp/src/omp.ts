@@ -536,6 +536,8 @@ export interface OmpAntigravityCliOptions {
   readonly providerSessionState?: Map<string, unknown>
   /** Working directory agy starts in; the plugin uses the process cwd. */
   readonly cwd?: string
+  /** The selected effort, forwarded as agy's per-turn `thought_level`. */
+  readonly reasoning?: string
 }
 
 /** One fully projected request: the devin transport's three positional arguments. */

@@ -38,7 +38,8 @@ export class Database {
     const statement = this.#db.prepare(sql)
     return {
       all: () => statement.all() as unknown[],
-      get: () => statement.get() as unknown,
+      // Bun answers `null` for an empty result; Node's `get()` answers `undefined`.
+      get: () => statement.get() ?? null,
     }
   }
 

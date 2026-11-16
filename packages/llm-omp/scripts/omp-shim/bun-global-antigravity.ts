@@ -20,7 +20,7 @@
  * @module dsh-llm-omp-transports/omp-shim/bun-global-antigravity
  */
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
 import { gunzipSync } from 'node:zlib'
 
@@ -41,7 +41,9 @@ function file(path: string): BunFile {
   return {
     exists: async () => {
       try {
-        await readFile(path)
+        // `stat` answers existence without reading the file: the install check runs
+        // on every artifact load and the release is megabytes.
+        await stat(path)
         return true
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
@@ -210,7 +212,6 @@ function prewarm(): void {
   server.listen(0, '127.0.0.1')
 }
 
-prewarm()
 prewarm()
 
 function takeWarmServer(): Server {
