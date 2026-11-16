@@ -2,6 +2,12 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.4.1] - 2026-11-16
+
+### Changed
+
+- A transport account whose access token has expired but which still holds a refresh token now reads "过期（将自动续期）" / "Expired (auto-renews)" instead of "令牌已过期" / "Token expired", because those routes renew the grant on the next request and the old copy read as a demand to sign in again. A Google access token's one-hour lifetime is the token's, not the sign-in's.
+
 ## [0.4.0] - 2026-11-16
 
 ### Fixed
