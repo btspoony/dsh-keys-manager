@@ -154,8 +154,11 @@ Providers the vendored pi-ai cannot speak are served by the companion
   keep separate grants, account rows and catalogs. The grant is
   `{access, refresh, expires, projectId, email?}`; sign-in resolves the Cloud
   project the route bills, and a `legacy-tier` or paid account whose project
-  cannot be discovered fails `AUTH_FAILED` until `GOOGLE_CLOUD_PROJECT` (or
-  `GOOGLE_CLOUD_PROJECT_ID`) is set.
+  cannot be discovered is asked for it in the sign-in panel — `GOOGLE_CLOUD_PROJECT`
+  (or `GOOGLE_CLOUD_PROJECT_ID`) in the host environment answers the same
+  question without the prompt, and declining both fails `AUTH_FAILED`. The
+  question belongs to `google-gemini-cli`; Antigravity onboards its free tier
+  instead.
 - **Factory Droid** — four wires behind one proxy, chosen by model id inside the
   artifact; rows carry no base URL and the account's residency
   (`orgId`/`region`) survives refresh.

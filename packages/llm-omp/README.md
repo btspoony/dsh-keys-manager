@@ -110,10 +110,11 @@ records — not a second code path.
   transport the structured JSON envelope (`token`, `projectId`, `refreshToken`,
   `expiresAt`, `email`) that omp parses.
 - **Project discovery** — sign-in finishes with the Cloud Code Assist project:
-  `loadCodeAssist` → (tier onboarding `onboardUser` + LRO poll, or the required
-  `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_PROJECT_ID` variable for a
-  `legacy-tier`/paid account). Antigravity additionally checks free-tier
-  eligibility and bounds onboarding at 30 s.
+  `loadCodeAssist` → (tier onboarding `onboardUser` + LRO poll, or, when a
+  `google-gemini-cli` account is `legacy-tier`/paid **and** Google returns no
+  project, a project-id question in the sign-in panel — `GOOGLE_CLOUD_PROJECT` /
+  `GOOGLE_CLOUD_PROJECT_ID` answers it without the prompt). Antigravity
+  additionally checks free-tier eligibility and bounds onboarding at 30 s.
 - **Models** — generated from the pinned `@oh-my-pi/pi-catalog@18.18.8`: 7 rows
   for `google-gemini-cli`, 22 for `google-antigravity`, served without a network
   call.

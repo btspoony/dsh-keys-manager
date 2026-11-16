@@ -283,12 +283,12 @@ async function discoverGeminiCliProject(
     const project = stringField(data, 'cloudaicompanionProject')
     if (project !== undefined) return project
     if (envProjectId !== undefined) return envProjectId
-    throw new GoogleAuthError(envProjectIdRequired())
+    throw new GoogleProjectRequiredError()
   }
 
   const tierId = defaultTierId(data.allowedTiers) ?? FREE_TIER_ID
   if (tierId !== FREE_TIER_ID && envProjectId === undefined) {
-    throw new GoogleAuthError(envProjectIdRequired())
+    throw new GoogleProjectRequiredError()
   }
 
   options.onProgress?.('Provisioning a Cloud Code Assist project (this may take a moment)…')
@@ -476,6 +476,22 @@ function envProjectIdRequired(): string {
   )
 }
 
+/**
+ * The account must name its own Cloud project.
+ *
+ * @remarks
+ * Distinct from a plain {@link GoogleAuthError} because the sign-in flow can
+ * answer it: the project is something only the human knows, so the flow asks
+ * instead of failing outright when it has a channel to ask on.
+ */
+export class GoogleProjectRequiredError extends GoogleAuthError {
+  constructor() {
+    // The name stays the parent's: a caller that reads `error.name` (rather than
+    // `instanceof`) must see exactly what the pinned rules raised.
+    super(envProjectIdRequired())
+  }
+}
+
 /** The default tier of a `loadCodeAssist` answer: the flagged one, else legacy. */
 function defaultTierId(allowedTiers: unknown): string | undefined {
   if (!Array.isArray(allowedTiers) || allowedTiers.length === 0) return LEGACY_TIER_ID
@@ -541,6 +557,12 @@ export interface GoogleLoginOptions extends GoogleDiscoveryOptions {
   readonly port?: number
   /** How long to wait for the browser before failing the attempt; defaults to five minutes. */
   readonly waitMs?: number
+  /**
+   * Ask the human for the Cloud project the account must name. The flow calls it
+   * only when discovery rejects with {@link GoogleProjectRequiredError}; an empty
+   * answer keeps the refusal.
+   */
+  readonly onProjectRequired?: (signal: AbortSignal) => Promise<string | undefined>
 }
 
 /** What a completed sign-in yields: the token grant plus the discovered project. */
@@ -619,8 +641,32 @@ export async function loginGoogle(
 
   const grant = await exchangeGoogleCode(facts, callback.code, params.redirectUri, options)
   const email = await fetchGoogleEmail(grant.access, options)
-  const projectId = await discoverGoogleProject(facts, grant.access, options)
+  const projectId = await discoverProjectOrAsk(facts, grant.access, options)
   return { ...grant, ...(email === undefined ? {} : { email }), projectId }
+}
+
+/**
+ * Discover the project, or ask the human for it when the account must name one.
+ *
+ * @remarks
+ * The ask is the same answer the pinned rules read from `GOOGLE_CLOUD_PROJECT`:
+ * a project id the account already has access to, unverified until the first
+ * request. An empty answer is not an answer, so the original refusal stands.
+ */
+async function discoverProjectOrAsk(
+  facts: GoogleRouteFacts,
+  access: string,
+  options: GoogleLoginOptions,
+): Promise<string> {
+  try {
+    return await discoverGoogleProject(facts, access, options)
+  } catch (cause) {
+    if (!(cause instanceof GoogleProjectRequiredError) || options.onProjectRequired === undefined) throw cause
+    const asked = await options.onProjectRequired(options.signal ?? new AbortController().signal)
+    const answer = (asked ?? '').trim()
+    if (answer === '') throw cause
+    return answer
+  }
 }
 
 /**

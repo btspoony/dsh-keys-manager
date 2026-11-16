@@ -136,8 +136,11 @@ Current design boundaries of the Keys Manager plugin:
   landed on, or `code#state` — runs as a second sign-in path beside the
   listener, so a blocked or unreachable redirect still finishes the login.
 - Sign-in also resolves the Google Cloud project the route bills and sends. When
-  Google demands a `GOOGLE_CLOUD_PROJECT` instead, the login fails with
-  `AUTH_FAILED`; there is no project-less fallback.
+  Google requires a `google-gemini-cli` account to name one (a Workspace/GCA or
+  paid tier) and returns none, the sign-in panel asks for the project id; `GOOGLE_CLOUD_PROJECT` or
+  `GOOGLE_CLOUD_PROJECT_ID` in the host environment answers the same question
+  without the prompt. Refusing both fails with `AUTH_FAILED`; there is no
+  project-less fallback.
 - `google-antigravity` reads a version manifest from Google once per process
   (5 s budget, pinned fallback when the read fails or times out), so a blocked
   network delays but does not break its first turn. A failed read is not retried
