@@ -84,8 +84,9 @@ import type {
 export const CURSOR_ROUTE = 'cursor'
 /** The Devin provider route this adapter owns. */
 export const DEVIN_ROUTE = 'devin'
-/** The Gemini CLI provider route this adapter owns. */
+/** The Antigravity ACP provider route this adapter owns. */
 export const ANTIGRAVITY_CLI_ROUTE = 'antigravity-cli'
+/** The Gemini CLI provider route this adapter owns. */
 export const GOOGLE_GEMINI_CLI_ROUTE = 'google-gemini-cli'
 /** The Antigravity provider route this adapter owns. */
 export const GOOGLE_ANTIGRAVITY_ROUTE = 'google-antigravity'

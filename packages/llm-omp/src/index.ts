@@ -44,6 +44,7 @@ import {
   ANTIGRAVITY_CLI_ROUTE,
   ANTIGRAVITY_CLI_TRANSPORT_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
+  OmpAntigravityCliAdapter,
   OmpCursorAdapter,
   OmpDevinAdapter,
   OmpFactoryDroidAdapter,
@@ -83,7 +84,7 @@ import {
   createGoogleAccess,
   googleCredentialKey,
 } from './google/credentials.js'
-import { ANTIGRAVITY_CLI_CREDENTIAL_KEY } from './antigravity/credentials.js'
+import { ANTIGRAVITY_CLI_CREDENTIAL_KEY, createAntigravityCliAccess } from './antigravity/credentials.js'
 import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from './google/route.js'
 import type { GoogleRouteFacts } from './google/route.js'
 
@@ -114,7 +115,7 @@ type TransportRouteId =
   | 'cursor'
   | 'devin'
   | 'google-gemini-cli'
-  | 'google-antigravity'
+  | 'antigravity-cli'
   | 'factory-droid'
   | 'gitlab-duo'
   | 'gitlab-duo-agent'
@@ -124,7 +125,7 @@ export interface TransportProvidersProfile {
   cursor?: TransportProviderProfile
   devin?: TransportProviderProfile
   'google-gemini-cli'?: TransportProviderProfile
-  'google-antigravity'?: TransportProviderProfile
+  'antigravity-cli'?: TransportProviderProfile
   'factory-droid'?: TransportProviderProfile
   'gitlab-duo'?: TransportProviderProfile
   'gitlab-duo-agent'?: TransportProviderProfile
@@ -187,7 +188,7 @@ export const Config = z.object({
           )
           .default([]),
       }),
-      'google-antigravity': z.object({
+      'antigravity-cli': z.object({
         models: z
           .array(
             z.object({
@@ -232,7 +233,7 @@ export const Config = z.object({
       cursor: { models: [] },
       devin: { models: [] },
       'google-gemini-cli': { models: [] },
-      'google-antigravity': { models: [] },
+      'antigravity-cli': { models: [] },
     })
     .volatile(),
 })
@@ -734,7 +735,7 @@ async function bundledAntigravityLogin(): Promise<AntigravityLoginModule> {
 export function antigravityCliAuthorizationFlow(): CursorAuthorizationFlow {
   return {
     key: ANTIGRAVITY_CLI_CREDENTIAL_KEY,
-    label: 'Antigravity',
+    label: 'Antigravity (agy)',
     methods: [{ id: 'oauth', label: 'Sign in with Google' }],
     async run(session) {
       const module = await bundledAntigravityLogin()
@@ -996,11 +997,12 @@ export function gitlabDuoAgentAuthorizationFlow(options: GitLabFlowOptions = {})
  * request and its failure reaches that request as a typed `LlmError`.
  */
 function bundledTransport<Model, Options>(
-  artifact: 'cursor' | 'devin' | 'google' | 'factory-droid' | 'gitlab-duo' | 'gitlab-duo-agent',
+  artifact: 'cursor' | 'devin' | 'google' | 'antigravity-cli' | 'factory-droid' | 'gitlab-duo' | 'gitlab-duo-agent',
   exportName:
     | 'streamCursor'
     | 'streamDevin'
     | 'streamGoogleGeminiCli'
+    | 'streamAntigravityCli'
     | 'streamFactoryDroid'
     | 'streamGitLabDuoWorkflow'
     | 'streamGitLabDuo',
@@ -1084,13 +1086,18 @@ export function createGoogleGeminiCliAdapter(
  * on `model.provider` — over its own catalog, credential record and discovery
  * facts.
  */
-export function createGoogleAntigravityAdapter(
+export function createAntigravityCliAdapter(
   credentials: CredentialRecordsLike,
   models?: () => readonly string[] | undefined,
-): OmpGoogleAntigravityAdapter {
-  return new OmpGoogleAntigravityAdapter({
-    access: createGoogleAccess(credentials, GOOGLE_ANTIGRAVITY_FACTS),
-    transport: bundledTransport('google', 'streamGoogleGeminiCli', 'Google Antigravity'),
+): OmpAntigravityCliAdapter {
+  return new OmpAntigravityCliAdapter({
+    // The CLI owns the refresh exchange; the resolver reads the stored grant and
+    // calls it once under the record lock when the token is near expiry.
+    access: createAntigravityCliAccess(credentials, async (grant, signal) => {
+      const module = await bundledAntigravityLogin()
+      return await module.refreshAntigravityCli(grant, signal)
+    }),
+    transport: bundledTransport('antigravity-cli', 'streamAntigravityCli', 'Antigravity'),
     ...(models === undefined ? {} : { models }),
   })
 }
@@ -1177,7 +1184,7 @@ export const TRANSPORT_PROVIDERS: readonly LlmConfigurableProvider[] = Object.fr
   CURSOR_PROVIDER,
   DEVIN_PROVIDER,
   GOOGLE_GEMINI_CLI_PROVIDER,
-  GOOGLE_ANTIGRAVITY_PROVIDER,
+  ANTIGRAVITY_CLI_PROVIDER,
   FACTORY_DROID_PROVIDER,
   GITLAB_DUO_PROVIDER,
   GITLAB_DUO_AGENT_PROVIDER,
@@ -1188,7 +1195,7 @@ const TRANSPORT_CREDENTIAL_KEYS = [
   CURSOR_CREDENTIAL_KEY,
   DEVIN_CREDENTIAL_KEY,
   GOOGLE_GEMINI_CLI_CREDENTIAL_KEY,
-  GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY,
+  ANTIGRAVITY_CLI_CREDENTIAL_KEY,
   FACTORY_DROID_CREDENTIAL_KEY,
   GITLAB_DUO_CREDENTIAL_KEY,
   GITLAB_DUO_AGENT_CREDENTIAL_KEY,
@@ -1229,8 +1236,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   )
   adapterHandles.push(
     ctx.llm.registerAdapter(
-      [GOOGLE_ANTIGRAVITY_ROUTE],
-      createGoogleAntigravityAdapter(host.credentials, models('google-antigravity')),
+      [ANTIGRAVITY_CLI_ROUTE],
+      createAntigravityCliAdapter(host.credentials, models('antigravity-cli')),
     ),
   )
   adapterHandles.push(
@@ -1294,7 +1301,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   host.authorization.registerFlow(cursorAuthorizationFlow())
   host.authorization.registerFlow(devinAuthorizationFlow())
   host.authorization.registerFlow(googleGeminiCliAuthorizationFlow())
-  host.authorization.registerFlow(googleAntigravityAuthorizationFlow())
+  host.authorization.registerFlow(antigravityCliAuthorizationFlow())
   host.authorization.registerFlow(factoryDroidAuthorizationFlow())
   host.authorization.registerFlow(gitlabDuoAuthorizationFlow())
   host.authorization.registerFlow(gitlabDuoAgentAuthorizationFlow())
@@ -1312,7 +1319,7 @@ export {
   GITLAB_DUO_CREDENTIAL_KEY,
   GITLAB_DUO_ROUTE,
   GITLAB_DUO_TRANSPORT_ROUTE,
-  GOOGLE_ANTIGRAVITY_ROUTE,
+  ANTIGRAVITY_CLI_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
 } from './adapter.js'
 export { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
@@ -1330,4 +1337,5 @@ export { createFactoryDroidAccess } from './factory-droid/credentials.js'
 export type { FactoryDroidGrantPayload } from './factory-droid/credentials.js'
 export { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 export { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
-export { GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY, GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'
+export { ANTIGRAVITY_CLI_CREDENTIAL_KEY } from './antigravity/credentials.js'
+export { GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'
