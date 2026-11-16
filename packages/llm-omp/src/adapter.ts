@@ -31,11 +31,13 @@ import { DEVIN_MODELS } from './catalog/devin.js'
 import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
+import { ANTIGRAVITY_CLI_MODELS } from './catalog/antigravity-cli.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 import { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
 import {
+  ANTIGRAVITY_CLI_PROFILE,
   CURSOR_PROFILE,
   DEVIN_PROFILE,
   FACTORY_DROID_PROFILE,
@@ -49,6 +51,7 @@ import {
   projectFactoryDroidRequest,
   projectGitLabDuoAgentRequest,
   projectGitLabDuoRequest,
+  projectAntigravityCliRequest,
   projectGoogleRequest,
   projectRequest,
 } from './projection.js'
@@ -71,6 +74,8 @@ import type {
   OmpGitLabDuoModel,
   OmpGitLabDuoOptions,
   OmpGitLabDuoWorkflowOptions,
+  OmpAntigravityCliModel,
+  OmpAntigravityCliOptions,
   OmpGoogleModel,
   OmpGoogleOptions,
 } from './omp.js'
@@ -80,6 +85,7 @@ export const CURSOR_ROUTE = 'cursor'
 /** The Devin provider route this adapter owns. */
 export const DEVIN_ROUTE = 'devin'
 /** The Gemini CLI provider route this adapter owns. */
+export const ANTIGRAVITY_CLI_ROUTE = 'antigravity-cli'
 export const GOOGLE_GEMINI_CLI_ROUTE = 'google-gemini-cli'
 /** The Antigravity provider route this adapter owns. */
 export const GOOGLE_ANTIGRAVITY_ROUTE = 'google-antigravity'
@@ -156,6 +162,7 @@ export interface TransportRoute<Row extends TransportRow, Model, Options extends
     | 'gitlab-duo-agent'
     | 'google-gemini-cli'
     | 'google-antigravity'
+    | 'antigravity-cli'
   /** Models-page / provider-info display name. */
   readonly displayName: string
   /** The `ctx.credentials` record this route reads. */
@@ -225,6 +232,32 @@ export const GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE: TransportRoute<GoogleModelRow, 
   project: (row, options) => projectGoogleRequest(row, GOOGLE_ANTIGRAVITY_PROFILE, options),
   efforts: row => row.thinking?.efforts,
 }
+
+/**
+ * The Antigravity CLI (ACP) route's facts.
+ *
+ * The transport is omp's `streamAntigravityCli`: it runs the official `agy`
+ * binary over ACP, so a row's `baseUrl` is unused and the credential is the
+ * staged consumer grant. `state` is the adapter-owned map that carries agy's
+ * conversation across the steps of one tool turn — the provider parks an MCP
+ * request in it and resumes on the next call.
+ */
+export const ANTIGRAVITY_CLI_TRANSPORT_ROUTE: TransportRoute<
+  GoogleModelRow,
+  OmpAntigravityCliModel,
+  OmpAntigravityCliOptions
+> = (() => {
+  const state = new Map<string, unknown>()
+  return {
+    id: ANTIGRAVITY_CLI_ROUTE,
+    displayName: 'Antigravity (agy)',
+    credentialKey: `llm-omp-transports/${ANTIGRAVITY_CLI_ROUTE}`,
+    profile: ANTIGRAVITY_CLI_PROFILE,
+    models: ANTIGRAVITY_CLI_MODELS,
+    project: (row, options) =>
+      projectAntigravityCliRequest(row, ANTIGRAVITY_CLI_PROFILE, options, state, process.cwd()),
+  }
+})()
 
 /**
  * The Factory Droid route's credential record.
@@ -543,6 +576,17 @@ export class OmpGoogleGeminiCliAdapter extends OmpTransportAdapter<GoogleModelRo
 export class OmpGoogleAntigravityAdapter extends OmpTransportAdapter<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> {
   constructor(options: OmpGoogleAdapterConfig) {
     super({ route: GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE, ...options })
+  }
+}
+
+/** The Antigravity ACP adapter: the bundled `streamAntigravityCli` over the `agy` catalog. */
+export class OmpAntigravityCliAdapter extends OmpTransportAdapter<
+  GoogleModelRow,
+  OmpAntigravityCliModel,
+  OmpAntigravityCliOptions
+> {
+  constructor(options: OmpAdapterOptions<OmpAntigravityCliModel, OmpAntigravityCliOptions>) {
+    super({ route: ANTIGRAVITY_CLI_TRANSPORT_ROUTE, ...options })
   }
 }
 
