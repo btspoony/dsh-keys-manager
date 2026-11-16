@@ -111,6 +111,7 @@ describe('google drift gate', () => {
     // independent routes, one artifact each.
     expect(Object.keys(manifest.entries).sort()).toEqual([
       'antigravity-cli',
+      'antigravity-login',
       'cursor',
       'devin',
       'factory-droid',

@@ -246,7 +246,7 @@
       "entry": "lib/omp/antigravity-cli.mjs",
       "metafile": "lib/omp/antigravity-cli.metafile.json",
       "moduleCount": 100,
-      "bytes": 1119352,
+      "bytes": 1119976,
       "piUtilsShim": "scripts/omp-shim/pi-utils-antigravity.ts",
       "bunGlobalShim": "scripts/omp-shim/bun-global-antigravity.ts",
       "bunModulesShim": "scripts/omp-shim/bun-modules-antigravity.ts",
@@ -277,6 +277,36 @@
         "bun-modules": [
           "Database"
         ],
+        "bun-global": [
+          "Bun"
+        ]
+      }
+    },
+    "antigravity-login": {
+      "entry": "lib/omp/antigravity-login.mjs",
+      "metafile": "lib/omp/antigravity-login.metafile.json",
+      "moduleCount": 70,
+      "bytes": 923544,
+      "piUtilsShim": "scripts/omp-shim/pi-utils-antigravity.ts",
+      "bunGlobalShim": "scripts/omp-shim/bun-global-antigravity.ts",
+      "bunModulesShim": "scripts/omp-shim/bun-modules-antigravity.ts",
+      "shimImports": {
+        "pi-utils": [
+          "$env",
+          "LRUCache",
+          "extractHttpStatusFromError",
+          "extractRetryHint",
+          "getAntigravityCliDir",
+          "getLogsDir",
+          "isBunTestRuntime",
+          "isEnoent",
+          "isRecord",
+          "isRetryableError",
+          "isUnexpectedSocketCloseMessage",
+          "logger",
+          "withFileLock"
+        ],
+        "bun-modules": [],
         "bun-global": [
           "Bun"
         ]

@@ -257,5 +257,10 @@ function listen<T>(options: ListenOptions<T>): BunServer {
   }
 }
 
+/** `Bun.sleep`, used by the sign-in teardown to bound a killed child. */
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, milliseconds))
+}
+
 /** The `Bun` global this entry's graph reads. */
-export const Bun = { ...baseBun, file, spawn, listen, Archive }
+export const Bun = { ...baseBun, file, spawn, listen, Archive, sleep }

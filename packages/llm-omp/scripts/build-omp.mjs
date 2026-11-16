@@ -116,6 +116,18 @@ const ENTRIES = [
     nativesShim: true,
     bunModules: join(scriptsDir, 'omp-shim', 'bun-modules-antigravity.ts'),
   },
+  // The sign-in half of the same route: agy's own OAuth dance, the credential
+  // export and the staging calls the transport makes before each request.
+  {
+    name: 'antigravity-login',
+    entry: join(scriptsDir, 'omp-entry-antigravity-login.ts'),
+    out: join(packageRoot, 'lib', 'omp', 'antigravity-login.mjs'),
+    piUtils: join(scriptsDir, 'omp-shim', 'pi-utils-antigravity.ts'),
+    bunGlobal: join(scriptsDir, 'omp-shim', 'bun-global-antigravity.ts'),
+    nativesShim: true,
+    bunModules: join(scriptsDir, 'omp-shim', 'bun-modules-antigravity.ts'),
+    define: { 'import.meta.dir': 'import.meta.dirname' },
+  },
 ]
 const MANIFEST = join(scriptsDir, 'omp-manifest.json')
 

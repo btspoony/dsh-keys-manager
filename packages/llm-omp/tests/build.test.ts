@@ -93,6 +93,11 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // process/socket shims. A size near this ceiling means the model catalog or the
   // native addon came back in, not that the route grew.
   'antigravity-cli': 1_680_000,
+  // antigravity-login: 923 544 bytes measured. The sign-in half shares the same
+  // shims but not the transport graph: agy's OAuth dance, the credential export
+  // and the staging calls. A size near this ceiling means the transport graph or
+  // a provider registry came back in.
+  'antigravity-login': 1_400_000,
 }
 
 /** One entry's measured build facts (manifest schema v2). */
@@ -127,14 +132,24 @@ interface Metafile {
 }
 
 /** The esbuild export each entry is expected to expose, per artifact name. */
-const EXPORTS: Readonly<Record<string, string>> = {
-  cursor: 'streamCursor',
-  devin: 'streamDevin',
-  google: 'streamGoogleGeminiCli',
-  'factory-droid': 'streamFactoryDroid',
-  'gitlab-duo-agent': 'streamGitLabDuoWorkflow',
-  'gitlab-duo': 'streamGitLabDuo',
-  'antigravity-cli': 'streamAntigravityCli',
+const EXPORTS: Readonly<Record<string, readonly string[]>> = {
+  cursor: ['streamCursor'],
+  devin: ['streamDevin'],
+  google: ['streamGoogleGeminiCli'],
+  'factory-droid': ['streamFactoryDroid'],
+  'gitlab-duo-agent': ['streamGitLabDuoWorkflow'],
+  'gitlab-duo': ['streamGitLabDuo'],
+  'antigravity-cli': ['streamAntigravityCli'],
+  // The sign-in half is a small surface of named helpers, not one stream entry.
+  'antigravity-login': [
+    'agyCredentialEnv',
+    'agyCredentialKey',
+    'agyGeminiDir',
+    'exportAgyCredentials',
+    'loginAntigravityCli',
+    'refreshAntigravityCli',
+    'stageAgyCredentials',
+  ],
 }
 
 const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
@@ -224,10 +239,10 @@ describe.each(entries)('omp $name bundle', ({ name, manifest: entry, artifactPat
   it('imports under plain Node without a Bun global', async () => {
     expect('Bun' in globalThis).toBe(false)
     const module = (await import(pathToFileURL(artifactPath).href)) as Record<string, unknown>
-    const exportName = EXPORTS[name]
-    expect(exportName, `no expected export for ${name}`).toBeDefined()
-    expect(Object.keys(module)).toEqual([exportName])
-    expect(typeof module[exportName!]).toBe('function')
+    const exportNames = EXPORTS[name]
+    expect(exportNames, `no expected export for ${name}`).toBeDefined()
+    expect(Object.keys(module).sort()).toEqual([...exportNames!].sort())
+    for (const exportName of exportNames!) expect(typeof module[exportName]).toBe('function')
   })
 
   it('imports nothing but Node builtins', () => {
