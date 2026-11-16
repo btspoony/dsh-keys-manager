@@ -19,7 +19,7 @@ import {
   startCallbackListener,
 } from '../src/google/callback-listener.js'
 import type { CallbackListener } from '../src/google/callback-listener.js'
-import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from '../src/google/route.js'
+import { GOOGLE_GEMINI_CLI_FACTS } from '../src/google/route.js'
 
 /** Start a listener on an ephemeral port and always stop it. */
 async function withListener(
@@ -171,22 +171,6 @@ describe('loopback listener', () => {
     await listener.close()
   })
 
-  it('serves the Antigravity route’s path from its own facts', async () => {
-    const listener = await startCallbackListener({
-      facts: GOOGLE_ANTIGRAVITY_FACTS,
-      expectedState: 'state-2',
-      port: 0,
-    })
-    try {
-      // The gemini-cli path belongs to the other route's registration.
-      expect((await fetch(`http://127.0.0.1:${listener.port}/oauth2callback?code=abc&state=state-2`)).status).toBe(404)
-      const accepted = await fetch(`http://127.0.0.1:${listener.port}/oauth-callback?code=abc&state=state-2`)
-      expect(accepted.status).toBe(200)
-      await expect(listener.callback).resolves.toEqual({ code: 'abc', state: 'state-2' })
-    } finally {
-      await listener.close()
-    }
-  })
 })
 
 describe('startCallbackListener robustness', () => {

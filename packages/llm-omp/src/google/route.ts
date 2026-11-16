@@ -96,33 +96,6 @@ export const GOOGLE_GEMINI_CLI_FACTS: GoogleRouteFacts = {
   },
 }
 
-/**
- * The Antigravity route: the `google-antigravity.kdl` rule, whose client reaches
- * the Gemini, Claude and GPT-OSS rows on the same API.
- */
-export const GOOGLE_ANTIGRAVITY_FACTS: GoogleRouteFacts = {
-  id: 'google-antigravity',
-  label: 'Google Antigravity',
-  ...GOOGLE_CLIENT_FACTS['google-antigravity'],
-  scopes: [
-    'https://www.googleapis.com/auth/cloud-platform',
-    'https://www.googleapis.com/auth/userinfo.email',
-    'https://www.googleapis.com/auth/userinfo.profile',
-    'https://www.googleapis.com/auth/cclog',
-    'https://www.googleapis.com/auth/experimentsandconfigs',
-  ],
-  callback: { hostname: '127.0.0.1', port: 51121, path: '/oauth-callback' },
-  discovery: {
-    kind: 'antigravity',
-    endpoint: ANTIGRAVITY_ENDPOINT,
-    // The backend gates newer models on this client version; this is the
-    // captured reference build `@oh-my-pi/pi-catalog@18.18.8`
-    // `src/wire/gemini-headers.ts` announces (`DEFAULT_ANTIGRAVITY_VERSION`, and
-    // the `cl` changelist it ships with).
-    userAgent: 'antigravity/hub/2.26.0 (aidev_client; os_type=darwin; arch=arm64; cl=1005016104)',
-  },
-}
-
 /** The redirect URI one route advertises, on the port its listener actually got. */
 export function googleRedirectUri(
   facts: { readonly callback: GoogleCallbackFacts },

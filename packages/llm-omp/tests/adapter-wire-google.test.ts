@@ -19,29 +19,18 @@ import { ReasoningEffortId, attributionHeaders, createUserMessage } from '@deeps
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { OmpGoogleAntigravityAdapter, OmpGoogleGeminiCliAdapter } from '../src/adapter.js'
-import { GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
+import { OmpGoogleGeminiCliAdapter } from '../src/adapter.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 import type { OmpAssistantMessageEvent, OmpContext, OmpGoogleModel, OmpGoogleOptions } from '../src/omp.js'
 
 const testsDir = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(testsDir)
 
-/** The pinned Antigravity manifest endpoint (D11), stubbed rather than dialled. */
-const MANIFEST_URL =
-  'https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml'
-const DAILY = 'https://daily-cloudcode-pa.googleapis.com'
-const SANDBOX = 'https://daily-cloudcode-pa.sandbox.googleapis.com'
 const GEMINI_CLI = 'https://cloudcode-pa.googleapis.com'
 const PATH = '/v1internal:streamGenerateContent?alt=sse'
 
 const GEMINI_MODEL = GOOGLE_GEMINI_CLI_MODELS.find(row => row.id === 'gemini-2.5-pro')
 if (GEMINI_MODEL === undefined) throw new Error('the generated catalog lost gemini-2.5-pro')
-/** `gemini-3.1-pro` routes `high` to the captured `gemini-pro-agent` wire profile. */
-const ANTIGRAVITY_MODEL = GOOGLE_ANTIGRAVITY_MODELS.find(row => row.id === 'gemini-3.1-pro')
-if (ANTIGRAVITY_MODEL === undefined) throw new Error('the generated catalog lost gemini-3.1-pro')
-const WIRE_MODEL = ANTIGRAVITY_MODEL.thinking?.effortRouting?.high
-if (WIRE_MODEL === undefined) throw new Error('the Antigravity catalog lost the high-effort route')
 
 type WireTransport = (
   model: OmpGoogleModel,
@@ -122,13 +111,6 @@ function geminiAdapter(): OmpGoogleGeminiCliAdapter {
   })
 }
 
-function antigravityAdapter(): OmpGoogleAntigravityAdapter {
-  return new OmpGoogleAntigravityAdapter({
-    access: async () => ENVELOPE,
-    transport: artifact.streamGoogleGeminiCli,
-  })
-}
-
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
   const chunks: StreamChunk[] = []
   for await (const chunk of stream) chunks.push(chunk)
@@ -136,12 +118,12 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 }
 
 function request(
-  provider: 'google-gemini-cli' | 'google-antigravity',
+  provider: 'google-gemini-cli',
   extra: Partial<GenerateOptions> = {},
 ): GenerateOptions {
   return {
     provider,
-    model: provider === 'google-gemini-cli' ? 'gemini-2.5-pro' : 'gemini-3.1-pro',
+    model: 'gemini-2.5-pro',
     system: 'You are terse.',
     messages: [createUserMessage({ content: [{ type: 'text', text: 'Hello' }], source: { kind: 'user' } })],
     // Both pinned rows require an explicit effort; `high` also routes the
@@ -234,57 +216,6 @@ describe('bundled Google transport over Cloud Code Assist SSE', () => {
     ])
   })
 
-  it('sends the Antigravity envelope, forced tool mode and per-profile cap', async () => {
-    const calls = stubFetch(() => sse(textChunks()))
-    const tools = [
-      {
-        name: 'lookup_doc',
-        description: 'Look up a document',
-        parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-      },
-    ]
-
-    await collect(antigravityAdapter().stream(request('google-antigravity', { tools })))
-
-    const call = calls[0]!
-    expect(call.url).toBe(`${DAILY}${PATH}`)
-    const headers = new Headers(call.init?.headers)
-    expect(headers.get('authorization')).toBe('Bearer access-token')
-    // D11: the pinned client identity, discovered from the version manifest. The
-    // route owns the template, the version and the changelist; `os_type`/`arch`
-    // describe the host the artifact happens to run on, so they are matched
-    // rather than pinned — a literal here only asserts which machine ran the test.
-    expect(headers.get('user-agent')).toMatch(
-      /^antigravity\/hub\/2\.19\.1 \(aidev_client; os_type=\w+; arch=\w+; cl=1005016104\)$/,
-    )
-    // D10: the vendor identity is not overwritten by DSH attribution.
-    expect(headers.get('user-agent')).not.toBe(attributionHeaders()['user-agent'])
-    expect(headers.get('client-metadata')).toBeNull()
-
-    const body = bodyOf(call)
-    expect(body.project).toBe('project-1')
-    expect(body.model).toBe(WIRE_MODEL)
-    expect(body.request.toolConfig?.functionCallingConfig.mode).toBe('VALIDATED')
-    expect(body.request.generationConfig?.maxOutputTokens).toBe(65535)
-    expect(body.request.generationConfig?.thinkingConfig).toMatchObject({
-      includeThoughts: true,
-      thinkingBudget: ANTIGRAVITY_MODEL.thinking?.effortBudgets?.high,
-    })
-    expect(body.request.sessionId).toMatch(/^-?\d+$/)
-    expect(body.request.labels).toMatchObject({
-      model_enum: 'MODEL_PLACEHOLDER_M16',
-      used_claude: 'false',
-      used_claude_conservative: 'false',
-      // 18.18.8 trails the step counter by one
-      // (`pi-ai/src/providers/google-gemini-cli.ts:1282`), so a first-turn
-      // request labels step 0 where 18.12.6 labelled 1.
-      last_step_index: '0',
-      trajectory_id: expect.any(String),
-    })
-    // 18.18.8 numbers a first turn `1` (`pi-ai/src/providers/google-gemini-cli.ts:1276`);
-    // 18.12.6 numbered it 2, and the `last_step_index` label trails this by one.
-    expect(body.requestId).toMatch(/^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/1$/)
-  })
 
   it('hands a server function call to DSH as a tool-calls finish', async () => {
     stubFetch(() =>
@@ -363,40 +294,5 @@ describe('bundled Google transport over Cloud Code Assist SSE', () => {
       type: 'finish',
       reason: { kind: 'error', failure: { code: 'PROVIDER_ERROR', message: expect.stringContaining('SAFETY') } },
     })
-  })
-
-  it('fails over from Antigravity daily to sandbox before anything streamed', async () => {
-    const calls = stubFetch(call =>
-      call.url.startsWith(DAILY) ? new Response('upstream unavailable', { status: 503 }) : sse(textChunks()),
-    )
-
-    const chunks = await collect(antigravityAdapter().stream(request('google-antigravity')))
-
-    expect(calls.map(call => new URL(call.url).origin)).toEqual([DAILY, SANDBOX])
-    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
-  })
-
-  it('reads the Antigravity client version from the update manifest (D11)', async () => {
-    // No pinned override: the artifact must look the version up once and use it
-    // for the vendor identity the backend gates newer models on.
-    vi.stubEnv('PI_AI_ANTIGRAVITY_VERSION', '')
-    artifact = await loadArtifact()
-    const calls = stubFetch(call => {
-      if (call.url === MANIFEST_URL) {
-        return new Response('version: 2.30.0\npath: Antigravity-darwin-arm64.zip\n', { status: 200 })
-      }
-      return sse(textChunks())
-    })
-
-    await collect(antigravityAdapter().stream(request('google-antigravity')))
-
-    const manifest = calls.find(call => call.url === MANIFEST_URL)
-    expect(manifest).toBeDefined()
-    expect(new Headers(manifest?.init?.headers).get('user-agent')).toBe('electron-builder')
-    const stream = calls.find(call => call.url.startsWith(DAILY))
-    // Same template, with the version the manifest discovery produced.
-    expect(new Headers(stream?.init?.headers).get('user-agent')).toMatch(
-      /^antigravity\/hub\/2\.30\.0 \(aidev_client; os_type=\w+; arch=\w+; cl=1005016104\)$/,
-    )
   })
 })

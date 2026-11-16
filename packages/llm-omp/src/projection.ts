@@ -156,7 +156,6 @@ export interface RouteProfile {
     | 'gitlab-duo'
     | 'gitlab-duo-agent'
     | 'google-gemini-cli'
-    | 'google-antigravity'
     | 'antigravity-cli'
   /** omp's `Api` for the route. */
   readonly api:
@@ -280,25 +279,18 @@ export const GITLAB_DUO_AGENT_PROFILE = {
 /**
  * The Google routes' projection facts.
  *
- * Both routes carry `api: 'google-gemini-cli'`: one provider serves them and
- * dispatches on `model.provider`. No transport-resolved marker — the provider
- * emits tool calls for DSH's own loop, so every call in the stream is DSH's.
+ * The route carries `api: 'google-gemini-cli'`. No transport-resolved marker —
+ * the provider emits tool calls for DSH's own loop, so every call in the stream
+ * is DSH's.
  */
 export interface GoogleRouteProfile extends RouteProfile {
-  readonly provider: 'google-gemini-cli' | 'google-antigravity'
+  readonly provider: 'google-gemini-cli'
   readonly api: 'google-gemini-cli'
 }
 
 /** The Gemini CLI route's projection facts. */
 export const GOOGLE_GEMINI_CLI_PROFILE = {
   provider: 'google-gemini-cli',
-  api: 'google-gemini-cli',
-  fallbackErrorCode: 'PROVIDER_ERROR',
-} as const satisfies GoogleRouteProfile
-
-/** The Antigravity route's projection facts: same artifact, different endpoint family. */
-export const GOOGLE_ANTIGRAVITY_PROFILE = {
-  provider: 'google-antigravity',
   api: 'google-gemini-cli',
   fallbackErrorCode: 'PROVIDER_ERROR',
 } as const satisfies GoogleRouteProfile
@@ -774,10 +766,6 @@ export function projectGoogleRequest(
       ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
       requestModelId: wire.requestModelId,
       thinking: wire.thinking,
-      // A fresh map per request: the provider keeps its endpoint-failover state
-      // in it, and a last-good endpoint must not be inherited from another turn
-      // (or another route) that happened to share this option object.
-      ...(profile.provider === 'google-antigravity' ? { providerSessionState: new Map<string, unknown>() } : {}),
       // The vendor `user-agent` is the client identity here; attribution is
       // filled only where the request left it absent.
       fetch: attributionPreservingFetch,

@@ -21,19 +21,17 @@ import {
 import type { GoogleFetch } from '../src/google/auth.js'
 import { GoogleAuthError } from '../src/google/callback-listener.js'
 import {
-  GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY,
   GOOGLE_GEMINI_CLI_CREDENTIAL_KEY,
   createGoogleAccess,
   readGoogleGrant,
 } from '../src/google/credentials.js'
 import type { GoogleGrantPayload } from '../src/google/credentials.js'
-import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from '../src/google/route.js'
+import { GOOGLE_GEMINI_CLI_FACTS } from '../src/google/route.js'
 import {
-  GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE,
   GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE,
 } from '../src/adapter.js'
 import type { CredentialRecordsLike, StoredCredentialRecord } from '../src/cursor/credentials.js'
-import { googleAntigravityAuthorizationFlow, googleGeminiCliAuthorizationFlow } from '../src/index.js'
+import { googleGeminiCliAuthorizationFlow } from '../src/index.js'
 import type { AuthorizationPrompt } from '../src/index.js'
 
 /** Wait for a value a concurrent flow fills in, without a fixed sleep. */
@@ -128,20 +126,13 @@ describe('google authorize params', () => {
 
   it('mints a 32-character hex state when none is supplied, and follows the bound port', () => {
     const first = googleAuthParams(GOOGLE_GEMINI_CLI_FACTS)
-    const second = googleAuthParams(GOOGLE_ANTIGRAVITY_FACTS, { port: 51122 })
+    const second = googleAuthParams(GOOGLE_GEMINI_CLI_FACTS, { port: 51122 })
 
     expect(first.state).toMatch(/^[0-9a-f]{32}$/)
     expect(second.state).not.toBe(first.state)
-    expect(new URL(second.authorizeUrl).searchParams.get('redirect_uri')).toBe('http://127.0.0.1:51122/oauth-callback')
+    expect(new URL(second.authorizeUrl).searchParams.get('redirect_uri')).toBe('http://127.0.0.1:51122/oauth2callback')
   })
 
-  it('sends the Antigravity client, its extra scopes and its own callback path', () => {
-    const url = new URL(googleAuthParams(GOOGLE_ANTIGRAVITY_FACTS, { state: 's' }).authorizeUrl)
-
-    expect(url.searchParams.get('client_id')).toBe(GOOGLE_ANTIGRAVITY_FACTS.clientId)
-    expect(url.searchParams.get('scope')?.split(' ')).toContain('https://www.googleapis.com/auth/cclog')
-    expect(url.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:51121/oauth-callback')
-  })
 })
 
 describe('google token exchange', () => {
@@ -286,62 +277,8 @@ describe('google project discovery', () => {
     expect(sleeps).toEqual([5000])
   })
 
-  it('runs the Antigravity script: status, onboarding, then the project re-read', async () => {
-    const answers = [
-      json({}),
-      json({ name: 'operations/antigravity-1', done: false }),
-      json({ done: true, response: { cloudaicompanionProject: 'x' } }),
-      json({ currentTier: { id: 'free-tier' }, cloudaicompanionProject: 'antigravity-project' }),
-    ]
-    const stub = stubFetch(() => {
-      const answer = answers.shift()
-      if (answer === undefined) throw new Error('the discovery script made an unexpected call')
-      return answer
-    })
 
-    await expect(
-      discoverGoogleProject(GOOGLE_ANTIGRAVITY_FACTS, 'access-1', {
-        fetch: stub.fetch,
-        sleep: async () => {},
-      }),
-    ).resolves.toBe('antigravity-project')
 
-    expect(stub.calls.map(call => call.url)).toEqual([
-      'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
-      'https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser',
-      'https://daily-cloudcode-pa.googleapis.com/v1internal/operations/antigravity-1',
-      'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
-    ])
-    const headers = new Headers(stub.calls[0]?.init?.headers)
-    expect(headers.get('user-agent')).toContain('antigravity/hub/')
-    expect(headers.has('client-metadata')).toBe(false)
-    const onboardBody = JSON.parse(String(stub.calls[1]?.init?.body)) as Record<string, unknown>
-    expect(onboardBody).toMatchObject({ tierId: 'free-tier', metadata: { ideType: 'ANTIGRAVITY' } })
-  })
-
-  it('refuses an Antigravity account whose free tier is unavailable', async () => {
-    const stub = stubFetch(() =>
-      json({
-        ineligibleTiers: [
-          { tierId: 'free-tier', reasonMessage: 'not eligible in this country', validationUrl: 'https://example.com' },
-        ],
-      }),
-    )
-    await expect(
-      discoverGoogleProject(GOOGLE_ANTIGRAVITY_FACTS, 'a', { fetch: stub.fetch }),
-    ).rejects.toThrowError(/not eligible in this country/)
-  })
-
-  it('names the allowed tiers when the free tier is absent from the allow-list', async () => {
-    // No ineligible reason is spelled out, but onboarding a tier the account may
-    // not use is a wasted provisioning call; the error says what is on offer.
-    const stub = stubFetch(() => json({ allowedTiers: [{ id: 'legacy-tier' }, { id: 'standard-tier' }] }))
-    await expect(
-      discoverGoogleProject(GOOGLE_ANTIGRAVITY_FACTS, 'a', { fetch: stub.fetch }),
-    ).rejects.toThrowError(/allowed tiers do not include free-tier \(allowed: legacy-tier, standard-tier\)/)
-    // Nothing was provisioned.
-    expect(stub.calls.every(call => !call.url.includes('onboardUser'))).toBe(true)
-  })
 })
 
 describe('google login', () => {
@@ -682,31 +619,19 @@ describe('google credential resolver', () => {
   it('reports a missing record as MISSING_CREDENTIAL, naming the route', async () => {
     const store = fakeStore(undefined)
     await expect(
-      createGoogleAccess(store.credentials, GOOGLE_ANTIGRAVITY_FACTS, { now: () => NOW })(),
+      createGoogleAccess(store.credentials, GOOGLE_GEMINI_CLI_FACTS, { now: () => NOW })(),
     ).rejects.toMatchObject({ code: 'MISSING_CREDENTIAL' })
   })
 
-  it('keeps the two routes’ records apart and rejects a payload without a project', () => {
-    expect(GOOGLE_GEMINI_CLI_CREDENTIAL_KEY).toBe('llm-omp-transports/google-gemini-cli')
-    expect(GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY).toBe('llm-omp-transports/google-antigravity')
-    // The adapter registered by the next task reads the same key the flow writes.
-    expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.credentialKey).toBe(GOOGLE_GEMINI_CLI_CREDENTIAL_KEY)
-    expect(GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE.credentialKey).toBe(GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY)
-    expect(readGoogleGrant(grantRecord({ access: 'a', expires: NOW, projectId: '' }))).toBeUndefined()
-    expect(readGoogleGrant({ kind: 'api-key', key: 'k' })).toBeUndefined()
-  })
 })
 
 describe('google authorization flows', () => {
-  it('registers one flow per route over the same factory', () => {
+  it('registers the flow over the shared factory', () => {
     const gemini = googleGeminiCliAuthorizationFlow()
-    const antigravity = googleAntigravityAuthorizationFlow()
 
     expect(gemini.key).toBe(GOOGLE_GEMINI_CLI_CREDENTIAL_KEY)
     expect(gemini.label).toBe('Google Gemini CLI')
     expect(gemini.methods).toEqual([{ id: 'oauth', label: 'Sign in with Google Gemini CLI' }])
-    expect(antigravity.key).toBe(GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY)
-    expect(antigravity.label).toBe('Google Antigravity')
   })
 
   it('commits the grant with its project, and the email only when userinfo named one', async () => {
@@ -748,7 +673,7 @@ describe('google authorization flows', () => {
 
   it('maps a failed sign-in onto AUTH_FAILED with the route’s label', async () => {
     const stub = stubFetch(() => json({ error: 'invalid_grant' }, 400))
-    const flow = googleAntigravityAuthorizationFlow({ fetch: stub.fetch, port: 0 })
+    const flow = googleGeminiCliAuthorizationFlow({ fetch: stub.fetch, port: 0 })
 
     await expect(
       flow.run({

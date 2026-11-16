@@ -385,7 +385,6 @@
     "@oh-my-pi/pi-ai/src/providers/anthropic-images.ts": "sha256:b4daf8e329a5abf49abe7b6d858c279b61073f2f4b0f1311cd9b637542430217",
     "@oh-my-pi/pi-catalog/src/wire/gemini-headers.ts": "sha256:e87dcf484ba86b0467b4f413bb044bd8644967fffa17017b9dfa1a919fe3617b",
     "@oh-my-pi/pi-catalog/src/compat/rules/auth/google-gemini-cli.kdl": "sha256:a681b993a441a0db450e1c76f996fbf6024e1eaf8452eded3bfdf7fd117caa4c",
-    "@oh-my-pi/pi-catalog/src/compat/rules/auth/google-antigravity.kdl": "sha256:a5bdbd2f4a841ab03fda85a34f73c08dcb515e6e89e7a93d34db1f55cdcd7e39",
     "@oh-my-pi/pi-ai/src/providers/factory-droid.ts": "sha256:7d58bee197dfae69cbfb11a4d01a7fddef6d5d44560aae94202789954f7405f9",
     "@oh-my-pi/pi-ai/src/providers/factory-droid/gemini.ts": "sha256:1ff93180b19661b47f147650791f80577b10b232bdeeb3e1bcf1ee6dd23634bf",
     "@oh-my-pi/pi-ai/src/providers/factory-droid/droid-identity.md": "sha256:389b9faa6de5eb3dc9b288f349af41346f44ec60122504578cbe226f55803aff",
