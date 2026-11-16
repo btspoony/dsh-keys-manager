@@ -207,7 +207,7 @@ function makeContext(answer: RpcAnswer = { ok: true, value: makeState() }): Harn
     transportSignIn: '登录',
     transportExpires: '有效期至 {time}',
     transportStatusActive: '正常',
-    transportStatusExpired: '令牌已过期',
+    transportStatusExpired: '过期（将自动续期）',
     transportStatusNeedsReauth: '需重新登录',
     transportStatusSignedOut: '未登录',
     transportRemoveTitle: '移除 {name} 传输账户？',
