@@ -547,6 +547,32 @@ const PROVIDERS = [
  * @module dsh-llm-omp-transports/catalog/google-antigravity
  */`,
   },
+  {
+    key: 'antigravity-cli',
+    out: join(packageRoot, 'src', 'catalog', 'antigravity-cli.ts'),
+    constName: 'ANTIGRAVITY_CLI_MODELS',
+    sourceConst: 'ANTIGRAVITY_CLI_CATALOG_SOURCE',
+    rowType: 'GoogleModelRow',
+    sourceFile: 'src/models.json',
+    select: (_data, key, catalog) => getCatalogProvider(catalog, key),
+    summary: 'Every Antigravity CLI model the pinned catalog serves, sorted by id.',
+    reduce: reduceGoogle,
+    doc: ({ version, rowCount, sourceHash }) => `/**
+ * Generated Antigravity CLI model table — do not edit by hand.
+ *
+ * Source: \`@oh-my-pi/pi-catalog@${version}\` \`src/models.json\` key \`antigravity-cli\`
+ * (${rowCount} rows, ${sourceHash}). Regenerate with \`pnpm -C packages/llm-omp run generate:catalog\`.
+ *
+ * The drift gate in \`tests/build-google.test.ts\` pins the same package version
+ * and source hash, so an omp bump fails there before this table can describe
+ * the wrong models.
+ *
+ * These rows belong to the ACP route: the CLI decides the endpoint, so a row's
+ * \`baseUrl\` is not sent anywhere, and \`id\` is the ACP model id.
+ *
+ * @module dsh-llm-omp-transports/catalog/antigravity-cli
+ */`,
+  },
 ]
 
 /** Render a JSON value at a fixed indentation inside the surrounding array. */
