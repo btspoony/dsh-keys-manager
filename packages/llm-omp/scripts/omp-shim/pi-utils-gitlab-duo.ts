@@ -27,7 +27,7 @@ export { parseImageMetadata } from '@oh-my-pi/pi-utils/mime'
 export { slugify } from '@oh-my-pi/pi-utils/slugify'
 export { readJsonl, readSseEvents, readSseJson, readSseJsonOrText } from '@oh-my-pi/pi-utils/stream'
 export { resolveExtraCa, withExtraCaInit } from '@oh-my-pi/pi-utils/tls-fetch'
-export { asRecord } from '@oh-my-pi/pi-utils/type-guards'
+export { asRecord, toError } from '@oh-my-pi/pi-utils/type-guards'
 // `cloneJsonTree` lives in the package barrel, whose import drags half of
 // pi-utils; the base shim's `structuredCloneJSON` is the same operation for JSON
 // data (the pin itself falls back to `structuredClone` for non-JSON values).

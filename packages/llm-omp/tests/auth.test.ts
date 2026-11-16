@@ -837,7 +837,7 @@ describe('llm-omp-transports registration', () => {
 
     expect(devin).toBeInstanceOf(OmpDevinAdapter)
     expect(devin.providerInfo(DEVIN_ROUTE)).toEqual({ id: 'devin', name: 'Devin' })
-    expect(await devin.listModels(DEVIN_ROUTE)).toHaveLength(2)
+    expect(await devin.listModels(DEVIN_ROUTE)).toHaveLength(1)
     expect(() => devin.providerInfo(CURSOR_ROUTE)).toThrow(expect.objectContaining({ code: 'UNKNOWN_PROVIDER' }))
   })
 

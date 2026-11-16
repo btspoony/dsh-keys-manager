@@ -121,10 +121,10 @@ describe('factory droid wire: model id picks the protocol', () => {
     expect(call.init?.method).toBe('POST')
     const headers = new Headers(call.init?.headers)
     // Factory's CLI identity, not DSH's: the backend gates on this tuple.
-    expect(headers.get('user-agent')).toBe('factory-cli/1.1.0')
-    // 18.18.8: `X-Client-Version` carries the same `FACTORY_DROID_CLIENT_VERSION`
-    // as the user agent (`pi-catalog/src/wire/factory-droid.ts:13`).
-    expect(headers.get('x-client-version')).toBe('1.1.0')
+    expect(headers.get('user-agent')).toBe('factory-cli/1.7.1')
+    // `X-Client-Version` carries the same `FACTORY_DROID_CLIENT_VERSION` as the
+    // user agent (`pi-catalog/src/wire/factory-droid.ts:13`).
+    expect(headers.get('x-client-version')).toBe('1.7.1')
     expect(headers.get('x-factory-client')).toBe('cli')
     expect(headers.get('authorization')).toBe('Bearer workos-token')
     expect(headers.get('x-api-provider')).toBeTruthy()

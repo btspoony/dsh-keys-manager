@@ -1,8 +1,8 @@
 /**
  * Generated GitLab Duo agent model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.18.8` `src/models.json` key
- * `gitlab-duo-agent` (1 row, sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612). Regenerate with
+ * Source: `@oh-my-pi/pi-catalog@18.20.3` `src/models.json` key
+ * `gitlab-duo-agent` (1 row, sha256:d183025c204d185d1a002fccfc2bd7afd39407c3b96062fa373e56947e1ccdaf). Regenerate with
  * `pnpm -C packages/llm-omp run generate:catalog`.
  *
  * The route's live GraphQL discovery is a non-goal for this slice, so the picker
@@ -17,10 +17,10 @@ import type { GitLabDuoAgentModelRow } from '../omp.js'
 /** Provenance of {@link GITLAB_DUO_AGENT_MODELS}. */
 export const GITLAB_DUO_AGENT_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.18.8',
+  version: '18.20.3',
   file: 'src/models.json',
   key: 'gitlab-duo-agent',
-  sourceHash: 'sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612',
+  sourceHash: 'sha256:d183025c204d185d1a002fccfc2bd7afd39407c3b96062fa373e56947e1ccdaf',
   rowCount: 1,
 } as const
 
