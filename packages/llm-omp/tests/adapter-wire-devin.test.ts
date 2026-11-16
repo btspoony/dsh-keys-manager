@@ -199,7 +199,7 @@ describe('bundled devin transport over Connect frames', () => {
       apiKey: 'session-token',
       ideName: 'devin-cli',
       ideType: 'chisel',
-      ideVersion: '3000.11.205',
+      ideVersion: '3000.12.57',
       extensionName: 'chisel',
     })
 

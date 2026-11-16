@@ -175,13 +175,14 @@ describe('OmpDevinAdapter text streaming', () => {
 })
 
 describe('OmpDevinAdapter catalog', () => {
-  it('lists both pinned devin models with text-only modalities', async () => {
+  it('lists the pinned devin models with text-only modalities', async () => {
     const { adapter } = adapterFor('devin-text.jsonl')
 
     expect(adapter.providerInfo(DEVIN_ROUTE)).toEqual({ id: 'devin', name: 'Devin' })
     const models = await adapter.listModels(DEVIN_ROUTE)
     expect(models.map(row => row.id)).toEqual(DEVIN_MODELS.map(row => row.id))
-    expect(models).toHaveLength(2)
+    // 18.20.3 serves one Devin row (`swe-1-6`); the count follows the pin.
+    expect(models).toHaveLength(1)
     for (const row of models) expect(row.inputModalities).toEqual(['text'])
   })
 

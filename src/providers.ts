@@ -757,7 +757,8 @@ export const EXTRA_PROVIDERS: readonly ExtraProvider[] = deepFreeze([
         "contextWindow": 1000000,
         "maxTokens": 65536,
         "input": [
-          "text"
+          "text",
+          "image"
         ]
       },
       {

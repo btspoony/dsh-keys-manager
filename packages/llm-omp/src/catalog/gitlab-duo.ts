@@ -1,8 +1,8 @@
 /**
  * Generated GitLab Duo proxy model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.18.8` `src/models.json` key
- * `gitlab-duo` (16 rows, sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612), plus the alias → upstream id
+ * Source: `@oh-my-pi/pi-catalog@18.20.3` `src/models.json` key
+ * `gitlab-duo` (16 rows, sha256:d183025c204d185d1a002fccfc2bd7afd39407c3b96062fa373e56947e1ccdaf), plus the alias → upstream id
  * table parsed from `src/provider-models/special.ts` and the wire per row from
  * `src/compat/rules.json` `behavior.apiRoutes`. Regenerate with
  * `pnpm -C packages/llm-omp run generate:catalog`.
@@ -23,10 +23,10 @@ import type { GitLabDuoModelRow } from '../omp.js'
 /** Provenance of {@link GITLAB_DUO_MODELS}. */
 export const GITLAB_DUO_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.18.8',
+  version: '18.20.3',
   file: 'src/models.json',
   key: 'gitlab-duo',
-  sourceHash: 'sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612',
+  sourceHash: 'sha256:d183025c204d185d1a002fccfc2bd7afd39407c3b96062fa373e56947e1ccdaf',
   rowCount: 16,
 } as const
 

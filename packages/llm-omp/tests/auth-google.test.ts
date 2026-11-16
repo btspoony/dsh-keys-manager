@@ -418,6 +418,78 @@ describe('google login', () => {
     expect(result.email).toBeUndefined()
   })
 
+  it('asks for the project the account must name and uses the trimmed answer', async () => {
+    const stub = stubFetch(url => {
+      if (url.includes('/token')) return json({ access_token: 'a', refresh_token: 'r', expires_in: 60 })
+      if (url.includes('userinfo')) return json({})
+      return json({ currentTier: { id: 'standard-tier' } })
+    })
+    let asked = 0
+
+    const result = await loginGoogle(GOOGLE_GEMINI_CLI_FACTS, {
+      fetch: stub.fetch,
+      state: 'state-1',
+      port: 0,
+      now: () => NOW,
+      prompt: async () => 'http://127.0.0.1:8085/oauth2callback?code=code-3&state=state-1',
+      onProjectRequired: async () => {
+        asked += 1
+        return '  typed-project  '
+      },
+    })
+
+    expect(result.projectId).toBe('typed-project')
+    expect(asked).toBe(1)
+  })
+
+  it('keeps the refusal when the answer names no project', async () => {
+    const stub = stubFetch(url => {
+      if (url.includes('/token')) return json({ access_token: 'a', refresh_token: 'r', expires_in: 60 })
+      if (url.includes('userinfo')) return json({})
+      return json({ currentTier: { id: 'standard-tier' } })
+    })
+
+    let asked = 0
+
+    await expect(
+      loginGoogle(GOOGLE_GEMINI_CLI_FACTS, {
+        fetch: stub.fetch,
+        state: 'state-1',
+        port: 0,
+        now: () => NOW,
+        prompt: async () => 'http://127.0.0.1:8085/oauth2callback?code=code-4&state=state-1',
+        onProjectRequired: async () => {
+          asked += 1
+          return '   '
+        },
+      }),
+    ).rejects.toThrowError(/GOOGLE_CLOUD_PROJECT/)
+    // Asked exactly once: without the seam the discovery error alone would
+    // satisfy the refusal, so the count is what proves the prompt ran.
+    expect(asked).toBe(1)
+  })
+
+  it('never asks when Google names the project itself', async () => {
+    const stub = stubFetch(url => {
+      if (url.includes('/token')) return json({ access_token: 'a', refresh_token: 'r', expires_in: 60 })
+      if (url.includes('userinfo')) return json({})
+      return json({ currentTier: { id: 'free-tier' }, cloudaicompanionProject: 'project-9' })
+    })
+
+    const result = await loginGoogle(GOOGLE_GEMINI_CLI_FACTS, {
+      fetch: stub.fetch,
+      state: 'state-1',
+      port: 0,
+      now: () => NOW,
+      prompt: async () => 'http://127.0.0.1:8085/oauth2callback?code=code-5&state=state-1',
+      onProjectRequired: async () => {
+        throw new Error('the flow must not ask for a project Google named')
+      },
+    })
+
+    expect(result.projectId).toBe('project-9')
+  })
+
   it('refuses a pasted redirect that carries an OAuth error', async () => {
     await expect(
       loginGoogle(GOOGLE_GEMINI_CLI_FACTS, {

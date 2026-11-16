@@ -85,6 +85,6 @@ export { parseImageMetadata } from '@oh-my-pi/pi-utils/mime'
 export { slugify } from '@oh-my-pi/pi-utils/slugify'
 export { readJsonl, readSseEvents, readSseJson, readSseJsonOrText } from '@oh-my-pi/pi-utils/stream'
 export { resolveExtraCa, withExtraCaInit } from '@oh-my-pi/pi-utils/tls-fetch'
-export { asRecord } from '@oh-my-pi/pi-utils/type-guards'
+export { asRecord, toError } from '@oh-my-pi/pi-utils/type-guards'
 
 export * from './pi-utils'

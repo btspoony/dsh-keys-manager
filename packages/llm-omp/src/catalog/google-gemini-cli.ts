@@ -1,8 +1,8 @@
 /**
  * Generated Gemini CLI model table — do not edit by hand.
  *
- * Source: `@oh-my-pi/pi-catalog@18.18.8` `src/models.json` key `google-gemini-cli`
- * (7 rows, sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
+ * Source: `@oh-my-pi/pi-catalog@18.20.3` `src/models.json` key `google-gemini-cli`
+ * (7 rows, sha256:d183025c204d185d1a002fccfc2bd7afd39407c3b96062fa373e56947e1ccdaf). Regenerate with `pnpm -C packages/llm-omp run generate:catalog`.
  *
  * The drift gate in `tests/build-google.test.ts` pins the same package version
  * and source hash, so an omp bump fails there before this table can describe
@@ -19,10 +19,10 @@ import type { GoogleModelRow } from '../omp.js'
 /** Provenance of {@link GOOGLE_GEMINI_CLI_MODELS}. */
 export const GOOGLE_GEMINI_CLI_CATALOG_SOURCE = {
   package: '@oh-my-pi/pi-catalog',
-  version: '18.18.8',
+  version: '18.20.3',
   file: 'src/models.json',
   key: 'google-gemini-cli',
-  sourceHash: 'sha256:3256ca28d788655c098b346dadb4d1317a1d9f591e42fc499641533c78e05612',
+  sourceHash: 'sha256:d183025c204d185d1a002fccfc2bd7afd39407c3b96062fa373e56947e1ccdaf',
   rowCount: 7,
 } as const
 

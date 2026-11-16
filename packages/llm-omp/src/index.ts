@@ -596,6 +596,16 @@ function googleAuthorizationFlow(facts: GoogleRouteFacts, options: GoogleFlowOpt
           onAuthUrl: url =>
             session.notify({ message: `Open this page to sign in to ${facts.label}.`, url }),
           onProgress: message => session.notify({ message }),
+          // A Workspace/GCA account must name its Cloud project; only the human
+          // knows it, so the panel asks instead of the host env deciding.
+          onProjectRequired: () =>
+            session.prompt({
+              kind: 'text',
+              message:
+                'This Google account must name the Cloud project it bills. Enter the project id (set GOOGLE_CLOUD_PROJECT / GOOGLE_CLOUD_PROJECT_ID in the host environment to answer this without the prompt).',
+              placeholder: 'my-gcp-project',
+              signal: session.signal,
+            }),
           // The paste half exists for browsers that cannot reach the loopback;
           // it is cancelled once the listener already has the code.
           prompt: signal =>
