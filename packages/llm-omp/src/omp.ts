@@ -516,6 +516,30 @@ export interface OmpGoogleOptions {
   readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 }
 
+/** The omp model object for an Antigravity CLI (ACP) row: the CLI owns the endpoint. */
+export interface OmpAntigravityCliModel extends GoogleModelRow {
+  readonly api: 'antigravity-acp'
+  readonly provider: 'antigravity-cli'
+}
+
+/**
+ * Request options handed to omp's `streamAntigravityCli`.
+ *
+ * @remarks
+ * `apiKey` is the staged grant envelope the provider parses before writing it
+ * into agy's isolated directory. `providerSessionState` is the adapter-owned map
+ * that carries agy's conversation across the steps of one tool turn.
+ */
+export interface OmpAntigravityCliOptions {
+  readonly apiKey: string
+  readonly signal?: AbortSignal
+  readonly providerSessionState?: Map<string, unknown>
+  /** Working directory agy starts in; the plugin uses the process cwd. */
+  readonly cwd?: string
+  /** The selected effort, forwarded as agy's per-turn `thought_level`. */
+  readonly reasoning?: string
+}
+
 /** One fully projected request: the devin transport's three positional arguments. */
 export interface OmpContext {
   readonly systemPrompt?: readonly string[]

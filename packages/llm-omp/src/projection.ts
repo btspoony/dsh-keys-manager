@@ -101,6 +101,8 @@ import type {
   OmpDevinModel,
   OmpDevinOptions,
   OmpFactoryDroidModel,
+  OmpAntigravityCliModel,
+  OmpAntigravityCliOptions,
   OmpFactoryDroidOptions,
   OmpGitLabDuoAgentModel,
   OmpGitLabDuoModel,
@@ -155,6 +157,7 @@ export interface RouteProfile {
     | 'gitlab-duo-agent'
     | 'google-gemini-cli'
     | 'google-antigravity'
+    | 'antigravity-cli'
   /** omp's `Api` for the route. */
   readonly api:
     | 'cursor-agent'
@@ -163,6 +166,7 @@ export interface RouteProfile {
     | 'gitlab-duo-agent'
     | 'gitlab-duo'
     | 'google-gemini-cli'
+    | 'antigravity-acp'
   /** Provider-neutral code an unclassified transport failure maps to. */
   readonly fallbackErrorCode: string
   /**
@@ -298,6 +302,13 @@ export const GOOGLE_ANTIGRAVITY_PROFILE = {
   api: 'google-gemini-cli',
   fallbackErrorCode: 'PROVIDER_ERROR',
 } as const satisfies GoogleRouteProfile
+
+/** The Antigravity CLI (ACP) route's projection facts: the CLI owns the transport. */
+export const ANTIGRAVITY_CLI_PROFILE = {
+  provider: 'antigravity-cli',
+  api: 'antigravity-acp',
+  fallbackErrorCode: 'PROVIDER_ERROR',
+} as const satisfies RouteProfile
 
 /** Token counters of a historical assistant message; the transport never re-prices history. */
 const EMPTY_USAGE: OmpUsage = Object.freeze({
@@ -694,6 +705,54 @@ interface GoogleWireRoute {
  * @throws LlmError with {@link UNSUPPORTED_REASONING_EFFORT} for an effort the
  *   model does not advertise, and for no effort on a `requiresEffort` row.
  */
+/** The ACP request projection's three positional transport arguments. */
+export interface ProjectedAntigravityCliRequest {
+  readonly model: OmpAntigravityCliModel
+  readonly context: OmpContext
+  readonly options: Omit<OmpAntigravityCliOptions, 'apiKey'> & { readonly apiKey?: string }
+}
+
+/**
+ * Project one DSH request onto the ACP transport.
+ *
+ * @remarks
+ * The ACP host keeps agy's conversation in the adapter-owned `state` map and
+ * resumes a parked tool request on the next stream call, so the projection
+ * forwards that map rather than projecting one turn's messages alone. Tool
+ * declarations ride the same {@link projectContext} every route uses.
+ *
+ * @param row - the catalog row the request resolved to.
+ * @param profile - the route's identity facts.
+ * @param options - the caller's request.
+ * @param state - the adapter's per-session ACP state map.
+ * @param cwd - the directory agy starts in.
+ * @returns the model, context and transport options for one call.
+ */
+export function projectAntigravityCliRequest(
+  row: GoogleModelRow,
+  profile: RouteProfile,
+  options: GenerateOptions<string>,
+  state: Map<string, unknown>,
+  cwd: string,
+): ProjectedAntigravityCliRequest {
+  const context = projectContext(profile, options)
+  return {
+    model: { api: 'antigravity-acp', provider: 'antigravity-cli', ...row },
+    context,
+    options: {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      // Only an effort the row itself advertises is forwarded: the ACP route
+      // publishes no ladder of its own, so an unadvertised selection is dropped
+      // rather than sent as a wire value agy may not know.
+      ...(options.reasoningEffort === undefined || !(row.thinking?.efforts ?? []).includes(String(options.reasoningEffort))
+        ? {}
+        : { reasoning: String(options.reasoningEffort) }),
+      providerSessionState: state,
+      cwd,
+    },
+  }
+}
+
 export function projectGoogleRequest(
   row: GoogleModelRow,
   profile: GoogleRouteProfile,

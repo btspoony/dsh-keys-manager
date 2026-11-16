@@ -144,10 +144,11 @@ Current design boundaries of the Keys Manager plugin:
 - The two Google routes are different accounts, not two doors to one: the
   `google-gemini-cli` route is the Google Cloud (Gemini Code Assist) route and
   needs a Cloud project, which a Google One subscription does not provide;
-  `google-antigravity` runs on the account's Antigravity entitlement, whose free
-  tier is onboarded here. Both call Cloud Code Assist directly, so this plugin
-  needs no Antigravity `agy` CLI and no ACP transport; Antigravity's own plans
-  decide which accounts the second route serves.
+  `antigravity-cli` runs on the account's Antigravity entitlement and speaks ACP
+  to the official `agy` CLI. The plugin downloads and verifies that CLI from
+  Google's release manifest on first use (SHA-512; `PI_AGY_PATH` overrides a
+  local copy), so nothing needs a manual install — but the route cannot run
+  offline on a machine that has never fetched it.
 - `google-antigravity` reads a version manifest from Google once per process
   (5 s budget, pinned fallback when the read fails or times out), so a blocked
   network delays but does not break its first turn. A failed read is not retried

@@ -41,7 +41,10 @@ import {
   GITLAB_DUO_ROUTE,
   GITLAB_DUO_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
+  ANTIGRAVITY_CLI_ROUTE,
+  ANTIGRAVITY_CLI_TRANSPORT_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
+  OmpAntigravityCliAdapter,
   OmpCursorAdapter,
   OmpDevinAdapter,
   OmpFactoryDroidAdapter,
@@ -62,6 +65,7 @@ import { DEVIN_MODELS } from './catalog/devin.js'
 import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
+import { ANTIGRAVITY_CLI_MODELS } from './catalog/antigravity-cli.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { loginCursor } from './cursor/auth.js'
@@ -80,6 +84,7 @@ import {
   createGoogleAccess,
   googleCredentialKey,
 } from './google/credentials.js'
+import { ANTIGRAVITY_CLI_CREDENTIAL_KEY, createAntigravityCliAccess } from './antigravity/credentials.js'
 import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from './google/route.js'
 import type { GoogleRouteFacts } from './google/route.js'
 
@@ -110,7 +115,7 @@ type TransportRouteId =
   | 'cursor'
   | 'devin'
   | 'google-gemini-cli'
-  | 'google-antigravity'
+  | 'antigravity-cli'
   | 'factory-droid'
   | 'gitlab-duo'
   | 'gitlab-duo-agent'
@@ -120,7 +125,7 @@ export interface TransportProvidersProfile {
   cursor?: TransportProviderProfile
   devin?: TransportProviderProfile
   'google-gemini-cli'?: TransportProviderProfile
-  'google-antigravity'?: TransportProviderProfile
+  'antigravity-cli'?: TransportProviderProfile
   'factory-droid'?: TransportProviderProfile
   'gitlab-duo'?: TransportProviderProfile
   'gitlab-duo-agent'?: TransportProviderProfile
@@ -183,7 +188,7 @@ export const Config = z.object({
           )
           .default([]),
       }),
-      'google-antigravity': z.object({
+      'antigravity-cli': z.object({
         models: z
           .array(
             z.object({
@@ -228,7 +233,7 @@ export const Config = z.object({
       cursor: { models: [] },
       devin: { models: [] },
       'google-gemini-cli': { models: [] },
-      'google-antigravity': { models: [] },
+      'antigravity-cli': { models: [] },
     })
     .volatile(),
 })
@@ -279,6 +284,17 @@ export function googleGeminiCliCatalogModels(): TransportCatalogModel[] {
  */
 export function googleAntigravityCatalogModels(): TransportCatalogModel[] {
   return GOOGLE_ANTIGRAVITY_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
+/**
+ * The full Antigravity ACP catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * The rows come from the pin's `antigravity-cli` provider, not the direct Cloud Code
+ * Assist table: the CLI owns the endpoint, so the picker lists ACP model ids.
+ */
+export function antigravityCliCatalogModels(): TransportCatalogModel[] {
+  return ANTIGRAVITY_CLI_MODELS.map(row => ({ id: row.id, name: row.name }))
 }
 
 /**
@@ -357,6 +373,15 @@ const GOOGLE_ANTIGRAVITY_PROVIDER = {
   displayName: 'Google Antigravity',
   settingsNs: 'llm-omp-transports',
   settingsPath: ['providers', 'google-antigravity'],
+  declared: false,
+} as const
+
+/** The Antigravity ACP route's Models-page entry: the `agy` transport, its own settings path. */
+const ANTIGRAVITY_CLI_PROVIDER = {
+  provider: ANTIGRAVITY_CLI_TRANSPORT_ROUTE.id,
+  displayName: ANTIGRAVITY_CLI_TRANSPORT_ROUTE.displayName,
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'antigravity-cli'],
   declared: false,
 } as const
 
@@ -661,6 +686,98 @@ export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = 
   return googleAuthorizationFlow(GOOGLE_ANTIGRAVITY_FACTS, options)
 }
 
+/** The sign-in half of the ACP artifact: agy's OAuth dance, exposed as functions. */
+interface AntigravityLoginModule {
+  loginAntigravityCli(controller: {
+    signal?: AbortSignal
+    onAuth?(info: { url: string; instructions?: string }): void
+    onProgress?(message: string): void
+    onManualCodeInput?(signal?: AbortSignal): Promise<string>
+  }): Promise<{ access: string; refresh: string; expires: number; email?: string; accountId?: string }>
+  refreshAntigravityCli(
+    grant: { access: string; refresh: string; expires: number; email?: string; accountId?: string },
+    signal?: AbortSignal,
+  ): Promise<{ access: string; refresh: string; expires: number; email?: string; accountId?: string }>
+}
+
+/** Load the sign-in artifact on first use, so a missing build cannot fail `apply`. */
+async function bundledAntigravityLogin(): Promise<AntigravityLoginModule> {
+  try {
+    const loaded = (await import(new URL('./omp/antigravity-login.mjs', import.meta.url).href)) as Record<string, unknown>
+    const login = loaded['loginAntigravityCli']
+    const refresh = loaded['refreshAntigravityCli']
+    if (typeof login !== 'function' || typeof refresh !== 'function') {
+      throw new Error('the artifact does not export the Antigravity sign-in functions')
+    }
+    return {
+      loginAntigravityCli: login as AntigravityLoginModule['loginAntigravityCli'],
+      refreshAntigravityCli: refresh as AntigravityLoginModule['refreshAntigravityCli'],
+    }
+  } catch (cause) {
+    throw LlmError.fromFailure({
+      message: 'llm-omp-transports: the bundled Antigravity sign-in is unavailable; run `pnpm build` in the transports package',
+      code: TRANSPORT_UNAVAILABLE,
+    }, { cause })
+  }
+}
+
+/**
+ * The `llm-omp-transports/antigravity-cli` sign-in flow.
+ *
+ * @remarks
+ * This route has no authorize URL of its own: the provider runs `agy acp --login`
+ * and reads Google's page off the child's output, so the flow maps the host's
+ * notice/prompt pair onto that controller and commits whatever grant the CLI
+ * exported. A pasted code or callback URL is accepted by the provider itself.
+ *
+ * @returns the flow the authorization seam registers.
+ */
+export function antigravityCliAuthorizationFlow(): CursorAuthorizationFlow {
+  return {
+    key: ANTIGRAVITY_CLI_CREDENTIAL_KEY,
+    label: 'Antigravity (agy)',
+    methods: [{ id: 'oauth', label: 'Sign in with Google' }],
+    async run(session) {
+      const module = await bundledAntigravityLogin()
+      try {
+        const credentials = await module.loginAntigravityCli({
+          signal: session.signal,
+          onAuth: info =>
+            session.notify({
+              message: info.instructions ?? 'Open this page to sign in to Antigravity.',
+              url: info.url,
+            }),
+          onProgress: message => session.notify({ message }),
+          onManualCodeInput: signal =>
+            session.prompt({
+              kind: 'secret',
+              message: 'Paste the authorization code (or the callback URL) here.',
+              ...(signal === undefined ? {} : { signal }),
+            }),
+        })
+        await session.commit({
+          kind: 'grant',
+          payload: {
+            access: credentials.access,
+            refresh: credentials.refresh,
+            expires: credentials.expires,
+            ...(credentials.email === undefined ? {} : { email: credentials.email }),
+            ...(credentials.accountId === undefined ? {} : { accountId: credentials.accountId }),
+          },
+        })
+      } catch (cause) {
+        if (session.signal.aborted) throw cause
+        const detail = cause instanceof Error ? cause.message : String(cause)
+        throw LlmError.fromFailure({
+          message: 'llm-omp-transports: Antigravity sign-in failed — ' + detail,
+          code: 'AUTH_FAILED',
+        }, { cause })
+      }
+    },
+  }
+}
+
+
 /** Test seams for the Factory Droid flow; the plugin uses the real network and timers. */
 export interface FactoryDroidFlowOptions {
   readonly fetch?: FactoryDroidFetch
@@ -880,11 +997,12 @@ export function gitlabDuoAgentAuthorizationFlow(options: GitLabFlowOptions = {})
  * request and its failure reaches that request as a typed `LlmError`.
  */
 function bundledTransport<Model, Options>(
-  artifact: 'cursor' | 'devin' | 'google' | 'factory-droid' | 'gitlab-duo' | 'gitlab-duo-agent',
+  artifact: 'cursor' | 'devin' | 'google' | 'antigravity-cli' | 'factory-droid' | 'gitlab-duo' | 'gitlab-duo-agent',
   exportName:
     | 'streamCursor'
     | 'streamDevin'
     | 'streamGoogleGeminiCli'
+    | 'streamAntigravityCli'
     | 'streamFactoryDroid'
     | 'streamGitLabDuoWorkflow'
     | 'streamGitLabDuo',
@@ -968,13 +1086,18 @@ export function createGoogleGeminiCliAdapter(
  * on `model.provider` — over its own catalog, credential record and discovery
  * facts.
  */
-export function createGoogleAntigravityAdapter(
+export function createAntigravityCliAdapter(
   credentials: CredentialRecordsLike,
   models?: () => readonly string[] | undefined,
-): OmpGoogleAntigravityAdapter {
-  return new OmpGoogleAntigravityAdapter({
-    access: createGoogleAccess(credentials, GOOGLE_ANTIGRAVITY_FACTS),
-    transport: bundledTransport('google', 'streamGoogleGeminiCli', 'Google Antigravity'),
+): OmpAntigravityCliAdapter {
+  return new OmpAntigravityCliAdapter({
+    // The CLI owns the refresh exchange; the resolver reads the stored grant and
+    // calls it once under the record lock when the token is near expiry.
+    access: createAntigravityCliAccess(credentials, async (grant, signal) => {
+      const module = await bundledAntigravityLogin()
+      return await module.refreshAntigravityCli(grant, signal)
+    }),
+    transport: bundledTransport('antigravity-cli', 'streamAntigravityCli', 'Antigravity'),
     ...(models === undefined ? {} : { models }),
   })
 }
@@ -1061,7 +1184,7 @@ export const TRANSPORT_PROVIDERS: readonly LlmConfigurableProvider[] = Object.fr
   CURSOR_PROVIDER,
   DEVIN_PROVIDER,
   GOOGLE_GEMINI_CLI_PROVIDER,
-  GOOGLE_ANTIGRAVITY_PROVIDER,
+  ANTIGRAVITY_CLI_PROVIDER,
   FACTORY_DROID_PROVIDER,
   GITLAB_DUO_PROVIDER,
   GITLAB_DUO_AGENT_PROVIDER,
@@ -1072,7 +1195,7 @@ const TRANSPORT_CREDENTIAL_KEYS = [
   CURSOR_CREDENTIAL_KEY,
   DEVIN_CREDENTIAL_KEY,
   GOOGLE_GEMINI_CLI_CREDENTIAL_KEY,
-  GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY,
+  ANTIGRAVITY_CLI_CREDENTIAL_KEY,
   FACTORY_DROID_CREDENTIAL_KEY,
   GITLAB_DUO_CREDENTIAL_KEY,
   GITLAB_DUO_AGENT_CREDENTIAL_KEY,
@@ -1113,8 +1236,8 @@ export function apply(ctx: Context, config: Config = {}): void {
   )
   adapterHandles.push(
     ctx.llm.registerAdapter(
-      [GOOGLE_ANTIGRAVITY_ROUTE],
-      createGoogleAntigravityAdapter(host.credentials, models('google-antigravity')),
+      [ANTIGRAVITY_CLI_ROUTE],
+      createAntigravityCliAdapter(host.credentials, models('antigravity-cli')),
     ),
   )
   adapterHandles.push(
@@ -1178,7 +1301,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   host.authorization.registerFlow(cursorAuthorizationFlow())
   host.authorization.registerFlow(devinAuthorizationFlow())
   host.authorization.registerFlow(googleGeminiCliAuthorizationFlow())
-  host.authorization.registerFlow(googleAntigravityAuthorizationFlow())
+  host.authorization.registerFlow(antigravityCliAuthorizationFlow())
   host.authorization.registerFlow(factoryDroidAuthorizationFlow())
   host.authorization.registerFlow(gitlabDuoAuthorizationFlow())
   host.authorization.registerFlow(gitlabDuoAgentAuthorizationFlow())
@@ -1196,7 +1319,7 @@ export {
   GITLAB_DUO_CREDENTIAL_KEY,
   GITLAB_DUO_ROUTE,
   GITLAB_DUO_TRANSPORT_ROUTE,
-  GOOGLE_ANTIGRAVITY_ROUTE,
+  ANTIGRAVITY_CLI_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
 } from './adapter.js'
 export { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
@@ -1214,4 +1337,5 @@ export { createFactoryDroidAccess } from './factory-droid/credentials.js'
 export type { FactoryDroidGrantPayload } from './factory-droid/credentials.js'
 export { CURSOR_CREDENTIAL_KEY } from './cursor/credentials.js'
 export { DEVIN_CREDENTIAL_KEY } from './devin/credentials.js'
-export { GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY, GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'
+export { ANTIGRAVITY_CLI_CREDENTIAL_KEY } from './antigravity/credentials.js'
+export { GOOGLE_GEMINI_CLI_CREDENTIAL_KEY } from './google/credentials.js'

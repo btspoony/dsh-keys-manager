@@ -33,6 +33,7 @@ import { describe, expect, it } from 'vitest'
 
 import * as baseShim from '../scripts/omp-shim/pi-utils'
 import * as googleShim from '../scripts/omp-shim/pi-utils-google'
+import { ANTIGRAVITY_CLI_CATALOG_SOURCE, ANTIGRAVITY_CLI_MODELS } from '../src/catalog/antigravity-cli.js'
 import { GOOGLE_ANTIGRAVITY_CATALOG_SOURCE, GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_CATALOG_SOURCE, GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 import { GOOGLE_ANTIGRAVITY_FACTS } from '../src/google/route.js'
@@ -110,6 +111,8 @@ describe('google drift gate', () => {
     // was reversed without the manifest saying so. The other entries are the
     // independent routes, one artifact each.
     expect(Object.keys(manifest.entries).sort()).toEqual([
+      'antigravity-cli',
+      'antigravity-login',
       'cursor',
       'devin',
       'factory-droid',
@@ -207,6 +210,7 @@ describe('generated google tables freshness', () => {
     for (const [key, source, rows] of [
       ['google-gemini-cli', GOOGLE_GEMINI_CLI_CATALOG_SOURCE, GOOGLE_GEMINI_CLI_MODELS],
       ['google-antigravity', GOOGLE_ANTIGRAVITY_CATALOG_SOURCE, GOOGLE_ANTIGRAVITY_MODELS],
+      ['antigravity-cli', ANTIGRAVITY_CLI_CATALOG_SOURCE, ANTIGRAVITY_CLI_MODELS],
     ] as const) {
       expect(source.version, key).toBe(manifest.piCatalogVersion)
       expect(source.key, key).toBe(key)

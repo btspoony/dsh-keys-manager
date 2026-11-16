@@ -20,14 +20,14 @@ import {
   FACTORY_DROID_TRANSPORT_ROUTE,
   GITLAB_DUO_AGENT_TRANSPORT_ROUTE,
   GITLAB_DUO_TRANSPORT_ROUTE,
-  GOOGLE_ANTIGRAVITY_ROUTE,
+  ANTIGRAVITY_CLI_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
   OmpFactoryDroidAdapter,
   OmpGitLabDuoAdapter,
   OmpGitLabDuoAgentAdapter,
-  OmpGoogleAntigravityAdapter,
+  OmpAntigravityCliAdapter,
   OmpGoogleGeminiCliAdapter,
 } from '../src/adapter.js'
 import {
@@ -678,7 +678,7 @@ describe('llm-omp-transports registration', () => {
       `adapter:${CURSOR_ROUTE}`,
       `adapter:${DEVIN_ROUTE}`,
       `adapter:${GOOGLE_GEMINI_CLI_ROUTE}`,
-      `adapter:${GOOGLE_ANTIGRAVITY_ROUTE}`,
+      `adapter:${ANTIGRAVITY_CLI_ROUTE}`,
       `adapter:${FACTORY_DROID_TRANSPORT_ROUTE.id}`,
       `adapter:${GITLAB_DUO_TRANSPORT_ROUTE.id}`,
       `adapter:${GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id}`,
@@ -686,7 +686,7 @@ describe('llm-omp-transports registration', () => {
       'flow:llm-omp-transports/cursor',
       'flow:llm-omp-transports/devin',
       'flow:llm-omp-transports/google-gemini-cli',
-      'flow:llm-omp-transports/google-antigravity',
+      'flow:llm-omp-transports/antigravity-cli',
       'flow:llm-omp-transports/factory-droid',
       'flow:llm-omp-transports/gitlab-duo',
       'flow:llm-omp-transports/gitlab-duo-agent',
@@ -695,7 +695,7 @@ describe('llm-omp-transports registration', () => {
       [CURSOR_ROUTE],
       [DEVIN_ROUTE],
       [GOOGLE_GEMINI_CLI_ROUTE],
-      [GOOGLE_ANTIGRAVITY_ROUTE],
+      [ANTIGRAVITY_CLI_ROUTE],
       [FACTORY_DROID_TRANSPORT_ROUTE.id],
       [GITLAB_DUO_TRANSPORT_ROUTE.id],
       [GITLAB_DUO_AGENT_TRANSPORT_ROUTE.id],
@@ -703,7 +703,7 @@ describe('llm-omp-transports registration', () => {
     expect(host.adapters[0]!.adapter).toBeInstanceOf(OmpCursorAdapter)
     expect(host.adapters[1]!.adapter).toBeInstanceOf(OmpDevinAdapter)
     expect(host.adapters[2]!.adapter).toBeInstanceOf(OmpGoogleGeminiCliAdapter)
-    expect(host.adapters[3]!.adapter).toBeInstanceOf(OmpGoogleAntigravityAdapter)
+    expect(host.adapters[3]!.adapter).toBeInstanceOf(OmpAntigravityCliAdapter)
     expect(host.adapters[4]!.adapter).toBeInstanceOf(OmpFactoryDroidAdapter)
     // The GitLab routes register after the Factory one; the agent ships first and
     // the proxy route follows in its own task.
@@ -733,10 +733,10 @@ describe('llm-omp-transports registration', () => {
           declared: false,
         },
         {
-          provider: 'google-antigravity',
-          displayName: 'Google Antigravity',
+          provider: 'antigravity-cli',
+          displayName: 'Antigravity (agy)',
           settingsNs: 'llm-omp-transports',
-          settingsPath: ['providers', 'google-antigravity'],
+          settingsPath: ['providers', 'antigravity-cli'],
           declared: false,
         },
         {
@@ -779,9 +779,9 @@ describe('llm-omp-transports registration', () => {
         methods: [{ id: 'oauth', label: 'Sign in with Google Gemini CLI' }],
       },
       {
-        key: 'llm-omp-transports/google-antigravity',
-        label: 'Google Antigravity',
-        methods: [{ id: 'oauth', label: 'Sign in with Google Antigravity' }],
+        key: 'llm-omp-transports/antigravity-cli',
+        label: 'Antigravity (agy)',
+        methods: [{ id: 'oauth', label: 'Sign in with Google' }],
       },
       {
         key: 'llm-omp-transports/factory-droid',

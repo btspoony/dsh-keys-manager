@@ -18,12 +18,12 @@ import {
   FACTORY_DROID_TRANSPORT_ROUTE,
   GITLAB_DUO_AGENT_ROUTE,
   GITLAB_DUO_ROUTE,
-  GOOGLE_ANTIGRAVITY_ROUTE,
+  ANTIGRAVITY_CLI_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpFactoryDroidAdapter,
   OmpGitLabDuoAdapter,
   OmpGitLabDuoAgentAdapter,
-  OmpGoogleAntigravityAdapter,
+  OmpAntigravityCliAdapter,
   OmpGoogleGeminiCliAdapter,
 } from '../src/adapter.js'
 import {
@@ -35,7 +35,7 @@ import {
   factoryDroidCatalogModels,
   gitlabDuoAgentCatalogModels,
   gitlabDuoCatalogModels,
-  googleAntigravityCatalogModels,
+  antigravityCliCatalogModels,
   googleGeminiCliCatalogModels,
   TRANSPORT_PROVIDERS,
 } from '../src/index.js'
@@ -45,7 +45,7 @@ import { DEVIN_MODELS } from '../src/catalog/devin.js'
 import { FACTORY_DROID_MODELS } from '../src/catalog/factory-droid.js'
 import { GITLAB_DUO_MODELS } from '../src/catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from '../src/catalog/gitlab-duo-agent.js'
-import { GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
+import { ANTIGRAVITY_CLI_MODELS } from '../src/catalog/antigravity-cli.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 
 /** The accessor key a schemastery volatile value carries (cosmokit). */
@@ -91,7 +91,7 @@ describe('Config', () => {
         cursor: { models: [] },
         devin: { models: [] },
         'google-gemini-cli': { models: [] },
-        'google-antigravity': { models: [] },
+        'antigravity-cli': { models: [] },
         'factory-droid': { models: [] },
         'gitlab-duo': { models: [] },
         'gitlab-duo-agent': { models: [] },
@@ -104,7 +104,7 @@ describe('Config', () => {
     expect(getPath(value, ['providers', 'devin']) !== undefined).toBe(true)
     // The Google pair resolves the same way, so each is a configured provider.
     expect(getPath(value, ['providers', 'google-gemini-cli']) !== undefined).toBe(true)
-    expect(getPath(value, ['providers', 'google-antigravity']) !== undefined).toBe(true)
+    expect(getPath(value, ['providers', 'antigravity-cli']) !== undefined).toBe(true)
     expect(getPath(value, ['providers', 'factory-droid']) !== undefined).toBe(true)
     expect(getPath(value, ['providers', 'gitlab-duo']) !== undefined).toBe(true)
     expect(getPath(value, ['providers', 'gitlab-duo-agent']) !== undefined).toBe(true)
@@ -119,7 +119,7 @@ describe('Config', () => {
       cursor: { models: [] },
       devin: { models: [] },
       'google-gemini-cli': { models: [] },
-      'google-antigravity': { models: [] },
+      'antigravity-cli': { models: [] },
       'factory-droid': { models: [] },
       'gitlab-duo': { models: [] },
       'gitlab-duo-agent': { models: [] },
@@ -139,7 +139,7 @@ describe('Config', () => {
   it('resolves an allow-list on either Google route', () => {
     const rows = [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }]
 
-    for (const route of ['google-gemini-cli', 'google-antigravity'] as const) {
+    for (const route of ['google-gemini-cli', 'antigravity-cli'] as const) {
       const value = describeValue({ providers: { [route]: { models: rows } } })
       expect(getPath(value, ['providers', route, 'models'])).toEqual(rows)
     }
@@ -157,12 +157,12 @@ describe('catalog projections', () => {
 
   it('projects every Google row as an id/name pair, one list per route', () => {
     const gemini = googleGeminiCliCatalogModels()
-    const antigravity = googleAntigravityCatalogModels()
+    const antigravity = antigravityCliCatalogModels()
 
     expect(gemini).toHaveLength(GOOGLE_GEMINI_CLI_MODELS.length)
-    expect(antigravity).toHaveLength(GOOGLE_ANTIGRAVITY_MODELS.length)
+    expect(antigravity).toHaveLength(ANTIGRAVITY_CLI_MODELS.length)
     expect(gemini.map(row => row.id)).toEqual(GOOGLE_GEMINI_CLI_MODELS.map(row => row.id))
-    expect(antigravity.map(row => row.id)).toEqual(GOOGLE_ANTIGRAVITY_MODELS.map(row => row.id))
+    expect(antigravity.map(row => row.id)).toEqual(ANTIGRAVITY_CLI_MODELS.map(row => row.id))
     expect(Object.keys(gemini[0]!)).toEqual(['id', 'name'])
     // The two routes advertise different models from one artifact.
     expect(gemini.map(row => row.id)).not.toEqual(antigravity.map(row => row.id))
@@ -229,10 +229,13 @@ async function flushReconcile(): Promise<void> {
 
 /** A fake `ctx` implementing exactly the seams `apply` reaches. */
 function fakeHost(
-  record: { access: string; expires: number; projectId: string } = {
+  // One record shape for every route: the direct Google route needs `projectId`,
+  // the ACP route needs `refresh`, and both tolerate the other's field.
+  record: { access: string; expires: number; projectId: string; refresh?: string } = {
     access: 'google-token',
     expires: FAR_FUTURE,
     projectId: 'project-1',
+    refresh: 'refresh-1',
   },
   options: { omitListRecords?: boolean } = {},
 ): RegisteredHost {
@@ -246,7 +249,7 @@ function fakeHost(
     'llm-omp-transports/cursor',
     'llm-omp-transports/devin',
     'llm-omp-transports/google-gemini-cli',
-    'llm-omp-transports/google-antigravity',
+    'llm-omp-transports/antigravity-cli',
     'llm-omp-transports/factory-droid',
     'llm-omp-transports/gitlab-duo',
     'llm-omp-transports/gitlab-duo-agent',
@@ -331,7 +334,7 @@ describe('apply registration', () => {
       ['cursor'],
       ['devin'],
       [GOOGLE_GEMINI_CLI_ROUTE],
-      [GOOGLE_ANTIGRAVITY_ROUTE],
+      [ANTIGRAVITY_CLI_ROUTE],
       ['factory-droid'],
       ['gitlab-duo'],
       ['gitlab-duo-agent'],
@@ -340,7 +343,7 @@ describe('apply registration', () => {
       'cursor',
       'devin',
       GOOGLE_GEMINI_CLI_ROUTE,
-      GOOGLE_ANTIGRAVITY_ROUTE,
+      ANTIGRAVITY_CLI_ROUTE,
       'factory-droid',
       'gitlab-duo',
       'gitlab-duo-agent',
@@ -349,7 +352,7 @@ describe('apply registration', () => {
       'providers.cursor',
       'providers.devin',
       'providers.google-gemini-cli',
-      'providers.google-antigravity',
+      'providers.antigravity-cli',
       'providers.factory-droid',
       'providers.gitlab-duo',
       'providers.gitlab-duo-agent',
@@ -358,7 +361,7 @@ describe('apply registration', () => {
       'llm-omp-transports/cursor',
       'llm-omp-transports/devin',
       'llm-omp-transports/google-gemini-cli',
-      'llm-omp-transports/google-antigravity',
+      'llm-omp-transports/antigravity-cli',
       'llm-omp-transports/factory-droid',
       'llm-omp-transports/gitlab-duo',
       'llm-omp-transports/gitlab-duo-agent',
@@ -367,7 +370,7 @@ describe('apply registration', () => {
       'Cursor',
       'Devin',
       'Google Gemini CLI',
-      'Google Antigravity',
+      'Antigravity (agy)',
       'Factory Droid',
       'GitLab Duo',
       'GitLab Duo Agent',
@@ -381,20 +384,20 @@ describe('apply registration', () => {
     const gemini = host.adapters[2]!.adapter
     const antigravity = host.adapters[3]!.adapter
     expect(gemini).toBeInstanceOf(OmpGoogleGeminiCliAdapter)
-    expect(antigravity).toBeInstanceOf(OmpGoogleAntigravityAdapter)
+    expect(antigravity).toBeInstanceOf(OmpAntigravityCliAdapter)
     expect((gemini as OmpGoogleGeminiCliAdapter).providerInfo(GOOGLE_GEMINI_CLI_ROUTE)).toEqual({
       id: GOOGLE_GEMINI_CLI_ROUTE,
       name: 'Google Gemini CLI',
     })
-    expect((antigravity as OmpGoogleAntigravityAdapter).providerInfo(GOOGLE_ANTIGRAVITY_ROUTE)).toEqual({
-      id: GOOGLE_ANTIGRAVITY_ROUTE,
-      name: 'Google Antigravity',
+    expect((antigravity as OmpAntigravityCliAdapter).providerInfo(ANTIGRAVITY_CLI_ROUTE)).toEqual({
+      id: ANTIGRAVITY_CLI_ROUTE,
+      name: 'Antigravity (agy)',
     })
     expect(await (gemini as OmpGoogleGeminiCliAdapter).listModels(GOOGLE_GEMINI_CLI_ROUTE)).toHaveLength(
       GOOGLE_GEMINI_CLI_MODELS.length,
     )
-    expect(await (antigravity as OmpGoogleAntigravityAdapter).listModels(GOOGLE_ANTIGRAVITY_ROUTE)).toHaveLength(
-      GOOGLE_ANTIGRAVITY_MODELS.length,
+    expect(await (antigravity as OmpAntigravityCliAdapter).listModels(ANTIGRAVITY_CLI_ROUTE)).toHaveLength(
+      ANTIGRAVITY_CLI_MODELS.length,
     )
   })
 
@@ -479,15 +482,15 @@ describe('apply registration', () => {
       providers: {
         get: () => ({
           'google-gemini-cli': { models: rows },
-          'google-antigravity': { models: [{ id: 'claude-opus-4-5', name: 'Claude Opus 4.5' }] },
+          'antigravity-cli': { models: [{ id: 'claude-opus-5-5', name: 'Claude Opus 4.5' }] },
         }),
       },
     })
 
     const gemini = host.adapters[2]!.adapter as OmpGoogleGeminiCliAdapter
-    const antigravity = host.adapters[3]!.adapter as OmpGoogleAntigravityAdapter
+    const antigravity = host.adapters[3]!.adapter as OmpAntigravityCliAdapter
     expect((await gemini.listModels(GOOGLE_GEMINI_CLI_ROUTE)).map(row => row.id)).toEqual(['gemini-2.5-flash'])
-    expect((await antigravity.listModels(GOOGLE_ANTIGRAVITY_ROUTE)).map(row => row.id)).toEqual(['claude-opus-4-5'])
+    expect((await antigravity.listModels(ANTIGRAVITY_CLI_ROUTE)).map(row => row.id)).toEqual(['claude-opus-5-5'])
     await expect(gemini.resolveModel(GOOGLE_GEMINI_CLI_ROUTE, 'gemini-3-pro-preview')).rejects.toMatchObject({
       code: 'UNKNOWN_MODEL',
     })
@@ -503,8 +506,8 @@ describe('apply registration', () => {
     const gemini = host.adapters[2]!.adapter as OmpGoogleGeminiCliAdapter
     expect((await gemini.listModels(GOOGLE_GEMINI_CLI_ROUTE)).map(row => row.id)).toEqual(['gemini-2.5-flash'])
     // The sibling route is untouched by a malformed row on this one.
-    const antigravity = host.adapters[3]!.adapter as OmpGoogleAntigravityAdapter
-    expect(await antigravity.listModels(GOOGLE_ANTIGRAVITY_ROUTE)).toHaveLength(GOOGLE_ANTIGRAVITY_MODELS.length)
+    const antigravity = host.adapters[3]!.adapter as OmpAntigravityCliAdapter
+    expect(await antigravity.listModels(ANTIGRAVITY_CLI_ROUTE)).toHaveLength(ANTIGRAVITY_CLI_MODELS.length)
   })
 
   it('surfaces a missing Google bundle at request time as TRANSPORT_UNAVAILABLE', async () => {
@@ -515,12 +518,12 @@ describe('apply registration', () => {
 
     for (const [index, route] of [
       [2, GOOGLE_GEMINI_CLI_ROUTE],
-      [3, GOOGLE_ANTIGRAVITY_ROUTE],
+      [3, ANTIGRAVITY_CLI_ROUTE],
     ] as const) {
-      const adapter = host.adapters[index]!.adapter as OmpGoogleGeminiCliAdapter | OmpGoogleAntigravityAdapter
+      const adapter = host.adapters[index]!.adapter as OmpGoogleGeminiCliAdapter | OmpAntigravityCliAdapter
       const options: GenerateOptions = {
         provider: route,
-        model: route === GOOGLE_GEMINI_CLI_ROUTE ? 'gemini-2.5-flash' : 'claude-opus-4-5',
+        model: route === GOOGLE_GEMINI_CLI_ROUTE ? 'gemini-2.5-flash' : 'claude-opus-5-5',
         messages: [createUserMessage({ content: [{ type: 'text', text: 'Hi' }], source: { kind: 'user' } })],
       }
       const chunks: StreamChunk[] = []
@@ -541,7 +544,7 @@ describe('signed-in reconcile', () => {
       'cursor',
       'devin',
       GOOGLE_GEMINI_CLI_ROUTE,
-      GOOGLE_ANTIGRAVITY_ROUTE,
+      ANTIGRAVITY_CLI_ROUTE,
       'factory-droid',
       'gitlab-duo',
       'gitlab-duo-agent',
