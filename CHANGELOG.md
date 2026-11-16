@@ -2,6 +2,23 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.3.6] - 2026-11-16
+
+### Changed
+
+- The Antigravity route now runs omp's `antigravity-cli` provider over the official
+- The route ids split by account: `google-gemini-cli` for Google Cloud projects,
+- Moved the build-time `@oh-my-pi/*` pin from 18.18.8 to 18.20.3 and rebuilt the
+- Dropped the transport tests that only restated a pin measurement (per-entry
+
+### Fixed
+
+- Sign-in to `google-gemini-cli` now asks for the Google Cloud project id in the
+
+### Removed
+
+- Removed the retired direct Cloud Code Assist Antigravity route: its route record,
+
 ## [0.3.5] - 2026-11-15
 
 ### Changed
