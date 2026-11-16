@@ -481,10 +481,6 @@ async function main() {
       piCatalogRoot,
       'src/compat/rules/auth/google-gemini-cli.kdl',
     ),
-    '@oh-my-pi/pi-catalog/src/compat/rules/auth/google-antigravity.kdl': join(
-      piCatalogRoot,
-      'src/compat/rules/auth/google-antigravity.kdl',
-    ),
     // The Factory Droid graph and the three modules its build substitutions copy
     // from or bypass: the wire multiplexer, its Gemini encoder, the identity
     // document it embeds, the registry seed its catalog comes from, and the two

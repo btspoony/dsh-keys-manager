@@ -13,14 +13,11 @@ import type { ContentBlock, GenerateOptions, StreamChunk } from '@deepseek-ai/ds
 import { describe, expect, it } from 'vitest'
 
 import {
-  GOOGLE_ANTIGRAVITY_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
-  OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
   UNKNOWN_MODEL,
   UNKNOWN_PROVIDER,
 } from '../src/adapter.js'
-import { GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 import { attributionPreservingFetch } from '../src/transport/fetch.js'
 import { CONTENT_UNSUPPORTED, STREAM_CLOSED } from '../src/projection.js'
@@ -38,18 +35,6 @@ const ROUTES = [
     adapter: OmpGoogleGeminiCliAdapter,
     providerState: false,
     // A budget-mode row: the wire takes a token budget and the cap grows by it.
-    thinking: { enabled: true, budgetTokens: 4096 },
-  },
-  {
-    id: GOOGLE_ANTIGRAVITY_ROUTE,
-    label: 'Google Antigravity',
-    rowCount: 22,
-    models: GOOGLE_ANTIGRAVITY_MODELS,
-    // A budget-mode row whose effort is optional, so a plain turn is servable.
-    model: 'claude-opus-4-5',
-    reasoningRow: 'gemini-3-pro',
-    adapter: OmpGoogleAntigravityAdapter,
-    providerState: true,
     thinking: { enabled: true, budgetTokens: 4096 },
   },
 ] as const
@@ -81,7 +66,7 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 
 describe.each(ROUTES)('OmpGoogleAdapter on $label', route => {
   function adapterFor(fixture = 'google-text.jsonl'): {
-    adapter: OmpGoogleGeminiCliAdapter | OmpGoogleAntigravityAdapter
+    adapter: OmpGoogleGeminiCliAdapter
     calls: ReturnType<typeof scriptedGoogleTransport>['calls']
   } {
     const { transport, calls } = scriptedGoogleTransport(fixture)
@@ -283,8 +268,8 @@ describe.each(ROUTES)('OmpGoogleAdapter on $label', route => {
     await expect(adapter.resolveModel(route.id, 'not-a-model')).rejects.toMatchObject({ code: UNKNOWN_MODEL })
     await expect(adapter.listModels('openai')).rejects.toMatchObject({ code: UNKNOWN_PROVIDER })
     expect(() => adapter.providerInfo('openai')).toThrow(expect.objectContaining({ code: UNKNOWN_PROVIDER }))
-    // The other Google route is not this adapter's provider either.
-    const foreign = route.id === GOOGLE_GEMINI_CLI_ROUTE ? GOOGLE_ANTIGRAVITY_ROUTE : GOOGLE_GEMINI_CLI_ROUTE
+    // The ACP Antigravity route is not this adapter's provider either.
+    const foreign = 'antigravity-cli'
     await expect(adapter.listModels(foreign)).rejects.toMatchObject({ code: UNKNOWN_PROVIDER })
     await expect(collect(adapter.stream(request(route, { model: 'not-a-model' })))).rejects.toMatchObject({
       code: UNKNOWN_MODEL,
@@ -298,14 +283,14 @@ describe.each(ROUTES)('OmpGoogleAdapter on $label', route => {
   })
 })
 
-/** Antigravity is the route with level-mode rows; the wire takes the level, not a budget. */
+/** The Gemini CLI catalog also serves level-mode rows; the wire takes the level, not a budget. */
 describe('OmpGoogleAdapter level-mode thinking', () => {
-  const route = ROUTES[1]
+  const route = ROUTES[0]
 
   it('forwards an explicit level and leaves the caller’s cap alone', async () => {
     const { transport, calls } = scriptedGoogleTransport('google-text.jsonl')
-    const adapter = new OmpGoogleAntigravityAdapter({ access: async () => 'test-token', transport })
-    const row = rowOf(GOOGLE_ANTIGRAVITY_MODELS, 'gemini-3.6-flash')
+    const adapter = new OmpGoogleGeminiCliAdapter({ access: async () => 'test-token', transport })
+    const row = rowOf(GOOGLE_GEMINI_CLI_MODELS, 'gemini-3-pro-preview')
 
     await collect(
       adapter.stream(

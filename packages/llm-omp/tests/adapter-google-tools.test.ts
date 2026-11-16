@@ -11,25 +11,15 @@ import { ToolCallId, createAssistantMessage, createToolResultMessage, createUser
 import type { GenerateOptions, StreamChunk, ToolSchema } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 
-import {
-  GOOGLE_ANTIGRAVITY_ROUTE,
-  GOOGLE_GEMINI_CLI_ROUTE,
-  OmpGoogleAntigravityAdapter,
-  OmpGoogleGeminiCliAdapter,
-} from '../src/adapter.js'
+import { GOOGLE_GEMINI_CLI_ROUTE, OmpGoogleGeminiCliAdapter } from '../src/adapter.js'
 import { scriptedGoogleTransport } from './replay.js'
 
-/** The two routes, as the wiring registers them. */
+/** The route, as the wiring registers it. */
 const ROUTES = [
   {
     id: GOOGLE_GEMINI_CLI_ROUTE,
     model: 'gemini-2.5-flash',
     adapter: OmpGoogleGeminiCliAdapter,
-  },
-  {
-    id: GOOGLE_ANTIGRAVITY_ROUTE,
-    model: 'claude-opus-4-5',
-    adapter: OmpGoogleAntigravityAdapter,
   },
 ] as const
 
@@ -57,7 +47,7 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 
 describe.each(ROUTES)('OmpGoogleAdapter tool handoff on $id', route => {
   function adapterFor(fixture: string): {
-    adapter: OmpGoogleGeminiCliAdapter | OmpGoogleAntigravityAdapter
+    adapter: OmpGoogleGeminiCliAdapter
     calls: ReturnType<typeof scriptedGoogleTransport>['calls']
   } {
     const { transport, calls } = scriptedGoogleTransport(fixture)

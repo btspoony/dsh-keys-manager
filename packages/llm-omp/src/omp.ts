@@ -214,7 +214,7 @@ export interface GitLabDuoAgentModelRow {
 /** The omp model object for a Google row: one catalog row plus the transport identity. */
 export interface OmpGoogleModel extends GoogleModelRow {
   readonly api: 'google-gemini-cli'
-  readonly provider: 'google-gemini-cli' | 'google-antigravity'
+  readonly provider: 'google-gemini-cli'
 }
 
 /** Explicit thinking-off suppression: CCA re-applies the baked per-id default when omitted. */

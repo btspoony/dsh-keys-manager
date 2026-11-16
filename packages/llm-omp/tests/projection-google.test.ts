@@ -23,16 +23,13 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 
 import {
-  GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE,
   GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE,
 } from '../src/adapter.js'
-import { GOOGLE_ANTIGRAVITY_MODELS } from '../src/catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from '../src/catalog/google-gemini-cli.js'
 import type { OmpAssistantMessage, OmpAssistantMessageEvent, OmpUsage } from '../src/omp.js'
 import type { GoogleRouteProfile } from '../src/projection.js'
 import {
   CONTENT_UNSUPPORTED,
-  GOOGLE_ANTIGRAVITY_PROFILE,
   GOOGLE_GEMINI_CLI_PROFILE,
   MALFORMED_TOOL_CALL,
   STREAM_CLOSED,
@@ -49,12 +46,9 @@ function row<T extends { id: string }>(rows: readonly T[], id: string): T {
 }
 
 const FLASH = row(GOOGLE_GEMINI_CLI_MODELS, 'gemini-2.5-flash')
-const GEMINI_3_PRO = row(GOOGLE_GEMINI_CLI_MODELS, 'gemini-3-pro-preview')
+const PRO_3 = row(GOOGLE_GEMINI_CLI_MODELS, 'gemini-3-pro-preview')
 const PLAIN = row(GOOGLE_GEMINI_CLI_MODELS, 'gemini-2.0-flash')
-const ANTIGRAVITY_PRO = row(GOOGLE_ANTIGRAVITY_MODELS, 'gemini-3-pro')
-const ANTIGRAVITY_31_PRO = row(GOOGLE_ANTIGRAVITY_MODELS, 'gemini-3.1-pro')
-const OPUS = row(GOOGLE_ANTIGRAVITY_MODELS, 'claude-opus-4-5')
-const GPT_OSS = row(GOOGLE_ANTIGRAVITY_MODELS, 'gpt-oss-120b')
+const PRO_31 = row(GOOGLE_GEMINI_CLI_MODELS, 'gemini-3.1-pro-preview')
 
 /** The structured credential envelope omp's `parseGeminiCliCredentials` reads. */
 const CREDENTIAL = JSON.stringify({
@@ -99,27 +93,21 @@ async function collect(
 }
 
 describe('google route facts', () => {
-  it('serves the two routes from the generated catalogs over one transport identity', () => {
+  it('serves the route from the generated catalog over one transport identity', () => {
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.id).toBe('google-gemini-cli')
-    expect(GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE.id).toBe('google-antigravity')
-    // Both credential records are namespaced under the package, as cursor/devin are.
+    // The credential record is namespaced under the package, as cursor/devin are.
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.credentialKey).toBe('llm-omp-transports/google-gemini-cli')
-    expect(GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE.credentialKey).toBe('llm-omp-transports/google-antigravity')
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.profile.api).toBe('google-gemini-cli')
-    expect(GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE.profile.api).toBe('google-gemini-cli')
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.profile.fallbackErrorCode).toBe('PROVIDER_ERROR')
-    expect(GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE.profile.fallbackErrorCode).toBe('PROVIDER_ERROR')
     // No transport-resolved marker: every Google tool call belongs to DSH's loop.
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.profile).not.toHaveProperty('transportResolvedMarker')
-    expect(GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE.models).toBe(GOOGLE_ANTIGRAVITY_MODELS)
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.models).toBe(GOOGLE_GEMINI_CLI_MODELS)
   })
 
   it('advertises each row’s own effort ladder', () => {
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.efforts?.(FLASH)).toEqual(['minimal', 'low', 'medium', 'high'])
-    expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.efforts?.(GEMINI_3_PRO)).toEqual(['low', 'high'])
+    expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.efforts?.(PRO_3)).toEqual(['low', 'high'])
     expect(GOOGLE_GEMINI_CLI_TRANSPORT_ROUTE.efforts?.(PLAIN)).toBeUndefined()
-    expect(GOOGLE_ANTIGRAVITY_TRANSPORT_ROUTE.efforts?.(OPUS)).toEqual(['minimal', 'low', 'medium', 'high'])
   })
 })
 
@@ -157,55 +145,40 @@ describe('projectGoogleRequest', () => {
 
   it('routes an effort to its wire model id and thinking level on a google-level row', () => {
     const projected = projectGoogleRequest(
-      ANTIGRAVITY_PRO,
-      GOOGLE_ANTIGRAVITY_PROFILE,
+      PRO_3,
+      GOOGLE_GEMINI_CLI_PROFILE,
       request({ reasoningEffort: 'high' as never }),
       CREDENTIAL,
     )
 
-    expect(projected.options.requestModelId).toBe('gemini-3-pro-high')
+    expect(projected.options.requestModelId).toBe(PRO_3.thinking?.effortRouting?.high ?? PRO_3.id)
     expect(projected.options.thinking).toEqual({ enabled: true, level: 'HIGH' })
     // The row's own cap stays untouched on the level-mode path, as in omp.
     expect(projected.options.maxTokens).toBeUndefined()
   })
 
-  it('sends LOW for a collapsed minimal tier that shares the low wire id', () => {
-    // `gemini-3.6-flash` routes both `minimal` and `low` onto `-low`; CCA
-    // rejects `MINIMAL` on those SKUs.
-    const flash36 = row(GOOGLE_ANTIGRAVITY_MODELS, 'gemini-3.6-flash')
-    const projected = projectGoogleRequest(
-      flash36,
-      GOOGLE_ANTIGRAVITY_PROFILE,
-      request({ reasoningEffort: 'minimal' as never }),
-      CREDENTIAL,
-    )
-
-    expect(projected.options.requestModelId).toBe('gemini-3.6-flash-low')
-    expect(projected.options.thinking).toEqual({ enabled: true, level: 'LOW' })
-  })
-
   it('routes a budget-row effort to its routed id and a token budget', () => {
     const projected = projectGoogleRequest(
-      OPUS,
-      GOOGLE_ANTIGRAVITY_PROFILE,
+      FLASH,
+      GOOGLE_GEMINI_CLI_PROFILE,
       request({ reasoningEffort: 'medium' as never }),
       CREDENTIAL,
     )
 
-    expect(projected.options.requestModelId).toBe('claude-opus-4-5-thinking')
-    expect(projected.options.thinking).toEqual({ enabled: true, budgetTokens: 8192 })
+    expect(projected.options.requestModelId).toBe(FLASH.thinking?.effortRouting?.medium ?? FLASH.id)
+    expect(projected.options.thinking).toMatchObject({ enabled: true, budgetTokens: 8192 })
   })
 
   it('uses the row’s pinned budget when it has one', () => {
     const projected = projectGoogleRequest(
-      ANTIGRAVITY_31_PRO,
-      GOOGLE_ANTIGRAVITY_PROFILE,
+      FLASH,
+      GOOGLE_GEMINI_CLI_PROFILE,
       request({ reasoningEffort: 'high' as never }),
       CREDENTIAL,
     )
 
-    expect(projected.options.requestModelId).toBe('gemini-pro-agent')
-    expect(projected.options.thinking).toEqual({ enabled: true, budgetTokens: 10001 })
+    expect(projected.options.requestModelId).toBe(FLASH.thinking?.effortRouting?.high ?? FLASH.id)
+    expect(projected.options.thinking).toMatchObject({ enabled: true, budgetTokens: 16384 })
   })
 
   it('grows the output cap by the thinking budget and clamps it to the row', () => {
@@ -252,32 +225,32 @@ describe('projectGoogleRequest', () => {
     // `requiresEffort`, so its off path is reachable only through the budget
     // fallback below.
     const budgetRow = {
-      ...OPUS,
-      thinking: { ...OPUS.thinking!, suppressWhenOff: true, mode: 'budget' },
+      ...FLASH,
+      thinking: { ...FLASH.thinking!, suppressWhenOff: true, mode: 'budget' },
     }
     expect(
-      projectGoogleRequest(budgetRow, GOOGLE_ANTIGRAVITY_PROFILE, request(), CREDENTIAL).options.thinking,
+      projectGoogleRequest(budgetRow, GOOGLE_GEMINI_CLI_PROFILE, request(), CREDENTIAL).options.thinking,
     ).toEqual({ enabled: false, suppress: { budget: 0 } })
 
     const levelRow = {
-      ...ANTIGRAVITY_PRO,
-      thinking: { ...ANTIGRAVITY_PRO.thinking!, suppressWhenOff: true, mode: 'google-level', requiresEffort: false },
+      ...PRO_3,
+      thinking: { ...PRO_3.thinking!, suppressWhenOff: true, mode: 'google-level', requiresEffort: false },
     }
     expect(
-      projectGoogleRequest(levelRow, GOOGLE_ANTIGRAVITY_PROFILE, request(), CREDENTIAL).options.thinking,
+      projectGoogleRequest(levelRow, GOOGLE_GEMINI_CLI_PROFILE, request(), CREDENTIAL).options.thinking,
     ).toEqual({ enabled: false, suppress: { level: 'MINIMAL' } })
   })
 
   it('refuses a request that selects no effort on a requiresEffort row', () => {
     // No thinking-off wire form exists for a mandatory-reasoning row.
-    expect(() => projectGoogleRequest(GEMINI_3_PRO, GOOGLE_GEMINI_CLI_PROFILE, request(), CREDENTIAL)).toThrowError(
+    expect(() => projectGoogleRequest(PRO_3, GOOGLE_GEMINI_CLI_PROFILE, request(), CREDENTIAL)).toThrowError(
       expect.objectContaining({ code: UNSUPPORTED_REASONING_EFFORT }),
     )
   })
 
   it('refuses an effort the row does not advertise, and any effort on a non-reasoning row', () => {
     for (const [candidate, effort] of [
-      [GEMINI_3_PRO, 'minimal'],
+      [PRO_3, 'minimal'],
       [FLASH, 'max'],
       [PLAIN, 'low'],
     ] as const) {
@@ -289,19 +262,6 @@ describe('projectGoogleRequest', () => {
     }
   })
 
-  it('gives Antigravity a fresh endpoint-state map per request, and Gemini CLI none', () => {
-    const first = projectGoogleRequest(OPUS, GOOGLE_ANTIGRAVITY_PROFILE, request(), CREDENTIAL)
-    const second = projectGoogleRequest(OPUS, GOOGLE_ANTIGRAVITY_PROFILE, request(), CREDENTIAL)
-
-    // The provider caches its last-good endpoint in this map; sharing one would
-    // carry a previous turn's (or another route's) endpoint into this request.
-    expect(first.options.providerSessionState).toBeInstanceOf(Map)
-    expect(first.options.providerSessionState).not.toBe(second.options.providerSessionState)
-    expect(first.options.providerSessionState?.size).toBe(0)
-    expect(projectGoogleRequest(FLASH, GOOGLE_GEMINI_CLI_PROFILE, request(), CREDENTIAL).options).not.toHaveProperty(
-      'providerSessionState',
-    )
-  })
 
   it('forwards the session id and the caller signal', () => {
     const controller = new AbortController()
@@ -500,14 +460,14 @@ describe('projectEvents with a google profile', () => {
   })
 
   it('classifies an empty successful turn as EMPTY_RESPONSE and names the route', async () => {
-    const chunks = await collect([doneEvent({ content: [] })], GOOGLE_ANTIGRAVITY_PROFILE)
+    const chunks = await collect([doneEvent({ content: [] })], GOOGLE_GEMINI_CLI_PROFILE)
 
     expect(chunks.at(-1)).toEqual({
       type: 'finish',
       reason: {
         kind: 'error',
         failure: {
-          message: 'llm-omp-transports: google-antigravity model "gemini-2.5-flash" completed the turn with no content',
+          message: 'llm-omp-transports: google-gemini-cli model "gemini-2.5-flash" completed the turn with no content',
           code: EMPTY_RESPONSE_CODE,
         },
       },

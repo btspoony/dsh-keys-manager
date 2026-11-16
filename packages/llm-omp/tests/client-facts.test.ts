@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from '../src/google/route.js'
+import { GOOGLE_GEMINI_CLI_FACTS } from '../src/google/route.js'
 
 /** The installed root of the pinned catalog, by its own manifest. */
 function pinnedCatalogRoot(): string {
@@ -39,12 +39,8 @@ function fromRule(route: string, field: 'client-id' | 'client-secret'): string {
 }
 
 describe('google client facts', () => {
-  it('derives both routes from their pinned auth rules', () => {
+  it('derives the route from its pinned auth rule', () => {
     expect(GOOGLE_GEMINI_CLI_FACTS.clientId).toBe(fromRule('google-gemini-cli', 'client-id'))
     expect(GOOGLE_GEMINI_CLI_FACTS.clientSecret).toBe(fromRule('google-gemini-cli', 'client-secret'))
-    expect(GOOGLE_ANTIGRAVITY_FACTS.clientId).toBe(fromRule('google-antigravity', 'client-id'))
-    expect(GOOGLE_ANTIGRAVITY_FACTS.clientSecret).toBe(fromRule('google-antigravity', 'client-secret'))
-    // The two rules use different clients; a copy-paste slip would show here.
-    expect(GOOGLE_GEMINI_CLI_FACTS.clientId).not.toBe(GOOGLE_ANTIGRAVITY_FACTS.clientId)
   })
 })

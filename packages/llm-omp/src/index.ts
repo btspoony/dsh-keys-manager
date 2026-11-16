@@ -40,7 +40,6 @@ import {
   GITLAB_DUO_CREDENTIAL_KEY,
   GITLAB_DUO_ROUTE,
   GITLAB_DUO_TRANSPORT_ROUTE,
-  GOOGLE_ANTIGRAVITY_ROUTE,
   ANTIGRAVITY_CLI_ROUTE,
   ANTIGRAVITY_CLI_TRANSPORT_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
@@ -50,7 +49,6 @@ import {
   OmpFactoryDroidAdapter,
   OmpGitLabDuoAdapter,
   OmpGitLabDuoAgentAdapter,
-  OmpGoogleAntigravityAdapter,
   OmpGoogleGeminiCliAdapter,
 } from './adapter.js'
 import type { OmpTransportOf } from './adapter.js'
@@ -66,7 +64,6 @@ import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
 import { ANTIGRAVITY_CLI_MODELS } from './catalog/antigravity-cli.js'
-import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { loginCursor } from './cursor/auth.js'
 import type { CursorFetch } from './cursor/auth.js'
@@ -79,13 +76,12 @@ import { loginGoogle } from './google/auth.js'
 import type { GoogleFetch, GoogleLoginResult } from './google/auth.js'
 import { GoogleAuthError } from './google/callback-listener.js'
 import {
-  GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY,
   GOOGLE_GEMINI_CLI_CREDENTIAL_KEY,
   createGoogleAccess,
   googleCredentialKey,
 } from './google/credentials.js'
 import { ANTIGRAVITY_CLI_CREDENTIAL_KEY, createAntigravityCliAccess } from './antigravity/credentials.js'
-import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from './google/route.js'
+import { GOOGLE_GEMINI_CLI_FACTS } from './google/route.js'
 import type { GoogleRouteFacts } from './google/route.js'
 
 /** Machine code for a transport artifact that cannot be loaded. */
@@ -282,9 +278,6 @@ export function googleGeminiCliCatalogModels(): TransportCatalogModel[] {
  * Same shape and source pin as {@link googleGeminiCliCatalogModels}; the rows
  * differ because the routes advertise different models and wire ids.
  */
-export function googleAntigravityCatalogModels(): TransportCatalogModel[] {
-  return GOOGLE_ANTIGRAVITY_MODELS.map(row => ({ id: row.id, name: row.name }))
-}
 
 /**
  * The full Antigravity ACP catalog, projected for host-side configuration surfaces.
@@ -367,14 +360,6 @@ const GOOGLE_GEMINI_CLI_PROVIDER = {
   declared: false,
 } as const
 
-/** The Antigravity route's Models-page entry: one artifact, its own catalog and settings path. */
-const GOOGLE_ANTIGRAVITY_PROVIDER = {
-  provider: GOOGLE_ANTIGRAVITY_ROUTE,
-  displayName: 'Google Antigravity',
-  settingsNs: 'llm-omp-transports',
-  settingsPath: ['providers', 'google-antigravity'],
-  declared: false,
-} as const
 
 /** The Antigravity ACP route's Models-page entry: the `agy` transport, its own settings path. */
 const ANTIGRAVITY_CLI_PROVIDER = {
@@ -682,9 +667,6 @@ export function googleGeminiCliAuthorizationFlow(options: GoogleFlowOptions = {}
 }
 
 /** The `llm-omp-transports/google-antigravity` sign-in flow: same shape, its own client and project. */
-export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = {}): CursorAuthorizationFlow {
-  return googleAuthorizationFlow(GOOGLE_ANTIGRAVITY_FACTS, options)
-}
 
 /** The sign-in half of the ACP artifact: agy's OAuth dance, exposed as functions. */
 interface AntigravityLoginModule {

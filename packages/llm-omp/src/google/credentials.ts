@@ -32,7 +32,6 @@ export function googleCredentialKey(id: GoogleRouteId): string {
 /** The Gemini CLI route's credential record. */
 export const GOOGLE_GEMINI_CLI_CREDENTIAL_KEY = googleCredentialKey('google-gemini-cli')
 /** The Antigravity route's credential record. */
-export const GOOGLE_ANTIGRAVITY_CREDENTIAL_KEY = googleCredentialKey('google-antigravity')
 
 /**
  * How long before `expires` the resolver refreshes.

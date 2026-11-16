@@ -37,7 +37,7 @@ function packageRootOf(name) {
 }
 
 /** The routes whose auth rule carries a Google OAuth client. */
-const ROUTES = ['google-gemini-cli', 'google-antigravity']
+const ROUTES = ['google-gemini-cli']
 
 const rulesDir = join(packageRootOf('@oh-my-pi/pi-catalog'), 'src', 'compat', 'rules', 'auth')
 
@@ -69,7 +69,7 @@ export interface GoogleClientFacts {
 
 /** The pinned client identity per route. */
 export const GOOGLE_CLIENT_FACTS: Readonly<
-  Record<'google-gemini-cli' | 'google-antigravity', GoogleClientFacts>
+  Record<'google-gemini-cli', GoogleClientFacts>
 > = ${JSON.stringify(
   facts,
   null,

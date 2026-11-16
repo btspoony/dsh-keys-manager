@@ -1,9 +1,9 @@
 /**
  * Bundle entry for the omp Google Cloud Code Assist transport.
  *
- * One artifact serves both Google routes: `streamGoogleGeminiCli` dispatches on
- * `model.provider` (`google-gemini-cli` or `google-antigravity`), so the plugin
- * never selects a provider code path. Only that entry point is exported.
+ * The artifact serves the Cloud Code Assist route: `streamGoogleGeminiCli`
+ * dispatches on `model.provider`, so the plugin never selects a provider code
+ * path. Only that entry point is exported.
  *
  * @module dsh-llm-omp-transports/omp-entry-google
  */
