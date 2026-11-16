@@ -115,6 +115,13 @@ records — not a second code path.
   project, a project-id question in the sign-in panel — `GOOGLE_CLOUD_PROJECT` /
   `GOOGLE_CLOUD_PROJECT_ID` answers it without the prompt). Antigravity
   additionally checks free-tier eligibility and bounds onboarding at 30 s.
+- **Google account requirements** — the routes are not interchangeable.
+  `google-gemini-cli` is the Google Cloud (Gemini Code Assist) route: the account
+  needs a Cloud project, and a Google One subscription does not provide one.
+  `google-antigravity` runs on a Google account's Antigravity entitlement (its
+  free tier here; Antigravity's own plans decide paid access). Both go straight
+  to Cloud Code Assist — this package bundles no `agy` CLI and no ACP transport;
+  omp's separate `antigravity-cli` provider is out of scope.
 - **Models** — generated from the pinned `@oh-my-pi/pi-catalog@18.18.8`: 7 rows
   for `google-gemini-cli`, 22 for `google-antigravity`, served without a network
   call.

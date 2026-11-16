@@ -158,7 +158,13 @@ Providers the vendored pi-ai cannot speak are served by the companion
   (or `GOOGLE_CLOUD_PROJECT_ID`) in the host environment answers the same
   question without the prompt, and declining both fails `AUTH_FAILED`. The
   question belongs to `google-gemini-cli`; Antigravity onboards its free tier
-  instead.
+  instead. The two routes are not interchangeable accounts: `google-gemini-cli`
+  is the Google Cloud (Gemini Code Assist) route and needs a Cloud project — a
+  Google One subscription does not supply one — while `google-antigravity` runs
+  on a Google account's Antigravity entitlement, where Antigravity's own plans
+  (including the Google One AI plans) decide access. Neither route needs
+  Antigravity's `agy` CLI, and neither speaks ACP: omp ships that as a separate
+  `antigravity-cli` provider, which this plugin does not bundle.
 - **Factory Droid** — four wires behind one proxy, chosen by model id inside the
   artifact; rows carry no base URL and the account's residency
   (`orgId`/`region`) survives refresh.
