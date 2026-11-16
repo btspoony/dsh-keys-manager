@@ -2,6 +2,12 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.4.0] - 2026-11-16
+
+### Fixed
+
+- Fixed Antigravity sign-in failing immediately with "Antigravity CLI sign-in failed;
+
 ## [0.3.6] - 2026-11-16
 
 ### Changed
