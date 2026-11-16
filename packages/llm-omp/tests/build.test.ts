@@ -87,6 +87,12 @@ const CEILINGS: Readonly<Record<string, number>> = {
   // registry and the 12.4 MB model catalog stay out. A size near this ceiling means
   // a substitution stopped firing, not that the route grew.
   'gitlab-duo': 3_980_000,
+  // antigravity-cli: 1 118 664 bytes measured (98 modules) -> 1 680 000. The graph
+  // is the ACP host, the reconcile/step-writer pair, the MCP bridge and the
+  // managed-install path; it is the only entry that reaches the file/archive/
+  // process/socket shims. A size near this ceiling means the model catalog or the
+  // native addon came back in, not that the route grew.
+  'antigravity-cli': 1_680_000,
 }
 
 /** One entry's measured build facts (manifest schema v2). */
@@ -97,6 +103,10 @@ interface OmpEntry {
   bytes: number
   /** Package-relative path of the module that replaced `@oh-my-pi/pi-utils`. */
   piUtilsShim: string
+  /** Set when the entry replaces the base `bun-global` shim with its own. */
+  bunGlobalShim?: string
+  /** Set when the entry replaces the base `bun:*` module shim with its own. */
+  bunModulesShim?: string
   shimImports: Record<string, string[]>
 }
 
@@ -124,6 +134,7 @@ const EXPORTS: Readonly<Record<string, string>> = {
   'factory-droid': 'streamFactoryDroid',
   'gitlab-duo-agent': 'streamGitLabDuoWorkflow',
   'gitlab-duo': 'streamGitLabDuo',
+  'antigravity-cli': 'streamAntigravityCli',
 }
 
 const entries = Object.entries(manifest.entries).map(([name, entry]) => ({
@@ -148,8 +159,8 @@ if (entries.length === 0 || entries.some(entry => entry.metafile === undefined))
 function shimPaths(entry: OmpEntry): Record<string, string> {
   return {
     'pi-utils': entry.piUtilsShim,
-    'bun-modules': 'scripts/omp-shim/bun-modules.ts',
-    'bun-global': 'scripts/omp-shim/bun-global.ts',
+    'bun-modules': entry.bunModulesShim ?? 'scripts/omp-shim/bun-modules.ts',
+    'bun-global': entry.bunGlobalShim ?? 'scripts/omp-shim/bun-global.ts',
   }
 }
 
@@ -371,9 +382,14 @@ describe('omp drift gate', () => {
       // them together; the real reach must never silently become empty.
       expect(reached['pi-utils'].length, name).toBeGreaterThan(0)
       expect(entry.shimImports['pi-utils'].length, name).toBeGreaterThan(0)
-      // No module in any graph imports a `bun:*` builtin: the shim exists to
-      // fail loudly if one ever does, so its reach must stay empty.
-      expect(entry.shimImports['bun-modules'], name).toEqual([])
+      // No module in any graph imports a `bun:*` builtin unless the entry brings a
+      // real Node implementation: the ACP entry alone reaches `bun:sqlite` (agy's
+      // conversation store), and that entry replaces the refusal shim with one
+      // backed by `node:sqlite`. Everything else must stay empty, so a route that
+      // starts calling a bun builtin fails this gate instead of silently no-oping.
+      expect(entry.shimImports['bun-modules'], name).toEqual(
+        name === 'antigravity-cli' ? ['Database'] : [],
+      )
     }
   })
 })

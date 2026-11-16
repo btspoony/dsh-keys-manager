@@ -100,6 +100,22 @@ const ENTRIES = [
     // entry-scoped so the released artifacts cannot change.
     define: { 'import.meta.dir': 'import.meta.dirname' },
   },
+  // The Antigravity ACP route: the host, reconcile and MCP-bridge graphs plus the
+  // managed agy install path, which reaches the file/archive/process/socket Bun
+  // members no other entry touches.
+  {
+    name: 'antigravity-cli',
+    entry: join(scriptsDir, 'omp-entry-antigravity-cli.ts'),
+    out: join(packageRoot, 'lib', 'omp', 'antigravity-cli.mjs'),
+    piUtils: join(scriptsDir, 'omp-shim', 'pi-utils-antigravity.ts'),
+    bunGlobal: join(scriptsDir, 'omp-shim', 'bun-global-antigravity.ts'),
+    // The ACP entry resolves its agent definition and install root from Bun's
+    // `import.meta.dir`; Node's equivalent is the same one-token substitution the
+    // GitLab agent entry uses.
+    define: { 'import.meta.dir': 'import.meta.dirname' },
+    nativesShim: true,
+    bunModules: join(scriptsDir, 'omp-shim', 'bun-modules-antigravity.ts'),
+  },
 ]
 const MANIFEST = join(scriptsDir, 'omp-manifest.json')
 
@@ -135,11 +151,11 @@ const LEAN_PI_AI_STREAM = join(scriptsDir, 'omp-shim', 'pi-ai-stream-lean.ts')
  * extension module, so the recorded reach is that build's surface.
  * @param piUtils - the entry's `@oh-my-pi/pi-utils` replacement.
  */
-function shimPaths(piUtils) {
+function shimPaths(piUtils, bunGlobal = BUN_GLOBAL_SHIM, bunModules = BUN_SHIM) {
   return {
     'pi-utils': relative(packageRoot, piUtils).split('\\').join('/'),
-    'bun-modules': relative(packageRoot, BUN_SHIM).split('\\').join('/'),
-    'bun-global': relative(packageRoot, BUN_GLOBAL_SHIM).split('\\').join('/'),
+    'bun-modules': relative(packageRoot, bunModules).split('\\').join('/'),
+    'bun-global': relative(packageRoot, bunGlobal).split('\\').join('/'),
   }
 }
 
@@ -236,7 +252,7 @@ const ompJsonAsEsm = () => ({
   },
 })
 
-const ompShims = piUtils => ({
+const ompShims = (piUtils, bunModules = BUN_SHIM) => ({
   name: 'omp-node-shims',
   setup(build_) {
     build_.onResolve({ filter: /^@oh-my-pi\/pi-utils(\/.*)?$/ }, args => {
@@ -245,7 +261,7 @@ const ompShims = piUtils => ({
       if (args.importer.startsWith(SHIM_DIR)) return undefined
       return { path: piUtils }
     })
-    build_.onResolve({ filter: /^bun(:.*)?$/ }, () => ({ path: BUN_SHIM }))
+    build_.onResolve({ filter: /^bun(:.*)?$/ }, () => ({ path: bunModules }))
     // omp reaches Node's `ws` through a bare require in a Bun-targeted module;
     // the stand-in keeps that edge resolvable and fails only if a route really
     // asks for the socket transport. See the shim's own header.
@@ -260,6 +276,20 @@ const ompShims = piUtils => ({
       contents: EMPTY_MODEL_CATALOG,
       loader: 'js',
     }))
+  },
+})
+
+/**
+ * The ACP entry's `withFileLock` (an OS lock) and `dirs.ts` (a Windows long-path
+ * helper) reach `@oh-my-pi/pi-natives`, whose addon the published artifact must
+ * not load. Entry-scoped so the released artifacts keep their bytes.
+ */
+const NATIVES_SHIM = join(scriptsDir, 'omp-shim', 'pi-natives.ts')
+
+const ompNativesShim = () => ({
+  name: 'omp-natives-shim',
+  setup(build_) {
+    build_.onResolve({ filter: /^@oh-my-pi\/pi-natives(\/.*)?$/ }, () => ({ path: NATIVES_SHIM }))
   },
 })
 
@@ -348,11 +378,12 @@ async function bundleEntry(entry) {
     logLevel: 'warning',
     // Free `Bun` identifiers (the runtime global, not the `bun:*` modules) resolve
     // to the Node shim, so the artifact carries no unmet runtime global.
-    inject: [BUN_GLOBAL_SHIM],
+    inject: [entry.bunGlobal ?? BUN_GLOBAL_SHIM],
     ...(entry.define === undefined ? {} : { define: entry.define }),
     plugins: [
       ompJsonAsEsm(),
-      ompShims(entry.piUtils ?? PI_UTILS_SHIM),
+      ompShims(entry.piUtils ?? PI_UTILS_SHIM, entry.bunModules ?? BUN_SHIM),
+      ...(entry.nativesShim === true ? [ompNativesShim()] : []),
       ...(entry.substitutions === true ? [ompFactoryDroidSubstitutions(entry)] : []),
     ],
   })
@@ -372,9 +403,13 @@ async function bundleEntry(entry) {
       // or the Google entry's extension of it. The drift test re-derives reach
       // with the same path, so the recorded surface is this build's surface.
       piUtilsShim,
+      // Recorded only when an entry replaces the base shim, so the released rows
+      // keep their shape and the drift test re-derives the same surface.
+      ...(entry.bunGlobal === undefined ? {} : { bunGlobalShim: shimPaths(entry.piUtils, entry.bunGlobal)['bun-global'] }),
+      ...(entry.bunModules === undefined ? {} : { bunModulesShim: shimPaths(entry.piUtils, entry.bunGlobal, entry.bunModules)['bun-modules'] }),
       shimImports: shimImportsOf(result.metafile, {
         packageRoot,
-        shimPaths: shimPaths(entry.piUtils ?? PI_UTILS_SHIM),
+        shimPaths: shimPaths(entry.piUtils ?? PI_UTILS_SHIM, entry.bunGlobal ?? BUN_GLOBAL_SHIM, entry.bunModules ?? BUN_SHIM),
       }),
     },
     metafile: result.metafile,

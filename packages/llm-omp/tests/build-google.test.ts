@@ -110,6 +110,7 @@ describe('google drift gate', () => {
     // was reversed without the manifest saying so. The other entries are the
     // independent routes, one artifact each.
     expect(Object.keys(manifest.entries).sort()).toEqual([
+      'antigravity-cli',
       'cursor',
       'devin',
       'factory-droid',
