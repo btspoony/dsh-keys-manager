@@ -41,6 +41,8 @@ import {
   GITLAB_DUO_ROUTE,
   GITLAB_DUO_TRANSPORT_ROUTE,
   GOOGLE_ANTIGRAVITY_ROUTE,
+  ANTIGRAVITY_CLI_ROUTE,
+  ANTIGRAVITY_CLI_TRANSPORT_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
   OmpCursorAdapter,
   OmpDevinAdapter,
@@ -62,6 +64,7 @@ import { DEVIN_MODELS } from './catalog/devin.js'
 import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
+import { ANTIGRAVITY_CLI_MODELS } from './catalog/antigravity-cli.js'
 import { GOOGLE_ANTIGRAVITY_MODELS } from './catalog/google-antigravity.js'
 import { GOOGLE_GEMINI_CLI_MODELS } from './catalog/google-gemini-cli.js'
 import { loginCursor } from './cursor/auth.js'
@@ -282,6 +285,17 @@ export function googleAntigravityCatalogModels(): TransportCatalogModel[] {
 }
 
 /**
+ * The full Antigravity ACP catalog, projected for host-side configuration surfaces.
+ *
+ * @remarks
+ * The rows come from the pin's `antigravity-cli` provider, not the direct Cloud Code
+ * Assist table: the CLI owns the endpoint, so the picker lists ACP model ids.
+ */
+export function antigravityCliCatalogModels(): TransportCatalogModel[] {
+  return ANTIGRAVITY_CLI_MODELS.map(row => ({ id: row.id, name: row.name }))
+}
+
+/**
  * The full Factory Droid catalog, projected for host-side configuration surfaces.
  *
  * @remarks
@@ -357,6 +371,15 @@ const GOOGLE_ANTIGRAVITY_PROVIDER = {
   displayName: 'Google Antigravity',
   settingsNs: 'llm-omp-transports',
   settingsPath: ['providers', 'google-antigravity'],
+  declared: false,
+} as const
+
+/** The Antigravity ACP route's Models-page entry: the `agy` transport, its own settings path. */
+const ANTIGRAVITY_CLI_PROVIDER = {
+  provider: ANTIGRAVITY_CLI_TRANSPORT_ROUTE.id,
+  displayName: ANTIGRAVITY_CLI_TRANSPORT_ROUTE.displayName,
+  settingsNs: 'llm-omp-transports',
+  settingsPath: ['providers', 'antigravity-cli'],
   declared: false,
 } as const
 
