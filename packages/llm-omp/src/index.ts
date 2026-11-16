@@ -83,6 +83,7 @@ import {
   createGoogleAccess,
   googleCredentialKey,
 } from './google/credentials.js'
+import { ANTIGRAVITY_CLI_CREDENTIAL_KEY } from './antigravity/credentials.js'
 import { GOOGLE_ANTIGRAVITY_FACTS, GOOGLE_GEMINI_CLI_FACTS } from './google/route.js'
 import type { GoogleRouteFacts } from './google/route.js'
 
@@ -683,6 +684,98 @@ export function googleGeminiCliAuthorizationFlow(options: GoogleFlowOptions = {}
 export function googleAntigravityAuthorizationFlow(options: GoogleFlowOptions = {}): CursorAuthorizationFlow {
   return googleAuthorizationFlow(GOOGLE_ANTIGRAVITY_FACTS, options)
 }
+
+/** The sign-in half of the ACP artifact: agy's OAuth dance, exposed as functions. */
+interface AntigravityLoginModule {
+  loginAntigravityCli(controller: {
+    signal?: AbortSignal
+    onAuth?(info: { url: string; instructions?: string }): void
+    onProgress?(message: string): void
+    onManualCodeInput?(signal?: AbortSignal): Promise<string>
+  }): Promise<{ access: string; refresh: string; expires: number; email?: string; accountId?: string }>
+  refreshAntigravityCli(
+    grant: { access: string; refresh: string; expires: number; email?: string; accountId?: string },
+    signal?: AbortSignal,
+  ): Promise<{ access: string; refresh: string; expires: number; email?: string; accountId?: string }>
+}
+
+/** Load the sign-in artifact on first use, so a missing build cannot fail `apply`. */
+async function bundledAntigravityLogin(): Promise<AntigravityLoginModule> {
+  try {
+    const loaded = (await import(new URL('./omp/antigravity-login.mjs', import.meta.url).href)) as Record<string, unknown>
+    const login = loaded['loginAntigravityCli']
+    const refresh = loaded['refreshAntigravityCli']
+    if (typeof login !== 'function' || typeof refresh !== 'function') {
+      throw new Error('the artifact does not export the Antigravity sign-in functions')
+    }
+    return {
+      loginAntigravityCli: login as AntigravityLoginModule['loginAntigravityCli'],
+      refreshAntigravityCli: refresh as AntigravityLoginModule['refreshAntigravityCli'],
+    }
+  } catch (cause) {
+    throw LlmError.fromFailure({
+      message: 'llm-omp-transports: the bundled Antigravity sign-in is unavailable; run `pnpm build` in the transports package',
+      code: TRANSPORT_UNAVAILABLE,
+    }, { cause })
+  }
+}
+
+/**
+ * The `llm-omp-transports/antigravity-cli` sign-in flow.
+ *
+ * @remarks
+ * This route has no authorize URL of its own: the provider runs `agy acp --login`
+ * and reads Google's page off the child's output, so the flow maps the host's
+ * notice/prompt pair onto that controller and commits whatever grant the CLI
+ * exported. A pasted code or callback URL is accepted by the provider itself.
+ *
+ * @returns the flow the authorization seam registers.
+ */
+export function antigravityCliAuthorizationFlow(): CursorAuthorizationFlow {
+  return {
+    key: ANTIGRAVITY_CLI_CREDENTIAL_KEY,
+    label: 'Antigravity',
+    methods: [{ id: 'oauth', label: 'Sign in with Google' }],
+    async run(session) {
+      const module = await bundledAntigravityLogin()
+      try {
+        const credentials = await module.loginAntigravityCli({
+          signal: session.signal,
+          onAuth: info =>
+            session.notify({
+              message: info.instructions ?? 'Open this page to sign in to Antigravity.',
+              url: info.url,
+            }),
+          onProgress: message => session.notify({ message }),
+          onManualCodeInput: signal =>
+            session.prompt({
+              kind: 'secret',
+              message: 'Paste the authorization code (or the callback URL) here.',
+              ...(signal === undefined ? {} : { signal }),
+            }),
+        })
+        await session.commit({
+          kind: 'grant',
+          payload: {
+            access: credentials.access,
+            refresh: credentials.refresh,
+            expires: credentials.expires,
+            ...(credentials.email === undefined ? {} : { email: credentials.email }),
+            ...(credentials.accountId === undefined ? {} : { accountId: credentials.accountId }),
+          },
+        })
+      } catch (cause) {
+        if (session.signal.aborted) throw cause
+        const detail = cause instanceof Error ? cause.message : String(cause)
+        throw LlmError.fromFailure({
+          message: 'llm-omp-transports: Antigravity sign-in failed — ' + detail,
+          code: 'AUTH_FAILED',
+        }, { cause })
+      }
+    },
+  }
+}
+
 
 /** Test seams for the Factory Droid flow; the plugin uses the real network and timers. */
 export interface FactoryDroidFlowOptions {
