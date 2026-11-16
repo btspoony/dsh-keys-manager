@@ -112,6 +112,8 @@ class Archive {
 interface BunChild {
   readonly stdin: { write(chunk: string): void; flush(): Promise<void>; end(): Promise<void> }
   readonly stdout: ReadableStream<Uint8Array>
+  /** Present only when the caller asked for a piped stderr, as Bun does. */
+  readonly stderr?: ReadableStream<Uint8Array>
   readonly exited: Promise<number>
   kill(signal?: NodeJS.Signals): void
 }
@@ -124,14 +126,30 @@ interface SpawnOptions {
   env?: Record<string, string | undefined>
 }
 
+/** Wrap one piped stdio stream as the web stream Bun hands back. */
+function pipeOf(stream: NodeJS.ReadableStream | null, name: string): ReadableStream<Uint8Array> {
+  if (stream === null) throw new Error(`Antigravity CLI spawned without a readable ${name}`)
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      stream.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+      stream.on('end', () => controller.close())
+      stream.on('error', error => controller.error(error))
+    },
+  })
+}
+
 function spawn(command: readonly string[], options: SpawnOptions = {}): BunChild {
+  const stderrMode = options.stderr ?? 'ignore'
   const child: ChildProcess = nodeSpawn(command[0]!, command.slice(1), {
     cwd: options.cwd,
-    stdio: [options.stdin ?? 'pipe', options.stdout ?? 'pipe', options.stderr ?? 'ignore'],
+    stdio: [options.stdin ?? 'pipe', options.stdout ?? 'pipe', stderrMode],
     env: options.env as NodeJS.ProcessEnv,
   })
-  const stdout = child.stdout
-  if (stdout === null) throw new Error('Antigravity CLI spawned without a readable stdout')
+  const stdout = pipeOf(child.stdout, 'stdout')
+  // The sign-in reads agy's stderr as well as its stdout (the authorization URL
+  // can arrive on either), so a piped stderr must be exposed. Bun leaves the
+  // property undefined when the stream is not piped, and callers test for that.
+  const stderr = stderrMode === 'pipe' ? pipeOf(child.stderr, 'stderr') : undefined
   const exited = new Promise<number>(resolve => {
     child.once('exit', code => resolve(code ?? 1))
     child.once('error', () => resolve(1))
@@ -149,13 +167,8 @@ function spawn(command: readonly string[], options: SpawnOptions = {}): BunChild
   }
   return {
     stdin,
-    stdout: new ReadableStream<Uint8Array>({
-      start(controller) {
-        stdout.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
-        stdout.on('end', () => controller.close())
-        stdout.on('error', error => controller.error(error))
-      },
-    }),
+    stdout,
+    ...(stderr === undefined ? {} : { stderr }),
     exited,
     kill: signal => {
       child.kill(signal)

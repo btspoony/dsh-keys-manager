@@ -78,6 +78,28 @@ describe('bun-global-antigravity', () => {
     expect(chunks.join('')).toBe('ok')
   })
 
+  it('exposes a piped stderr and omits it when the stream is not piped', async () => {
+    // The sign-in reads agy's stderr as well as its stdout: the authorization URL
+    // can arrive on either. Before this, `Bun.spawn` returned no stderr at all,
+    // so the pin's `collect(process.stderr)` threw and the whole sign-in surfaced
+    // as "Antigravity CLI sign-in failed; try signing in again".
+    const piped = Bun.spawn(['node', '-e', 'process.stderr.write("on-stderr")'], { stderr: 'pipe' })
+    const chunks: string[] = []
+    const reader = piped.stderr!.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(new TextDecoder().decode(value))
+    }
+    await expect(piped.exited).resolves.toBe(0)
+    expect(chunks.join('')).toBe('on-stderr')
+
+    // Ignored stdio stays undefined, as Bun reports it.
+    const ignored = Bun.spawn(['node', '-e', ''])
+    expect(ignored.stderr).toBeUndefined()
+    await expect(ignored.exited).resolves.toBe(0)
+  })
+
   it('accepts one loopback connection and reports the bound port', async () => {
     // The pool binds on later ticks (Node has no synchronous listen); let it warm.
     await new Promise(resolve => setTimeout(resolve, 20))
