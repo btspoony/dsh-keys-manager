@@ -4782,7 +4782,7 @@ describe('managed chip placement', () => {
 
   test('clamps its width against the card actions', () => {
     expect(managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 }, 500).maxWidth).toBe(284)
-    expect(managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 }, 210).maxWidth).toBe(56)
+    expect(managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 }, 210).maxWidth).toBe(64)
   })
 
   test('the managed badge copy is the short chip form', () => {

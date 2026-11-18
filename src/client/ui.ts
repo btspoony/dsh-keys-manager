@@ -2185,6 +2185,9 @@ interface ManagedProviderBadgeProps {
   view?: 'summary' | 'page'
 }
 
+/** Narrowest chip worth painting; below it the name already reaches the actions. */
+export const MANAGED_CHIP_MIN_WIDTH = 64
+
 /**
  * Where the managed chip sits on a host provider card: right of the name and
  * vertically centred on its row. `maxWidth` keeps it off the card's actions.
@@ -2200,7 +2203,7 @@ export function managedChipLayout(
     top: Math.round(identity.top - card.top + identity.height / 2),
     maxWidth: actionsLeft === undefined
       ? 180
-      : Math.max(56, Math.round(actionsLeft - identity.right) - 16),
+      : Math.max(MANAGED_CHIP_MIN_WIDTH, Math.round(actionsLeft - identity.right) - 16),
   }
 }
 
@@ -2214,7 +2217,9 @@ function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElem
     ? undefined
     : state.providers.find(provider => provider.provider === providerId && provider.managed)
 
-  React.useEffect(() => {
+  // Layout effect: the chip stays hidden until its offsets are written, so the
+  // first paint never shows it at the stylesheet fallback.
+  React.useLayoutEffect(() => {
     const node = chip.current
     if (node === null || typeof HTMLElement === 'undefined') return
     const card = node.closest('li')
@@ -2232,16 +2237,24 @@ function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElem
         identity.getBoundingClientRect(),
         actions instanceof HTMLElement && actions !== identity ? actions.getBoundingClientRect().left : undefined,
       )
+      // No room left between the name and the actions: staying hidden beats
+      // covering a button the user needs. Also the fallback when the host
+      // structure is not the expected one, where an anchored chip is impossible.
+      if (layout.maxWidth <= MANAGED_CHIP_MIN_WIDTH) return
       node.style.setProperty('--km-chip-left', `${layout.left}px`)
       node.style.setProperty('--km-chip-top', `${layout.top}px`)
       node.style.setProperty('--km-chip-max', `${layout.maxWidth}px`)
+      node.dataset.kmPlaced = ''
     }
     place()
+    // Observes the card only: a host display-name change resizes the identity
+    // alone, and the chip keeps its offset until the next mount.
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place)
     observer?.observe(card)
     return () => {
       observer?.disconnect()
       delete card.dataset.kmCard
+      delete node.dataset.kmPlaced
     }
   }, [managed?.keyCount, managed?.bindingHealthy])
 
@@ -2251,10 +2264,12 @@ function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElem
     ref: chip,
     className: cx('km-managed-chip', broken && 'km-managed-chip-warn'),
     role: 'note',
-    title: t('modelsHint'),
+    title: broken ? t('bindingBroken') : t('modelsHint'),
   },
     h('span', { className: cx('km-dot', broken ? 'km-dot-warn' : 'km-dot-success') }),
-    h('span', { className: 'km-managed-chip-text' }, broken ? t('bindingBroken') : t('modelsBadge', { n: managed.keyCount })),
+    // Broken bindings keep the chip legible: the full explanation stays in the
+    // title, and the long sentence it used to carry never fit this width.
+    h('span', { className: 'km-managed-chip-text' }, broken ? t('bindingBrokenShort') : t('modelsBadge', { n: managed.keyCount })),
   )
 }
 
