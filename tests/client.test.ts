@@ -4794,7 +4794,7 @@ describe('managed chip placement', () => {
 
   test('the managed badge copy is the short chip form', () => {
     const dicts = LOCALE_DICTS
-    expect(dicts.zh.modelsBadge).toBe('已接管 · {n}')
-    expect(dicts.en.modelsBadge).toBe('Managed · {n}')
+    expect(dicts.zh.modelsBadge).toBe('已接管：{n} Key(s)')
+    expect(dicts.en.modelsBadge).toBe('Managed: {n} Key(s)')
   })
 })
