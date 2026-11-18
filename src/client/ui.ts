@@ -2276,7 +2276,6 @@ function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElem
     role: 'note',
     title: broken ? t('bindingBroken') : t('modelsHint'),
   },
-    h('span', { className: cx('km-dot', broken ? 'km-dot-warn' : 'km-dot-success') }),
     // Broken bindings keep the chip legible: the full explanation stays in the
     // title, and the long sentence it used to carry never fit this width.
     h('span', { className: 'km-managed-chip-text' }, broken ? t('bindingBrokenShort') : t('modelsBadge', { n: managed.keyCount })),
