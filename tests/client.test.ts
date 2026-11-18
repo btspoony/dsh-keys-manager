@@ -6,7 +6,7 @@ import { LOCALE_DICTS } from '../src/client/locales'
 import { createStore } from '../src/client/store'
 import { QUOTA_RETRY_MS, QUOTA_TTL_MS, cooldownMinutes, cooldownMs, graceMinutes, graceMs, quotaNeedsRefresh } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
-import { KeysManagerBody, KeysManagerCard, managedChipLayout, oauthCapable, originOf } from '../src/client/ui'
+import { KeysManagerBody, KeysManagerCard, managedChipLayout, managedChipPlaced, oauthCapable, originOf } from '../src/client/ui'
 import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, QuotaView, QuotaWindowId, QuotaWindowView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
 
 function makeState(): StateView {
@@ -4783,6 +4783,13 @@ describe('managed chip placement', () => {
   test('clamps its width against the card actions', () => {
     expect(managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 }, 500).maxWidth).toBe(284)
     expect(managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 }, 210).maxWidth).toBe(64)
+  })
+
+  test('a chip with no room before the actions stays unplaced', () => {
+    const name = { right: 200, top: 30, height: 22 }
+    expect(managedChipPlaced(managedChipLayout({ left: 12, top: 12 }, name, 210))).toBe(false)
+    expect(managedChipPlaced(managedChipLayout({ left: 12, top: 12 }, name, 500))).toBe(true)
+    expect(managedChipPlaced(managedChipLayout({ left: 12, top: 12 }, name))).toBe(true)
   })
 
   test('the managed badge copy is the short chip form', () => {

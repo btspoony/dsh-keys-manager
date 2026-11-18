@@ -2207,6 +2207,11 @@ export function managedChipLayout(
   }
 }
 
+/** A chip is only worth painting when the name leaves room before the actions. */
+export function managedChipPlaced(layout: { maxWidth: number }): boolean {
+  return layout.maxWidth > MANAGED_CHIP_MIN_WIDTH
+}
+
 function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElement | null {
   const t = useT()
   const snapshot = useStore()
@@ -2240,7 +2245,12 @@ function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElem
       // No room left between the name and the actions: staying hidden beats
       // covering a button the user needs. Also the fallback when the host
       // structure is not the expected one, where an anchored chip is impossible.
-      if (layout.maxWidth <= MANAGED_CHIP_MIN_WIDTH) return
+      // The attribute is dropped on the way out so a card that shrank never keeps
+      // painting the offsets of the wider layout it had before.
+      if (!managedChipPlaced(layout)) {
+        delete node.dataset.kmPlaced
+        return
+      }
       node.style.setProperty('--km-chip-left', `${layout.left}px`)
       node.style.setProperty('--km-chip-top', `${layout.top}px`)
       node.style.setProperty('--km-chip-max', `${layout.maxWidth}px`)
