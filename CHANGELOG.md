@@ -2,6 +2,12 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.4.2] - 2026-11-18
+
+### Changed
+
+- The Models provider card now shows one compact translucent-green `Managed: N Key(s)` chip beside the provider name instead of a full-width note line underneath it.
+
 ## [0.4.1] - 2026-11-16
 
 ### Changed
