@@ -2,10 +2,11 @@ import { beforeAll, describe, expect, test, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import React from 'react'
 import { apply } from '../src/client/index'
+import { LOCALE_DICTS } from '../src/client/locales'
 import { createStore } from '../src/client/store'
 import { QUOTA_RETRY_MS, QUOTA_TTL_MS, cooldownMinutes, cooldownMs, graceMinutes, graceMs, quotaNeedsRefresh } from '../src/client/format'
 import { RuntimeContext } from '../src/client/runtime'
-import { KeysManagerBody, KeysManagerCard, oauthCapable, originOf } from '../src/client/ui'
+import { KeysManagerBody, KeysManagerCard, managedChipLayout, managedChipPlaced, oauthCapable, originOf } from '../src/client/ui'
 import type { AccountAttemptView, ClientContext, KeyView, LocaleDicts, ProviderView, QuotaView, QuotaWindowId, QuotaWindowView, RpcResult, Runtime, StateView, TransportAccountView } from '../src/client/types'
 
 function makeState(): StateView {
@@ -4770,5 +4771,30 @@ describe('quota surface', () => {
       'quotaStale',
       'quotaCompactHint',
     ])
+  })
+})
+
+describe('managed chip placement', () => {
+  test('sits right of the name, centred on its row', () => {
+    const layout = managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 })
+    expect(layout).toEqual({ left: 196, top: 29, maxWidth: 180 })
+  })
+
+  test('clamps its width against the card actions', () => {
+    expect(managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 }, 500).maxWidth).toBe(284)
+    expect(managedChipLayout({ left: 12, top: 12 }, { right: 200, top: 30, height: 22 }, 210).maxWidth).toBe(64)
+  })
+
+  test('a chip with no room before the actions stays unplaced', () => {
+    const name = { right: 200, top: 30, height: 22 }
+    expect(managedChipPlaced(managedChipLayout({ left: 12, top: 12 }, name, 210))).toBe(false)
+    expect(managedChipPlaced(managedChipLayout({ left: 12, top: 12 }, name, 500))).toBe(true)
+    expect(managedChipPlaced(managedChipLayout({ left: 12, top: 12 }, name))).toBe(true)
+  })
+
+  test('the managed badge copy is the short chip form', () => {
+    const dicts = LOCALE_DICTS
+    expect(dicts.zh.modelsBadge).toBe('已接管 · {n}')
+    expect(dicts.en.modelsBadge).toBe('Managed · {n}')
   })
 })

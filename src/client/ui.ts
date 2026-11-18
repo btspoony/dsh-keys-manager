@@ -2185,19 +2185,101 @@ interface ManagedProviderBadgeProps {
   view?: 'summary' | 'page'
 }
 
+/** Narrowest chip worth painting; below it the name already reaches the actions. */
+export const MANAGED_CHIP_MIN_WIDTH = 64
+
+/**
+ * Where the managed chip sits on a host provider card: right of the name and
+ * vertically centred on its row. `maxWidth` keeps it off the card's actions.
+ * Pure so the placement stays testable without a DOM.
+ */
+export function managedChipLayout(
+  card: { left: number; top: number },
+  identity: { right: number; top: number; height: number },
+  actionsLeft?: number,
+): { left: number; top: number; maxWidth: number } {
+  return {
+    left: Math.round(identity.right - card.left) + 8,
+    top: Math.round(identity.top - card.top + identity.height / 2),
+    maxWidth: actionsLeft === undefined
+      ? 180
+      : Math.max(MANAGED_CHIP_MIN_WIDTH, Math.round(actionsLeft - identity.right) - 16),
+  }
+}
+
+/** A chip is only worth painting when the name leaves room before the actions. */
+export function managedChipPlaced(layout: { maxWidth: number }): boolean {
+  return layout.maxWidth > MANAGED_CHIP_MIN_WIDTH
+}
+
 function ManagedProviderBadge(props: ManagedProviderBadgeProps): React.ReactElement | null {
   const t = useT()
   const snapshot = useStore()
+  const chip = React.useRef<HTMLSpanElement>(null)
   const state = snapshot.state
   const providerId = props.provider?.provider
-  if (state === null || providerId === undefined) return null
-  const managed = state.providers.find(provider => provider.provider === providerId && provider.managed)
+  const managed = state === null || providerId === undefined
+    ? undefined
+    : state.providers.find(provider => provider.provider === providerId && provider.managed)
+
+  // Layout effect: the chip stays hidden until its offsets are written, so the
+  // first paint never shows it at the stylesheet fallback.
+  React.useLayoutEffect(() => {
+    const node = chip.current
+    if (node === null || typeof HTMLElement === 'undefined') return
+    const card = node.closest('li')
+    const head = card?.firstElementChild
+    const identity = head?.firstElementChild
+    if (!(card instanceof HTMLElement) || !(head instanceof HTMLElement) || !(identity instanceof HTMLElement)) return
+    // The host card carries no positioning context and its class names are
+    // hashed; the attribute is what lets the chip ride the name row instead of
+    // holding a row of its own.
+    card.dataset.kmCard = ''
+    const place = (): void => {
+      const actions = head.lastElementChild
+      const layout = managedChipLayout(
+        card.getBoundingClientRect(),
+        identity.getBoundingClientRect(),
+        actions instanceof HTMLElement && actions !== identity ? actions.getBoundingClientRect().left : undefined,
+      )
+      // No room left between the name and the actions: staying hidden beats
+      // covering a button the user needs. Also the fallback when the host
+      // structure is not the expected one, where an anchored chip is impossible.
+      // The attribute is dropped on the way out so a card that shrank never keeps
+      // painting the offsets of the wider layout it had before.
+      if (!managedChipPlaced(layout)) {
+        delete node.dataset.kmPlaced
+        return
+      }
+      node.style.setProperty('--km-chip-left', `${layout.left}px`)
+      node.style.setProperty('--km-chip-top', `${layout.top}px`)
+      node.style.setProperty('--km-chip-max', `${layout.maxWidth}px`)
+      node.dataset.kmPlaced = ''
+    }
+    place()
+    // Observes the card only: a host display-name change resizes the identity
+    // alone, and the chip keeps its offset until the next mount.
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(place)
+    observer?.observe(card)
+    return () => {
+      observer?.disconnect()
+      delete card.dataset.kmCard
+      delete node.dataset.kmPlaced
+    }
+  }, [managed?.keyCount, managed?.bindingHealthy])
+
   if (managed === undefined) return null
   const broken = managed.bindingHealthy === false
-  return h('div', { className: cx('km-models-note', broken && 'km-models-note-warn'), role: 'note' },
+  return h('span', {
+    ref: chip,
+    className: cx('km-managed-chip', broken && 'km-managed-chip-warn'),
+    role: 'note',
+    title: broken ? t('bindingBroken') : t('modelsHint'),
+  },
     h('span', { className: cx('km-dot', broken ? 'km-dot-warn' : 'km-dot-success') }),
-    h('span', { className: 'km-models-note-text' }, t('modelsBadge', { n: managed.keyCount })),
-    h('span', { className: 'km-models-note-hint' }, broken ? t('bindingBroken') : t('modelsHint')),
+    // Broken bindings keep the chip legible: the full explanation stays in the
+    // title, and the long sentence it used to carry never fit this width.
+    h('span', { className: 'km-managed-chip-text' }, broken ? t('bindingBrokenShort') : t('modelsBadge', { n: managed.keyCount })),
   )
 }
 
