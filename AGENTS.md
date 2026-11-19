@@ -31,6 +31,11 @@ version: release prep writes the same version to both manifests.
   built `lib/omp/cursor.mjs`. CI runs root typecheck/build/test first, then
   the transport's typecheck/build/test; the install proof builds each package
   through its own `prepack`.
+- The root `build` builds every `packages/*` component first
+  (`pnpm -r --filter './packages/**' run build`). The root imports the transport
+  package at runtime through its `lib/`, so a root-only build would leave a
+  stale transport in place — a route would keep serving the previous version's
+  flows and catalogs while the root looked current.
 - `@oh-my-pi/*` is a build-time pin for the transport bundle. It must never
   appear as a runtime dependency of either published package.
 
