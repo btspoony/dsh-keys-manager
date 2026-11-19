@@ -114,7 +114,7 @@ export interface ClientStore {
    * Start the `llm-omp-transports/<route>` sign-in; resolves with the attempt
    * view, which the login dialog polls through {@link accountAttempt}.
    */
-  beginTransportLogin(route: string): Promise<AccountAttemptResult>
+  beginTransportLogin(route: string, method?: string): Promise<AccountAttemptResult>
   /** Re-read one transport route's stored grant (activation writes nothing). */
   activateTransportAccount(route: string): Promise<ActionOutcome>
   /** Delete one transport route's grant record. */

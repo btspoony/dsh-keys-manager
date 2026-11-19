@@ -49,6 +49,23 @@ repository root docs.
   port, so the browser's redirect target fails to load and the code stays in the
   address bar to paste. A full callback URL or `code#state` is state-checked; a
   bare code skips the check (documented weakening of CSRF protection).
+- **A second method imports the seat key the official Devin CLI already stores**
+  (`devin auth login` → `$XDG_DATA_HOME/devin/credentials.toml`, else
+  `~/.local/share`, else the macOS Library path). It is offline and needs no
+  browser; the key is accepted only when `api_server_url` is absent or one of
+  `server.codeium.com` / `server.enterprise.windsurf.com`, because a key issued
+  for another host would not authenticate this route's requests. The key neither
+  expires nor refreshes, so the record is a static bearer.
+- **Windsurf Enterprise seats are not supported.** omp's `devin-windsurf` login
+  drives `windsurf.com/editor/signin` with its own PKCE exchange and a second
+  loopback port; that flow is not ported, so such a seat has to use the Devin CLI
+  import above.
+- **The model roster is discovered per account.** Devin's catalog is
+  credential-scoped, so the committed table carries the seed (`swe-1-6`) and the
+  route replaces it with the answer of `GetCliModelConfigs` for the signed-in
+  grant (cached for five minutes). A failed, empty or unauthenticated read keeps
+  the seed: the route never publishes an empty catalog and never fails a turn
+  because discovery was slow.
 
 ## Google clients
 
@@ -178,10 +195,11 @@ repository root docs.
   `thinkingLevel`. Antigravity rewrites `maxOutputTokens` to the captured
   per-wire-id cap (e.g. 65 535 for `gemini-pro-agent`, 64 000 for Claude), as
   the real client does.
-- The Devin catalog has 2 pinned rows (`swe-1-6`, `swe-1-6-fast`) and no
-  reasoning efforts. The projection forwards `maxTokens`, `temperature` and
-  `stop` (as `stopPatterns`) and reuses `sessionId` as the cascade id; `purpose`
-  is still ignored.
+- The Devin catalog's committed table has one seed row (`swe-1-6`); the account's
+  real roster arrives from discovery and carries no reasoning efforts (a selected
+  effort is refused by the projection). The projection forwards `maxTokens`,
+  `temperature` and `stop` (as `stopPatterns`) and reuses `sessionId` as the
+  cascade id; `purpose` is still ignored.
 
 ## Turns and tools
 

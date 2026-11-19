@@ -119,6 +119,17 @@ Current design boundaries of the Keys Manager plugin:
   refresh token, so it stops until you sign in again; Cursor refreshes on the
   credential seam and keeps serving, and stops only when the refresh is
   rejected or no refresh token is stored.
+- Devin offers two ways to sign in: the browser authorize page plus a pasted
+  callback (nothing listens on the loopback port), and **importing the seat key
+  the official Devin CLI already stores** (`devin auth login` →
+  `$XDG_DATA_HOME/devin/credentials.toml`, then `~/.local/share`, then the macOS
+  Library path). The import is offline and needs no browser. Windsurf Enterprise
+  seats have their own login flow, which is not ported.
+- Devin's model roster is **credential-scoped**: the committed table carries one
+  seed row (`swe-1-6`), and a sign-in lets the route discover the account's real
+  models through `GetCliModelConfigs` (cached for five minutes). A failed, empty
+  or signed-out read keeps the seed, so the route never lists nothing and never
+  fails a turn because discovery was slow.
 - The Cursor and Devin clients are unofficial and their live endpoints are
   unverified. Their specifics (vendor identities, ToS risk, no image input, no
   Devin refresh) are in

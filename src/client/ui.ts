@@ -884,6 +884,17 @@ interface TransportAccountRowProps {
  * IS the route's live credential. Removal deletes that record, and sign-in
  * starts the transports package's own flow.
  */
+/**
+ * A sign-in method's button text.
+ *
+ * The transports package owns the flow's labels and they are English; the one
+ * method this plugin localizes is Devin's CLI credential import, whose id the
+ * package itself declares. Anything else renders the flow's own label.
+ */
+function transportMethodLabel(method: { id: string; label: string }, t: (key: string) => string): string {
+  return method.id === 'devin-cli' ? t('transportMethodCliImport') : method.label
+}
+
 function TransportAccountRow({ account, now }: TransportAccountRowProps): React.ReactElement {
   const runtime = useRuntime()
   const t = useT()
@@ -896,10 +907,10 @@ function TransportAccountRow({ account, now }: TransportAccountRowProps): React.
   // snapshot renders, whether it sits inside a card or in the orphan section.
   const [quotaRejected, setQuotaRejected] = React.useState(false)
 
-  async function signIn(): Promise<void> {
+  async function signIn(method: string | undefined): Promise<void> {
     setBusy(true)
     setError(null)
-    const result = await runtime.store.beginTransportLogin(account.id)
+    const result = await runtime.store.beginTransportLogin(account.id, method)
     setBusy(false)
     if (!result.ok) {
       setError(result.error)
@@ -919,6 +930,8 @@ function TransportAccountRow({ account, now }: TransportAccountRowProps): React.
 
   const identity = account.email ?? account.accountId ?? account.displayName
   const tone = transportStatusTone(account.status)
+  // The flow's first method is the one the row's primary button starts.
+  const [primary, ...rest] = account.methods ?? []
   return h('div', { className: 'km-account-row km-transport-row' },
     h('div', { className: 'km-key-identity' },
       h('div', { className: 'km-key-alias-line' },
@@ -954,13 +967,37 @@ function TransportAccountRow({ account, now }: TransportAccountRowProps): React.
     }),
     quotaInline(account, t, now, quotaRejected),
     h('div', { className: 'km-key-actions' },
-      h(Button, {
-        size: 'small',
-        disabled: busy,
-        onClick: signIn,
-        title: account.active ? t('accountReauth') : t('transportSignIn'),
-      }, busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'refresh', size: 14 }),
-        t(account.active ? 'accountReauth' : 'transportSignIn')),
+      // One button per method the route's flow declares: Devin offers the
+      // browser sign-in first and "import what the Devin CLI already stored"
+      // second, and the host refuses a method the flow does not declare. The
+      // first method keeps this plugin's own wording, so a route with one way
+      // in (every other route) renders exactly as before.
+      ...(primary === undefined
+        ? [h(Button, {
+            key: 'sign-in',
+            size: 'small',
+            disabled: busy,
+            onClick: () => void signIn(undefined),
+            title: account.active ? t('accountReauth') : t('transportSignIn'),
+          }, busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'refresh', size: 14 }),
+            t(account.active ? 'accountReauth' : 'transportSignIn'))]
+        : [
+            h(Button, {
+              key: primary.id,
+              size: 'small',
+              disabled: busy,
+              onClick: () => void signIn(primary.id),
+              title: primary.label,
+            }, busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'refresh', size: 14 }),
+              t(account.active ? 'accountReauth' : 'transportSignIn')),
+            ...rest.map(method => h(Button, {
+              key: method.id,
+              size: 'small',
+              disabled: busy,
+              onClick: () => void signIn(method.id),
+              title: transportMethodLabel(method, t),
+            }, transportMethodLabel(method, t))),
+          ]),
       // No "Set active" entry: activation would write nothing (the stored grant
       // already IS the route's live credential), so the host endpoint stays for
       // API symmetry with the account surface and the row omits a no-effect

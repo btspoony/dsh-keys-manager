@@ -22,6 +22,9 @@ import {
   parseJsonWithRepair as realParseJsonWithRepair,
   parseStreamingJsonThrottled as realParseStreamingJsonThrottled,
 } from '@oh-my-pi/pi-utils/json-parse'
+// Reached by the Devin discovery graph when it names a server-declared model
+// family; omp's own implementation, since a slug is an id the server answers to.
+export { slugify } from '@oh-my-pi/pi-utils/slugify'
 
 /** Environment accessor omp reads as a record (`$env.KEY`). */
 export const $env: Record<string, string | undefined> = new Proxy(

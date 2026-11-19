@@ -40,6 +40,7 @@
   "transportProviderHint": "Served by a transport plugin: its credential is managed inside this card.",
   "transportTag": "Transport",
   "transportSignIn": "Sign in",
+  "transportMethodCliImport": "Import from Devin CLI",
   "transportExpires": "Expires {time}",
   "transportStatusActive": "Active",
   "transportStatusExpired": "Expired (auto-renews)",

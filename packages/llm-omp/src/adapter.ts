@@ -348,7 +348,7 @@ export const GITLAB_DUO_AGENT_TRANSPORT_ROUTE: TransportRoute<
 }
 
 /** What an adapter needs from its host plugin. */
-export interface OmpAdapterOptions<Model, Options extends TransportOptions> {
+export interface OmpAdapterOptions<Model, Options extends TransportOptions, Row = never> {
   /**
    * Resolve the route's bearer token for one request.
    *
@@ -384,11 +384,22 @@ export interface OmpAdapterOptions<Model, Options extends TransportOptions> {
    * the design chose over a route-specific adapter subclass.
    */
   identity?: () => Promise<Readonly<Record<string, unknown>> | undefined>
+  /**
+   * The route's live catalog, for a route whose roster is credential-scoped.
+   *
+   * @remarks
+   * Devin's model table is per account: the committed table only carries the
+   * seed, and the real roster comes from an RPC the adapter cannot make before
+   * a grant exists. A route that supplies this is served from the returned rows
+   * on every call (the source applies its own cache); every other route keeps
+   * its static table.
+   */
+  rows?: () => Promise<readonly Row[]>
 }
 
 /** The adapter configuration for one concrete route. */
 interface OmpRouteAdapterConfig<Row extends TransportRow, Model, Options extends TransportOptions>
-  extends OmpAdapterOptions<Model, Options> {
+  extends OmpAdapterOptions<Model, Options, Row> {
   readonly route: TransportRoute<Row, Model, Options>
 }
 
@@ -419,9 +430,23 @@ abstract class OmpTransportAdapter<
     return models === undefined || models.length === 0 ? undefined : new Set(models)
   }
 
+  /**
+   * The rows this route serves now: its static table, or the live one.
+   *
+   * @remarks
+   * A static route answers its committed table. A credential-scoped route
+   * (`rows`) answers what its source holds — the source caches, so this is
+   * cheap enough to call per request.
+   */
+  private async catalog(): Promise<readonly Row[]> {
+    return this.config.rows === undefined ? this.config.route.models : await this.config.rows()
+  }
+
   /** Resolve one catalog row, refusing ids the configured allow-list excludes. */
-  private rowFor(model: string): Row {
-    const row = this.rows.get(model)
+  private async rowFor(model: string): Promise<Row> {
+    const row = this.config.rows === undefined
+      ? this.rows.get(model)
+      : (await this.catalog()).find(candidate => candidate.id === model)
     const allowed = this.allowed()
     if (row === undefined || (allowed !== undefined && !allowed.has(row.id))) {
       throw new LlmError(`llm-omp-transports: the ${this.config.route.id} route has no model "${model}"`, UNKNOWN_MODEL)
@@ -448,7 +473,7 @@ abstract class OmpTransportAdapter<
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     this.assertRoute(provider)
     const allowed = this.allowed()
-    return this.config.route.models
+    return (await this.catalog())
       .filter(row => allowed === undefined || allowed.has(row.id))
       .map(row => ({
         provider,
@@ -460,7 +485,7 @@ abstract class OmpTransportAdapter<
 
   override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     this.assertRoute(provider)
-    return this.modelInfo(provider, this.rowFor(model))
+    return this.modelInfo(provider, await this.rowFor(model))
   }
 
   override stream(options: GenerateOptions<string>): AsyncIterable<StreamChunk> {
@@ -486,7 +511,7 @@ abstract class OmpTransportAdapter<
       yield abortedFinish()
       return
     }
-    const row = this.rowFor(options.model)
+    const row = await this.rowFor(options.model)
     // Validate and project before touching the credential: a refused request
     // must not pay a credential read. Only a request that can be served
     // resolves `access` and carries its token into the transport options.
@@ -555,7 +580,7 @@ abstract class OmpTransportAdapter<
 }
 
 /** The DSH llm adapter configuration for the Cursor route. */
-export type OmpCursorAdapterConfig = OmpAdapterOptions<OmpCursorModel, OmpCursorOptions>
+export type OmpCursorAdapterConfig = OmpAdapterOptions<OmpCursorModel, OmpCursorOptions, CursorModelRow>
 
 /** The Cursor adapter: the bundled `streamCursor` over the generated Cursor catalog. */
 export class OmpCursorAdapter extends OmpTransportAdapter<CursorModelRow, OmpCursorModel, OmpCursorOptions> {
@@ -565,7 +590,7 @@ export class OmpCursorAdapter extends OmpTransportAdapter<CursorModelRow, OmpCur
 }
 
 /** The DSH llm adapter configuration for the Devin route. */
-export type OmpDevinAdapterConfig = OmpAdapterOptions<OmpDevinModel, OmpDevinOptions>
+export type OmpDevinAdapterConfig = OmpAdapterOptions<OmpDevinModel, OmpDevinOptions, DevinModelRow>
 
 /** The Devin adapter: the bundled `streamDevin` over the generated Devin catalog. */
 export class OmpDevinAdapter extends OmpTransportAdapter<DevinModelRow, OmpDevinModel, OmpDevinOptions> {
@@ -575,7 +600,7 @@ export class OmpDevinAdapter extends OmpTransportAdapter<DevinModelRow, OmpDevin
 }
 
 /** The DSH llm adapter configuration for a Google route. */
-export type OmpGoogleAdapterConfig = OmpAdapterOptions<OmpGoogleModel, OmpGoogleOptions>
+export type OmpGoogleAdapterConfig = OmpAdapterOptions<OmpGoogleModel, OmpGoogleOptions, GoogleModelRow>
 
 /** The Gemini CLI adapter: the bundled `streamGoogleGeminiCli` over the Gemini CLI catalog. */
 export class OmpGoogleGeminiCliAdapter extends OmpTransportAdapter<GoogleModelRow, OmpGoogleModel, OmpGoogleOptions> {
@@ -597,7 +622,7 @@ export class OmpAntigravityCliAdapter extends OmpTransportAdapter<
 }
 
 /** The DSH llm adapter configuration for the Factory Droid route. */
-export type OmpFactoryDroidAdapterConfig = OmpAdapterOptions<OmpFactoryDroidModel, OmpFactoryDroidOptions>
+export type OmpFactoryDroidAdapterConfig = OmpAdapterOptions<OmpFactoryDroidModel, OmpFactoryDroidOptions, FactoryDroidModelRow>
 
 /** The Factory Droid adapter: the bundled `streamFactoryDroid` over the registry seed catalog. */
 export class OmpFactoryDroidAdapter extends OmpTransportAdapter<

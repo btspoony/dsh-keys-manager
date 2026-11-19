@@ -96,6 +96,44 @@ export interface OmpDevinModel extends DevinModelRow {
 }
 
 /**
+ * One row the Devin discovery RPC returned (a `ModelSpec<'devin-agent'>`).
+ *
+ * A subset: the fields the adapter serves are here, and the transport reads the
+ * rest off the same object at request time. `thinking` is absent on purpose —
+ * the route advertises no effort ladder, so a row's routed efforts are not
+ * carried (see `projectDevinRequest`).
+ */
+export interface OmpDevinDiscoveredModel {
+  readonly id: string
+  readonly name: string
+  readonly baseUrl: string
+  /** `null` when the server states no window; the adapter falls back as omp does. */
+  readonly contextWindow: number | null
+  readonly maxTokens: number | null
+  readonly input: ('text' | 'image')[]
+  readonly cost: ModelCost
+  readonly reasoning: boolean
+  /** Sparse compat: omp's row carries a `ResolvedDevinCompat`, whose required trio defaults here. */
+  readonly compat?: {
+    readonly trustExplicitThinkingOnly?: boolean
+    readonly modelRouter?: boolean
+    readonly supportsParallelToolCalls?: boolean
+  }
+  /** Wire model id to request when it differs from {@link id}. */
+  readonly requestModelId?: string
+}
+
+/** The options `fetchDevinModels` takes; only the credential is passed by this plugin. */
+export interface OmpDevinDiscoveryOptions {
+  readonly apiKey?: string
+  readonly baseUrl?: string
+  readonly timeoutMs?: number
+  readonly signal?: AbortSignal
+  /** The standard `fetch` shape; the transport's `FetchImpl` is this plus an optional `preconnect`. */
+  readonly fetch?: typeof fetch
+}
+
+/**
  * The wire family a Google row speaks.
  *
  * omp's Google provider switches on `identity.class` (Anthropic-shaped Claude

@@ -266,6 +266,15 @@ export interface TransportAccountView {
   status: TransportAccountStatus
   /** Derived from {@link status}: true only while it is `'active'`. */
   active: boolean
+  /**
+   * The sign-in methods the route's own flow declares, in its order.
+   *
+   * A route can offer more than one way in (Devin: a browser sign-in, or
+   * importing the credential the Devin CLI already stores), and the flow — not
+   * this plugin — owns that list, so the row carries it for the row's buttons.
+   * Absent when the host could not enumerate the flow.
+   */
+  methods?: { id: string; label: string }[]
   /** Latest cached plan usage; absent until a quota refresh ran for this route. */
   quota?: QuotaView
 }

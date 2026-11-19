@@ -445,7 +445,7 @@ const INVOCATIONS: InvocationDescriptor[] = [
   // Transport accounts (llm-omp-transports/<route>): managed beside the pi-ai
   // pool, never through it. The sign-in reuses the same attempt machinery and
   // is polled through `accountAttempt` above.
-  endpoint('beginTransportLogin', ['provider']),
+  endpoint('beginTransportLogin', ['provider', 'method']),
   endpoint('activateTransportAccount', ['provider']),
   endpoint('removeTransportAccount', ['provider']),
   // The transport card's model picker: the catalog lives in the transports
@@ -807,6 +807,7 @@ function transportAccountOf(flow: AuthorizationFlowEntry, record: CredentialReco
     id: route,
     scope: flow.key,
     displayName: flow.label,
+    methods: flow.methods.map(method => ({ id: method.id, label: method.label })),
     ...(grant?.email === undefined ? {} : { email: grant.email }),
     ...(grant?.accountId === undefined ? {} : { accountId: grant.accountId }),
     ...(grant?.expires === undefined ? {} : { expiresAt: grant.expires }),
@@ -838,6 +839,18 @@ const DEVIN_ROUTE = 'devin'
  * added after the installed build, including the Google pair, `factory-droid`
  * and the GitLab pair), so a probe can legitimately find nothing.
  */
+/**
+ * The catalog *refresh* accessor a transport route may ship.
+ *
+ * Devin's roster is credential-scoped, so its committed table only carries the
+ * seed and the real one has to be read from the account. A route listed here has
+ * its catalog refreshed before the picker reads it; an installed build without
+ * the export is served its committed table, which is what every other route has.
+ */
+const TRANSPORT_CATALOG_REFRESH: Readonly<Record<string, string>> = Object.freeze({
+  [DEVIN_ROUTE]: 'ensureDevinCatalog',
+})
+
 const TRANSPORT_CATALOG_EXPORTS: Readonly<Record<string, string>> = Object.freeze({
   [DEVIN_ROUTE]: 'devinCatalogModels',
   'google-gemini-cli': 'googleGeminiCliCatalogModels',
@@ -2733,10 +2746,14 @@ export class KeysManagerService {
    * polls through `accountAttempt`, so the client reuses that dialog; an
    * authorized outcome is terminal here (the flow has already committed).
    */
-  async beginTransportLogin(route: string): Promise<AccountAttemptView> {
+  async beginTransportLogin(route: string, method?: string): Promise<AccountAttemptView> {
     if (typeof route !== 'string' || route.length === 0) throw new TypeError('provider is required')
     const flow = this.transportFlowFor(route)
     if (flow === undefined) throw new Error(`Provider "${route}" offers no transport sign-in flow`)
+    // The flow owns its method ids; a caller may pick one, and an unknown id is
+    // refused instead of silently falling back to the first.
+    const methodId = method === undefined ? transportMethodOf(flow) : flow.methods.find(entry => entry.id === method)?.id
+    if (methodId === undefined) throw new Error(`Provider "${route}" offers no sign-in method "${String(method)}"`)
     const pendingId = this.transportInFlight.get(route)
     if (pendingId !== undefined) {
       const pendingAttempt = this.loginAttempts.get(pendingId)
@@ -2763,7 +2780,7 @@ export class KeysManagerService {
     // method; the method id is the flow's own, not the pi-ai `'oauth'` literal.
     const settled = this.ctx.authorization!.begin({
       key: flow.key,
-      method: transportMethodOf(flow)!,
+      method: methodId,
       interaction: this.attemptInteraction(attempt),
       signal: attempt.controller.signal,
     }).then(
@@ -2878,6 +2895,34 @@ export class KeysManagerService {
   }
 
   /**
+   * Ask a transport route to refresh its account-scoped catalog.
+   *
+   * The transports package owns the read (the grant, the RPC, the codec), so
+   * this only probes its export and hands over the credential seam. Never
+   * throws: a model picker with a stale catalog is better than one that fails
+   * to open, and the next open retries.
+   *
+   * @param route - the transport route id.
+   */
+  private async refreshTransportCatalog(route: string): Promise<void> {
+    const exportName = Object.hasOwn(TRANSPORT_CATALOG_REFRESH, route) ? TRANSPORT_CATALOG_REFRESH[route] : undefined
+    if (exportName === undefined) return
+    const probe = (transportModule as Record<string, unknown>)[exportName]
+    const records = this.credentialRecords()
+    if (typeof probe !== 'function' || records === undefined) return
+    try {
+      // The RPC is slow by design (a full account catalog takes seconds), so a
+      // bounded wait keeps the picker responsive; the package's own cache keeps
+      // a later read from starting over.
+      await (probe as (records: unknown, options: unknown) => Promise<unknown>)(records, {
+        signal: AbortSignal.timeout(20_000),
+      })
+    } catch (error) {
+      this.warn(`transport catalog refresh for ${route} failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
    * Remote: read one transport route's catalog and configured allow-list.
    *
    * @remarks
@@ -2888,6 +2933,10 @@ export class KeysManagerService {
    */
   async transportModels(route: string): Promise<TransportModelsView> {
     this.assertTransportRoute(route)
+    // A credential-scoped catalog is read from the account before the picker
+    // renders; a failure keeps the committed table (the row still lists what
+    // the route can serve without the discovery answer).
+    await this.refreshTransportCatalog(route)
     const configured = this.transportModelIds(route)
     let missingCatalog = false
     const catalog = transportCatalogOf(route, missing => {

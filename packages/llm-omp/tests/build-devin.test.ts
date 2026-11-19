@@ -97,6 +97,9 @@ describe('devin drift gate', () => {
     for (const key of [
       '@oh-my-pi/pi-ai/src/providers/devin.ts',
       '@oh-my-pi/pi-ai/src/providers/connect-frame.ts',
+      // The discovery half and the family collapse its normalize step applies.
+      '@oh-my-pi/pi-catalog/src/discovery/devin.ts',
+      '@oh-my-pi/pi-catalog/src/compat/collapse.ts',
       '@oh-my-pi/pi-catalog/src/discovery/devin-proto.ts',
       '@oh-my-pi/pi-catalog/src/discovery/protobuf.ts',
       '@oh-my-pi/pi-catalog/src/wire/devin.ts',

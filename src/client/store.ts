@@ -306,8 +306,8 @@ export function createStore(ctx: ClientContext, options: ClientStoreOptions = {}
         return { ok: false, error: messageOf(error) }
       }
     },
-    beginTransportLogin(route: string): Promise<AccountAttemptResult> {
-      return send('beginTransportLogin', { provider: route }, attemptOutcome)
+    beginTransportLogin(route: string, method?: string): Promise<AccountAttemptResult> {
+      return send('beginTransportLogin', method === undefined ? { provider: route } : { provider: route, method }, attemptOutcome)
     },
     activateTransportAccount(route: string): Promise<ActionOutcome> {
       return send('activateTransportAccount', { provider: route }, stateOutcome)
