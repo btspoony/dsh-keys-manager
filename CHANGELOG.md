@@ -2,6 +2,18 @@
 
 All notable changes to dsh-keys-manager are documented here. Assembled from `.changes/unreleased/` fragments by the release-prep workflow.
 
+## [0.4.3] - 2026-11-19
+
+### Fixed
+
+- `pnpm run build` now builds every `packages/*` component first, so a root-only build can no longer leave a stale `dsh-llm-omp-transports` artifact in place while the root looks current — a transport route kept serving the previous version's sign-in methods and model catalog.
+
+### Added
+
+- Devin now lists the account's own models instead of a single seed row: a signed-in route discovers them through `GetCliModelConfigs` (cached five minutes, seed kept when the read fails).
+- Devin sign-in offers a second method that imports the seat key the official Devin CLI already stores, so a machine already signed in with `devin auth login` needs no browser.
+- The Devin account row renders one sign-in button per method the transport flow declares, and the model picker refreshes an account-scoped catalog before it renders.
+
 ## [0.4.2] - 2026-11-18
 
 ### Changed
