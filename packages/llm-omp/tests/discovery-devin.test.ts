@@ -163,6 +163,31 @@ describe('devin account catalog', () => {
     expect(calls).toBe(1)
   })
 
+  it('bounds a throwing read (network, timeout, unloadable artifact) the same way', async () => {
+    let calls = 0
+    const throwing = (async () => {
+      calls += 1
+      throw new Error('connect ECONNREFUSED')
+    }) as unknown as typeof globalThis.fetch
+    const records = store({ access: 'throwing.account', expires: FAR_FUTURE })
+    const now = (): number => 1_700_000_500_000
+
+    expect(await devinRows(records, { fetch: throwing, discover: fetchDevinModels, now })).toEqual(DEVIN_MODELS)
+    expect(await devinRows(records, { fetch: throwing, discover: fetchDevinModels, now })).toEqual(DEVIN_MODELS)
+    expect(calls).toBe(1)
+  })
+
+  it('serves the seed when the credential store itself cannot be read', async () => {
+    const unreadable: CredentialRecordsLike = {
+      readRecord: async () => {
+        throw new Error('IO error')
+      },
+      modifyRecord: async (_key, mutate) => mutate(undefined),
+    }
+
+    await expect(devinRows(unreadable)).resolves.toEqual(DEVIN_MODELS)
+  })
+
   it('serves the seed, never the previous account, after a switch or sign-out', async () => {
     const serving = (async () =>
       new Response(catalogBody([config('swe-2-high', 'SWE-2 High')]))) as unknown as typeof globalThis.fetch

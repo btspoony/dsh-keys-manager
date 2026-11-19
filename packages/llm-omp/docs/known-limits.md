@@ -65,10 +65,10 @@ repository root docs.
   route replaces it with the answer of `GetCliModelConfigs` for the signed-in
   grant. The answer is served for five minutes; a failed read is retried only
   after that window, so a down endpoint costs one attempt per window instead of
-  one per turn. A signed-out route, a switched account, a failed read and an
-  empty answer all serve the seed — never another account's rows — so the route
-  neither publishes an empty catalog nor fails a turn because discovery was
-  slow.
+  one per turn. A failed read keeps that account's last good roster (the seed
+  when none was ever published); a signed-out route and a switched account serve
+  the seed — never another account's rows — so the route neither publishes an
+  empty catalog nor fails a turn because discovery was slow.
 
 ## Google clients
 

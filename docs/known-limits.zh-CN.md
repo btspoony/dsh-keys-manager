@@ -34,7 +34,7 @@ Keys Manager 插件当前的设计边界：
 - 只要授权的 `access` 令牌可用且该路由能使用它，状态就是 `active`：要么 `expires` 在未来，要么仅在 `devin` 上完全没有 `expires`（其解析器接受的静态 bearer 形态）。Devin 的 CLI 导入写入的正是这种记录（导入的席位密钥既不失效也不刷新），而浏览器登录仍从令牌推导有效期；这类行不显示有效期与倒计时。Cursor 解析器需要带有效期的授权，因此同样的记录出现在 `cursor` 上会显示 `needs-reauth`。若 `expires` 存在但无法读取，那是损坏的记录而非静态 bearer，路由会上报 `needs-reauth`。
 - 授权过期在 Cursor 与 Devin 上的后果不同：Devin 没有刷新令牌，过期后停止服务，直到重新登录；Cursor 在凭据 seam 上自动刷新并继续服务，只有刷新被拒或没有存刷新令牌时才停止。
 - Devin 提供两种登录方式：浏览器授权页 + 粘贴回调（本机没有监听端口），以及**直接导入官方 Devin CLI 已保存的席位密钥**（`devin auth login` → `$XDG_DATA_HOME/devin/credentials.toml`，其次 `~/.local/share`，再次 macOS 的 Library 路径），后者完全离线、无需浏览器。Windsurf 企业席位的独立登录流程未移植。
-- Devin 的模型目录是**按账号授权**的：插件内置表只有一行种子（`swe-1-6`），登录后由 `GetCliModelConfigs` 发现该账号的真实模型列表（结果服务五分钟，失败也只在窗口过后才重试）。未登录、切换账号、发现失败与返回空一律回落到种子——绝不沿用上一个账号的行——因此路由不会列出空列表，也不会因为发现变慢而让对话失败。
+- Devin 的模型目录是**按账号授权**的：插件内置表只有一行种子（`swe-1-6`），登录后由 `GetCliModelConfigs` 发现该账号的真实模型列表（结果服务五分钟，失败也只在窗口过后才重试）。发现失败时沿用该账号上一次成功的目录（从未成功过则为种子）；未登录与切换账号一律回落到种子——绝不沿用上一个账号的行——因此路由不会列出空列表，也不会因为发现变慢而让对话失败。
 - Cursor 与 Devin 两个客户端都是非官方实现，真实端点均未验证。它们的具体风险（厂商身份、ToS 风险、不转发图片、Devin 无刷新）见[传输包的已知限制](../packages/llm-omp/docs/known-limits.md)。
 - 两条 Google 路由共用一份生成的 `lib/omp/google.mjs` 产物，除此之外彼此独立：授权记录、账户行与模型目录都各自独立。其授权内容为 `{access, refresh, expires, projectId, email?}`，在凭据 seam 上刷新：刷新令牌仍有效时，过期的 access 令牌会自动续期；刷新被拒则该路由停止服务，直到重新登录。
 - Google 登录的监听器只在本机：`node:http` 绑定在 `127.0.0.1` 上（`google-gemini-cli` 用 `8085` 的 `/oauth2callback`，`google-antigravity` 用 `51121` 的 `/oauth-callback`），默认端口被占用时回落到其它空闲端口，中止或超时会关闭监听器。本机之外无法访问该端口。粘贴路径——浏览器最终落到的完整地址，或 `code#state`——与监听器并行作为第二条登录路径，因此重定向被阻断或不可达时仍能完成登录。

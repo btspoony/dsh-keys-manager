@@ -127,11 +127,11 @@ Current design boundaries of the Keys Manager plugin:
   seats have their own login flow, which is not ported.
 - Devin's model roster is **credential-scoped**: the committed table carries one
   seed row (`swe-1-6`), and a sign-in lets the route discover the account's real
-  models through `GetCliModelConfigs` (served for five minutes; a failure is
-  retried only after that window). A signed-out route, a switched account, a
-  failed read and an empty answer all serve the seed — never the previous
-  account's rows — so the route never lists nothing and never fails a turn
-  because discovery was slow.
+  models through `GetCliModelConfigs` (served for five minutes; a failed read is
+  retried only after that window). A failed read keeps that account's last good
+  roster (the seed when none was ever published); a signed-out route and a
+  switched account serve the seed — never the previous account's rows — so the
+  route never lists nothing and never fails a turn because discovery was slow.
 - The Cursor and Devin clients are unofficial and their live endpoints are
   unverified. Their specifics (vendor identities, ToS risk, no image input, no
   Devin refresh) are in

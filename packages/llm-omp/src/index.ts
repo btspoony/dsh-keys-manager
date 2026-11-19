@@ -277,8 +277,8 @@ export function devinCatalogModels(): TransportCatalogModel[] {
  *
  * @param credentials - the record half of the credentials seam.
  * @param options - fetch/timeout/clock seams.
- * @returns the roster now served: the account's models, or the committed seed
- *   while the route has no usable grant.
+ * @returns the roster now served: the account's discovered models, its last good
+ *   roster while a read is failing, or the committed seed before any read.
  */
 export function ensureDevinCatalog(
   credentials: CredentialRecordsLike,
