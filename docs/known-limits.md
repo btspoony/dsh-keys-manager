@@ -108,17 +108,30 @@ Current design boundaries of the Keys Manager plugin:
   stay registered instead of hiding (fail-open, logged).
 - A stored grant is `active` when its `access` token is usable and its route
   can serve it: a dated `expires` in the future, or — on `devin` only — no
-  `expires` at all, the static-bearer shape its resolver accepts. No shipped
-  flow writes such a record today (Devin derives an expiry from the token), and
-  it shows no expiry time and no countdown. The Cursor resolver needs a dated
-  grant, so the
-  same record on `cursor` reports `needs-reauth`. An `expires` that is present
-  but unreadable is a corrupt record, not a static bearer, and the route reports
-  `needs-reauth`.
+  `expires` at all, the static-bearer shape its resolver accepts. Devin's CLI
+  import writes exactly that record (the imported seat key neither expires nor
+  refreshes), while its browser sign-in still derives an expiry from the token;
+  such a row shows no expiry time and no countdown. The Cursor resolver needs a
+  dated grant, so the same record on `cursor` reports `needs-reauth`. An
+  `expires` that is present but unreadable is a corrupt record, not a static
+  bearer, and the route reports `needs-reauth`.
 - An expired grant does not fail the same way on Cursor and Devin: Devin has no
   refresh token, so it stops until you sign in again; Cursor refreshes on the
   credential seam and keeps serving, and stops only when the refresh is
   rejected or no refresh token is stored.
+- Devin offers two ways to sign in: the browser authorize page plus a pasted
+  callback (nothing listens on the loopback port), and **importing the seat key
+  the official Devin CLI already stores** (`devin auth login` →
+  `$XDG_DATA_HOME/devin/credentials.toml`, then `~/.local/share`, then the macOS
+  Library path). The import is offline and needs no browser. Windsurf Enterprise
+  seats have their own login flow, which is not ported.
+- Devin's model roster is **credential-scoped**: the committed table carries one
+  seed row (`swe-1-6`), and a sign-in lets the route discover the account's real
+  models through `GetCliModelConfigs` (served for five minutes; a failed read is
+  retried only after that window). A failed read keeps that account's last good
+  roster (the seed when none was ever published); a signed-out route and a
+  switched account serve the seed — never the previous account's rows — so the
+  route never lists nothing and never fails a turn because discovery was slow.
 - The Cursor and Devin clients are unofficial and their live endpoints are
   unverified. Their specifics (vendor identities, ToS risk, no image input, no
   Devin refresh) are in

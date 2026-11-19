@@ -134,7 +134,9 @@ interface Metafile {
 /** The esbuild export each entry is expected to expose, per artifact name. */
 const EXPORTS: Readonly<Record<string, readonly string[]>> = {
   cursor: ['streamCursor'],
-  devin: ['streamDevin'],
+  // The chat stream plus the account-scoped catalog read (the route's roster
+  // is credential-scoped, so discovery is part of the artifact).
+  devin: ['fetchDevinModels', 'streamDevin'],
   google: ['streamGoogleGeminiCli'],
   'factory-droid': ['streamFactoryDroid'],
   'gitlab-duo-agent': ['streamGitLabDuoWorkflow'],

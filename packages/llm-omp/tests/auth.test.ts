@@ -771,7 +771,10 @@ describe('llm-omp-transports registration', () => {
       {
         key: 'llm-omp-transports/devin',
         label: 'Devin',
-        methods: [{ id: 'oauth', label: 'Sign in with Devin' }],
+        methods: [
+          { id: 'oauth', label: 'Sign in with Devin' },
+          { id: 'devin-cli', label: 'Import from Devin CLI' },
+        ],
       },
       {
         key: 'llm-omp-transports/google-gemini-cli',

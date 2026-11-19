@@ -463,6 +463,10 @@ async function main() {
     // The second route's protocol surface: provider, Connect envelope, codecs,
     // wire identity constants and the declarative auth rule.
     '@oh-my-pi/pi-ai/src/providers/devin.ts': join(piAiRoot, 'src/providers/devin.ts'),
+    // The account-scoped catalog read the route's roster comes from, plus the
+    // family collapse it applies: both are now inlined into the artifact.
+    '@oh-my-pi/pi-catalog/src/discovery/devin.ts': join(piCatalogRoot, 'src/discovery/devin.ts'),
+    '@oh-my-pi/pi-catalog/src/compat/collapse.ts': join(piCatalogRoot, 'src/compat/collapse.ts'),
     '@oh-my-pi/pi-ai/src/providers/connect-frame.ts': join(piAiRoot, 'src/providers/connect-frame.ts'),
     '@oh-my-pi/pi-catalog/src/discovery/devin-proto.ts': join(piCatalogRoot, 'src/discovery/devin-proto.ts'),
     '@oh-my-pi/pi-catalog/src/discovery/protobuf.ts': join(piCatalogRoot, 'src/discovery/protobuf.ts'),

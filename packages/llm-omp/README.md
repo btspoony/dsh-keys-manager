@@ -59,15 +59,19 @@ package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
   the call, finishes the turn `toolUse`, and DSH executes it; the result is
   replayed from history on the next request. Unlike Cursor, no call is
   transport-resolved, so nothing is filtered from the handoff.
-- **Sign-in** — yes, by pasting the callback. The pinned omp login is a
-  declarative `oauth-code` rule whose loopback listener is Bun-only; this
-  package registers the `llm-omp-transports/devin` flow, opens the authorize
-  page, and asks for the address the browser landed on (or just the code).
-  There is **no refresh** (`refresh "none"`): an expired grant demands a new
-  sign-in.
-- **Models** — from the pinned catalog: the Devin slice of
-  `@oh-my-pi/pi-catalog@18.18.8` (2 rows: `swe-1-6`, `swe-1-6-fast`) is
-  generated into `src/catalog/devin.ts` and served without a network call.
+- **Sign-in** — two methods. Either paste the callback: the pinned omp login is
+  a declarative `oauth-code` rule whose loopback listener is Bun-only, so this
+  package opens the authorize page and asks for the address the browser landed
+  on (or just the code). Or import the seat key the official Devin CLI already
+  stores (`devin auth login` → `credentials.toml`), which is offline and needs
+  no browser. There is **no refresh** (`refresh "none"`): an expired grant
+  demands a new sign-in, and an imported key is a static bearer.
+- **Models** — the committed table is the pinned catalog's one-row seed
+  (`swe-1-6`); Devin's roster is credential-scoped, so a signed-in route
+  replaces it with `GetCliModelConfigs` for that account. The answer is served
+  for five minutes (a failure included); a failed read keeps that account's last
+  good roster, and a signed-out route or a switched account serves the seed
+  rather than the previous account's rows.
 - **Route** — `devin`, declared configurable so the Models page has a
   `providers.devin` profile with an allow-list.
 - **Images** — not yet, same as Cursor: text-only input, image blocks refused

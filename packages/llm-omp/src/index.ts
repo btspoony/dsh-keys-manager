@@ -59,7 +59,6 @@ import { GitLabAuthError, loginGitLab, loginGitLabDuo } from './gitlab/auth.js'
 import type { GitLabFetch } from './gitlab/auth.js'
 import { createGitLabDuoAccess, createGitLabDuoAgentAccess } from './gitlab/credentials.js'
 import { CURSOR_MODELS } from './catalog/cursor.js'
-import { DEVIN_MODELS } from './catalog/devin.js'
 import { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 import { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
 import { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'
@@ -71,7 +70,10 @@ import { CURSOR_CREDENTIAL_KEY, createCursorAccess } from './cursor/credentials.
 import type { CredentialRecordsLike } from './cursor/credentials.js'
 import { DevinAuthError, loginDevin } from './devin/auth.js'
 import type { DevinFetch, DevinGrant } from './devin/auth.js'
+import { readDevinCliCredentials } from './devin/cli-credentials.js'
 import { DEVIN_CREDENTIAL_KEY, createDevinAccess } from './devin/credentials.js'
+import { currentDevinRows, devinRows } from './devin/discovery.js'
+import type { DevinCatalogOptions } from './devin/discovery.js'
 import { loginGoogle } from './google/auth.js'
 import type { GoogleFetch, GoogleLoginResult } from './google/auth.js'
 import { GoogleAuthError } from './google/callback-listener.js'
@@ -256,7 +258,33 @@ export function cursorCatalogModels(): TransportCatalogModel[] {
  * route advertises.
  */
 export function devinCatalogModels(): TransportCatalogModel[] {
-  return DEVIN_MODELS.map(row => ({ id: row.id, name: row.name }))
+  // The roster the route serves now: the account's discovered models once a
+  // sign-in has been read, else the committed seed. The picker calls
+  // {@link ensureDevinCatalog} first, so this normally reports the live table.
+  return currentDevinRows().map(row => ({ id: row.id, name: row.name }))
+}
+
+/**
+ * Make sure the Devin route's account-scoped roster has been read.
+ *
+ * @remarks
+ * Devin's model table is per account, so the committed catalog only carries the
+ * seed; this reads the real one (`GetCliModelConfigs`) with the stored grant and
+ * replaces what {@link devinCatalogModels} and the adapter serve. The keys
+ * manager calls it before rendering the model picker; the adapter's own reads
+ * use the same cache, and the shared five-minute TTL keeps a picker reopened
+ * inside that window from paying for the RPC again.
+ *
+ * @param credentials - the record half of the credentials seam.
+ * @param options - fetch/timeout/clock seams.
+ * @returns the roster now served: the account's discovered models, its last good
+ *   roster while a read is failing, or the committed seed before any read.
+ */
+export function ensureDevinCatalog(
+  credentials: CredentialRecordsLike,
+  options: DevinCatalogOptions = {},
+): Promise<readonly TransportCatalogModel[]> {
+  return devinRows(credentials, options).then(rows => rows.map(row => ({ id: row.id, name: row.name })))
 }
 
 /**
@@ -508,6 +536,8 @@ export function beginCursorSignIn(
 export interface DevinFlowOptions {
   readonly fetch?: DevinFetch
   readonly now?: () => number
+  /** Where the CLI-import method reads the seat key; defaults to the real probe. */
+  readonly readCliCredentials?: () => Promise<string>
 }
 
 /**
@@ -524,8 +554,36 @@ export function devinAuthorizationFlow(options: DevinFlowOptions = {}): CursorAu
   return {
     key: DEVIN_CREDENTIAL_KEY,
     label: 'Devin',
-    methods: [{ id: 'oauth', label: 'Sign in with Devin' }],
+    // Devin CLI already holds a seat key for the same account and the same
+    // API hosts, so adopting it is the one sign-in that needs no browser.
+    // Windsurf Enterprise seats use a different flow entirely (a Windsurf
+    // authorize page), which this plugin does not implement.
+    methods: [
+      { id: 'oauth', label: 'Sign in with Devin' },
+      { id: 'devin-cli', label: 'Import from Devin CLI' },
+    ],
     async run(session) {
+      if (session.method === 'devin-cli') {
+        let access: string
+        try {
+          const read = options.readCliCredentials ?? readDevinCliCredentials
+          access = (await read()).trim()
+          if (access === '') throw new DevinAuthError('the Devin CLI credential is empty')
+        } catch (cause) {
+          if (session.signal.aborted) throw cause
+          throw LlmError.fromFailure(
+            {
+              message: `llm-omp-transports: Devin CLI credential import failed — ${cause instanceof Error ? cause.message : String(cause)}`,
+              code: 'AUTH_FAILED',
+            },
+            { cause },
+          )
+        }
+        // The seat key neither expires nor refreshes, so the grant is a static
+        // bearer: the resolver serves it until the row is removed.
+        await session.commit({ kind: 'grant', payload: { access } })
+        return
+      }
       let grant: DevinGrant
       try {
         grant = await loginDevin({
@@ -1037,6 +1095,9 @@ export function createDevinAdapter(credentials: CredentialRecordsLike, models?: 
   return new OmpDevinAdapter({
     access: createDevinAccess(credentials),
     transport: bundledTransport('devin', 'streamDevin', 'Devin'),
+    // The account's own roster, not the seed: the source caches and never
+    // rejects, so a failed read keeps the previous table in service.
+    rows: () => devinRows(credentials),
     ...(models === undefined ? {} : { models }),
   })
 }
@@ -1304,6 +1365,8 @@ export {
   ANTIGRAVITY_CLI_ROUTE,
   GOOGLE_GEMINI_CLI_ROUTE,
 } from './adapter.js'
+export { DEVIN_MODELS } from './catalog/devin.js'
+export { currentDevinRows } from './devin/discovery.js'
 export { FACTORY_DROID_MODELS } from './catalog/factory-droid.js'
 export { GITLAB_DUO_MODELS } from './catalog/gitlab-duo.js'
 export { GITLAB_DUO_AGENT_MODELS } from './catalog/gitlab-duo-agent.js'

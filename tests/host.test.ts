@@ -12109,9 +12109,11 @@ test('the endpoint registry exposes the oauth account invocations', async () => 
     assert.deepEqual(params('removeAccount'), ['provider', 'accountId'])
     assert.deepEqual(params('testKey'), ['provider', 'keyId'])
     assert.deepEqual(params('quotaRefresh'), ['provider'])
-    // Transport routes are addressed by route only; the attempt is polled
-    // through the same accountAttempt record the pi-ai dialog uses.
-    assert.deepEqual(params('beginTransportLogin'), ['provider'])
+    // Transport routes are addressed by route, plus the flow's own method id
+    // when the route offers more than one way in (Devin: browser, or the seat
+    // key its CLI already stores). The attempt is polled through the same
+    // accountAttempt record the pi-ai dialog uses.
+    assert.deepEqual(params('beginTransportLogin'), ['provider', 'method'])
     assert.deepEqual(params('activateTransportAccount'), ['provider'])
     assert.deepEqual(params('removeTransportAccount'), ['provider'])
     assert.deepEqual(params('transportModels'), ['provider'])
@@ -13786,7 +13788,10 @@ const TRANSPORT_FLOW = {
 const DEVIN_FLOW = {
   key: 'llm-omp-transports/devin',
   label: 'Devin',
-  methods: [{ id: 'oauth', label: 'Sign in with Devin' }],
+  methods: [
+    { id: 'oauth', label: 'Sign in with Devin' },
+    { id: 'devin-cli', label: 'Import from Devin CLI' },
+  ],
 }
 
 const CURSOR_SCOPE = 'llm-omp-transports/cursor'
@@ -13826,6 +13831,9 @@ test('lists the cursor transport account from its own grant record', async () =>
       id: 'cursor',
       scope: CURSOR_SCOPE,
       displayName: 'Cursor',
+      // The flow's own methods travel with the row so the card can offer one
+      // button per way in, instead of assuming the pi-ai `oauth` literal.
+      methods: [{ id: 'oauth', label: 'Sign in with Cursor' }],
       email: 'dev@cursor.example',
       accountId: 'user_1',
       expiresAt: payload.expires,
@@ -15321,6 +15329,30 @@ test('a superseded cleanup cannot clear the owner of a projection removed during
     h.credentials.raw.readRecord = realRead
     await testOne?.catch(() => undefined)
     await testTwo?.catch(() => undefined)
+    await h.close()
+  }
+})
+
+test('the transport sign-in starts the flow method the caller named', async () => {
+  // Devin offers two ways in, and the row renders one button per method. The
+  // host must hand the chosen id to the seam instead of always taking the first,
+  // and must refuse an id the flow does not declare.
+  const h = await harness([...piAiFlows(), TRANSPORT_FLOW, DEVIN_FLOW])
+  try {
+    const imported = await h.service.beginTransportLogin('devin', 'devin-cli')
+    assert.equal(imported.status, 'pending')
+    assert.equal(h.authorization.beganRequests.at(-1)!.method, 'devin-cli')
+    // The attempt is single-flight per route, so settle it before the refusal.
+    h.authorization.pending!.resolve({ status: 'cancelled' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    await assert.rejects(() => h.service.beginTransportLogin('devin', 'nope'), /no sign-in method/)
+    // No method at all keeps the flow's own first entry (the route's primary).
+    await h.service.beginTransportLogin('devin')
+    assert.equal(h.authorization.beganRequests.at(-1)!.method, 'oauth')
+    h.authorization.pending!.resolve({ status: 'cancelled' })
+    await new Promise(resolve => setTimeout(resolve, 0))
+  } finally {
     await h.close()
   }
 })

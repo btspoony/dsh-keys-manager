@@ -7,7 +7,7 @@
     "cursor": {
       "entry": "lib/omp/cursor.mjs",
       "metafile": "lib/omp/cursor.metafile.json",
-      "moduleCount": 142,
+      "moduleCount": 143,
       "bytes": 1490160,
       "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
@@ -44,8 +44,8 @@
     "devin": {
       "entry": "lib/omp/devin.mjs",
       "metafile": "lib/omp/devin.metafile.json",
-      "moduleCount": 131,
-      "bytes": 1352408,
+      "moduleCount": 138,
+      "bytes": 1449211,
       "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
         "pi-utils": [
@@ -66,6 +66,7 @@
           "parseJsonWithRepair",
           "parseStreamingJsonThrottled",
           "sanitizeText",
+          "slugify",
           "stringifyJson",
           "structuredCloneJSON",
           "wrapFetchForExtraCa"
@@ -79,7 +80,7 @@
     "google": {
       "entry": "lib/omp/google.mjs",
       "metafile": "lib/omp/google.metafile.json",
-      "moduleCount": 145,
+      "moduleCount": 146,
       "bytes": 1392825,
       "piUtilsShim": "scripts/omp-shim/pi-utils-google.ts",
       "shimImports": {
@@ -164,7 +165,7 @@
       "entry": "lib/omp/gitlab-duo.mjs",
       "metafile": "lib/omp/gitlab-duo.metafile.json",
       "moduleCount": 262,
-      "bytes": 2851384,
+      "bytes": 2851404,
       "piUtilsShim": "scripts/omp-shim/pi-utils-gitlab-duo.ts",
       "shimImports": {
         "pi-utils": [
@@ -212,7 +213,7 @@
     "gitlab-duo-agent": {
       "entry": "lib/omp/gitlab-duo-agent.mjs",
       "metafile": "lib/omp/gitlab-duo-agent.metafile.json",
-      "moduleCount": 125,
+      "moduleCount": 126,
       "bytes": 1076185,
       "piUtilsShim": "scripts/omp-shim/pi-utils.ts",
       "shimImports": {
@@ -245,7 +246,7 @@
     "antigravity-cli": {
       "entry": "lib/omp/antigravity-cli.mjs",
       "metafile": "lib/omp/antigravity-cli.metafile.json",
-      "moduleCount": 100,
+      "moduleCount": 101,
       "bytes": 1120298,
       "piUtilsShim": "scripts/omp-shim/pi-utils-antigravity.ts",
       "bunGlobalShim": "scripts/omp-shim/bun-global-antigravity.ts",
@@ -285,7 +286,7 @@
     "antigravity-login": {
       "entry": "lib/omp/antigravity-login.mjs",
       "metafile": "lib/omp/antigravity-login.metafile.json",
-      "moduleCount": 70,
+      "moduleCount": 71,
       "bytes": 923773,
       "piUtilsShim": "scripts/omp-shim/pi-utils-antigravity.ts",
       "bunGlobalShim": "scripts/omp-shim/bun-global-antigravity.ts",
@@ -373,6 +374,8 @@
     "@oh-my-pi/pi-utils/src/json-parse.ts": "sha256:9a5dc5dd2a180fae6066ada73bde5cf3652c1853cf249ca862d60a6631538893",
     "@oh-my-pi/pi-ai/src/providers/cursor-external-tool-handoff.md": "sha256:620487ffda8ccfb39fa60700d9aae63a752c8f4359cf0939ddb125734d668b5d",
     "@oh-my-pi/pi-ai/src/providers/devin.ts": "sha256:ee91a9e7bce78a14df6e59da63da1f362126774102adbd6e15eb4d9ae26e113f",
+    "@oh-my-pi/pi-catalog/src/discovery/devin.ts": "sha256:46f9a4f2631acac19500fb8c34ec20196500ee2a1d1716f26820403e77d0d60c",
+    "@oh-my-pi/pi-catalog/src/compat/collapse.ts": "sha256:a9f4df3919a225673b211fc2312bf6050fdc08e15e7aabf80fda30a86b30df69",
     "@oh-my-pi/pi-ai/src/providers/connect-frame.ts": "sha256:5811467269cf1e4d2309a723164da605b76cf135326a0b1e618d17af6e6b11ab",
     "@oh-my-pi/pi-catalog/src/discovery/devin-proto.ts": "sha256:801b7469300585eeb2b6c9ce6b2d95b94b64d89c0db5ce4cf370b8352da81062",
     "@oh-my-pi/pi-catalog/src/discovery/protobuf.ts": "sha256:aff266ce3d1375dcbedaca27cb2db35571e78f9d37424caaedc6ea46195383e5",

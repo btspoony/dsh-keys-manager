@@ -134,7 +134,7 @@ Providers the vendored pi-ai cannot speak are served by the companion
 | Route | Sign-in | Refresh | Model rows |
 |---|---|---|---|
 | `cursor` | browser page + poll | on the credential seam | 123 |
-| `devin` | paste the landed callback URL | none — sign in again | 2 |
+| `devin` | paste the landed callback URL, or import the Devin CLI seat key | none — sign in again | 1 seed, then the account's roster |
 | `google-gemini-cli` | loopback `8085` + paste fallback | on the credential seam | 7 |
 | `google-antigravity` | loopback `51121` + paste fallback | on the credential seam | 22 |
 | `factory-droid` | WorkOS device code (URL + user code) | one refresh in a 60 s window, keeps `orgId`/`region` | 77 |
@@ -147,9 +147,9 @@ Providers the vendored pi-ai cannot speak are served by the companion
 - **Cursor** — streams text and reasoning and hands tool calls to DSH's tool
   loop; images are refused with a typed error. The client presents Cursor's
   vendor-internal OAuth identity.
-- **Devin** — no refresh: a static bearer whose expiry is derived from the token
-  (JWT `exp` minus five minutes, else one year), and without a readable expiry
-  the row shows `active` with a blank countdown column.
+- **Devin** — no refresh. The browser sign-in derives an expiry from the token
+  (JWT `exp` minus five minutes, else one year); the CLI import's seat key has
+  none, so that row is a static bearer with a blank countdown column.
 - **Google routes** — both share one generated `lib/omp/google.mjs` artifact yet
   keep separate grants, account rows and catalogs. The grant is
   `{access, refresh, expires, projectId, email?}`; sign-in resolves the Cloud

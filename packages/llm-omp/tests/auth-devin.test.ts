@@ -366,7 +366,62 @@ describe('devin authorization flow', () => {
 
     expect(flow.key).toBe(DEVIN_CREDENTIAL_KEY)
     expect(flow.label).toBe('Devin')
-    expect(flow.methods).toEqual([{ id: 'oauth', label: 'Sign in with Devin' }])
+    // Browser sign-in first (the route's primary action), then the seat key the
+    // official Devin CLI already stores — the one method that needs no browser.
+    expect(flow.methods).toEqual([
+      { id: 'oauth', label: 'Sign in with Devin' },
+      { id: 'devin-cli', label: 'Import from Devin CLI' },
+    ])
+  })
+
+  it('imports the Devin CLI seat key as a static bearer, touching no network', async () => {
+    const events: string[] = []
+    const committed: { kind: string; payload: Record<string, unknown> }[] = []
+    const { fetch, calls } = stubFetch(() => json({ token: 'unused' }))
+    const flow = devinAuthorizationFlow({ fetch, readCliCredentials: async () => 'sk-ws-seat-key' })
+
+    await flow.run({
+      method: 'devin-cli',
+      signal: new AbortController().signal,
+      notify: () => events.push('notify'),
+      prompt: async () => {
+        events.push('prompt')
+        return 'unused'
+      },
+      commit: async (record: { kind: 'grant'; payload: unknown }) => {
+        events.push('commit')
+        committed.push({ kind: record.kind, payload: record.payload as Record<string, unknown> })
+      },
+    })
+
+    // No page to open, nothing to paste, no exchange: the key is the grant.
+    expect(events).toEqual(['commit'])
+    expect(calls).toEqual([])
+    expect(committed).toEqual([{ kind: 'grant', payload: { access: 'sk-ws-seat-key' } }])
+  })
+
+  it('maps a failed CLI import to AUTH_FAILED and commits nothing', async () => {
+    const committed: unknown[] = []
+    const { fetch } = stubFetch(() => json({ token: 'unused' }))
+    const flow = devinAuthorizationFlow({
+      fetch,
+      readCliCredentials: async () => {
+        throw new Error('no Devin CLI credentials were found')
+      },
+    })
+
+    await expect(
+      flow.run({
+        method: 'devin-cli',
+        signal: new AbortController().signal,
+        notify: () => undefined,
+        prompt: async () => 'unused',
+        commit: async record => {
+          committed.push(record)
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'AUTH_FAILED' })
+    expect(committed).toEqual([])
   })
 
   it('maps a token-exchange failure to AUTH_FAILED and commits nothing', async () => {
