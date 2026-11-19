@@ -174,6 +174,11 @@ async function discoverRows(
 /**
  * Read the grant and refresh the roster, publishing or recording the outcome.
  *
+ * The forced re-read: unlike {@link devinRows} it ignores the TTL and reports a
+ * failure instead of absorbing it. The routine path (adapter reads, the model
+ * picker) goes through `devinRows`; this entry point exists for a caller that
+ * wants to know whether a read works, and the test suite drives it.
+ *
  * @param credentials - the record half of the credentials seam, for the grant.
  * @param options - fetch/timeout/clock seams.
  * @returns the roster now served (the seed when there is no usable grant).
@@ -218,8 +223,10 @@ export async function devinRows(
   try {
     grant = usableGrant(await credentials.readRecord(DEVIN_CREDENTIAL_KEY), now)
   } catch {
-    // A store that cannot be read is not the route's answer: this seam promises
-    // the seed, and the caller (a model list, a picker, a turn) keeps working.
+    // The store cannot say whose roster the slot holds, and the invariant is
+    // "this account or the seed": an unreadable store proves neither, so the
+    // published rows are dropped rather than attributed to whoever asks next.
+    forget()
     return currentDevinRows()
   }
   // The picker and the adapter both reach here, so the account check happens on

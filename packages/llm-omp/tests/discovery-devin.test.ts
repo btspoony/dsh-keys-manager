@@ -184,6 +184,16 @@ describe('devin account catalog', () => {
       },
       modifyRecord: async (_key, mutate) => mutate(undefined),
     }
+    // With a roster already published: an unreadable store cannot prove whose
+    // it is, so the slot is dropped instead of handed to the next caller.
+    const serving = (async () =>
+      new Response(catalogBody([config('swe-2-high', 'SWE-2 High')]))) as unknown as typeof globalThis.fetch
+    expect(
+      (await devinRows(store({ access: 'account.readable', expires: FAR_FUTURE }), {
+        fetch: serving,
+        discover: fetchDevinModels,
+      })).map(row => row.id),
+    ).toEqual(['swe-2-high'])
 
     await expect(devinRows(unreadable)).resolves.toEqual(DEVIN_MODELS)
   })
