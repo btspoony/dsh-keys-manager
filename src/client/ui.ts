@@ -987,7 +987,9 @@ function TransportAccountRow({ account, now }: TransportAccountRowProps): React.
               size: 'small',
               disabled: busy,
               onClick: () => void signIn(primary.id),
-              title: primary.label,
+              // Same localizer as the sibling methods: the flow's label is
+              // English, and this is the control's accessible name.
+              title: transportMethodLabel(primary, t),
             }, busy ? h(Icon, { name: 'refresh', size: 14, className: 'km-spin' }) : h(Icon, { name: 'refresh', size: 14 }),
               t(account.active ? 'accountReauth' : 'transportSignIn')),
             ...rest.map(method => h(Button, {
@@ -1025,6 +1027,12 @@ function TransportAccountRow({ account, now }: TransportAccountRowProps): React.
       onClose: () => setLogin(null),
     }) : null,
   )
+}
+
+/** Identity of the route's current sign-in, used to key the model picker. */
+function transportSignInKey(account: TransportAccountView | undefined): string {
+  if (account === undefined) return 'signed-out'
+  return `${account.status}:${account.accountId ?? account.email ?? account.scope}`
 }
 
 interface TransportModelsProps {
@@ -1463,7 +1471,15 @@ function ProviderCard({ provider, expanded, onToggle, now, transportAccount }: P
             transportAccount !== undefined
               ? h('div', { className: 'km-keys' }, h(TransportAccountRow, { account: transportAccount, now }))
               : h('div', { className: 'km-muted' }, t('transportProviderHint')),
-            h(TransportModels, { route: provider.provider }),
+            // The roster is credential-scoped, so a catalog read before a
+            // sign-in — or by the previous account — must not survive it. Keying
+            // the picker to the sign-in state remounts it on any change, which
+            // drops the stale list and its draft and makes the next open read
+            // again instead of pinning the signed-out seed as the allow-list.
+            h(TransportModels, {
+              key: `models:${provider.provider}:${transportSignInKey(transportAccount)}`,
+              route: provider.provider,
+            }),
           )
         : !managed ? h('div', { className: 'km-adopt' },
         h('div', { className: 'km-adopt-copy' },

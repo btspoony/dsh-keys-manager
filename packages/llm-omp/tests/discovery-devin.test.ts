@@ -147,6 +147,39 @@ describe('devin account catalog', () => {
     await expect(refreshDevinRows(records, { fetch: failing, discover: fetchDevinModels })).rejects.toThrow(/Devin/)
   })
 
+  it('does not retry a failed read before the five-minute window', async () => {
+    let calls = 0
+    const failing = (async () => {
+      calls += 1
+      return new Response('boom', { status: 500 })
+    }) as unknown as typeof globalThis.fetch
+    const records = store({ access: 'failing.account', expires: FAR_FUTURE })
+    const now = (): number => 1_700_000_000_000
+
+    // A down endpoint costs one attempt per window, not one per turn: the
+    // adapter reaches this on every listModels/resolveModel/stream.
+    expect(await devinRows(records, { fetch: failing, discover: fetchDevinModels, now })).toEqual(DEVIN_MODELS)
+    expect(await devinRows(records, { fetch: failing, discover: fetchDevinModels, now })).toEqual(DEVIN_MODELS)
+    expect(calls).toBe(1)
+  })
+
+  it('serves the seed, never the previous account, after a switch or sign-out', async () => {
+    const serving = (async () =>
+      new Response(catalogBody([config('swe-2-high', 'SWE-2 High')]))) as unknown as typeof globalThis.fetch
+    const accountA = store({ access: 'account.a', expires: FAR_FUTURE })
+    expect((await devinRows(accountA, { fetch: serving, discover: fetchDevinModels })).map(row => row.id)).toEqual([
+      'swe-2-high',
+    ])
+
+    // A different account whose read fails must not inherit A's roster.
+    const failing = (async () => new Response('boom', { status: 500 })) as unknown as typeof globalThis.fetch
+    const accountB = store({ access: 'account.b', expires: FAR_FUTURE })
+    expect(await devinRows(accountB, { fetch: failing, discover: fetchDevinModels })).toEqual(DEVIN_MODELS)
+
+    // Signing out drops the slot as well: the route sells what it can prove.
+    expect(await devinRows(store(), { fetch: failing, discover: fetchDevinModels })).toEqual(DEVIN_MODELS)
+  })
+
   it('refuses an empty catalog instead of publishing an empty route', async () => {
     const empty = (async () => new Response(catalogBody([]))) as unknown as typeof globalThis.fetch
 

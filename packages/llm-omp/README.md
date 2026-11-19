@@ -68,8 +68,10 @@ package imports nothing from `@oh-my-pi/*` or `bun:*` at runtime.
   demands a new sign-in, and an imported key is a static bearer.
 - **Models** — the committed table is the pinned catalog's one-row seed
   (`swe-1-6`); Devin's roster is credential-scoped, so a signed-in route
-  replaces it with `GetCliModelConfigs` for that account (cached five minutes,
-  seed on failure).
+  replaces it with `GetCliModelConfigs` for that account. The answer is served
+  for five minutes (a failure included), and a signed-out route, a switched
+  account or a failed read serves the seed rather than the previous account's
+  rows.
 - **Route** — `devin`, declared configurable so the Models page has a
   `providers.devin` profile with an allow-list.
 - **Images** — not yet, same as Cursor: text-only input, image blocks refused

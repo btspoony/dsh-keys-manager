@@ -63,9 +63,12 @@ repository root docs.
 - **The model roster is discovered per account.** Devin's catalog is
   credential-scoped, so the committed table carries the seed (`swe-1-6`) and the
   route replaces it with the answer of `GetCliModelConfigs` for the signed-in
-  grant (cached for five minutes). A failed, empty or unauthenticated read keeps
-  the seed: the route never publishes an empty catalog and never fails a turn
-  because discovery was slow.
+  grant. The answer is served for five minutes; a failed read is retried only
+  after that window, so a down endpoint costs one attempt per window instead of
+  one per turn. A signed-out route, a switched account, a failed read and an
+  empty answer all serve the seed — never another account's rows — so the route
+  neither publishes an empty catalog nor fails a turn because discovery was
+  slow.
 
 ## Google clients
 

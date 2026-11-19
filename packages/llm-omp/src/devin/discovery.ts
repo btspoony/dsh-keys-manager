@@ -9,20 +9,24 @@
  * reading that RPC through the bundled artifact (the published package may not
  * import `@oh-my-pi/*` at runtime).
  *
- * The discovered rows are held in one module-level slot, so the adapter's
- * `listModels` and the keys-manager's model picker see the same roster without
- * the host having to route it through a service. An absent, failed or expired
- * read falls back to the committed seed: a route that cannot list its account's
- * models must still serve the one model it can prove.
+ * The discovered rows live in one module-level slot keyed by the account they
+ * were read for, so the adapter's `listModels` and the keys-manager's model
+ * picker see the same roster without the host routing it through a service.
+ * The fallback is the committed seed, never another account's rows: a signed-out
+ * route, a switched account, a failed read and the window right after a failure
+ * all answer the seed, and a failed read is not retried before the TTL expires
+ * (a dead endpoint must not cost one doomed RPC per turn).
  *
  * @module dsh-llm-omp-transports/devin/discovery
  */
+import { createHash } from 'node:crypto'
+
 import { DEVIN_MODELS } from '../catalog/devin.js'
 import type { DevinModelRow, OmpDevinDiscoveredModel, OmpDevinDiscoveryOptions } from '../omp.js'
 import { DEVIN_CREDENTIAL_KEY, readDevinGrant } from './credentials.js'
 import type { CredentialRecordsLike } from '../cursor/credentials.js'
 
-/** How long a discovered roster is served before the next read asks Devin again. */
+/** How long a discovered roster — or a failed read — is trusted before the next ask. */
 const TTL_MS = 5 * 60 * 1000
 
 /** The discovery half of the bundled artifact (also the tests' seam). */
@@ -40,14 +44,32 @@ export interface DevinCatalogOptions {
   readonly discover?: DiscoverDevinModels
 }
 
-/** The roster currently served: the last good discovery, else the committed seed. */
-let served: { readonly rows: readonly DevinModelRow[]; readonly at: number } | undefined
-/** The read in flight, so concurrent callers share one RPC. */
-let inFlight: Promise<readonly DevinModelRow[]> | undefined
+/** The roster a successful read published, and the account it belongs to. */
+let served: { readonly rows: readonly DevinModelRow[]; readonly at: number; readonly account: string } | undefined
+/** When the last read for an account failed, so the TTL bounds a dead endpoint too. */
+let failed: { readonly at: number; readonly account: string } | undefined
+/** The read in flight, keyed by account, so concurrent callers share one RPC. */
+let inFlight: { readonly account: string; readonly promise: Promise<readonly DevinModelRow[]> } | undefined
+
+/**
+ * An opaque per-account cache key.
+ *
+ * A digest, not the token: the slot has to recognize "the same account" across
+ * turns without keeping a second copy of a live credential around.
+ */
+function accountKey(access: string): string {
+  return createHash('sha256').update(access).digest('hex').slice(0, 16)
+}
 
 /** The rows this route serves right now: a discovery result, or the seed. */
 export function currentDevinRows(): readonly DevinModelRow[] {
-  return served?.rows ?? DEVIN_MODELS
+  return served === undefined ? DEVIN_MODELS : served.rows
+}
+
+/** Forget the published roster and the failure mark (sign-out, account switch). */
+function forget(): void {
+  served = undefined
+  failed = undefined
 }
 
 /**
@@ -89,6 +111,25 @@ function toRow(spec: OmpDevinDiscoveredModel): DevinModelRow {
   }
 }
 
+/** One stored grant this route can ask Devin with. */
+interface UsableGrant {
+  readonly access: string
+  readonly account: string
+}
+
+/**
+ * The grant the route may discover with, or `undefined` when there is none.
+ *
+ * An absent, corrupt or expired record is not a failure: there is nothing to ask
+ * with, and the route still serves its seed.
+ */
+function usableGrant(record: Awaited<ReturnType<CredentialRecordsLike['readRecord']>>, now: number): UsableGrant | undefined {
+  const grant = readDevinGrant(record)
+  if (grant === undefined || grant.expiresInvalid === true) return undefined
+  if (grant.expires !== undefined && grant.expires <= now) return undefined
+  return { access: grant.access, account: accountKey(grant.access) }
+}
+
 /**
  * Ask Devin for this account's models and publish the answer.
  *
@@ -96,19 +137,21 @@ function toRow(spec: OmpDevinDiscoveredModel): DevinModelRow {
  * @param options - fetch/timeout/clock seams.
  * @returns the roster now served (the seed when there is no usable grant).
  * @throws when the RPC fails, so a forced refresh can report it; callers that
- *   must not fail ({@link devinRows}) swallow it and keep serving the last good
- *   roster.
+ *   must not fail ({@link devinRows}) swallow it and serve the seed.
  */
 export async function refreshDevinRows(
   credentials: CredentialRecordsLike,
   options: DevinCatalogOptions = {},
 ): Promise<readonly DevinModelRow[]> {
   const now = options.now ?? Date.now
-  const grant = readDevinGrant(await credentials.readRecord(DEVIN_CREDENTIAL_KEY))
-  // No readable grant: there is nothing to ask with, and this is not a failure
-  // (a signed-out route still serves the seed).
-  if (grant === undefined || grant.expiresInvalid === true) return currentDevinRows()
-  if (grant.expires !== undefined && grant.expires <= now()) return currentDevinRows()
+  const grant = usableGrant(await credentials.readRecord(DEVIN_CREDENTIAL_KEY), now())
+  if (grant === undefined) {
+    // Signed out (or the record is unusable): the previous account's roster is
+    // not this route's to serve, and there is nothing to ask with.
+    forget()
+    return currentDevinRows()
+  }
+  if (served !== undefined && served.account !== grant.account) forget()
 
   const discover = options.discover ?? await loadDiscovery()
   const specs = await discover({
@@ -118,18 +161,21 @@ export async function refreshDevinRows(
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   })
   if (specs === null || specs.length === 0) {
+    failed = { at: now(), account: grant.account }
     throw new Error('llm-omp-transports: Devin returned no model catalog for this account')
   }
   const rows = specs.map(toRow).sort((a, b) => a.id.localeCompare(b.id))
-  served = { rows, at: now() }
+  served = { rows, at: now(), account: grant.account }
+  failed = undefined
   return rows
 }
 
 /**
- * The route's roster, refreshed at most once per {@link TTL_MS}.
+ * The route's roster, read at most once per {@link TTL_MS} per account.
  *
- * Never rejects: a failed read keeps the previous roster (or the seed) in
- * service, exactly as omp's own discovery falls back to its seed.
+ * Never rejects: a failed read leaves the seed in service for the rest of the
+ * TTL, so an endpoint that is down costs one attempt per window instead of one
+ * per turn.
  *
  * @param credentials - the record half of the credentials seam.
  * @param options - fetch/timeout/clock seams, forwarded to the refresh.
@@ -140,13 +186,24 @@ export async function devinRows(
   options: DevinCatalogOptions = {},
 ): Promise<readonly DevinModelRow[]> {
   const now = (options.now ?? Date.now)()
-  if (served !== undefined && now - served.at < TTL_MS) return served.rows
-  if (inFlight !== undefined) return inFlight
+  const grant = usableGrant(await credentials.readRecord(DEVIN_CREDENTIAL_KEY), now)
+  // The picker and the adapter both reach here, so the account check happens on
+  // every call: a signed-out or switched route must not keep serving the old
+  // account's rows while the same module slot survives.
+  if (served !== undefined && (grant === undefined || served.account !== grant.account)) forget()
+  if (grant === undefined) return currentDevinRows()
+  if (served !== undefined && served.account === grant.account && now - served.at < TTL_MS) return served.rows
+  if (failed !== undefined && failed.account === grant.account && now - failed.at < TTL_MS) return currentDevinRows()
+  // Only the same account's read is worth sharing; a different account's
+  // in-flight answer would publish its roster here.
+  if (inFlight !== undefined) {
+    return inFlight.account === grant.account ? inFlight.promise : currentDevinRows()
+  }
   const run = refreshDevinRows(credentials, options)
     .catch(() => currentDevinRows())
     .finally(() => {
-      if (inFlight === run) inFlight = undefined
+      if (inFlight?.promise === run) inFlight = undefined
     })
-  inFlight = run
+  inFlight = { account: grant.account, promise: run }
   return run
 }
