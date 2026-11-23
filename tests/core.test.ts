@@ -197,7 +197,7 @@ test('failover excludes request-shaped failures and cancellation', () => {
   for (const code of ['AUTH', 'QUOTA', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT', 'INVALID_CREDENTIAL']) {
     assert.equal(shouldFailover(code), true, code)
   }
-  for (const code of ['ABORTED', 'CONTEXT_WINDOW_EXCEEDED', 'INVALID_REQUEST', 'UNKNOWN_MODEL', '']) {
+  for (const code of ['ABORTED', 'CONTENT_REFUSED', 'CONTEXT_WINDOW_EXCEEDED', 'INVALID_REQUEST', 'UNKNOWN_MODEL', '']) {
     assert.equal(shouldFailover(code), false, code)
   }
 })
@@ -479,6 +479,7 @@ test('classifyOAuthFailure keeps non-key failure codes excluded', () => {
   assert.equal(classifyOAuthFailure({ code: 'CONTEXT_WINDOW_EXCEEDED' }), 'ignore')
   assert.equal(classifyOAuthFailure({ code: 'ABORTED' }), 'ignore')
   assert.equal(classifyOAuthFailure({ code: 'INVALID_REQUEST' }), 'ignore')
+  assert.equal(classifyOAuthFailure({ code: 'CONTENT_REFUSED' }), 'ignore')
   assert.equal(classifyOAuthFailure(undefined), 'ignore')
   assert.equal(classifyOAuthFailure({ code: '' }), 'ignore')
 })
