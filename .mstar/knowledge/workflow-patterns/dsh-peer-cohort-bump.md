@@ -26,12 +26,16 @@ tags: [dsh, peers, cordis, schemastery, cosmokit, declaration-emit, ts2742]
    declares: `@deepseek-ai/cordis` `~4.1.0` and, in the transport package,
    `@deepseek-ai/schemastery` `~3.19.0` — as the peer range **and** the devDependency range
    (rationale below).
-3. Update `pnpm-workspace.yaml`: the six `@deepseek-ai/dsh-*` entries under
-   `minimumReleaseAgeExclude` must name the new cohort's exact versions, or a frozen install
-   refuses it as too fresh. Update both README DSH badges to the declared peer range.
-4. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
+4. Update `pnpm-workspace.yaml` only for the `@deepseek-ai/*` cohort, and only when the
+   effective release-age window would reject the new versions: the window is the configured
+   `minimumReleaseAge` if any, otherwise pnpm's own default, so judge it by whether
+   `pnpm install --no-frozen-lockfile` reports the cohort as too fresh. When it does, add
+   exact-version `minimumReleaseAgeExclude` rows for the resolved `@deepseek-ai/*` packages;
+   otherwise delete the previous cohort's `@deepseek-ai/*` rows. Leave the `@oh-my-pi/*` rows
+   alone. Update both README DSH badges to the declared peer range.
+5. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
    `pnpm ls -r --depth 99 @deepseek-ai/cordis @deepseek-ai/schemastery @deepseek-ai/cosmokit`.
-5. Run both packages' typecheck, build and tests. The transport build is the real gate for
+6. Run both packages' typecheck, build and tests. The transport build is the real gate for
    declaration emit; typecheck alone does not exercise it.
 
 ## Why cordis and schemastery move with the cohort
@@ -96,3 +100,31 @@ Keep genuinely built-in codes (`ABORTED`, `STREAM_CLOSED`, `UNKNOWN_MODEL`,
 
 A transport package whose `tsconfig.json` includes `tests` must adapt test fixtures that
 construct `LlmError` with a custom code too, or the package typecheck fails on the fixture.
+
+## The refusal code changed in rc.5 (`MALFORMED_RESPONSE` → `CONTENT_REFUSED`)
+
+`dsh-llm@0.2.2-rc.5` adds `CONTENT_REFUSED` to `LLM_FAILURE_CODES` and the DeepSeek stream
+raises it when the provider refuses the request content; rc.3 raised `MALFORMED_RESPONSE` for
+the same event, and rc.5 also emits a `usage` chunk before the error. Nothing narrows at the
+type level, so a consumer that only typechecks will not notice.
+
+The behavioral hazard belongs to whoever classifies failures per key. A refusal is
+request-shaped: the key is healthy and re-sending the same content on another key cannot
+succeed. A key-managing plugin that decides failover/cooldown from the raw code
+(`shouldFailover` in `dsh-keys-manager`) must treat `CONTENT_REFUSED` as non-key, otherwise
+it cools a healthy key and spends the retry budget looping over keys. Pin the classification
+at the shared classifier and at every entry point that consults it (here: `shouldFailover`
+and `classifyOAuthFailure`), not just one.
+
+`CONTENT_REFUSED` carries no `retryChoice`, so default host retry policies do not offer it;
+do not add it to a custom `retryableCodes` set as a substitute for the classification fix.
+
+## Release-age rows are conditional, not automatic
+
+`minimumReleaseAgeExclude` needs a row only when the effective release-age window rejects
+that exact version. The window can come from configuration (`pnpm config get minimumReleaseAge`,
+`undefined` in this checkout) or from pnpm's own default, so the decisive check is whether
+`pnpm install --no-frozen-lockfile` refuses the cohort as too fresh; an RC published days
+earlier then installs with no rows at all. Delete the previous cohort's `@deepseek-ai/*` rows
+on each bump instead of re-pointing them at a version that was never refused, leave the
+`@oh-my-pi/*` rows alone, and keep the comment truthful about the re-add trigger.
