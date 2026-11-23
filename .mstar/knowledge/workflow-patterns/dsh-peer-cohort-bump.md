@@ -26,12 +26,14 @@ tags: [dsh, peers, cordis, schemastery, cosmokit, declaration-emit, ts2742]
    declares: `@deepseek-ai/cordis` `~4.1.0` and, in the transport package,
    `@deepseek-ai/schemastery` `~3.19.0` — as the peer range **and** the devDependency range
    (rationale below).
-3. Update `pnpm-workspace.yaml`: the six `@deepseek-ai/dsh-*` entries under
-   `minimumReleaseAgeExclude` must name the new cohort's exact versions, or a frozen install
-   refuses it as too fresh. Update both README DSH badges to the declared peer range.
-4. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
+4. Update `pnpm-workspace.yaml` only if the effective release-age policy would reject the new
+   cohort: check `pnpm config get minimumReleaseAge`; when it is set and blocks the exact
+   resolved `@deepseek-ai/*` versions, add exact-version `minimumReleaseAgeExclude` rows,
+   otherwise delete the previous cohort's rows. Update both README DSH badges to the declared
+   peer range.
+5. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
    `pnpm ls -r --depth 99 @deepseek-ai/cordis @deepseek-ai/schemastery @deepseek-ai/cosmokit`.
-5. Run both packages' typecheck, build and tests. The transport build is the real gate for
+6. Run both packages' typecheck, build and tests. The transport build is the real gate for
    declaration emit; typecheck alone does not exercise it.
 
 ## Why cordis and schemastery move with the cohort
