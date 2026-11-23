@@ -26,11 +26,13 @@ tags: [dsh, peers, cordis, schemastery, cosmokit, declaration-emit, ts2742]
    declares: `@deepseek-ai/cordis` `~4.1.0` and, in the transport package,
    `@deepseek-ai/schemastery` `~3.19.0` — as the peer range **and** the devDependency range
    (rationale below).
-4. Update `pnpm-workspace.yaml` only if the effective release-age policy would reject the new
-   cohort: check `pnpm config get minimumReleaseAge`; when it is set and blocks the exact
-   resolved `@deepseek-ai/*` versions, add exact-version `minimumReleaseAgeExclude` rows,
-   otherwise delete the previous cohort's rows. Update both README DSH badges to the declared
-   peer range.
+4. Update `pnpm-workspace.yaml` only for the `@deepseek-ai/*` cohort, and only when the
+   effective release-age window would reject the new versions: the window is the configured
+   `minimumReleaseAge` if any, otherwise pnpm's own default, so judge it by whether
+   `pnpm install --no-frozen-lockfile` reports the cohort as too fresh. When it does, add
+   exact-version `minimumReleaseAgeExclude` rows for the resolved `@deepseek-ai/*` packages;
+   otherwise delete the previous cohort's `@deepseek-ai/*` rows. Leave the `@oh-my-pi/*` rows
+   alone. Update both README DSH badges to the declared peer range.
 5. `pnpm install --no-frozen-lockfile`, then confirm one resolution per package:
    `pnpm ls -r --depth 99 @deepseek-ai/cordis @deepseek-ai/schemastery @deepseek-ai/cosmokit`.
 6. Run both packages' typecheck, build and tests. The transport build is the real gate for
@@ -119,8 +121,10 @@ do not add it to a custom `retryableCodes` set as a substitute for the classific
 
 ## Release-age rows are conditional, not automatic
 
-`minimumReleaseAgeExclude` needs a row only when an effective `minimumReleaseAge` policy
-rejects that exact version. Check `pnpm config get minimumReleaseAge` (this checkout returns
-`undefined`) before adding rows: an RC published days earlier installs cleanly with none.
-Delete the previous cohort's rows on each bump instead of re-pointing them at a version that
-was never refused, and keep the comment truthful about the re-add trigger.
+`minimumReleaseAgeExclude` needs a row only when the effective release-age window rejects
+that exact version. The window can come from configuration (`pnpm config get minimumReleaseAge`,
+`undefined` in this checkout) or from pnpm's own default, so the decisive check is whether
+`pnpm install --no-frozen-lockfile` refuses the cohort as too fresh; an RC published days
+earlier then installs with no rows at all. Delete the previous cohort's `@deepseek-ai/*` rows
+on each bump instead of re-pointing them at a version that was never refused, leave the
+`@oh-my-pi/*` rows alone, and keep the comment truthful about the re-add trigger.
