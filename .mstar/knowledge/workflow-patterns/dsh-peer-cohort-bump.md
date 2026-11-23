@@ -96,3 +96,29 @@ Keep genuinely built-in codes (`ABORTED`, `STREAM_CLOSED`, `UNKNOWN_MODEL`,
 
 A transport package whose `tsconfig.json` includes `tests` must adapt test fixtures that
 construct `LlmError` with a custom code too, or the package typecheck fails on the fixture.
+
+## The refusal code changed in rc.5 (`MALFORMED_RESPONSE` → `CONTENT_REFUSED`)
+
+`dsh-llm@0.2.2-rc.5` adds `CONTENT_REFUSED` to `LLM_FAILURE_CODES` and the DeepSeek stream
+raises it when the provider refuses the request content; rc.3 raised `MALFORMED_RESPONSE` for
+the same event, and rc.5 also emits a `usage` chunk before the error. Nothing narrows at the
+type level, so a consumer that only typechecks will not notice.
+
+The behavioral hazard belongs to whoever classifies failures per key. A refusal is
+request-shaped: the key is healthy and re-sending the same content on another key cannot
+succeed. A key-managing plugin that decides failover/cooldown from the raw code
+(`shouldFailover` in `dsh-keys-manager`) must treat `CONTENT_REFUSED` as non-key, otherwise
+it cools a healthy key and spends the retry budget looping over keys. Pin the classification
+at the shared classifier and at every entry point that consults it (here: `shouldFailover`
+and `classifyOAuthFailure`), not just one.
+
+`CONTENT_REFUSED` carries no `retryChoice`, so default host retry policies do not offer it;
+do not add it to a custom `retryableCodes` set as a substitute for the classification fix.
+
+## Release-age rows are conditional, not automatic
+
+`minimumReleaseAgeExclude` needs a row only when an effective `minimumReleaseAge` policy
+rejects that exact version. Check `pnpm config get minimumReleaseAge` (this checkout returns
+`undefined`) before adding rows: an RC published days earlier installs cleanly with none.
+Delete the previous cohort's rows on each bump instead of re-pointing them at a version that
+was never refused, and keep the comment truthful about the re-add trigger.
